@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/allan-mobley-jr/gimmes/main/assets/gimmes-social-preview.png" alt="GIMMES — We only play the gimmes" width="1280" />
+</p>
+
 # GIMMES ⛳
 
 > *We only play the gimmes.*
