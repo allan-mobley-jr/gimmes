@@ -6,6 +6,8 @@ import asyncio
 import time
 from types import TracebackType
 
+from urllib.parse import urlparse
+
 import httpx
 
 from gimmes.config import GimmesConfig
@@ -56,6 +58,7 @@ class KalshiClient:
             if config.private_key_path.exists()
             else None
         )
+        self._base_path = urlparse(config.base_url).path  # e.g. /trade-api/v2
         self._rate_limiter = RateLimiter()
         self._client = httpx.AsyncClient(
             base_url=config.base_url,
@@ -97,7 +100,9 @@ class KalshiClient:
         is_write = method.upper() in ("POST", "PUT", "DELETE", "PATCH")
         await self._rate_limiter.acquire(is_write=is_write)
 
-        headers = self._get_auth_headers(method.upper(), path)
+        # Sign with full URL path (e.g. /trade-api/v2/portfolio/balance)
+        sign_path = self._base_path + path
+        headers = self._get_auth_headers(method.upper(), sign_path)
 
         for attempt in range(max_retries):
             response = await self._client.request(
@@ -112,7 +117,7 @@ class KalshiClient:
                 retry_after = float(response.headers.get("Retry-After", "1"))
                 await asyncio.sleep(retry_after * (attempt + 1))
                 # Re-sign with fresh timestamp
-                headers = self._get_auth_headers(method.upper(), path)
+                headers = self._get_auth_headers(method.upper(), sign_path)
                 continue
 
             response.raise_for_status()

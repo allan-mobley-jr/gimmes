@@ -19,7 +19,7 @@ def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         event_ticker=data.get("event_ticker", ""),
         title=data.get("title", ""),
         subtitle=data.get("subtitle", ""),
-        status=MarketStatus(data.get("status", "open")),
+        status=MarketStatus(data.get("status", "active")),
         yes_bid=_cents_to_dollars(data, "yes_bid"),
         yes_ask=_cents_to_dollars(data, "yes_ask"),
         no_bid=_cents_to_dollars(data, "no_bid"),

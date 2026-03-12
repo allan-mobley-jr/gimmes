@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 
 class MarketStatus(StrEnum):
+    ACTIVE = "active"
+    INITIALIZED = "initialized"
+    FINALIZED = "finalized"
+    # Legacy / fallback
     OPEN = "open"
     CLOSED = "closed"
     SETTLED = "settled"

@@ -36,8 +36,8 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
     candidates: list[Market] = []
 
     for m in markets:
-        # Must be open
-        if m.status != MarketStatus.OPEN:
+        # Must be active/open
+        if m.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
             continue
 
         # Price range check (use midpoint or last_price)
