@@ -1,0 +1,175 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1a2e14" stroke-width="0.5"/>
+    </pattern>
+    <radialGradient id="glow" cx="35%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#0f2a09" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#060c04" stop-opacity="1"/>
+    </radialGradient>
+    <radialGradient id="termglow" cx="70%" cy="50%" r="45%">
+      <stop offset="0%" stop-color="#112610" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#060c04" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softshadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="0" stdDeviation="12" flood-color="#5bef6a" flood-opacity="0.18"/>
+    </filter>
+    <filter id="textshadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="8" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <clipPath id="termclip">
+      <rect x="660" y="60" width="570" height="520" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <rect width="1280" height="640" fill="url(#termglow)"/>
+
+  <!-- Subtle left accent line -->
+  <rect x="0" y="0" width="4" height="640" fill="#4ade80" opacity="0.6"/>
+
+  <!-- Large decorative circle behind wordmark -->
+  <circle cx="300" cy="320" r="260" fill="none" stroke="#1d3b17" stroke-width="1"/>
+  <circle cx="300" cy="320" r="200" fill="none" stroke="#1d3b17" stroke-width="0.5"/>
+
+  <!-- Golf hole group, bottom left area -->
+  <!-- Putting green surface -->
+  <ellipse cx="195" cy="490" rx="120" ry="28" fill="#16391a" opacity="0.9"/>
+  <ellipse cx="195" cy="490" rx="120" ry="28" fill="none" stroke="#22522a" stroke-width="1"/>
+  <!-- Cup -->
+  <ellipse cx="195" cy="490" rx="22" ry="9" fill="#0a0e08"/>
+  <ellipse cx="195" cy="490" rx="22" ry="9" fill="none" stroke="#2a5c30" stroke-width="1.5"/>
+  <!-- Flag pole -->
+  <line x1="195" y1="491" x2="195" y2="400" stroke="#8aab8e" stroke-width="2"/>
+  <!-- Flag -->
+  <polygon points="195,400 238,413 195,426" fill="#4ade80" opacity="0.9"/>
+  <!-- Golf ball -->
+  <circle cx="105" cy="482" r="14" fill="#e8f0e4"/>
+  <circle cx="105" cy="482" r="14" fill="none" stroke="#c8d8c4" stroke-width="0.5"/>
+  <!-- Ball dimple suggestion -->
+  <circle cx="100" cy="478" r="2" fill="#c8d8c4" opacity="0.4"/>
+  <circle cx="108" cy="475" r="1.5" fill="#c8d8c4" opacity="0.4"/>
+  <circle cx="103" cy="485" r="2" fill="#c8d8c4" opacity="0.4"/>
+  <circle cx="112" cy="481" r="1.5" fill="#c8d8c4" opacity="0.4"/>
+  <!-- Putt line (dashed) -->
+  <line x1="119" y1="482" x2="173" y2="487" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.7"/>
+
+  <!-- GIMMES wordmark -->
+  <text x="64" y="240" font-family="Georgia, 'Times New Roman', serif" font-size="108" font-weight="700" fill="#e8f0e4" filter="url(#textshadow)" textLength="540" lengthAdjust="spacingAndGlyphs">GIMMES</text>
+  <!-- Underline accent — exactly matches textLength -->
+  <rect x="64" y="256" width="540" height="4" fill="#4ade80" rx="2"/>
+
+  <text x="66" y="318" font-family="Georgia, 'Times New Roman', serif" font-size="26" fill="#7aad7e" font-style="italic" letter-spacing="0.5">We only play the gimmes.</text>
+
+  <!-- Descriptor pills -->
+  <rect x="66" y="348" width="130" height="30" rx="4" fill="#0f2a0f" stroke="#2a5c30" stroke-width="1"/>
+  <text x="131" y="368" font-family="'Courier New', monospace" font-size="13" fill="#4ade80" text-anchor="middle" letter-spacing="1">KALSHI</text>
+
+  <rect x="208" y="348" width="165" height="30" rx="4" fill="#0f2a0f" stroke="#2a5c30" stroke-width="1"/>
+  <text x="290" y="368" font-family="'Courier New', monospace" font-size="13" fill="#4ade80" text-anchor="middle" letter-spacing="1">CLAUDE CODE</text>
+
+  <rect x="385" y="348" width="150" height="30" rx="4" fill="#0f2a0f" stroke="#2a5c30" stroke-width="1"/>
+  <text x="460" y="368" font-family="'Courier New', monospace" font-size="13" fill="#4ade80" text-anchor="middle" letter-spacing="1">AUTONOMOUS</text>
+
+  <!-- Divider -->
+  <line x1="648" y1="60" x2="648" y2="580" stroke="#1d3b17" stroke-width="1"/>
+
+  <!-- Terminal panel -->
+  <rect x="660" y="60" width="570" height="520" rx="12" fill="#080e07" stroke="#1d3b17" stroke-width="1"/>
+
+  <!-- Terminal title bar -->
+  <rect x="660" y="60" width="570" height="40" rx="12" fill="#0f1e0e"/>
+  <rect x="660" y="88" width="570" height="12" fill="#0f1e0e"/>
+  <!-- Traffic lights -->
+  <circle cx="690" cy="80" r="6" fill="#3a1a1a"/>
+  <circle cx="712" cy="80" r="6" fill="#3a2d0a"/>
+  <circle cx="734" cy="80" r="6" fill="#1a3a1a"/>
+  <!-- Terminal title -->
+  <text x="950" y="85" font-family="'Courier New', monospace" font-size="12" fill="#3a5c3a" text-anchor="middle">gimmes — scout agent</text>
+
+  <!-- Terminal content -->
+  <!-- Line 1 - prompt -->
+  <text x="688" y="130" font-family="'Courier New', monospace" font-size="13" fill="#3a7a3a">$</text>
+  <text x="702" y="130" font-family="'Courier New', monospace" font-size="13" fill="#8aab8e"> python -m gimmes.agents.scout --run</text>
+
+  <!-- Scout output -->
+  <text x="688" y="158" font-family="'Courier New', monospace" font-size="12" fill="#3a7a3a">[ SCOUT ]</text>
+  <text x="768" y="158" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> scanning 2,847 active markets...</text>
+
+  <text x="688" y="178" font-family="'Courier New', monospace" font-size="12" fill="#3a7a3a">[ SCOUT ]</text>
+  <text x="768" y="178" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> price range 0.55–0.85 → 312 candidates</text>
+
+  <text x="688" y="198" font-family="'Courier New', monospace" font-size="12" fill="#3a7a3a">[ SCOUT ]</text>
+  <text x="768" y="198" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> routing 312 → caddie for research...</text>
+
+  <!-- Separator -->
+  <line x1="688" y1="213" x2="1200" y2="213" stroke="#1a3a1a" stroke-width="0.5"/>
+
+  <!-- Caddie output -->
+  <text x="688" y="232" font-family="'Courier New', monospace" font-size="12" fill="#d4a843">[ CADDIE ]</text>
+  <text x="778" y="232" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> researching KXSENATE-25NOV-R55...</text>
+
+  <text x="688" y="252" font-family="'Courier New', monospace" font-size="12" fill="#d4a843">[ CADDIE ]</text>
+  <text x="778" y="252" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> market price: 0.71 | signals: 4 of 4 ✓</text>
+
+  <text x="688" y="272" font-family="'Courier New', monospace" font-size="12" fill="#d4a843">[ CADDIE ]</text>
+  <text x="778" y="272" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> model probability: 0.94</text>
+
+  <!-- Gimme score highlight box -->
+  <rect x="688" y="284" width="482" height="38" rx="4" fill="#0a1f08" stroke="#2a5c1a" stroke-width="1"/>
+  <text x="700" y="308" font-family="'Courier New', monospace" font-size="13" fill="#4ade80">GIMME SCORE  </text>
+  <text x="818" y="308" font-family="'Courier New', monospace" font-size="13" fill="#ffffff">88 / 100</text>
+  <text x="900" y="308" font-family="'Courier New', monospace" font-size="13" fill="#4ade80">  ▶  QUALIFIES</text>
+
+  <!-- Separator -->
+  <line x1="688" y1="333" x2="1200" y2="333" stroke="#1a3a1a" stroke-width="0.5"/>
+
+  <!-- Closer output -->
+  <text x="688" y="352" font-family="'Courier New', monospace" font-size="12" fill="#7a9ae8">[ CLOSER ]</text>
+  <text x="768" y="352" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> kelly sizing: 0.25× → $340 position</text>
+
+  <text x="688" y="372" font-family="'Courier New', monospace" font-size="12" fill="#7a9ae8">[ CLOSER ]</text>
+  <text x="768" y="372" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> edge after fees: +21.4pp  maker order</text>
+
+  <text x="688" y="392" font-family="'Courier New', monospace" font-size="12" fill="#7a9ae8">[ CLOSER ]</text>
+  <text x="768" y="392" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> limit order placed @ 0.71 ✓</text>
+
+  <!-- Separator -->
+  <line x1="688" y1="407" x2="1200" y2="407" stroke="#1a3a1a" stroke-width="0.5"/>
+
+  <!-- Monitor output -->
+  <text x="688" y="426" font-family="'Courier New', monospace" font-size="12" fill="#e87a9a">[ MONITOR ]</text>
+  <text x="778" y="426" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> 3 open positions</text>
+
+  <text x="688" y="446" font-family="'Courier New', monospace" font-size="12" fill="#e87a9a">[ MONITOR ]</text>
+  <text x="778" y="446" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> KXCPI-25MAR → 0.91  (+0.14)  hold</text>
+
+  <text x="688" y="466" font-family="'Courier New', monospace" font-size="12" fill="#e87a9a">[ MONITOR ]</text>
+  <text x="778" y="466" font-family="'Courier New', monospace" font-size="12" fill="#4ade80"> KXFED-25MAR → 0.97  (+0.19)  </text>
+  <text x="1053" y="466" font-family="'Courier New', monospace" font-size="12" fill="#ffffff">CLOSE NOW ↗</text>
+
+  <!-- Separator -->
+  <line x1="688" y1="481" x2="1200" y2="481" stroke="#1a3a1a" stroke-width="0.5"/>
+
+  <!-- Scorecard -->
+  <text x="688" y="500" font-family="'Courier New', monospace" font-size="12" fill="#7aad7e">[ SCORECARD ]</text>
+  <text x="792" y="500" font-family="'Courier New', monospace" font-size="12" fill="#5a8a5a"> session: 14W / 2L  win rate: 87.5%</text>
+
+  <text x="688" y="520" font-family="'Courier New', monospace" font-size="12" fill="#7aad7e">[ SCORECARD ]</text>
+  <text x="792" y="520" font-family="'Courier New', monospace" font-size="12" fill="#4ade80"> net P&amp;L: +$1,840  avg edge: +18.2pp</text>
+
+  <!-- Blinking cursor -->
+  <rect x="688" y="545" width="9" height="16" fill="#4ade80" opacity="0.85">
+    <animate attributeName="opacity" values="0.85;0;0.85" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Bottom strip -->
+  <rect x="0" y="600" width="1280" height="40" fill="#060c04"/>
+  <line x1="0" y1="600" x2="1280" y2="600" stroke="#1d3b17" stroke-width="1"/>
+  <text x="80" y="626" font-family="'Courier New', monospace" font-size="13" fill="#3a5c3a" letter-spacing="2">GIMMES</text>
+  <text x="175" y="626" font-family="'Courier New', monospace" font-size="13" fill="#1d3b17">|</text>
+  <text x="188" y="626" font-family="'Courier New', monospace" font-size="13" fill="#3a5c3a"> Autonomous prediction market trading via Claude Code</text>
+  <text x="1200" y="626" font-family="'Courier New', monospace" font-size="13" fill="#2a5c2a" text-anchor="end">⛳</text>
+</svg>
