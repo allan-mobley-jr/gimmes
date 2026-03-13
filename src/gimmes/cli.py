@@ -600,7 +600,7 @@ def discover(
 
 @app.command()
 def config(
-    section: str = typer.Option(
+    section: str | None = typer.Option(
         None, "--section", "-s",
         help="Jump to a specific section (paper, strategy, sizing, risk, orders, scanner, scoring)",
     ),
