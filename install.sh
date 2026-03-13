@@ -102,7 +102,7 @@ else
     MAX_RETRIES=3
     RETRY=0
     while [ $RETRY -lt $MAX_RETRIES ]; do
-        if git clone "$REPO_URL" "$REPO_DIR" 2>/dev/null; then
+        if git clone "$REPO_URL" "$REPO_DIR"; then
             break
         fi
         RETRY=$((RETRY + 1))
@@ -161,17 +161,20 @@ add_to_path() {
 }
 
 SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
+RC_FILE=""
 
 case "$SHELL_NAME" in
     zsh)
-        add_to_path "$HOME/.zshrc"
+        RC_FILE="$HOME/.zshrc"
+        add_to_path "$RC_FILE"
         ;;
     bash)
         if [ -f "$HOME/.bash_profile" ]; then
-            add_to_path "$HOME/.bash_profile"
+            RC_FILE="$HOME/.bash_profile"
         else
-            add_to_path "$HOME/.bashrc"
+            RC_FILE="$HOME/.bashrc"
         fi
+        add_to_path "$RC_FILE"
         ;;
     fish)
         FISH_CONFIG="$HOME/.config/fish/conf.d/gimmes.fish"
@@ -195,10 +198,11 @@ echo ""
 ok "gimmes installed successfully!"
 echo ""
 info "Next steps:"
-case "$SHELL_NAME" in
-    fish) echo "  1. Restart your terminal" ;;
-    *)    echo "  1. Restart your terminal (or run: source ~/.${SHELL_NAME}rc)" ;;
-esac
+if [ -n "$RC_FILE" ]; then
+    echo "  1. Restart your terminal (or run: source $RC_FILE)"
+else
+    echo "  1. Restart your terminal"
+fi
 echo "  2. Run: gimmes init"
 echo "  3. Run: gimmes help"
 echo ""

@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-GIMMES_HOME = Path(os.getenv("GIMMES_HOME", str(Path.home() / ".gimmes")))
+GIMMES_HOME = Path(os.getenv("GIMMES_HOME", str(Path.home() / ".gimmes"))).expanduser()
 
 load_dotenv(dotenv_path=GIMMES_HOME / ".env")
 
