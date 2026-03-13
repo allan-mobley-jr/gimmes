@@ -35,7 +35,7 @@ class TestOrders:
                 action=OrderAction.BUY,
                 side=OrderSide.YES,
                 count=1,
-                yes_price=1,  # 1 cent — won't fill
+                yes_price=1,  # 1 cent — sent as "0.0100" to API
                 post_only=True,
             )
 
