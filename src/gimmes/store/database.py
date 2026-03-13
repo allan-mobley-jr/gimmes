@@ -82,10 +82,17 @@ class Database:
         """Open database connection and initialize schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self.db_path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.executescript(SCHEMA_SQL)
-        await self._conn.commit()
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.executescript(SCHEMA_SQL)
+            await self._conn.commit()
+            # Run any pending migrations
+            from gimmes.store.migrations import run_migrations
+            await run_migrations(self)
+        except BaseException:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         """Close the database connection."""
