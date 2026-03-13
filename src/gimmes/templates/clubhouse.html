@@ -395,7 +395,8 @@
 
         function formatTimestamp(ts) {
             if (!ts) return '--';
-            const d = new Date(ts);
+            const n = ts.replace(' ', 'T');
+            const d = new Date(n.endsWith('Z') ? n : n + 'Z');
             return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
         }
 
