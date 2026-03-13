@@ -66,6 +66,24 @@ async def get_trades(
     return [dict(row) for row in rows]
 
 
+async def update_trade_outcome(db: Database, ticker: str, outcome: str) -> int:
+    """Set resolved_outcome for all trades matching a ticker.
+
+    Args:
+        ticker: Market ticker.
+        outcome: Resolution result ('yes' or 'no').
+
+    Returns:
+        Number of rows updated.
+    """
+    cursor = await db.conn.execute(
+        "UPDATE trades SET resolved_outcome = ? WHERE ticker = ? AND resolved_outcome IS NULL",
+        (outcome, ticker),
+    )
+    await db.conn.commit()
+    return cursor.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Positions
 # ---------------------------------------------------------------------------
@@ -166,14 +184,32 @@ async def get_latest_snapshot(db: Database) -> dict | None:  # type: ignore[type
 # ---------------------------------------------------------------------------
 
 
-async def insert_candidate(db: Database, ticker: str, title: str, market_price: float,
-                           model_prob: float, edge: float, score: float, memo: str) -> None:
-    """Insert a scanned gimme candidate."""
+async def insert_candidate(
+    db: Database,
+    ticker: str,
+    title: str,
+    market_price: float,
+    model_prob: float,
+    edge: float,
+    score: float,
+    memo: str,
+    *,
+    edge_size_score: float = 0,
+    signal_strength_score: float = 0,
+    liquidity_depth_score: float = 0,
+    settlement_clarity_score: float = 0,
+    time_to_resolution_score: float = 0,
+) -> None:
+    """Insert a scanned gimme candidate with optional component scores."""
     await db.conn.execute(
         """INSERT INTO candidates
-           (ticker, title, market_price, model_probability, edge, gimme_score, research_memo)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (ticker, title, market_price, model_prob, edge, score, memo),
+           (ticker, title, market_price, model_probability, edge, gimme_score,
+            research_memo, edge_size_score, signal_strength_score,
+            liquidity_depth_score, settlement_clarity_score, time_to_resolution_score)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ticker, title, market_price, model_prob, edge, score, memo,
+         edge_size_score, signal_strength_score, liquidity_depth_score,
+         settlement_clarity_score, time_to_resolution_score),
     )
     await db.conn.commit()
 
