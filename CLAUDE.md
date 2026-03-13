@@ -18,6 +18,7 @@ CLI (python -m gimmes)  ←→  Kalshi REST API
 **Key modules:**
 - `src/gimmes/config.py` — Two-layer config (env vars + TOML)
 - `src/gimmes/kalshi/` — HTTP client, auth, market/order/portfolio endpoints
+- `src/gimmes/paper/` — Paper trading engine (fill simulator, broker, schema)
 - `src/gimmes/strategy/` — Scanner, scorer, Kelly sizing, fee calculator
 - `src/gimmes/risk/` — Limits, validator, settlement risk scanner
 - `src/gimmes/store/` — SQLite persistence (trades, positions, snapshots)
@@ -26,8 +27,10 @@ CLI (python -m gimmes)  ←→  Kalshi REST API
 
 ## Two Modes
 
-- **Driving Range** (`GIMMES_MODE=driving_range`): Demo API at `demo-api.kalshi.co`. Paper trading. Default.
+- **Driving Range** (`GIMMES_MODE=driving_range`): Paper trading. Reads **real prod market data** but simulates order execution locally via `PaperBroker`. Virtual bankroll (default $10,000). Default.
 - **Championship** (`GIMMES_MODE=championship`): Production API at `api.elections.kalshi.com`. Real money. Requires explicit confirmation.
+
+Both modes use the same prod API credentials for market data. The only difference is where portfolio operations (orders, balance, positions) are routed — `PaperBroker` in driving range vs. Kalshi API in championship. The `trading_context()` helper in `cli.py` handles this routing transparently.
 
 **Always default to Driving Range. Never switch to Championship without explicit user approval.**
 
@@ -52,7 +55,7 @@ python -m gimmes log-trade TICKER  # Log a trade decision
 
 ```bash
 uv run pytest tests/unit/             # Unit tests (no API needed)
-uv run pytest tests/integration/ -m integration  # Integration tests (needs demo API)
+uv run pytest tests/integration/ -m integration  # Integration tests (needs API credentials)
 uv run pytest                          # All tests
 ```
 

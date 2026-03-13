@@ -16,10 +16,7 @@ load_dotenv()
 # Constants
 # ---------------------------------------------------------------------------
 
-DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
 PROD_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
-
-DEMO_WS_URL = "wss://demo-api.kalshi.co/trade-api/ws/v2"
 PROD_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 
 DEFAULT_CONFIG_PATH = Path("config/gimmes.toml")
@@ -77,6 +74,10 @@ class ScoringConfig(BaseModel):
     weights: ScoringWeights = Field(default_factory=ScoringWeights)
 
 
+class PaperTradingConfig(BaseModel):
+    starting_balance: float = 10_000.00
+
+
 # ---------------------------------------------------------------------------
 # Main config
 # ---------------------------------------------------------------------------
@@ -85,13 +86,13 @@ class ScoringConfig(BaseModel):
 class GimmesConfig(BaseModel):
     mode: Mode = Mode.DRIVING_RANGE
 
-    # Kalshi credentials
+    # Kalshi credentials (prod — used for market data in both modes)
     api_key: str = ""
     private_key_path: Path = Path()
 
-    # API URLs
-    base_url: str = DEMO_BASE_URL
-    ws_url: str = DEMO_WS_URL
+    # API URLs (always prod — paper trading simulates orders locally)
+    base_url: str = PROD_BASE_URL
+    ws_url: str = PROD_WS_URL
 
     # Strategy parameters (from TOML)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -100,6 +101,7 @@ class GimmesConfig(BaseModel):
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    paper: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
 
     # Database
     db_path: Path = Path("gimmes.db")
@@ -114,18 +116,9 @@ def load_config(config_path: Path | None = None) -> GimmesConfig:
     mode_str = os.getenv("GIMMES_MODE", "driving_range").lower()
     mode = Mode(mode_str)
 
-    # Select credentials based on mode
-    if mode == Mode.CHAMPIONSHIP:
-        api_key = os.getenv("KALSHI_PROD_API_KEY", "")
-        key_path_str = os.getenv("KALSHI_PROD_PRIVATE_KEY_PATH", "")
-        base_url = PROD_BASE_URL
-        ws_url = PROD_WS_URL
-    else:
-        api_key = os.getenv("KALSHI_DEMO_API_KEY", "")
-        key_path_str = os.getenv("KALSHI_DEMO_PRIVATE_KEY_PATH", "")
-        base_url = DEMO_BASE_URL
-        ws_url = DEMO_WS_URL
-
+    # Both modes use prod credentials (driving range reads real market data)
+    api_key = os.getenv("KALSHI_PROD_API_KEY", "")
+    key_path_str = os.getenv("KALSHI_PROD_PRIVATE_KEY_PATH", "")
     private_key_path = Path(key_path_str).expanduser() if key_path_str else Path()
 
     # Load TOML config
@@ -139,12 +132,11 @@ def load_config(config_path: Path | None = None) -> GimmesConfig:
         mode=mode,
         api_key=api_key,
         private_key_path=private_key_path,
-        base_url=base_url,
-        ws_url=ws_url,
         strategy=StrategyConfig(**toml_data.get("strategy", {})),
         sizing=SizingConfig(**toml_data.get("sizing", {})),
         risk=RiskConfig(**toml_data.get("risk", {})),
         orders=OrdersConfig(**toml_data.get("orders", {})),
         scanner=ScannerConfig(**toml_data.get("scanner", {})),
         scoring=ScoringConfig(**toml_data.get("scoring", {})),
+        paper=PaperTradingConfig(**toml_data.get("paper", {})),
     )
