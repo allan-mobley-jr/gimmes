@@ -19,7 +19,7 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED):
 1. Run `python -m gimmes validate TICKER --prob P` — pre-trade validation
 2. If validation passes, run `python -m gimmes size TICKER --prob P` — position sizing
 3. Review the sizing output and confirm it's reasonable
-4. Place the order: `python -m gimmes order TICKER --prob P`
+4. Place the order: `python -m gimmes order TICKER --prob P --yes`
 5. Log the trade: `python -m gimmes log-trade TICKER --action open --prob P --score S --rationale "..."`
 
 ## Safety Checklist

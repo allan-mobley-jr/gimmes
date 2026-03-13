@@ -37,9 +37,16 @@ Both modes use the same prod API credentials for market data. The only differenc
 ## CLI Commands
 
 ```bash
+# Autonomous trading loop
+python -m gimmes driving_range     # Autonomous loop — paper trading (default)
+python -m gimmes championship      # Autonomous loop — real money (requires confirmation)
+
+# Setup & config
 python -m gimmes init              # First-time setup wizard
 python -m gimmes config            # Interactive config wizard (--section to jump)
 python -m gimmes mode              # Show mode + connection status
+
+# Manual trading
 python -m gimmes scan              # Scan markets (Scout pipeline)
 python -m gimmes score TICKER      # Score a specific market
 python -m gimmes size TICKER -p P  # Calculate position size
@@ -52,6 +59,10 @@ python -m gimmes report            # Performance scorecard
 python -m gimmes market-info TICKER # Detailed market info
 python -m gimmes log-trade TICKER  # Log a trade decision
 ```
+
+## Autonomous Loop
+
+`driving_range` and `championship` run the full trading pipeline in a loop via `claude -p "/caddy-shack"`. Each cycle: State Check → Monitor → Scout → Caddie → Closer → Scorecard. The orchestrator reads SQLite state at the start of each cycle for crash recovery. Options: `--cycles N` (bounded runs), `--pause S` (seconds between cycles).
 
 ## Running Tests
 
