@@ -24,6 +24,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run") as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
@@ -34,6 +35,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run") as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("championship", max_cycles=1)
 
@@ -44,6 +46,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run") as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
 
@@ -53,6 +56,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/opt/bin/claude"),
             patch("subprocess.run") as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
@@ -72,6 +76,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run", return_value=mock_result),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
@@ -92,6 +97,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run", side_effect=side_effect),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", pause_seconds=0)
 
@@ -104,6 +110,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run", return_value=mock_result) as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
 
@@ -129,6 +136,7 @@ class TestDrivingRangeCommand:
 
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=1, pause_seconds=0,
+            no_dashboard=False,
         )
 
 
@@ -155,6 +163,7 @@ class TestChampionshipCommand:
 
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=0,
+            no_dashboard=False,
         )
 
 

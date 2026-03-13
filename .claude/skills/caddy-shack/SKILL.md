@@ -12,6 +12,14 @@ Run one complete autonomous trading cycle. This skill is invoked by the `driving
 
 ## Cycle Steps
 
+### Step 0: Log Cycle Start
+
+Log the beginning of this cycle to the activity feed. The cycle number is passed via the `GIMMES_CYCLE` env var (default to 0 if not set):
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase start --message "Cycle $GIMMES_CYCLE started"
+```
+
 ### Step 1: State Check
 
 Before doing anything, assess the current state:
@@ -52,6 +60,11 @@ Launch the Scout agent (`scout.md`) to:
 2. Score the top candidates
 3. Return a ranked shortlist
 
+Log Scout completion:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase complete --message "Scout found N candidates"
+```
+
 **If Scout finds no candidates**, skip to Step 6.
 
 ### Step 4: Caddie
@@ -65,6 +78,11 @@ Launch the Caddie agent (`caddie.md`) to:
 4. Produce a GimmeScore and research memo
 5. Recommend PROCEED, PASS, or NEEDS MORE RESEARCH
 
+Log Caddie completion:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
+```
+
 **If no candidates receive PROCEED**, skip to Step 6.
 
 ### Step 5: Closer
@@ -77,6 +95,11 @@ Launch the Closer agent (`closer.md`) to:
 3. Place the order: `python -m gimmes order TICKER --prob P --yes`
 4. Log the trade: `python -m gimmes log-trade TICKER --action open --prob P --score S --rationale "..."`
 
+Log Closer completion:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase complete --message "Closer executed N trades"
+```
+
 **Safety**: The Closer must pass all 7 validation checks before any trade. Never override risk limits.
 
 ### Step 6: Scorecard
@@ -87,6 +110,11 @@ Launch the Scorecard agent (`scorecard.md`) to:
 1. Generate P&L summary
 2. Report performance metrics
 3. Assess strategy health
+
+Log cycle completion:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase complete --message "Cycle $GIMMES_CYCLE complete"
+```
 
 ## Parallelism
 

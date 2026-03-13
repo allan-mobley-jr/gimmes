@@ -60,10 +60,18 @@ Launch the autonomous trading loop in paper mode:
 gimmes driving_range
 ```
 
-That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. Check on performance anytime:
+That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. A live dashboard auto-starts at `http://127.0.0.1:1919` — open it in your browser to watch the action.
+
+Check on performance anytime:
 
 ```bash
 gimmes report
+```
+
+Or launch the dashboard standalone (without the trading loop):
+
+```bash
+gimmes clubhouse
 ```
 
 When you're ready for real money (after verifying your strategy on the driving range):
@@ -162,6 +170,13 @@ gimmes validate TICKER   # Pre-trade validation
 gimmes order TICKER      # Place an order (paper or real)
 gimmes cancel ORDER_ID   # Cancel a resting order
 ```
+
+### Dashboard
+```bash
+gimmes clubhouse         # Launch web dashboard at http://127.0.0.1:1919
+```
+
+The Clubhouse dashboard provides a live view of portfolio, positions, risk gauges, equity curve, agent activity, and trade history. It auto-starts when running `driving_range` or `championship` (disable with `--no-dashboard`).
 
 ### Monitoring & reporting
 ```bash
@@ -307,6 +322,8 @@ starting_balance = 10000.00   # Virtual bankroll for driving range mode
     ├── src/gimmes/
     │   ├── cli.py               # Typer CLI entry point + trading_context routing
     │   ├── config.py            # Two-layer config (env vars + TOML)
+    │   ├── clubhouse/           # Web dashboard (FastAPI + SSE)
+    │   ├── templates/           # Jinja2 HTML template (Tailwind + Chart.js)
     │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
     │   ├── paper/               # Paper trading engine (fill simulator, broker)
     │   ├── strategy/            # Scanner, scorer, Kelly sizing, fee calculator
@@ -357,7 +374,8 @@ uv run pytest                                      # All tests
 - **API:** Kalshi REST + WebSocket, RSA-PSS authentication
 - **State:** SQLite (trades, positions, snapshots, paper trading)
 - **Language:** Python 3.11+
-- **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`
+- **Dashboard:** FastAPI + Uvicorn + Jinja2 (Tailwind CSS + Chart.js via CDN)
+- **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`, `fastapi`, `uvicorn`, `jinja2`
 - **Dev tools:** `uv`, `pytest`, `ruff`, `mypy`
 
 ---
