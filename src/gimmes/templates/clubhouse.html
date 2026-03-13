@@ -281,6 +281,17 @@
         </div>
 
         <!-- ================================================================ -->
+        <!-- ROW 5.7: STRATEGY RECOMMENDATIONS                               -->
+        <!-- ================================================================ -->
+        <div id="recs-panel" class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5 hidden">
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
+                Strategy Recommendations
+                <span id="rec-count" class="ml-2 px-2 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30"></span>
+            </h2>
+            <div id="recs-container" class="space-y-2 max-h-[300px] overflow-y-auto scrollbar-thin"></div>
+        </div>
+
+        <!-- ================================================================ -->
         <!-- ROW 7: COLLAPSIBLE CONFIGURATION                                -->
         <!-- ================================================================ -->
         <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl">
@@ -460,6 +471,7 @@
             }
             if (data.activity) updateActivity(data.activity);
             if (data.errors) updateErrors(data.errors);
+            if (data.recommendations) updateRecommendations(data.recommendations);
             if (data.trades) updateTrades(data.trades);
             if (data.candidates) updateCandidates(data.candidates);
             if (data.config) updateConfig(data.config);
@@ -706,6 +718,41 @@
                         + '</details>';
                 }
                 html += '</div>';
+            });
+            container.innerHTML = html;
+        }
+
+        function updateRecommendations(recs) {
+            const panel = document.getElementById('recs-panel');
+            const container = document.getElementById('recs-container');
+            const countBadge = document.getElementById('rec-count');
+
+            if (!recs || recs.length === 0) {
+                panel.classList.add('hidden');
+                return;
+            }
+
+            panel.classList.remove('hidden');
+            countBadge.textContent = recs.length + ' pending';
+
+            const confColors = {
+                high: 'bg-red-500/20 text-red-400 border-red-500/30',
+                medium: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+                low: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
+            };
+
+            let html = '';
+            recs.forEach(function(r) {
+                const cls = confColors[r.confidence] || confColors.medium;
+                html += '<div class="py-2.5 px-3 rounded bg-slate-700/20 hover:bg-slate-700/30 transition-colors">'
+                    + '<div class="flex items-center gap-2 mb-1">'
+                    + '<span class="px-1.5 py-0.5 rounded border text-xs font-medium shrink-0 ' + cls + '">' + escapeHtml(r.confidence) + '</span>'
+                    + '<span class="text-sm text-cyan-400 font-mono font-semibold">' + escapeHtml(r.parameter_path) + '</span>'
+                    + '<span class="text-sm text-slate-300 font-mono">' + escapeHtml(r.current_value) + ' → ' + escapeHtml(r.recommended_value) + '</span>'
+                    + '</div>'
+                    + '<p class="text-xs text-slate-400 leading-relaxed">' + escapeHtml(r.rationale) + '</p>'
+                    + '<p class="text-xs text-slate-500 mt-1">' + escapeHtml(r.analysis_type) + ' · ' + (r.timestamp || '').substring(0, 10) + '</p>'
+                    + '</div>';
             });
             container.innerHTML = html;
         }

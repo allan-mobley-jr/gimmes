@@ -910,6 +910,99 @@ def recommendations(
 
 
 @app.command()
+def tune() -> None:
+    """Interactively apply pending strategy recommendations to gimmes.toml."""
+    config = load_config()
+
+    async def _tune() -> None:
+        from gimmes.config import DEFAULT_CONFIG_PATH
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_recommendations, update_recommendation_status
+
+        async with Database(config.db_path) as db:
+            rows = await get_recommendations(db, status="pending", limit=50)
+            if not rows:
+                console.print("[dim]No pending recommendations[/dim]")
+                return
+
+            applied = 0
+            for row in rows:
+                conf = row["confidence"]
+                conf_color = {"high": "red", "medium": "yellow", "low": "dim"}.get(conf, "white")
+                console.print(
+                    f"\n[{conf_color}][{conf.upper()}][/{conf_color}] "
+                    f"[cyan]{row['parameter_path']}[/cyan]: "
+                    f"{row['current_value']} → [bold]{row['recommended_value']}[/bold]"
+                )
+                console.print(f"  {row['rationale']}")
+                console.print(f"  [dim]Analysis: {row['analysis_type']}[/dim]")
+
+                answer = typer.prompt("  Apply? [y/n/q]", default="n").strip().lower()
+                if answer == "q":
+                    break
+                if answer == "y":
+                    _apply_toml_change(
+                        DEFAULT_CONFIG_PATH,
+                        row["parameter_path"],
+                        row["recommended_value"],
+                    )
+                    await update_recommendation_status(db, row["id"], "implemented")
+                    console.print(f"  [green]Applied and marked as implemented[/green]")
+                    applied += 1
+                else:
+                    reject = typer.confirm("  Mark as rejected?", default=False)
+                    if reject:
+                        await update_recommendation_status(db, row["id"], "rejected")
+                        console.print(f"  [dim]Marked as rejected[/dim]")
+
+            if applied:
+                console.print(f"\n[green]Applied {applied} change(s) to {DEFAULT_CONFIG_PATH}[/green]")
+                console.print("[dim]Restart the trading loop for changes to take effect[/dim]")
+
+    _run(_tune())
+
+
+def _apply_toml_change(toml_path: "Path", parameter_path: str, new_value: str) -> None:
+    """Update a single value in gimmes.toml by rewriting the file."""
+    import re
+    from pathlib import Path
+
+    path = Path(toml_path)
+    if not path.exists():
+        return
+
+    text = path.read_text()
+    parts = parameter_path.split(".")
+    if len(parts) != 2:
+        return
+
+    section, key = parts
+
+    # Try to convert to the right type
+    try:
+        if "." in new_value:
+            typed_value = str(float(new_value))
+        else:
+            typed_value = str(int(new_value))
+    except ValueError:
+        typed_value = f'"{new_value}"'
+
+    # Find the key in the right section and replace its value
+    in_section = False
+    lines = text.split("\n")
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == f"[{section}]"
+        if in_section and re.match(rf"^{re.escape(key)}\s*=", stripped):
+            line = f"{key} = {typed_value}"
+        new_lines.append(line)
+
+    path.write_text("\n".join(new_lines))
+
+
+@app.command()
 def discover(
     category: str = typer.Argument(
         ..., help="Category to explore (Economics, Politics, Financials, etc.)",

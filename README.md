@@ -171,6 +171,7 @@ The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `g
 | **Performance Metrics** | Win rate, Sharpe ratio, max drawdown, total return |
 | **Agent Activity Feed** | Live cycle events — which agent is running, what it found |
 | **Error Log** | Recent errors with severity color-coding (hidden when no errors) |
+| **Strategy Recommendations** | Pending parameter change recommendations from The Pro (hidden when none) |
 | **Recent Trades** | Trade log with action, price, score, agent |
 | **Candidate Pipeline** | Scout shortlist with scores, edge, and Caddie research memos |
 | **Configuration** | Current strategy settings (collapsible, read-only) |
@@ -233,6 +234,7 @@ gimmes log-error         # Log a structured error (used by agents/system)
 gimmes resolve-error ID  # Mark an error as resolved (--issue-url to link GitHub issue)
 gimmes lesson            # Run strategy analysis (--analysis TYPE, --dry-run)
 gimmes recommendations   # View past strategy recommendations (--status, --parameter)
+gimmes tune              # Interactively apply pending recommendations to gimmes.toml
 ```
 
 ---

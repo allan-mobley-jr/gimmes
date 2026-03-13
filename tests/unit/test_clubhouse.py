@@ -15,6 +15,7 @@ from gimmes.clubhouse.data import (
     get_metrics,
     get_portfolio,
     get_positions,
+    get_recommendations_data,
     get_risk,
     get_status,
     get_trades,
@@ -24,6 +25,7 @@ from gimmes.clubhouse.models import (
     ErrorItem,
     MetricsResponse,
     PortfolioResponse,
+    RecommendationItem,
     StatusResponse,
 )
 from gimmes.clubhouse.server import _find_port, app
@@ -155,6 +157,45 @@ class TestDataLayer:
         assert errors[0].agent == "scout"
         assert not errors[0].resolved
 
+    async def test_get_recommendations_data(self, db_path: Path) -> None:
+        # Insert a pending recommendation
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO recommendations
+                   (parameter_path, current_value, recommended_value,
+                    confidence, analysis_type, rationale)
+                   VALUES ('strategy.gimme_threshold', '75', '70',
+                           'high', 'threshold_sweep', 'Better win rate at 70')"""
+            )
+            await db.conn.commit()
+
+        recs = await get_recommendations_data(db_path)
+        assert len(recs) == 1
+        assert recs[0].parameter_path == "strategy.gimme_threshold"
+        assert recs[0].current_value == "75"
+        assert recs[0].recommended_value == "70"
+        assert recs[0].confidence == "high"
+        assert recs[0].status == "pending"
+
+    async def test_get_recommendations_filters_non_pending(self, db_path: Path) -> None:
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO recommendations
+                   (parameter_path, current_value, recommended_value,
+                    confidence, analysis_type, rationale, status)
+                   VALUES ('strategy.min_edge', '0.05', '0.04',
+                           'medium', 'edge_decay', 'Edge shrinking', 'implemented')"""
+            )
+            await db.conn.commit()
+
+        recs = await get_recommendations_data(db_path)
+        assert len(recs) == 0
+
+    async def test_get_recommendations_nonexistent_db(self, tmp_path: Path) -> None:
+        bad_path = tmp_path / "nonexistent.db"
+        recs = await get_recommendations_data(bad_path)
+        assert recs == []
+
     async def test_get_errors_nonexistent_db(self, tmp_path: Path) -> None:
         bad_path = tmp_path / "nonexistent.db"
         errors = await get_errors_data(bad_path)
@@ -217,6 +258,28 @@ class TestServerHelpers:
 # ---------------------------------------------------------------------------
 
 
+class TestRecommendationModel:
+    def test_defaults(self) -> None:
+        r = RecommendationItem()
+        assert r.status == "pending"
+        assert r.parameter_path == ""
+        assert r.confidence == ""
+
+    def test_full_item(self) -> None:
+        r = RecommendationItem(
+            id=1,
+            parameter_path="strategy.gimme_threshold",
+            current_value="75",
+            recommended_value="70",
+            confidence="high",
+            analysis_type="threshold_sweep",
+            rationale="Better win rate",
+            status="pending",
+        )
+        assert r.parameter_path == "strategy.gimme_threshold"
+        assert r.confidence == "high"
+
+
 class TestFastAPIApp:
     def test_app_has_routes(self) -> None:
         routes = {r.path for r in app.routes}
@@ -230,5 +293,6 @@ class TestFastAPIApp:
         assert "/api/risk" in routes
         assert "/api/activity" in routes
         assert "/api/errors" in routes
+        assert "/api/recommendations" in routes
         assert "/api/config" in routes
         assert "/api/stream" in routes

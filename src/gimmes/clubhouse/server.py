@@ -21,6 +21,7 @@ from gimmes.clubhouse.models import (
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
+    RecommendationItem,
     RiskResponse,
     StatusResponse,
     TradeItem,
@@ -108,6 +109,11 @@ async def api_errors() -> list[ErrorItem]:
     return await data.get_errors_data(_db_path)
 
 
+@app.get("/api/recommendations")
+async def api_recommendations() -> list[RecommendationItem]:
+    return await data.get_recommendations_data(_db_path)
+
+
 @app.get("/api/config")
 async def api_config() -> ConfigResponse:
     return await data.get_config_data()
@@ -140,6 +146,7 @@ async def api_stream() -> StreamingResponse:
                     candidates = await data.get_candidates(_db_path, limit=10)
                     metrics = await data.get_metrics(_db_path)
                     errors = await data.get_errors_data(_db_path, limit=10)
+                    recs = await data.get_recommendations_data(_db_path, limit=10)
 
                     payload = json.dumps({
                         "status": status.model_dump(),
@@ -151,6 +158,7 @@ async def api_stream() -> StreamingResponse:
                         "candidates": [c.model_dump() for c in candidates],
                         "metrics": metrics.model_dump(),
                         "errors": [e.model_dump() for e in errors],
+                        "recommendations": [r.model_dump() for r in recs],
                     })
 
                     yield f"data: {payload}\n\n"

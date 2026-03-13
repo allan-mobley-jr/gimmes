@@ -104,6 +104,18 @@ class ErrorItem(BaseModel):
     github_issue_url: str = ""
 
 
+class RecommendationItem(BaseModel):
+    id: int = 0
+    timestamp: str = ""
+    parameter_path: str = ""
+    current_value: str = ""
+    recommended_value: str = ""
+    confidence: str = ""
+    analysis_type: str = ""
+    rationale: str = ""
+    status: str = "pending"
+
+
 class ConfigResponse(BaseModel):
     mode: str = "driving_range"
     strategy: dict = {}

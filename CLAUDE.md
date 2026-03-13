@@ -63,6 +63,7 @@ python -m gimmes log-error         # Log a structured error (used by agents/syst
 python -m gimmes resolve-error ID  # Mark an error resolved (--issue-url to link issue)
 python -m gimmes lesson            # Strategy analysis and recommendations (--analysis TYPE, --dry-run)
 python -m gimmes recommendations   # View past strategy recommendations (--status, --parameter)
+python -m gimmes tune              # Interactively apply pending recommendations to gimmes.toml
 ```
 
 ## Autonomous Loop
