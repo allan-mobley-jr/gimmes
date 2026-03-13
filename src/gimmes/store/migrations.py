@@ -42,6 +42,26 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_error_timestamp ON error_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_error_resolved ON error_log(resolved);
     """),
+    (4, """
+        CREATE TABLE IF NOT EXISTS recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            parameter_path TEXT NOT NULL,
+            current_value TEXT NOT NULL,
+            recommended_value TEXT NOT NULL,
+            confidence TEXT NOT NULL CHECK (confidence IN ('low', 'medium', 'high')),
+            analysis_type TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            supporting_data TEXT NOT NULL DEFAULT '{}',
+            github_issue_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'implemented', 'rejected', 'superseded')),
+            outcome TEXT NOT NULL DEFAULT '',
+            outcome_measured_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_rec_status ON recommendations(status);
+        CREATE INDEX IF NOT EXISTS idx_rec_parameter ON recommendations(parameter_path);
+    """),
 ]
 
 

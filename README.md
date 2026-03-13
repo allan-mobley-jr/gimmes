@@ -121,6 +121,7 @@ The autonomous loop is orchestrated by the **caddy-shack** skill, which dispatch
 | **The Monitor** | Position watching | + WebSearch, WebFetch | Monitors open contracts, flags early-close opportunities |
 | **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
 | **The Groundskeeper** | Error escalation | Bash, Read, Glob, Grep | Reviews error logs, escalates critical/recurring errors to GitHub issues |
+| **The Pro** | Strategy tuning | + WebSearch, WebFetch | Analyzes performance data, recommends parameter changes with evidence |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
@@ -137,6 +138,7 @@ Each `driving_range` or `championship` invocation runs a continuous loop of trad
 5. **Closer** — validates, sizes (quarter-Kelly), and executes approved trades
 6. **Scorecard** — reports P&L, win rate, and strategy health
 7. **Groundskeeper** — reviews error logs, escalates critical or recurring errors to GitHub issues
+8. **The Pro** (every 10th cycle) — analyzes performance, recommends parameter changes with data
 
 The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
 
@@ -169,6 +171,7 @@ The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `g
 | **Performance Metrics** | Win rate, Sharpe ratio, max drawdown, total return |
 | **Agent Activity Feed** | Live cycle events — which agent is running, what it found |
 | **Error Log** | Recent errors with severity color-coding (hidden when no errors) |
+| **Strategy Recommendations** | Pending parameter change recommendations from The Pro (hidden when none) |
 | **Recent Trades** | Trade log with action, price, score, agent |
 | **Candidate Pipeline** | Scout shortlist with scores, edge, and Caddie research memos |
 | **Configuration** | Current strategy settings (collapsible, read-only) |
@@ -229,6 +232,9 @@ gimmes discover CATEGORY # Discover series tickers in a category
 gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
 gimmes log-error         # Log a structured error (used by agents/system)
 gimmes resolve-error ID  # Mark an error as resolved (--issue-url to link GitHub issue)
+gimmes lesson            # Run strategy analysis (--analysis TYPE, --dry-run)
+gimmes recommendations   # View past strategy recommendations (--status, --parameter)
+gimmes tune              # Interactively apply pending recommendations to gimmes.toml
 ```
 
 ---

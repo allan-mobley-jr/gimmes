@@ -121,6 +121,17 @@ Launch the Groundskeeper agent (`groundskeeper.md`) to:
 3. File GitHub issues for escalation-worthy errors
 4. Mark escalated errors as resolved
 
+### Step 7: The Pro (conditional, every 10th cycle)
+
+**Condition:** Only run when `$GIMMES_CYCLE % 10 == 0` AND at least 20 completed trades exist.
+
+If conditions are met, dispatch the **Pro** agent for strategy analysis.
+
+Launch the Pro agent (`pro.md`) to:
+1. Run all applicable strategy analyses
+2. File GitHub issues for high-confidence recommendations
+3. Track past recommendation outcomes
+
 Log cycle completion:
 ```bash
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase complete --message "Cycle $GIMMES_CYCLE complete"

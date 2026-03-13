@@ -18,6 +18,7 @@ from gimmes.clubhouse.models import (
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
+    RecommendationItem,
     RiskResponse,
     StatusResponse,
     TradeItem,
@@ -390,6 +391,39 @@ async def get_errors_data(db_path: Path, limit: int = 20) -> list[ErrorItem]:
     return items
 
 
+async def get_recommendations_data(db_path: Path, limit: int = 10) -> list[RecommendationItem]:
+    """Get pending strategy recommendations."""
+    items: list[RecommendationItem] = []
+
+    try:
+        async with _connect(db_path) as conn:
+            cursor = await conn.execute(_table_exists_sql("recommendations"))
+            if not await cursor.fetchone():
+                return items
+
+            cursor = await conn.execute(
+                "SELECT * FROM recommendations WHERE status = 'pending' ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                items.append(RecommendationItem(
+                    id=row["id"],
+                    timestamp=row["timestamp"],
+                    parameter_path=row["parameter_path"],
+                    current_value=row["current_value"],
+                    recommended_value=row["recommended_value"],
+                    confidence=row["confidence"],
+                    analysis_type=row["analysis_type"],
+                    rationale=row["rationale"],
+                    status=row["status"],
+                ))
+    except Exception:
+        logger.debug("get_recommendations_data failed", exc_info=True)
+
+    return items
+
+
 async def get_config_data() -> ConfigResponse:
     """Get current configuration (read-only)."""
     config = _config()
@@ -442,6 +476,15 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 row = await cursor.fetchone()
                 parts.append(f"{row['balance']:.2f}" if row else "0")
             except Exception:
+                parts.append("0")
+
+            # recommendations changes
+            cursor = await conn.execute(_table_exists_sql("recommendations"))
+            if await cursor.fetchone():
+                cursor = await conn.execute("SELECT MAX(id) as m FROM recommendations")
+                row = await cursor.fetchone()
+                parts.append(str(row["m"] if row and row["m"] else 0))
+            else:
                 parts.append("0")
 
             # error_log changes
