@@ -86,6 +86,9 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(SCHEMA_SQL)
         await self._conn.commit()
+        # Run any pending migrations
+        from gimmes.store.migrations import run_migrations
+        await run_migrations(self)
 
     async def close(self) -> None:
         """Close the database connection."""

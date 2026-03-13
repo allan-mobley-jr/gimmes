@@ -589,11 +589,9 @@ def log_activity(
 
     async def _log() -> None:
         from gimmes.store.database import Database
-        from gimmes.store.migrations import run_migrations
         from gimmes.store.queries import insert_activity
 
         async with Database(config.db_path) as db:
-            await run_migrations(db)
             row_id = await insert_activity(
                 db, cycle=cycle, agent=agent, phase=phase,
                 message=message, details=details,
