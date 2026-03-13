@@ -10,7 +10,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-load_dotenv()
+GIMMES_HOME = Path(os.getenv("GIMMES_HOME", str(Path.home() / ".gimmes")))
+
+load_dotenv(dotenv_path=GIMMES_HOME / ".env")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -19,7 +21,7 @@ load_dotenv()
 PROD_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 PROD_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 
-DEFAULT_CONFIG_PATH = Path("config/gimmes.toml")
+DEFAULT_CONFIG_PATH = GIMMES_HOME / "config" / "gimmes.toml"
 
 
 class Mode(StrEnum):
@@ -104,7 +106,7 @@ class GimmesConfig(BaseModel):
     paper: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
 
     # Database
-    db_path: Path = Path("gimmes.db")
+    db_path: Path = Field(default_factory=lambda: GIMMES_HOME / "gimmes.db")
 
     @property
     def is_championship(self) -> bool:
