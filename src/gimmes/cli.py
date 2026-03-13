@@ -746,6 +746,27 @@ def errors(
     _run(_errors())
 
 
+@app.command(name="resolve-error")
+def resolve_error_cmd(
+    error_id: int = typer.Argument(..., help="Error ID to mark as resolved"),
+    issue_url: str = typer.Option("", "--issue-url", "-u", help="GitHub issue URL"),
+) -> None:
+    """Mark an error log entry as resolved."""
+    config = load_config()
+
+    async def _resolve() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import resolve_error
+
+        async with Database(config.db_path) as db:
+            await resolve_error(db, error_id, issue_url)
+            console.print(f"[green]Resolved error #{error_id}[/green]")
+            if issue_url:
+                console.print(f"  Linked to: {issue_url}")
+
+    _run(_resolve())
+
+
 @app.command()
 def discover(
     category: str = typer.Argument(

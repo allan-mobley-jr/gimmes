@@ -91,7 +91,13 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 
 ### Step 4: Mark Resolved
 
-After filing an issue, log the resolution. Report the issue URL in your output.
+After filing an issue, mark the escalated errors as resolved using the CLI:
+
+```bash
+python -m gimmes resolve-error ERROR_ID --issue-url "https://github.com/..."
+```
+
+Report the issue URL in your output.
 
 ## Output Format
 

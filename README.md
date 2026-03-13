@@ -228,6 +228,7 @@ gimmes log-trade TICKER  # Log a trade decision
 gimmes discover CATEGORY # Discover series tickers in a category
 gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
 gimmes log-error         # Log a structured error (used by agents/system)
+gimmes resolve-error ID  # Mark an error as resolved (--issue-url to link GitHub issue)
 ```
 
 ---
