@@ -576,6 +576,33 @@ def log_trade(
     _run(_log())
 
 
+@app.command(name="log-activity")
+def log_activity(
+    cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
+    agent: str = typer.Option("", "--agent", "-a", help="Agent name"),
+    phase: str = typer.Option("", "--phase", help="Phase (start/complete/error)"),
+    message: str = typer.Option("", "--message", "-m", help="Activity message"),
+    details: str = typer.Option("", "--details", "-d", help="Additional details"),
+) -> None:
+    """Log agent activity to the activity_log table."""
+    config = load_config()
+
+    async def _log() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.migrations import run_migrations
+        from gimmes.store.queries import insert_activity
+
+        async with Database(config.db_path) as db:
+            await run_migrations(db)
+            row_id = await insert_activity(
+                db, cycle=cycle, agent=agent, phase=phase,
+                message=message, details=details,
+            )
+            console.print(f"[green]Logged activity #{row_id}[/green]")
+
+    _run(_log())
+
+
 @app.command()
 def discover(
     category: str = typer.Argument(
@@ -629,6 +656,22 @@ def init() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Clubhouse dashboard
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def clubhouse(
+    port: int = typer.Option(1919, "--port", "-p", help="Port number"),
+) -> None:
+    """Launch the Clubhouse web dashboard (standalone)."""
+    from gimmes.clubhouse.server import run_standalone
+
+    config = load_config()
+    run_standalone(port=port, db_path=config.db_path)
+
+
+# ---------------------------------------------------------------------------
 # Autonomous loop commands
 # ---------------------------------------------------------------------------
 
@@ -638,6 +681,7 @@ def _autonomous_loop(
     *,
     max_cycles: int = 0,
     pause_seconds: int = 30,
+    no_dashboard: bool = False,
 ) -> None:
     """Run the caddy-shack orchestrator skill via claude -p in a loop.
 
@@ -657,9 +701,28 @@ def _autonomous_loop(
         raise typer.Exit(1)
 
     project_root = Path(__file__).resolve().parent.parent.parent
+    config = load_config()
+
+    # Set mode in process env so the in-process dashboard reads the correct mode
+    os.environ["GIMMES_MODE"] = mode
 
     env = os.environ.copy()
-    env["GIMMES_MODE"] = mode
+
+    # Auto-start Clubhouse dashboard
+    if not no_dashboard:
+        from gimmes.clubhouse.server import start_background
+
+        port = start_background(
+            db_path=config.db_path, pause_seconds=pause_seconds,
+        )
+        if port:
+            console.print(
+                f"[green]Clubhouse dashboard:[/green] http://127.0.0.1:{port}"
+            )
+        else:
+            console.print(
+                "[yellow]Could not start Clubhouse dashboard (port unavailable)[/yellow]"
+            )
 
     mode_label = "DRIVING RANGE" if mode == "driving_range" else "CHAMPIONSHIP"
     console.print(f"\n[bold]{mode_label}[/bold] — autonomous trading loop started")
@@ -674,6 +737,7 @@ def _autonomous_loop(
             cycle += 1
             console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
 
+            env["GIMMES_CYCLE"] = str(cycle)
             result = subprocess.run(
                 [
                     claude_path, "-p", "/caddy-shack",
@@ -707,9 +771,13 @@ def driving_range(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
     pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
+    no_dashboard: bool = typer.Option(
+        False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
+    ),
 ) -> None:
     """Start autonomous trading loop in Driving Range mode (paper trading)."""
-    _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause)
+    _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause,
+                     no_dashboard=no_dashboard)
 
 
 @app.command(name="championship")
@@ -718,6 +786,9 @@ def championship(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
     pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
+    no_dashboard: bool = typer.Option(
+        False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
+    ),
 ) -> None:
     """Start autonomous trading loop in Championship mode (REAL MONEY)."""
     console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
@@ -728,7 +799,8 @@ def championship(
     )
     if not typer.confirm("Are you sure you want to start autonomous trading with real money?"):
         raise typer.Abort()
-    _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause)
+    _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause,
+                     no_dashboard=no_dashboard)
 
 
 if __name__ == "__main__":

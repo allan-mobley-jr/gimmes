@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GIMMES Clubhouse</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#141d32',
+                            950: '#0a1020',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: #0f172a;
+        }
+        .scrollbar-thin::-webkit-scrollbar {
+            width: 6px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-track {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+        .equity-chart-container {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .pulse-dot {
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+        .gauge-bar {
+            transition: width 0.6s ease-in-out;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-slate-200 font-sans antialiased">
+    <div class="max-w-screen-2xl mx-auto px-4 py-4 space-y-4">
+
+        <!-- ================================================================ -->
+        <!-- ROW 1: HEADER                                                    -->
+        <!-- ================================================================ -->
+        <header class="flex items-center justify-between bg-slate-800/60 border border-slate-700/50 rounded-xl px-6 py-4">
+            <div class="flex items-center gap-4">
+                <h1 class="text-2xl font-bold tracking-wide text-white">GIMMES CLUBHOUSE</h1>
+                <span id="mode-badge" class="px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    DRIVING RANGE
+                </span>
+            </div>
+            <div class="flex items-center gap-4 text-sm text-slate-400">
+                <div class="flex items-center gap-2">
+                    <span id="sse-dot" class="inline-block w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+                    <span id="sse-label">Disconnected</span>
+                </div>
+                <span class="text-slate-600">|</span>
+                <span id="last-updated">Last updated: --</span>
+            </div>
+        </header>
+
+        <!-- ================================================================ -->
+        <!-- ROW 2: KPI CARDS                                                 -->
+        <!-- ================================================================ -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Balance -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <p class="text-xs font-medium uppercase tracking-wider text-slate-400 mb-1">Balance</p>
+                <p id="kpi-balance" class="text-2xl font-bold font-mono text-white">$0.00</p>
+            </div>
+            <!-- Total Equity -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <p class="text-xs font-medium uppercase tracking-wider text-slate-400 mb-1">Total Equity</p>
+                <p id="kpi-equity" class="text-2xl font-bold font-mono text-white">$0.00</p>
+            </div>
+            <!-- Daily P&L -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <p class="text-xs font-medium uppercase tracking-wider text-slate-400 mb-1">Daily P&amp;L</p>
+                <p id="kpi-pnl" class="text-2xl font-bold font-mono text-slate-400">$0.00</p>
+            </div>
+            <!-- Positions -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <p class="text-xs font-medium uppercase tracking-wider text-slate-400 mb-1">Positions</p>
+                <div class="flex items-end gap-3">
+                    <p id="kpi-positions-text" class="text-2xl font-bold font-mono text-white">0 / 15</p>
+                    <div class="flex-1 mb-2">
+                        <div class="h-2 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="kpi-positions-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ROW 3: POSITIONS TABLE + RISK GAUGES                            -->
+        <!-- ================================================================ -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            <!-- Open Positions (60%) -->
+            <div class="lg:col-span-3 bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Open Positions</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-xs uppercase tracking-wider text-slate-500 border-b border-slate-700/50">
+                                <th class="text-left pb-2 pr-3">Ticker</th>
+                                <th class="text-left pb-2 pr-3">Side</th>
+                                <th class="text-right pb-2 pr-3">Qty</th>
+                                <th class="text-right pb-2 pr-3">Avg Price</th>
+                                <th class="text-right pb-2 pr-3">Mkt Price</th>
+                                <th class="text-right pb-2 pr-3">Unreal. P&amp;L</th>
+                                <th class="text-right pb-2">Cost Basis</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-body" class="font-mono">
+                            <tr>
+                                <td colspan="7" class="text-center text-slate-500 py-8">No open positions</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Risk Gauges (40%) -->
+            <div class="lg:col-span-2 bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Risk Gauges</h2>
+                <div class="space-y-5">
+                    <!-- Daily Loss -->
+                    <div>
+                        <div class="flex justify-between text-sm mb-1.5">
+                            <span class="text-slate-300">Daily Loss</span>
+                            <span id="risk-daily-label" class="font-mono text-slate-400">0% / 15%</span>
+                        </div>
+                        <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="risk-daily-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <!-- Positions -->
+                    <div>
+                        <div class="flex justify-between text-sm mb-1.5">
+                            <span class="text-slate-300">Positions</span>
+                            <span id="risk-positions-label" class="font-mono text-slate-400">0 / 15</span>
+                        </div>
+                        <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="risk-positions-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <!-- Largest Position -->
+                    <div>
+                        <div class="flex justify-between text-sm mb-1.5">
+                            <span class="text-slate-300">Largest Position</span>
+                            <span id="risk-largest-label" class="font-mono text-slate-400">0% / 5%</span>
+                        </div>
+                        <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="risk-largest-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ROW 4: EQUITY CURVE + PERFORMANCE METRICS                       -->
+        <!-- ================================================================ -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            <!-- Equity Curve (60%) -->
+            <div class="lg:col-span-3 bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Equity Curve</h2>
+                <div class="equity-chart-container">
+                    <canvas id="equity-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Performance Metrics (40%) -->
+            <div class="lg:col-span-2 bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Performance Metrics</h2>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center border-b border-slate-700/40 pb-3">
+                        <span class="text-slate-300 text-sm">Win Rate</span>
+                        <span id="metric-winrate" class="font-mono font-semibold text-white">--</span>
+                    </div>
+                    <div class="flex justify-between items-center border-b border-slate-700/40 pb-3">
+                        <span class="text-slate-300 text-sm">Sharpe Ratio</span>
+                        <span id="metric-sharpe" class="font-mono font-semibold text-white">--</span>
+                    </div>
+                    <div class="flex justify-between items-center border-b border-slate-700/40 pb-3">
+                        <span class="text-slate-300 text-sm">Max Drawdown</span>
+                        <span id="metric-drawdown" class="font-mono font-semibold text-white">--</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-slate-300 text-sm">Total Return</span>
+                        <span id="metric-return" class="font-mono font-semibold text-white">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ROW 5: AGENT ACTIVITY FEED                                      -->
+        <!-- ================================================================ -->
+        <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Agent Activity</h2>
+            <div id="activity-feed" class="max-h-[200px] overflow-y-auto scrollbar-thin space-y-1.5">
+                <div id="activity-empty" class="flex items-center justify-center py-10 text-slate-500 text-sm">
+                    No active loop -- start one with <code class="ml-1.5 px-2 py-0.5 bg-slate-700/50 rounded text-slate-400 font-mono text-xs">gimmes driving_range</code>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ROW 6: RECENT TRADES + CANDIDATE PIPELINE                       -->
+        <!-- ================================================================ -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <!-- Recent Trades -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Recent Trades</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-xs uppercase tracking-wider text-slate-500 border-b border-slate-700/50">
+                                <th class="text-left pb-2 pr-2">Time</th>
+                                <th class="text-left pb-2 pr-2">Ticker</th>
+                                <th class="text-left pb-2 pr-2">Action</th>
+                                <th class="text-left pb-2 pr-2">Side</th>
+                                <th class="text-right pb-2 pr-2">Qty</th>
+                                <th class="text-right pb-2 pr-2">Price</th>
+                                <th class="text-right pb-2 pr-2">Score</th>
+                                <th class="text-left pb-2">Agent</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-body" class="font-mono">
+                            <tr>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No recent trades</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Candidate Pipeline -->
+            <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Candidate Pipeline</h2>
+                <div id="candidates-container" class="space-y-2 max-h-[300px] overflow-y-auto scrollbar-thin">
+                    <div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">
+                        No candidates in pipeline
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ROW 7: COLLAPSIBLE CONFIGURATION                                -->
+        <!-- ================================================================ -->
+        <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl">
+            <button id="config-toggle" onclick="toggleConfig()" class="w-full flex items-center justify-between px-5 py-4 text-sm font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-300 transition-colors">
+                <span>Configuration</span>
+                <svg id="config-chevron" class="w-4 h-4 transform transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+            <div id="config-panel" class="hidden px-5 pb-5">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6" id="config-sections">
+                    <!-- Strategy -->
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-2 border-b border-slate-700/40 pb-1">Strategy</h3>
+                        <dl id="config-strategy" class="space-y-1 text-xs"></dl>
+                    </div>
+                    <!-- Sizing -->
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-2 border-b border-slate-700/40 pb-1">Sizing</h3>
+                        <dl id="config-sizing" class="space-y-1 text-xs"></dl>
+                    </div>
+                    <!-- Risk -->
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-2 border-b border-slate-700/40 pb-1">Risk</h3>
+                        <dl id="config-risk" class="space-y-1 text-xs"></dl>
+                    </div>
+                    <!-- Orders -->
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-2 border-b border-slate-700/40 pb-1">Orders</h3>
+                        <dl id="config-orders" class="space-y-1 text-xs"></dl>
+                    </div>
+                    <!-- Scanner -->
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-2 border-b border-slate-700/40 pb-1">Scanner</h3>
+                        <dl id="config-scanner" class="space-y-1 text-xs"></dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- JAVASCRIPT                                                         -->
+    <!-- ================================================================== -->
+    <script>
+        // ------------------------------------------------------------------
+        // State
+        // ------------------------------------------------------------------
+        let lastUpdateTime = null;
+        let equityChart = null;
+        let evtSource = null;
+
+        // ------------------------------------------------------------------
+        // Formatting helpers
+        // ------------------------------------------------------------------
+        function formatCurrency(val) {
+            if (val == null || isNaN(val)) return '$0.00';
+            const num = parseFloat(val);
+            const formatted = Math.abs(num).toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            });
+            if (num > 0) return '+' + formatted;
+            if (num < 0) return '-' + formatted;
+            return formatted;
+        }
+
+        function formatCurrencyPlain(val) {
+            if (val == null || isNaN(val)) return '$0.00';
+            return parseFloat(val).toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            });
+        }
+
+        function formatPrice(val) {
+            if (val == null || isNaN(val)) return '$0.00';
+            return '$' + parseFloat(val).toFixed(2);
+        }
+
+        function formatPercent(val) {
+            if (val == null || isNaN(val)) return '0%';
+            return parseFloat(val).toFixed(1) + '%';
+        }
+
+        function colorForPnl(val) {
+            const num = parseFloat(val);
+            if (num > 0) return 'text-emerald-400';
+            if (num < 0) return 'text-red-400';
+            return 'text-slate-400';
+        }
+
+        function timeAgo(timestamp) {
+            if (!timestamp) return '--';
+            const now = Date.now();
+            const then = new Date(timestamp).getTime();
+            const seconds = Math.floor((now - then) / 1000);
+            if (seconds < 5) return 'just now';
+            if (seconds < 60) return seconds + 's ago';
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes + 'm ago';
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours + 'h ago';
+            const days = Math.floor(hours / 24);
+            return days + 'd ago';
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '--';
+            const d = new Date(ts);
+            return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // ------------------------------------------------------------------
+        // Risk gauge color helper
+        // ------------------------------------------------------------------
+        function gaugeColor(ratio) {
+            if (ratio >= 0.9) return 'bg-red-500';
+            if (ratio >= 0.7) return 'bg-yellow-500';
+            return 'bg-emerald-500';
+        }
+
+        // ------------------------------------------------------------------
+        // Action badge color
+        // ------------------------------------------------------------------
+        function actionBadge(action) {
+            const a = (action || '').toLowerCase();
+            if (a === 'open' || a === 'buy') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400">' + escapeHtml(action) + '</span>';
+            if (a === 'close' || a === 'sell') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400">' + escapeHtml(action) + '</span>';
+            if (a === 'skip') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400">' + escapeHtml(action) + '</span>';
+            return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400">' + escapeHtml(action || '--') + '</span>';
+        }
+
+        // ------------------------------------------------------------------
+        // Agent badge colors
+        // ------------------------------------------------------------------
+        function agentBadge(name) {
+            const agentColors = {
+                scout:     'bg-blue-500/20 text-blue-400 border-blue-500/30',
+                caddie:    'bg-purple-500/20 text-purple-400 border-purple-500/30',
+                closer:    'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+                monitor:   'bg-orange-500/20 text-orange-400 border-orange-500/30',
+                scorecard: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+            };
+            const key = (name || '').toLowerCase();
+            const cls = agentColors[key] || 'bg-slate-500/20 text-slate-400 border-slate-500/30';
+            return '<span class="px-2 py-0.5 rounded border text-xs font-semibold uppercase tracking-wider ' + cls + '">' + escapeHtml(name || 'system') + '</span>';
+        }
+
+        function phaseBadge(phase) {
+            return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-slate-600/40 text-slate-300">' + escapeHtml(phase || '') + '</span>';
+        }
+
+        // ------------------------------------------------------------------
+        // Update functions
+        // ------------------------------------------------------------------
+        function updateDashboard(data) {
+            lastUpdateTime = Date.now();
+            if (data.portfolio) updateKPIs(data.portfolio, data.risk);
+            if (data.positions) updatePositions(data.positions);
+            if (data.risk) updateRisk(data.risk);
+            if (data.metrics) {
+                updateChart(data.metrics);
+                updatePerformance(data.metrics);
+            }
+            if (data.activity) updateActivity(data.activity);
+            if (data.trades) updateTrades(data.trades);
+            if (data.candidates) updateCandidates(data.candidates);
+            if (data.config) updateConfig(data.config);
+            if (data.status) updateStatus(data.status);
+        }
+
+        function updateKPIs(portfolio, risk) {
+            const balanceEl = document.getElementById('kpi-balance');
+            const equityEl = document.getElementById('kpi-equity');
+            const pnlEl = document.getElementById('kpi-pnl');
+            const posTextEl = document.getElementById('kpi-positions-text');
+            const posBarEl = document.getElementById('kpi-positions-bar');
+
+            if (portfolio.balance != null) {
+                balanceEl.textContent = formatCurrencyPlain(portfolio.balance);
+            }
+            if (portfolio.total_equity != null) {
+                equityEl.textContent = formatCurrencyPlain(portfolio.total_equity);
+            }
+            if (portfolio.daily_pnl != null) {
+                const pnl = parseFloat(portfolio.daily_pnl);
+                pnlEl.textContent = formatCurrency(pnl);
+                pnlEl.className = 'text-2xl font-bold font-mono ' + colorForPnl(pnl);
+            }
+            if (risk && risk.position_count != null) {
+                const count = parseInt(risk.position_count);
+                const limit = risk.max_positions || 15;
+                posTextEl.textContent = count + ' / ' + limit;
+                const pct = Math.min((count / limit) * 100, 100);
+                posBarEl.style.width = pct + '%';
+                posBarEl.className = 'h-full rounded-full gauge-bar ' + gaugeColor(count / limit);
+            }
+        }
+
+        function updatePositions(positions) {
+            const tbody = document.getElementById('positions-body');
+            if (!positions || positions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">No open positions</td></tr>';
+                return;
+            }
+            let html = '';
+            positions.forEach(function(p) {
+                const pnl = parseFloat(p.unrealized_pnl || 0);
+                const pnlClass = colorForPnl(pnl);
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
+                    + '<td class="py-2 pr-3 text-cyan-400 font-semibold">' + escapeHtml(p.ticker || '--') + '</td>'
+                    + '<td class="py-2 pr-3 text-slate-300">' + escapeHtml(p.side || '--') + '</td>'
+                    + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.count != null ? p.count : '--') + '</td>'
+                    + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.avg_price) + '</td>'
+                    + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.market_price) + '</td>'
+                    + '<td class="py-2 pr-3 text-right ' + pnlClass + '">' + formatCurrency(pnl) + '</td>'
+                    + '<td class="py-2 text-right text-slate-200">' + formatCurrencyPlain(p.cost_basis) + '</td>'
+                    + '</tr>';
+            });
+            tbody.innerHTML = html;
+        }
+
+        function updateRisk(risk) {
+            // Daily Loss — API sends fractional values (0.05 = 5%)
+            if (risk.daily_loss_pct != null) {
+                const pct = parseFloat(risk.daily_loss_pct);
+                const limit = parseFloat(risk.daily_loss_limit_pct || 0.15);
+                const ratio = limit > 0 ? Math.min(pct / limit, 1) : 0;
+                document.getElementById('risk-daily-label').textContent = formatPercent(pct) + ' / ' + formatPercent(limit);
+                const bar = document.getElementById('risk-daily-bar');
+                bar.style.width = (ratio * 100) + '%';
+                bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
+            }
+            // Positions
+            if (risk.position_count != null) {
+                const count = parseInt(risk.position_count);
+                const limit = risk.max_positions || 15;
+                const ratio = Math.min(count / limit, 1);
+                document.getElementById('risk-positions-label').textContent = count + ' / ' + limit;
+                const bar = document.getElementById('risk-positions-bar');
+                bar.style.width = (ratio * 100) + '%';
+                bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
+            }
+            // Largest Position — API sends fractional (0.03 = 3%)
+            if (risk.largest_position_pct != null) {
+                const pct = parseFloat(risk.largest_position_pct);
+                const limit = parseFloat(risk.max_position_pct || 0.05);
+                const ratio = limit > 0 ? Math.min(pct / limit, 1) : 0;
+                document.getElementById('risk-largest-label').textContent = formatPercent(pct) + ' / ' + formatPercent(limit);
+                const bar = document.getElementById('risk-largest-bar');
+                bar.style.width = (ratio * 100) + '%';
+                bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
+            }
+        }
+
+        function updateChart(metrics) {
+            if (!metrics.equity_curve || metrics.equity_curve.length === 0) return;
+
+            const labels = metrics.equity_curve.map(function(pt) {
+                return new Date(pt.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            });
+            const values = metrics.equity_curve.map(function(pt) {
+                return parseFloat(pt.equity);
+            });
+
+            if (equityChart) {
+                equityChart.data.labels = labels;
+                equityChart.data.datasets[0].data = values;
+                equityChart.update('none');
+            }
+        }
+
+        function updatePerformance(perf) {
+            if (perf.win_rate != null) {
+                document.getElementById('metric-winrate').textContent = formatPercent(perf.win_rate);
+            }
+            if (perf.sharpe_ratio != null) {
+                document.getElementById('metric-sharpe').textContent = parseFloat(perf.sharpe_ratio).toFixed(2);
+            }
+            if (perf.max_drawdown != null) {
+                let txt = formatCurrencyPlain(perf.max_drawdown);
+                if (perf.max_drawdown_pct != null) {
+                    txt += ' (' + formatPercent(perf.max_drawdown_pct) + ')';
+                }
+                const el = document.getElementById('metric-drawdown');
+                el.textContent = txt;
+                el.className = 'font-mono font-semibold text-red-400';
+            }
+            if (perf.total_return != null) {
+                let txt = formatCurrency(perf.total_return);
+                if (perf.total_return_pct != null) {
+                    txt += ' (' + formatPercent(perf.total_return_pct) + ')';
+                }
+                const el = document.getElementById('metric-return');
+                el.textContent = txt;
+                el.className = 'font-mono font-semibold ' + colorForPnl(perf.total_return);
+            }
+        }
+
+        function updateActivity(activity) {
+            const feed = document.getElementById('activity-feed');
+            const emptyEl = document.getElementById('activity-empty');
+
+            if (!activity || activity.length === 0) {
+                if (emptyEl) emptyEl.style.display = 'flex';
+                return;
+            }
+
+            let html = '';
+            activity.forEach(function(entry) {
+                html += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-slate-700/20 transition-colors text-sm">'
+                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[65px]">' + formatTimestamp(entry.timestamp) + '</span>'
+                    + agentBadge(entry.agent)
+                    + (entry.phase ? ' ' + phaseBadge(entry.phase) : '')
+                    + '<span class="text-slate-300 break-words">' + escapeHtml(entry.message || '') + '</span>'
+                    + '</div>';
+            });
+            feed.innerHTML = html;
+        }
+
+        function updateTrades(trades) {
+            const tbody = document.getElementById('trades-body');
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No recent trades</td></tr>';
+                return;
+            }
+            let html = '';
+            trades.forEach(function(t) {
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
+                    + '<td class="py-2 pr-2 text-xs text-slate-500">' + formatTimestamp(t.timestamp) + '</td>'
+                    + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
+                    + '<td class="py-2 pr-2">' + actionBadge(t.action) + '</td>'
+                    + '<td class="py-2 pr-2 text-slate-300">' + escapeHtml(t.side || '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.count != null ? t.count : '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-right text-slate-200">' + formatPrice(t.price) + '</td>'
+                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.gimme_score != null ? parseFloat(t.gimme_score).toFixed(1) : '--') + '</td>'
+                    + '<td class="py-2">' + escapeHtml(t.agent || '--') + '</td>'
+                    + '</tr>';
+            });
+            tbody.innerHTML = html;
+        }
+
+        function updateCandidates(candidates) {
+            const container = document.getElementById('candidates-container');
+            const emptyEl = document.getElementById('candidates-empty');
+
+            if (!candidates || candidates.length === 0) {
+                container.innerHTML = '<div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">No candidates in pipeline</div>';
+                return;
+            }
+
+            let html = '';
+            candidates.forEach(function(c, idx) {
+                const edgeClass = parseFloat(c.edge || 0) > 0 ? 'text-emerald-400' : 'text-red-400';
+                const memoId = 'memo-' + idx;
+                html += '<div class="bg-slate-700/30 border border-slate-600/30 rounded-lg p-3">'
+                    + '<div class="flex items-center justify-between mb-1">'
+                    + '<span class="text-cyan-400 font-mono font-semibold text-sm">' + escapeHtml(c.ticker || '--') + '</span>'
+                    + '<div class="flex items-center gap-3 text-xs font-mono">'
+                    + '<span class="text-slate-400">Mkt: ' + formatPrice(c.market_price) + '</span>'
+                    + '<span class="text-slate-300">Score: ' + (c.gimme_score != null ? parseFloat(c.gimme_score).toFixed(1) : '--') + '</span>'
+                    + '<span class="' + edgeClass + '">Edge: ' + (c.edge != null ? formatPercent(c.edge) : '--') + '</span>'
+                    + '</div>'
+                    + '</div>'
+                    + '<p class="text-xs text-slate-400 truncate">' + escapeHtml(c.title || '') + '</p>';
+                if (c.research_memo) {
+                    html += '<details class="mt-2">'
+                        + '<summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors">Research memo</summary>'
+                        + '<p class="mt-1 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">' + escapeHtml(c.research_memo) + '</p>'
+                        + '</details>';
+                }
+                html += '</div>';
+            });
+            container.innerHTML = html;
+        }
+
+        function updateConfig(config) {
+            const sectionMap = {
+                strategy: 'config-strategy',
+                sizing: 'config-sizing',
+                risk: 'config-risk',
+                orders: 'config-orders',
+                scanner: 'config-scanner',
+            };
+            Object.keys(sectionMap).forEach(function(section) {
+                const el = document.getElementById(sectionMap[section]);
+                if (!el) return;
+                const data = config[section];
+                if (!data || typeof data !== 'object') {
+                    el.innerHTML = '<div class="text-slate-500 text-xs">--</div>';
+                    return;
+                }
+                let html = '';
+                Object.keys(data).forEach(function(key) {
+                    html += '<div class="flex justify-between gap-2">'
+                        + '<dt class="text-slate-500 truncate">' + escapeHtml(key) + '</dt>'
+                        + '<dd class="text-slate-300 font-mono text-right shrink-0">' + escapeHtml(String(data[key])) + '</dd>'
+                        + '</div>';
+                });
+                el.innerHTML = html;
+            });
+        }
+
+        function updateStatus(status) {
+            const badge = document.getElementById('mode-badge');
+            if (status.mode) {
+                const mode = status.mode.toLowerCase();
+                if (mode === 'championship') {
+                    badge.textContent = 'CHAMPIONSHIP';
+                    badge.className = 'px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-red-500/20 text-red-400 border border-red-500/30';
+                } else {
+                    badge.textContent = 'DRIVING RANGE';
+                    badge.className = 'px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Configuration toggle
+        // ------------------------------------------------------------------
+        function toggleConfig() {
+            const panel = document.getElementById('config-panel');
+            const chevron = document.getElementById('config-chevron');
+            panel.classList.toggle('hidden');
+            chevron.classList.toggle('rotate-180');
+        }
+
+        // ------------------------------------------------------------------
+        // Last-updated ticker
+        // ------------------------------------------------------------------
+        function tickLastUpdated() {
+            const el = document.getElementById('last-updated');
+            if (lastUpdateTime) {
+                el.textContent = 'Last updated: ' + timeAgo(lastUpdateTime);
+            }
+        }
+        setInterval(tickLastUpdated, 1000);
+
+        // ------------------------------------------------------------------
+        // Chart.js initialization
+        // ------------------------------------------------------------------
+        function initChart() {
+            const ctx = document.getElementById('equity-chart').getContext('2d');
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, 280);
+            gradient.addColorStop(0, 'rgba(16, 185, 129, 0.25)');
+            gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
+
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Equity',
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: gradient,
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1e293b',
+                            titleColor: '#94a3b8',
+                            bodyColor: '#e2e8f0',
+                            borderColor: '#334155',
+                            borderWidth: 1,
+                            padding: 10,
+                            displayColors: false,
+                            callbacks: {
+                                label: function(context) {
+                                    return formatCurrencyPlain(context.parsed.y);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: 'rgba(51, 65, 85, 0.3)',
+                                drawBorder: false,
+                            },
+                            ticks: {
+                                color: '#64748b',
+                                font: { size: 11 },
+                                maxTicksLimit: 8,
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(51, 65, 85, 0.3)',
+                                drawBorder: false,
+                            },
+                            ticks: {
+                                color: '#64748b',
+                                font: { size: 11 },
+                                callback: function(value) {
+                                    return '$' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // SSE Connection
+        // ------------------------------------------------------------------
+        function connectSSE() {
+            const dot = document.getElementById('sse-dot');
+            const label = document.getElementById('sse-label');
+
+            evtSource = new EventSource('/api/stream');
+
+            evtSource.onopen = function() {
+                dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-dot';
+                label.textContent = 'Connected';
+                label.className = 'text-emerald-400';
+            };
+
+            evtSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateDashboard(data);
+                } catch (e) {
+                    console.error('Failed to parse SSE message:', e);
+                }
+            };
+
+            evtSource.onerror = function() {
+                dot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-slate-500';
+                label.textContent = 'Disconnected';
+                label.className = 'text-slate-400';
+                // EventSource auto-reconnects by default
+            };
+        }
+
+        // ------------------------------------------------------------------
+        // Initial data load
+        // ------------------------------------------------------------------
+        async function fetchEndpoint(url) {
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) return null;
+                return await resp.json();
+            } catch (e) {
+                console.warn('Failed to fetch ' + url + ':', e);
+                return null;
+            }
+        }
+
+        async function initialLoad() {
+            const endpoints = [
+                { url: '/api/portfolio',  key: 'portfolio' },
+                { url: '/api/positions',  key: 'positions' },
+                { url: '/api/risk',       key: 'risk' },
+                { url: '/api/metrics',    key: 'metrics' },
+                { url: '/api/activity',   key: 'activity' },
+                { url: '/api/trades',     key: 'trades' },
+                { url: '/api/candidates', key: 'candidates' },
+                { url: '/api/config',     key: 'config' },
+                { url: '/api/status',     key: 'status' },
+            ];
+
+            const results = await Promise.all(
+                endpoints.map(function(ep) {
+                    return fetchEndpoint(ep.url).then(function(data) {
+                        return { key: ep.key, data: data };
+                    });
+                })
+            );
+
+            const merged = {};
+            results.forEach(function(r) {
+                if (r.data != null) merged[r.key] = r.data;
+            });
+
+            if (Object.keys(merged).length > 0) {
+                updateDashboard(merged);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Bootstrap
+        // ------------------------------------------------------------------
+        document.addEventListener('DOMContentLoaded', function() {
+            initChart();
+            initialLoad();
+            connectSSE();
+        });
+    </script>
+</body>
+</html>

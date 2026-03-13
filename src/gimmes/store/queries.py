@@ -195,6 +195,72 @@ async def get_daily_pnl(db: Database) -> float:
     return float(row["daily_pnl"]) if row else 0.0
 
 
+# ---------------------------------------------------------------------------
+# Activity log
+# ---------------------------------------------------------------------------
+
+
+async def insert_activity(
+    db: Database,
+    *,
+    cycle: int = 0,
+    agent: str = "",
+    phase: str = "",
+    message: str = "",
+    details: str = "",
+) -> int:
+    """Insert an activity log entry. Returns the row ID."""
+    cursor = await db.conn.execute(
+        """INSERT INTO activity_log (cycle, agent, phase, message, details)
+           VALUES (?, ?, ?, ?, ?)""",
+        (cycle, agent, phase, message, details),
+    )
+    await db.conn.commit()
+    return cursor.lastrowid or 0
+
+
+async def get_recent_activity(db: Database, limit: int = 50) -> list[dict]:
+    """Get recent activity log entries, newest first."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Snapshots — range queries
+# ---------------------------------------------------------------------------
+
+
+async def get_snapshots(db: Database, limit: int = 500) -> list[dict]:
+    """Get portfolio snapshots, oldest first (for equity curve)."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM snapshots ORDER BY timestamp ASC LIMIT ?", (limit,)
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Candidates — recent
+# ---------------------------------------------------------------------------
+
+
+async def get_recent_candidates(db: Database, limit: int = 20) -> list[dict]:
+    """Get recent scanned candidates, newest first."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM candidates ORDER BY scanned_at DESC LIMIT ?", (limit,)
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Aggregate helpers
+# ---------------------------------------------------------------------------
+
+
 async def get_trade_count(db: Database, action: str | None = None) -> int:
     """Count trade records."""
     if action:

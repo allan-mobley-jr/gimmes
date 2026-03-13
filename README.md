@@ -60,10 +60,18 @@ Launch the autonomous trading loop in paper mode:
 gimmes driving_range
 ```
 
-That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. Check on performance anytime:
+That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. A live dashboard auto-starts at `http://127.0.0.1:1919` — open it in your browser to watch the action.
+
+Check on performance anytime:
 
 ```bash
 gimmes report
+```
+
+Or launch the dashboard standalone (without the trading loop):
+
+```bash
+gimmes clubhouse
 ```
 
 When you're ready for real money (after verifying your strategy on the driving range):
@@ -138,6 +146,45 @@ gimmes driving_range --pause 60     # 60s between cycles
 
 ---
 
+## The Clubhouse
+
+In golf, the clubhouse is where players check the leaderboard, review scores, and watch the action. The GIMMES Clubhouse is a local web dashboard that gives you a live view of everything the system is doing.
+
+```bash
+gimmes clubhouse    # Launch standalone at http://127.0.0.1:1919
+```
+
+The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `gimmes championship` — just open your browser to the printed URL. Disable with `--no-dashboard` if you prefer headless operation.
+
+### What you see
+
+| Panel | What it shows |
+|---|---|
+| **KPI Cards** | Balance, total equity, daily P&L, open position count |
+| **Positions Table** | Open positions with mark-to-market, unrealized P&L |
+| **Risk Gauges** | Daily loss vs. limit, position count vs. max, largest position vs. cap |
+| **Equity Curve** | Historical portfolio value chart (Chart.js) |
+| **Performance Metrics** | Win rate, Sharpe ratio, max drawdown, total return |
+| **Agent Activity Feed** | Live cycle events — which agent is running, what it found |
+| **Recent Trades** | Trade log with action, price, score, agent |
+| **Candidate Pipeline** | Scout shortlist with scores, edge, and Caddie research memos |
+| **Configuration** | Current strategy settings (collapsible, read-only) |
+
+### How it works
+
+- **FastAPI + Uvicorn** serves a single HTML page with Tailwind CSS and Chart.js (CDN, no build toolchain)
+- **SSE (Server-Sent Events)** pushes updates to the browser every 2 seconds when data changes
+- **Read-only** — the dashboard opens SQLite in read-only mode (`?mode=ro`) and never writes to the database
+- **WAL mode** enables concurrent reads without blocking the autonomous loop's writes
+- **Daemon thread** — when auto-started, the server runs in a background thread that dies when the main process exits
+- **Port 1919** by default; on conflict, probes port+1 through port+10
+
+### Loop activity detection
+
+The dashboard determines if an autonomous loop is active by checking the `activity_log` table. If the latest entry is recent (within `pause_seconds + 60s`), the loop is considered active and the header shows a green connection indicator. When idle, it shows historical data with a "No active loop" message in the activity feed.
+
+---
+
 ## CLI commands
 
 ### Autonomous trading
@@ -161,6 +208,11 @@ gimmes size TICKER -p P  # Calculate position size
 gimmes validate TICKER   # Pre-trade validation
 gimmes order TICKER      # Place an order (paper or real)
 gimmes cancel ORDER_ID   # Cancel a resting order
+```
+
+### Dashboard
+```bash
+gimmes clubhouse         # Launch Clubhouse dashboard (see above)
 ```
 
 ### Monitoring & reporting
@@ -307,6 +359,8 @@ starting_balance = 10000.00   # Virtual bankroll for driving range mode
     ├── src/gimmes/
     │   ├── cli.py               # Typer CLI entry point + trading_context routing
     │   ├── config.py            # Two-layer config (env vars + TOML)
+    │   ├── clubhouse/           # Web dashboard (FastAPI + SSE)
+    │   ├── templates/           # Jinja2 HTML template (Tailwind + Chart.js)
     │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
     │   ├── paper/               # Paper trading engine (fill simulator, broker)
     │   ├── strategy/            # Scanner, scorer, Kelly sizing, fee calculator
@@ -357,7 +411,8 @@ uv run pytest                                      # All tests
 - **API:** Kalshi REST + WebSocket, RSA-PSS authentication
 - **State:** SQLite (trades, positions, snapshots, paper trading)
 - **Language:** Python 3.11+
-- **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`
+- **Dashboard:** FastAPI + Uvicorn + Jinja2 (Tailwind CSS + Chart.js via CDN)
+- **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`, `fastapi`, `uvicorn`, `jinja2`
 - **Dev tools:** `uv`, `pytest`, `ruff`, `mypy`
 
 ---

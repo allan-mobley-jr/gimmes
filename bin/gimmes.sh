@@ -59,9 +59,12 @@ Portfolio:
   gimmes risk-check        Check risk limits and daily P&L
   gimmes report            Performance scorecard
 
+Dashboard:
+  gimmes clubhouse         Launch web dashboard (http://127.0.0.1:1919)
+
 Autonomous:
-  gimmes driving_range     Autonomous loop -- paper trading
-  gimmes championship      Autonomous loop -- real money
+  gimmes driving_range     Autonomous loop -- paper trading (auto-starts dashboard)
+  gimmes championship      Autonomous loop -- real money (auto-starts dashboard)
 
 https://github.com/allan-mobley-jr/gimmes
 HELP
