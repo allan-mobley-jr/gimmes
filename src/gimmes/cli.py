@@ -768,6 +768,141 @@ def resolve_error_cmd(
 
 
 @app.command()
+def lesson(
+    analysis: str | None = typer.Option(None, "--analysis", "-a", help="Run specific analysis (threshold/edge_decay/kelly/scanner/missed)"),
+    min_trades: int = typer.Option(0, "--min-trades", help="Override minimum sample size"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show recommendations without persisting"),
+) -> None:
+    """Run strategy analysis and show parameter recommendations."""
+    config = load_config()
+
+    async def _lesson() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_recommendations, get_trades, insert_recommendation
+        from gimmes.strategy.advisor import run_all_analyses
+
+        async with Database(config.db_path) as db:
+            all_trades = await get_trades(db, limit=1000)
+            # Candidates not yet used (scoring correlation needs #20)
+            candidates: list[dict] = []  # type: ignore[type-arg]
+
+            recs = run_all_analyses(all_trades, candidates, config)
+
+            if not recs:
+                console.print("[dim]No recommendations — insufficient data or current parameters are optimal[/dim]")
+                return
+
+            # Filter to specific analysis type if requested
+            if analysis:
+                recs = [r for r in recs if analysis in r.analysis_type.value]
+                if not recs:
+                    console.print(f"[dim]No recommendations from {analysis} analysis[/dim]")
+                    return
+
+            # Print The Lesson report
+            console.print("\n[bold]═══════════════════════════════════════════════[/bold]")
+            console.print("[bold]                  THE LESSON[/bold]")
+            console.print("[bold]═══════════════════════════════════════════════[/bold]\n")
+
+            console.print("[bold]Recommendations[/bold]")
+            console.print("─" * 46)
+
+            for rec in recs:
+                color = {"high": "red bold", "medium": "yellow", "low": "dim"}.get(
+                    rec.confidence.value, "white"
+                )
+                console.print(
+                    f"[{color}][{rec.confidence.value.upper()}][/{color}] "
+                    f"{rec.parameter_path}: {rec.current_value} → {rec.recommended_value}"
+                )
+                console.print(f"  {rec.rationale}\n")
+
+            # Persist recommendations
+            if not dry_run:
+                for rec in recs:
+                    await insert_recommendation(db, rec)
+                console.print(f"[green]Saved {len(recs)} recommendation(s) to database[/green]")
+
+            # Show past recommendations
+            past = await get_recommendations(db, status="pending", limit=10)
+            if past:
+                console.print("\n[bold]Past Pending Recommendations[/bold]")
+                console.print("─" * 46)
+                table = Table()
+                table.add_column("ID", justify="right")
+                table.add_column("Parameter")
+                table.add_column("Change")
+                table.add_column("Confidence")
+                table.add_column("Date")
+                for row in past:
+                    table.add_row(
+                        str(row["id"]),
+                        row["parameter_path"],
+                        f"{row['current_value']} → {row['recommended_value']}",
+                        row["confidence"],
+                        row["timestamp"][:10],
+                    )
+                console.print(table)
+
+    _run(_lesson())
+
+
+@app.command()
+def recommendations(
+    status: str | None = typer.Option(None, "--status", "-s", help="Filter by status (pending/implemented/rejected/superseded)"),
+    parameter: str | None = typer.Option(None, "--parameter", "-p", help="Filter by parameter path"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
+) -> None:
+    """View past strategy recommendations."""
+    config = load_config()
+
+    async def _recs() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_recommendations
+
+        async with Database(config.db_path) as db:
+            rows = await get_recommendations(db, status=status, parameter=parameter, limit=limit)
+            if not rows:
+                console.print("[dim]No recommendations found[/dim]")
+                return
+
+            table = Table(title="Strategy Recommendations")
+            table.add_column("ID", justify="right")
+            table.add_column("Date")
+            table.add_column("Parameter")
+            table.add_column("Current")
+            table.add_column("Recommended")
+            table.add_column("Confidence", style="bold")
+            table.add_column("Analysis")
+            table.add_column("Status")
+
+            for row in rows:
+                conf = row["confidence"]
+                conf_color = {"high": "red", "medium": "yellow", "low": "dim"}.get(conf, "white")
+                status_color = {
+                    "pending": "yellow", "implemented": "green",
+                    "rejected": "red", "superseded": "dim",
+                }.get(row["status"], "white")
+                table.add_row(
+                    str(row["id"]),
+                    row["timestamp"][:10],
+                    row["parameter_path"],
+                    row["current_value"],
+                    row["recommended_value"],
+                    f"[{conf_color}]{conf}[/{conf_color}]",
+                    row["analysis_type"],
+                    f"[{status_color}]{row['status']}[/{status_color}]",
+                )
+            console.print(table)
+
+    _run(_recs())
+
+
+@app.command()
 def discover(
     category: str = typer.Argument(
         ..., help="Category to explore (Economics, Politics, Financials, etc.)",

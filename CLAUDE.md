@@ -19,9 +19,9 @@ CLI (python -m gimmes)  ←→  Kalshi REST API
 - `src/gimmes/config.py` — Two-layer config (env vars + TOML)
 - `src/gimmes/kalshi/` — HTTP client, auth, market/order/portfolio endpoints
 - `src/gimmes/paper/` — Paper trading engine (fill simulator, broker, schema)
-- `src/gimmes/strategy/` — Scanner, scorer, Kelly sizing, fee calculator
+- `src/gimmes/strategy/` — Scanner, scorer, Kelly sizing, fee calculator, advisor
 - `src/gimmes/risk/` — Limits, validator, settlement risk scanner
-- `src/gimmes/store/` — SQLite persistence (trades, positions, snapshots, error log)
+- `src/gimmes/store/` — SQLite persistence (trades, positions, snapshots, error log, recommendations)
 - `src/gimmes/reporting/` — P&L, metrics, Rich console formatting
 - `src/gimmes/cli.py` — Typer CLI entry point
 
@@ -61,11 +61,13 @@ python -m gimmes log-trade TICKER  # Log a trade decision
 python -m gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
 python -m gimmes log-error         # Log a structured error (used by agents/system)
 python -m gimmes resolve-error ID  # Mark an error resolved (--issue-url to link issue)
+python -m gimmes lesson            # Strategy analysis and recommendations (--analysis TYPE, --dry-run)
+python -m gimmes recommendations   # View past strategy recommendations (--status, --parameter)
 ```
 
 ## Autonomous Loop
 
-`driving_range` and `championship` run the full trading pipeline in a loop via `claude -p "/caddy-shack"`. Each cycle: State Check → Monitor → Scout → Caddie → Closer → Scorecard → Groundskeeper. The orchestrator reads SQLite state at the start of each cycle for crash recovery. Options: `--cycles N` (bounded runs), `--pause S` (seconds between cycles).
+`driving_range` and `championship` run the full trading pipeline in a loop via `claude -p "/caddy-shack"`. Each cycle: State Check → Monitor → Scout → Caddie → Closer → Scorecard → Groundskeeper → The Pro (every 10th cycle). The orchestrator reads SQLite state at the start of each cycle for crash recovery. Options: `--cycles N` (bounded runs), `--pause S` (seconds between cycles).
 
 ## Running Tests
 

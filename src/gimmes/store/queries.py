@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from gimmes.models.error import ErrorLogEntry
 from gimmes.models.portfolio import PortfolioSnapshot, Position
+from gimmes.models.recommendation import Recommendation
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
 
@@ -351,5 +352,85 @@ async def resolve_error(db: Database, error_id: int, github_issue_url: str = "")
     await db.conn.execute(
         "UPDATE error_log SET resolved = 1, github_issue_url = ? WHERE id = ?",
         (github_issue_url, error_id),
+    )
+    await db.conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Recommendations
+# ---------------------------------------------------------------------------
+
+
+async def insert_recommendation(db: Database, rec: Recommendation) -> int:
+    """Insert a parameter recommendation. Returns the row ID."""
+    cursor = await db.conn.execute(
+        """INSERT INTO recommendations
+           (parameter_path, current_value, recommended_value, confidence,
+            analysis_type, rationale, supporting_data)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            rec.parameter_path,
+            rec.current_value,
+            rec.recommended_value,
+            rec.confidence.value,
+            rec.analysis_type.value,
+            rec.rationale,
+            rec.supporting_data,
+        ),
+    )
+    await db.conn.commit()
+    return cursor.lastrowid or 0
+
+
+async def get_recommendations(
+    db: Database,
+    *,
+    status: str | None = None,
+    parameter: str | None = None,
+    limit: int = 50,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Query recommendations with optional filters."""
+    query = "SELECT * FROM recommendations WHERE 1=1"
+    params: list[object] = []
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    if parameter:
+        query += " AND parameter_path = ?"
+        params.append(parameter)
+
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    cursor = await db.conn.execute(query, params)
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def update_recommendation_status(
+    db: Database,
+    rec_id: int,
+    status: str,
+    *,
+    github_issue_url: str = "",
+    outcome: str = "",
+) -> None:
+    """Update a recommendation's status and optional fields."""
+    fields = ["status = ?"]
+    params: list[object] = [status]
+
+    if github_issue_url:
+        fields.append("github_issue_url = ?")
+        params.append(github_issue_url)
+    if outcome:
+        fields.append("outcome = ?")
+        params.append(outcome)
+        fields.append("outcome_measured_at = datetime('now')")
+
+    params.append(rec_id)
+    await db.conn.execute(
+        f"UPDATE recommendations SET {', '.join(fields)} WHERE id = ?",
+        params,
     )
     await db.conn.commit()
