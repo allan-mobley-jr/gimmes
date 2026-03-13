@@ -304,13 +304,16 @@ def order(
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(0, "--price", help="Price in cents (0=use market price)"),
     probability: float = typer.Option(
-        0, "--prob", "-p", help="True probability (for auto-sizing)",
+        0, "--prob", "-p", help="True probability (for auto-sizing and edge check)",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
     ),
+    force: bool = typer.Option(
+        False, "--force", help="Override validation failures (use with caution)",
+    ),
 ) -> None:
-    """Place an order on Kalshi."""
+    """Place an order on Kalshi (runs pre-trade validation first)."""
     config = load_config()
     _championship_warning(config)
 
@@ -322,18 +325,25 @@ def order(
     async def _order() -> None:
         from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
+        from gimmes.risk.validator import validate_trade
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_daily_pnl
         from gimmes.strategy.kelly import position_size
 
         async with trading_context(config) as (client, broker):
             market = await get_market(client, ticker)
             mkt_price = market.midpoint or market.last_price
 
+            # Get balance and positions for both sizing and validation
+            if broker:
+                balance = await broker.get_balance()
+                positions = await broker.get_positions()
+            else:
+                from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                balance = await get_balance(client)
+                positions = await get_all_positions(client)
+
             if count <= 0 and probability > 0:
-                if broker:
-                    balance = await broker.get_balance()
-                else:
-                    from gimmes.kalshi.portfolio import get_balance
-                    balance = await get_balance(client)
                 final_count = position_size(
                     balance, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
@@ -347,7 +357,46 @@ def order(
                 return
 
             final_price = price if price > 0 else int(mkt_price * 100)
+            trade_dollars = final_count * (final_price / 100.0)
 
+            # --- Pre-trade validation ---
+            try:
+                async with Database(config.db_path) as db:
+                    daily_pnl = await get_daily_pnl(db)
+            except Exception:
+                daily_pnl = 0.0
+                console.print(
+                    "[yellow]Warning: Could not query daily P&L — "
+                    "using 0.0 (daily loss limit may not be enforced)[/yellow]"
+                )
+
+            true_prob = probability if probability > 0 else None
+            existing_tickers = [p.ticker for p in positions]
+            is_taker = config.orders.preferred_order_type != "maker"
+            validation = validate_trade(
+                market, trade_dollars, true_prob, balance,
+                daily_pnl, len(positions), existing_tickers, config,
+                is_taker=is_taker,
+            )
+
+            if not validation.approved:
+                console.print(f"\n[red bold]{validation.summary}[/red bold]")
+                for fail in validation.failures:
+                    console.print(f"  [red]✗[/red] {fail}")
+                if force:
+                    console.print(
+                        "[yellow bold]--force: Overriding validation failures![/yellow bold]"
+                    )
+                else:
+                    console.print(
+                        "[dim]Use --force to override (not recommended)[/dim]"
+                    )
+                    return
+            else:
+                for check in validation.checks:
+                    console.print(f"  [green]✓[/green] {check}")
+
+            # --- Place the order ---
             params = CreateOrderParams(
                 ticker=ticker,
                 action=OrderAction.BUY,

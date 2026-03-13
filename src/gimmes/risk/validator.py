@@ -33,7 +33,7 @@ class ValidationResult:
 def validate_trade(
     market: Market,
     trade_dollars: float,
-    true_probability: float,
+    true_probability: float | None,
     bankroll: float,
     daily_pnl: float,
     open_position_count: int,
@@ -49,7 +49,7 @@ def validate_trade(
     2. Position count limit
     3. Single position size limit
     4. Balance sufficient
-    5. Edge after fees meets minimum
+    5. Edge after fees meets minimum (skipped when true_probability is None)
     6. Duplicate position check
     7. Settlement risk
     """
@@ -83,14 +83,17 @@ def validate_trade(
     else:
         failures.append(f"Insufficient balance: need ${trade_dollars:.2f}, have ${bankroll:.2f}")
 
-    # 5. Edge after fees
-    price = market.midpoint if market.midpoint > 0 else market.last_price
-    edge = edge_after_fees(price, true_probability, is_taker=is_taker)
-    min_edge = config.strategy.min_edge_after_fees
-    if edge >= min_edge:
-        checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
+    # 5. Edge after fees (skipped when probability is unknown)
+    if true_probability is not None:
+        price = market.midpoint if market.midpoint > 0 else market.last_price
+        edge = edge_after_fees(price, true_probability, is_taker=is_taker)
+        min_edge = config.strategy.min_edge_after_fees
+        if edge >= min_edge:
+            checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
+        else:
+            failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
     else:
-        failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
+        checks.append("Edge check skipped (no probability provided)")
 
     # 6. Duplicate check
     if market.ticker in existing_tickers:

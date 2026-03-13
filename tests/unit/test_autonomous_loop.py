@@ -175,6 +175,13 @@ class TestOrderYesFlag:
         result = runner.invoke(app, ["order", "--help"])
         assert "--yes" in result.output
 
+    def test_order_command_has_force_option(self) -> None:
+        from typer.testing import CliRunner
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["order", "--help"])
+        assert "--force" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Caddy-shack skill
