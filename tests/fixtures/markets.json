@@ -1,0 +1,44 @@
+[
+  {
+    "ticker": "KXCPI-26MAR-T3.2",
+    "event_ticker": "KXCPI-26MAR",
+    "title": "CPI YoY > 3.2% (March 2026)",
+    "status": "open",
+    "yes_bid": 65,
+    "yes_ask": 68,
+    "last_price": 66,
+    "volume": 12500,
+    "volume_24h": 3200,
+    "open_interest": 4500,
+    "category": "economics",
+    "rules_primary": "This market resolves YES if the Bureau of Labor Statistics reports CPI YoY > 3.2%."
+  },
+  {
+    "ticker": "KXFED-26MAR-T4.5",
+    "event_ticker": "KXFED-26MAR",
+    "title": "Fed Funds Rate <= 4.5% (March FOMC)",
+    "status": "open",
+    "yes_bid": 72,
+    "yes_ask": 75,
+    "last_price": 73,
+    "volume": 8900,
+    "volume_24h": 2100,
+    "open_interest": 3200,
+    "category": "economics",
+    "rules_primary": "This market resolves YES if the FOMC sets the target range upper bound at or below 4.50%."
+  },
+  {
+    "ticker": "KXNFP-26MAR-T200K",
+    "event_ticker": "KXNFP-26MAR",
+    "title": "NFP > 200K (March 2026)",
+    "status": "open",
+    "yes_bid": 58,
+    "yes_ask": 62,
+    "last_price": 60,
+    "volume": 5400,
+    "volume_24h": 1800,
+    "open_interest": 2100,
+    "category": "economics",
+    "rules_primary": "This market resolves YES if Nonfarm Payrolls exceed 200,000."
+  }
+]

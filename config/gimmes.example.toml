@@ -1,0 +1,55 @@
+[strategy]
+gimme_threshold = 75          # Minimum GimmeScore to execute (0-100)
+min_market_price = 0.55       # Only scan markets above this price
+max_market_price = 0.85       # Only scan markets below this price
+min_true_probability = 0.90   # Model must see >=90% to qualify
+min_edge_after_fees = 0.05    # 5pp minimum edge after fee math
+
+[sizing]
+kelly_fraction = 0.25         # Conservative quarter-Kelly
+max_position_pct = 0.05       # Max 5% of bankroll per position
+
+[risk]
+max_open_positions = 15       # Concurrent position limit
+daily_loss_limit_pct = 0.15   # Auto-stop at 15% daily drawdown
+
+[orders]
+preferred_order_type = "maker" # Limit orders; no takers by default
+
+[scanner]
+min_volume = 100              # Minimum 24h volume to consider
+min_open_interest = 50        # Minimum open interest
+max_days_to_resolution = 90   # Skip markets resolving too far out
+min_days_to_resolution = 0.5  # Skip markets resolving too soon (12h)
+# Curated series with informational edge — use `gimmes discover <Category>` to find more
+series = [
+    # Inflation & CPI
+    "KXCPI", "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
+    "KXECONSTATCPI", "KXECONSTATCPICORE", "KXECONSTATCPIYOY", "KXECONSTATCORECPIYOY",
+    "KXPCECORE",
+    # GDP & Growth
+    "KXGDP", "KXGDPNOM", "KXGDPUSMAX",
+    # Fed & Rates
+    "KXFED", "KXFEDDECISION", "KXFEDCOMBO", "KXRATECUTCOUNT", "KXFEDCHGCOUNT",
+    "KXFEDMEET", "KXEMERCUTS", "KXFEDDISSENT",
+    # Employment
+    "KXJOBLESSCLAIMS", "KXUE", "KXU3", "KXPAYROLLS", "KXADP",
+    # Housing & Mortgage
+    "KXMORTGAGERATE", "KXHOUSINGSTART", "KXEHSALES", "KXNHSALES",
+    # Other Econ
+    "KXISMPMI", "KXRECSSNBER", "KXEFFTARIFF", "KXTARIFFREVENUE",
+    # Financials — S&P, Nasdaq, Treasuries
+    "KXINX", "KXINXU", "KXINXMAXY", "KXINXMINY",
+    "KXNASDAQ100", "KXNASDAQ100U", "KXNASDAQ100Y",
+    "KXUSTYLD", "KXTNOTEW", "KX10Y2Y", "KX10Y3M", "KX3MTBILL",
+    "KXGOLDW", "KXSILVERW", "KXWTI", "KXWTIMAX",
+    # Politics — high-level
+    "CONTROLH", "CONTROLS",
+]
+
+[scoring.weights]
+edge_size = 0.30              # Larger edge = higher score
+signal_strength = 0.25        # More/stronger confirming signals
+liquidity_depth = 0.15        # Can we actually fill?
+settlement_clarity = 0.15     # Red flags penalize heavily
+time_to_resolution = 0.15     # Sweet spot preferred

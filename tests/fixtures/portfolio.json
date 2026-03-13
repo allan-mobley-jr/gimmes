@@ -1,0 +1,18 @@
+{
+  "balance": 1000000,
+  "portfolio_value": 250000,
+  "market_positions": [
+    {
+      "ticker": "KXCPI-26MAR-T3.2",
+      "position": 50,
+      "market_exposure": 3250,
+      "realized_pnl": 0
+    },
+    {
+      "ticker": "KXFED-26MAR-T4.5",
+      "position": -30,
+      "market_exposure": 2100,
+      "realized_pnl": 150
+    }
+  ]
+}
