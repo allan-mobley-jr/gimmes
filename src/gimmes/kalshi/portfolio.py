@@ -8,19 +8,22 @@ from gimmes.models.portfolio import Position
 
 def _parse_position(data: dict) -> Position:  # type: ignore[type-arg]
     """Parse a position from Kalshi API response."""
-    # Kalshi returns market_exposure, resting_orders_count, etc.
+    # API returns dollar strings (e.g. "0.0000") and fp counts (e.g. "3.00")
     ticker = data.get("ticker", data.get("market_ticker", ""))
-    count = data.get("position", 0)
+    count = int(float(data.get("position_fp", data.get("position", "0"))))
     # Positive = YES position, negative = NO position
     side = "yes" if count >= 0 else "no"
     abs_count = abs(count)
+
+    market_value = float(data.get("market_exposure_dollars", "0"))
+    realized_pnl = float(data.get("realized_pnl_dollars", "0"))
 
     return Position(
         ticker=ticker,
         side=side,
         count=abs_count,
-        market_value=data.get("market_exposure", 0) / 100 if data.get("market_exposure") else 0,
-        realized_pnl=data.get("realized_pnl", 0) / 100 if data.get("realized_pnl") else 0,
+        market_value=market_value,
+        realized_pnl=realized_pnl,
     )
 
 

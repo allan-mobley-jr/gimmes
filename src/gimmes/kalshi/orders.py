@@ -10,6 +10,11 @@ from gimmes.models.order import CreateOrderParams, Fill, Order, OrderAction, Ord
 
 def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
     """Parse an order from Kalshi API response."""
+    # API returns dollar strings (e.g. "0.2500") — convert to int cents
+    yes_price = int(float(data.get("yes_price_dollars", "0")) * 100)
+    no_price = int(float(data.get("no_price_dollars", "0")) * 100)
+    count = int(float(data.get("initial_count_fp", "0")))
+    remaining = int(float(data.get("remaining_count_fp", "0")))
     return Order(
         order_id=data.get("order_id", ""),
         ticker=data.get("ticker", ""),
@@ -17,10 +22,10 @@ def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
         side=OrderSide(data.get("side", "yes")),
         type=data.get("type", "limit"),
         status=data.get("status", ""),
-        yes_price=data.get("yes_price", 0),
-        no_price=data.get("no_price", 0),
-        count=data.get("count", 0),
-        remaining_count=data.get("remaining_count", 0),
+        yes_price=yes_price,
+        no_price=no_price,
+        count=count,
+        remaining_count=remaining,
         created_time=data.get("created_time"),
         client_order_id=data.get("client_order_id", ""),
     )
@@ -28,15 +33,18 @@ def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
 
 def _parse_fill(data: dict) -> Fill:  # type: ignore[type-arg]
     """Parse a fill from Kalshi API response."""
+    yes_price = int(float(data.get("yes_price_dollars", "0")) * 100)
+    no_price = int(float(data.get("no_price_dollars", "0")) * 100)
+    count = int(float(data.get("count_fp", data.get("count", "0"))))
     return Fill(
         trade_id=data.get("trade_id", ""),
         order_id=data.get("order_id", ""),
         ticker=data.get("ticker", ""),
         action=OrderAction(data.get("action", "buy")),
         side=OrderSide(data.get("side", "yes")),
-        count=data.get("count", 0),
-        yes_price=data.get("yes_price", 0),
-        no_price=data.get("no_price", 0),
+        count=count,
+        yes_price=yes_price,
+        no_price=no_price,
         created_time=data.get("created_time"),
         is_taker=data.get("is_taker", False),
     )

@@ -6,10 +6,22 @@ from gimmes.kalshi.client import KalshiClient
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 
 
-def _cents_to_dollars(data: dict, key: str) -> float:  # type: ignore[type-arg]
-    """Convert a field from cents (int) to dollars, or pass through floats."""
+def _dollars_field(data: dict, key: str) -> float:  # type: ignore[type-arg]
+    """Read a dollar-string field (e.g. '0.2500') as float. Falls back to int cents."""
+    # API v2 returns dollar strings like "yes_bid_dollars": "0.5500"
+    dollars_key = f"{key}_dollars"
+    if dollars_key in data:
+        return float(data[dollars_key])
     val = data.get(key, 0)
-    return val / 100 if isinstance(val, int) else val
+    return val / 100 if isinstance(val, int) else float(val)
+
+
+def _fp_field(data: dict, key: str) -> int:
+    """Read a fractional-precision field (e.g. '150.00') as int."""
+    fp_key = f"{key}_fp"
+    if fp_key in data:
+        return int(float(data[fp_key]))
+    return int(data.get(key, 0))
 
 
 def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
@@ -20,14 +32,14 @@ def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         title=data.get("title", ""),
         subtitle=data.get("subtitle", ""),
         status=MarketStatus(data.get("status", "active")),
-        yes_bid=_cents_to_dollars(data, "yes_bid"),
-        yes_ask=_cents_to_dollars(data, "yes_ask"),
-        no_bid=_cents_to_dollars(data, "no_bid"),
-        no_ask=_cents_to_dollars(data, "no_ask"),
-        last_price=_cents_to_dollars(data, "last_price"),
-        volume=data.get("volume", 0),
-        volume_24h=data.get("volume_24h", 0),
-        open_interest=data.get("open_interest", 0),
+        yes_bid=_dollars_field(data, "yes_bid"),
+        yes_ask=_dollars_field(data, "yes_ask"),
+        no_bid=_dollars_field(data, "no_bid"),
+        no_ask=_dollars_field(data, "no_ask"),
+        last_price=_dollars_field(data, "last_price"),
+        volume=_fp_field(data, "volume"),
+        volume_24h=_fp_field(data, "volume_24h"),
+        open_interest=_fp_field(data, "open_interest"),
         close_time=data.get("close_time"),
         expiration_time=data.get("expiration_time"),
         result=data.get("result", ""),
@@ -38,13 +50,19 @@ def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
 
 def _parse_orderbook(ticker: str, data: dict) -> Orderbook:  # type: ignore[type-arg]
     """Parse orderbook from Kalshi API response."""
+    # API v2 returns orderbook_fp with dollar-string levels: [["0.5500", "10.00"], ...]
+    # Falls back to legacy integer-cents format: [[55, 10], ...]
+    fp = data.get("orderbook_fp", {})
+    yes_raw = fp.get("yes_dollars", data.get("yes", []))
+    no_raw = fp.get("no_dollars", data.get("no", []))
+
     yes_bids = [
-        OrderbookLevel(price=level[0] / 100, quantity=level[1])
-        for level in data.get("yes", [])
+        OrderbookLevel(price=float(level[0]), quantity=int(float(level[1])))
+        for level in yes_raw
     ]
     no_bids = [
-        OrderbookLevel(price=level[0] / 100, quantity=level[1])
-        for level in data.get("no", [])
+        OrderbookLevel(price=float(level[0]), quantity=int(float(level[1])))
+        for level in no_raw
     ]
     return Orderbook(ticker=ticker, yes_bids=yes_bids, no_bids=no_bids)
 
@@ -117,4 +135,4 @@ async def get_event(client: KalshiClient, event_ticker: str) -> dict:  # type: i
 async def get_orderbook(client: KalshiClient, ticker: str, depth: int = 10) -> Orderbook:
     """Get orderbook for a market."""
     data = await client.get(f"/markets/{ticker}/orderbook", params={"depth": depth})
-    return _parse_orderbook(ticker, data.get("orderbook", data))
+    return _parse_orderbook(ticker, data)
