@@ -62,7 +62,7 @@ class ScannerConfig(BaseModel):
     min_open_interest: int = 50
     max_days_to_resolution: float = 90.0
     min_days_to_resolution: float = 0.5
-    categories: list[str] = Field(default_factory=list)
+    series: list[str] = Field(default_factory=list)
 
 
 class ScoringWeights(BaseModel):

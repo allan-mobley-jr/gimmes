@@ -66,6 +66,11 @@ def mode() -> None:
 @app.command()
 def scan(
     top_n: int = typer.Option(20, "--top", "-n", help="Number of top candidates to show"),
+    series: list[str] = typer.Option(
+        None, "--series", "-s",
+        help="Override series tickers to scan (e.g. -s KXCPI -s KXGDP)",
+    ),
+    all_markets: bool = typer.Option(False, "--all", help="Scan all markets (ignore series filter)"),
 ) -> None:
     """Scan markets for gimme candidates (Scout pipeline)."""
     config = load_config()
@@ -78,10 +83,21 @@ def scan(
         from gimmes.strategy.scanner import filter_markets
         from gimmes.strategy.scorer import quick_score
 
+        series_tickers = series or config.scanner.series
+
         async with KalshiClient(config) as client:
             console.print("[cyan]Scanning markets...[/cyan]")
-            markets = await list_all_markets(client)
-            console.print(f"Fetched {len(markets)} markets")
+
+            if series_tickers and not all_markets:
+                # Fetch markets only for curated series — fast and focused
+                markets = []
+                for st in series_tickers:
+                    batch = await list_all_markets(client, series_ticker=st)
+                    markets.extend(batch)
+                console.print(f"Fetched {len(markets)} markets from {len(series_tickers)} series")
+            else:
+                markets = await list_all_markets(client)
+                console.print(f"Fetched {len(markets)} markets (all)")
 
             candidates = filter_markets(markets, config)
             console.print(f"Filtered to {len(candidates)} candidates")
@@ -485,6 +501,35 @@ def log_trade(
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
 
     _run(_log())
+
+
+@app.command()
+def discover(
+    category: str = typer.Argument(..., help="Category to explore (Economics, Politics, Financials, etc.)"),
+) -> None:
+    """Discover series tickers in a Kalshi category."""
+    config = load_config()
+
+    async def _discover() -> None:
+        from rich.table import Table
+
+        from gimmes.kalshi.client import KalshiClient
+        from gimmes.kalshi.markets import list_series
+
+        async with KalshiClient(config) as client:
+            series_list = await list_series(client, category=category)
+            console.print(f"Found {len(series_list)} series in [bold]{category}[/bold]")
+
+            table = Table(title=f"{category} Series")
+            table.add_column("Ticker", style="cyan")
+            table.add_column("Title")
+
+            for s in sorted(series_list, key=lambda x: x.get("ticker", "")):
+                table.add_row(s.get("ticker", ""), s.get("title", ""))
+
+            console.print(table)
+
+    _run(_discover())
 
 
 if __name__ == "__main__":

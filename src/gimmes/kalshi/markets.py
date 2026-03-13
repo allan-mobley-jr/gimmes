@@ -126,6 +126,23 @@ async def get_market(client: KalshiClient, ticker: str) -> Market:
     return _parse_market(data.get("market", data))
 
 
+async def list_series(
+    client: KalshiClient,
+    *,
+    category: str | None = None,
+) -> list[dict]:  # type: ignore[type-arg]
+    """List series, optionally filtered by category.
+
+    Categories match Kalshi's top-level groupings:
+    Economics, Politics, Financials, Sports, Crypto, etc.
+    """
+    params: dict[str, str] = {}
+    if category:
+        params["category"] = category
+    data = await client.get("/series", params=params)
+    return data.get("series", [])
+
+
 async def get_event(client: KalshiClient, event_ticker: str) -> dict:  # type: ignore[type-arg]
     """Get event details."""
     return await client.get(f"/events/{event_ticker}")

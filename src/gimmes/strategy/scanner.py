@@ -25,10 +25,10 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
     Filters by:
     - Price range (min_market_price to max_market_price)
     - Minimum volume / open interest
-    - Market status (open only)
+    - Market status (active only)
     - Time to resolution
-    - Category filter (if configured)
 
+    Category filtering is handled upstream by fetching markets per series.
     Returns filtered markets sorted by volume (descending).
     """
     sc = config.scanner
