@@ -6,6 +6,7 @@ and the update_trade_outcome query.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -137,7 +138,8 @@ class TestResolvedOutcome:
         """Outcome is recorded on all trade actions (open, close, skip)."""
         from gimmes.models.trade import TradeDecision
 
-        for action in (TradeDecision.Action.OPEN, TradeDecision.Action.CLOSE, TradeDecision.Action.SKIP):
+        actions = (TradeDecision.Action.OPEN, TradeDecision.Action.CLOSE, TradeDecision.Action.SKIP)
+        for action in actions:
             await insert_trade(db, TradeDecision(
                 ticker="MIXED-TEST",
                 action=action,
@@ -171,7 +173,7 @@ class TestResolvedOutcome:
             agent="closer",
         ))
 
-        with pytest.raises(Exception, match="CHECK"):
+        with pytest.raises(sqlite3.IntegrityError):
             await update_trade_outcome(db, "CHECK-TEST", "invalid")
 
     async def test_default_outcome_is_null(self, db: Database) -> None:

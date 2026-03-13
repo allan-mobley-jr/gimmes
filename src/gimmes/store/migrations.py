@@ -68,7 +68,8 @@ MIGRATIONS: list[tuple[int, str]] = [
 # ALTER TABLE ADD COLUMN statements for v5. Each is run individually so that
 # a partial failure on a previous attempt doesn't leave the schema stuck.
 _V5_COLUMNS: list[str] = [
-    "ALTER TABLE trades ADD COLUMN resolved_outcome TEXT DEFAULT NULL CHECK (resolved_outcome IN ('yes', 'no'))",
+    ("ALTER TABLE trades ADD COLUMN resolved_outcome TEXT DEFAULT NULL"
+     " CHECK (resolved_outcome IN ('yes', 'no'))"),
     "ALTER TABLE candidates ADD COLUMN edge_size_score REAL NOT NULL DEFAULT 0",
     "ALTER TABLE candidates ADD COLUMN signal_strength_score REAL NOT NULL DEFAULT 0",
     "ALTER TABLE candidates ADD COLUMN liquidity_depth_score REAL NOT NULL DEFAULT 0",
