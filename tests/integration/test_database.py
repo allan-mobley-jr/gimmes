@@ -5,7 +5,6 @@ import pytest
 from gimmes.models.portfolio import PortfolioSnapshot, Position
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
-from gimmes.store.migrations import run_migrations
 from gimmes.store.queries import (
     get_latest_snapshot,
     get_positions,
@@ -28,7 +27,7 @@ async def db(tmp_path):
 
 class TestDatabase:
     async def test_connect_and_schema(self, db: Database) -> None:
-        # Tables should exist after connect
+        # Base tables should exist after connect
         cursor = await db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
@@ -38,9 +37,20 @@ class TestDatabase:
         assert "snapshots" in tables
         assert "candidates" in tables
 
-    async def test_migrations(self, db: Database) -> None:
-        version = await run_migrations(db)
-        assert version >= 1
+    async def test_migrations_run_on_connect(self, db: Database) -> None:
+        # Migrated tables should exist after connect without explicit run_migrations()
+        cursor = await db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        tables = [row[0] for row in await cursor.fetchall()]
+        assert "activity_log" in tables
+
+        # Schema version should reflect latest migration
+        cursor = await db.conn.execute(
+            "SELECT MAX(version) FROM schema_version"
+        )
+        row = await cursor.fetchone()
+        assert row[0] >= 2
 
 
 class TestTradeQueries:
