@@ -619,5 +619,98 @@ def init() -> None:
     run_init()
 
 
+# ---------------------------------------------------------------------------
+# Autonomous loop commands
+# ---------------------------------------------------------------------------
+
+
+def _autonomous_loop(
+    mode: str,
+    *,
+    max_cycles: int = 0,
+    pause_seconds: int = 30,
+) -> None:
+    """Run the caddy-shack orchestrator skill via claude -p in a loop.
+
+    Each cycle invokes one complete trading pipeline (Scout → Caddie → Closer
+    → Monitor → Scorecard). On exit or crash, the loop re-invokes and the
+    orchestrator picks up where it left off by reading SQLite state.
+    """
+    import os
+    import shutil
+    import subprocess
+    import time
+    from pathlib import Path
+
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        console.print("[red]Error: 'claude' CLI not found. Install Claude Code first.[/red]")
+        raise typer.Exit(1)
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+
+    env = os.environ.copy()
+    env["GIMMES_MODE"] = mode
+
+    mode_label = "DRIVING RANGE" if mode == "driving_range" else "CHAMPIONSHIP"
+    console.print(f"\n[bold]{mode_label}[/bold] — autonomous trading loop started")
+    console.print(f"Pause between cycles: {pause_seconds}s")
+    if max_cycles > 0:
+        console.print(f"Max cycles: {max_cycles}")
+    console.print("Press Ctrl+C to stop\n")
+
+    cycle = 0
+    try:
+        while max_cycles == 0 or cycle < max_cycles:
+            cycle += 1
+            console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
+
+            subprocess.run(
+                [
+                    claude_path, "-p", "/caddy-shack",
+                    "--allowedTools", "Bash,Read,Glob,Grep,Agent",
+                ],
+                env=env,
+                cwd=project_root,
+                check=False,
+            )
+
+            if max_cycles > 0 and cycle >= max_cycles:
+                break
+
+            console.print(f"[dim]Next cycle in {pause_seconds}s...[/dim]")
+            time.sleep(pause_seconds)
+    except KeyboardInterrupt:
+        pass
+
+    console.print("\n[yellow]Autonomous loop stopped.[/yellow]")
+
+
+@app.command(name="driving_range")
+def driving_range(
+    cycles: int = typer.Option(0, "--cycles", "-n", help="Max cycles to run (0=unlimited)"),
+    pause: int = typer.Option(30, "--pause", help="Seconds between cycles"),
+) -> None:
+    """Start autonomous trading loop in Driving Range mode (paper trading)."""
+    _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause)
+
+
+@app.command(name="championship")
+def championship(
+    cycles: int = typer.Option(0, "--cycles", "-n", help="Max cycles to run (0=unlimited)"),
+    pause: int = typer.Option(30, "--pause", help="Seconds between cycles"),
+) -> None:
+    """Start autonomous trading loop in Championship mode (REAL MONEY)."""
+    console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
+    console.print(
+        "This will trade with real money on Kalshi autonomously.\n"
+        "The system will scan markets, research candidates, and execute trades\n"
+        "without asking for confirmation on each order.\n"
+    )
+    if not typer.confirm("Are you sure you want to start autonomous trading with real money?"):
+        raise typer.Abort()
+    _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause)
+
+
 if __name__ == "__main__":
     app()

@@ -56,45 +56,107 @@ python -m gimmes mode
 
 You should see "DRIVING RANGE — PAPER TRADING" with your paper balance.
 
+### Start trading
+
+Launch the autonomous trading loop in paper mode:
+
+```bash
+python -m gimmes driving_range
+```
+
+That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. Check on performance anytime:
+
+```bash
+python -m gimmes report
+```
+
+When you're ready for real money (after verifying your strategy on the driving range):
+
+```bash
+python -m gimmes championship
+```
+
+Championship mode requires explicit confirmation at startup since it trades with real money autonomously.
+
 ---
 
 ## Two modes
 
-| Mode | Env var | Market data | Orders | Balance |
+| Mode | Command | Market data | Orders | Balance |
 |---|---|---|---|---|
-| **Driving Range** (default) | `driving_range` | Real (prod API) | Simulated locally | Virtual $10,000 |
-| **Championship** | `championship` | Real (prod API) | Real (prod API) | Real money |
+| **Driving Range** (default) | `gimmes driving_range` | Real (prod API) | Simulated locally | Virtual $10,000 |
+| **Championship** | `gimmes championship` | Real (prod API) | Real (prod API) | Real money |
 
 Both modes use the same prod API credentials for market data. The only difference is where portfolio operations are routed — the `PaperBroker` in driving range vs. Kalshi's API in championship. CLI commands and agents work identically in both modes.
 
-**Always start in Driving Range.** Championship mode requires explicit confirmation before every order.
+**Always start in Driving Range.** Championship mode requires explicit confirmation at startup.
 
 ---
 
 ## Agent team
 
-| Agent | Role | Responsibilities |
-|---|---|---|
-| **The Scout** | Opportunity discovery | Scans Kalshi for markets above 55¢, scores each for gimme potential |
-| **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns |
-| **The Closer** | Trade execution | Sizes positions using fractional Kelly, places maker limit orders |
-| **The Monitor** | Position watching | Monitors open contracts, flags early-close opportunities |
-| **The Scorecard** | Reporting | Tracks P&L, win rate, edge accuracy, and strategy performance |
+The autonomous loop is orchestrated by the **caddy-shack** skill, which dispatches five specialized Claude Code agents each cycle:
+
+| Agent | Role | Tools | Responsibilities |
+|---|---|---|---|
+| **The Scout** | Opportunity discovery | Bash, Read, Glob, Grep | Scans Kalshi for markets above 55¢, scores each for gimme potential |
+| **The Caddie** | Research & analysis | + WebSearch, WebFetch | Deep-dives shortlisted markets — news, social signals, historical patterns |
+| **The Closer** | Trade execution | Bash, Read, Glob, Grep | Sizes positions using fractional Kelly, places maker limit orders |
+| **The Monitor** | Position watching | + WebSearch, WebFetch | Monitors open contracts, flags early-close opportunities |
+| **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
+
+Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
+
+---
+
+## How it works
+
+Each `driving_range` or `championship` invocation runs a continuous loop of trading cycles. Each cycle:
+
+1. **State check** — reads positions, daily P&L, and risk limits from SQLite
+2. **Monitor** — reviews existing positions, recommends hold/close/size-up
+3. **Scout** — scans Kalshi markets, filters by price/volume/time, produces a shortlist
+4. **Caddie** — deep-researches each candidate with web search, estimates true probability
+5. **Closer** — validates, sizes (quarter-Kelly), and executes approved trades
+6. **Scorecard** — reports P&L, win rate, and strategy health
+
+The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
+
+```bash
+python -m gimmes driving_range                # Unlimited cycles, 30s pause
+python -m gimmes driving_range --cycles 5     # Run exactly 5 cycles
+python -m gimmes driving_range --pause 60     # 60s between cycles
+```
 
 ---
 
 ## CLI commands
 
+### Autonomous trading
+```bash
+python -m gimmes driving_range     # Start autonomous loop (paper trading)
+python -m gimmes championship      # Start autonomous loop (real money)
+```
+
+### Setup & configuration
 ```bash
 python -m gimmes init              # First-time setup wizard
 python -m gimmes config            # Interactive config wizard
 python -m gimmes mode              # Show mode + connection status
+```
+
+### Manual trading
+```bash
 python -m gimmes scan              # Scan markets for gimme candidates
 python -m gimmes score TICKER      # Score a specific market
 python -m gimmes size TICKER -p P  # Calculate position size
 python -m gimmes validate TICKER   # Pre-trade validation
 python -m gimmes order TICKER      # Place an order (paper or real)
 python -m gimmes cancel ORDER_ID   # Cancel a resting order
+```
+
+### Monitoring & reporting
+```bash
 python -m gimmes positions         # List open positions (with mark-to-market)
 python -m gimmes risk-check        # Check risk limits and daily P&L
 python -m gimmes report            # Performance scorecard
