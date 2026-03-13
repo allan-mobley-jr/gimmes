@@ -6,8 +6,8 @@ functions, making the routing transparent to CLI commands and agents.
 
 from __future__ import annotations
 
+import datetime
 import uuid
-from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -21,7 +21,7 @@ from gimmes.models.order import (
     OrderSide,
 )
 from gimmes.models.portfolio import Position
-from gimmes.paper.fill_simulator import simulate_fill
+from gimmes.paper.fill_simulator import FillResult, simulate_fill
 from gimmes.paper.schema import PAPER_SCHEMA_SQL
 from gimmes.store.database import Database
 
@@ -64,7 +64,8 @@ class PaperBroker:
     async def _update_balance(self, delta: float) -> None:
         """Adjust balance by delta (positive = credit, negative = debit)."""
         await self._conn.execute(
-            "UPDATE paper_balance SET balance = balance + ?, updated_at = datetime('now') WHERE id = 1",
+            "UPDATE paper_balance SET balance = balance + ?,"
+            " updated_at = datetime('now') WHERE id = 1",
             (delta,),
         )
 
@@ -75,7 +76,7 @@ class PaperBroker:
     async def create_order(self, params: CreateOrderParams, orderbook: Orderbook) -> Order:
         """Simulate placing an order. Fills immediately if marketable."""
         order_id = f"paper-{uuid.uuid4().hex[:12]}"
-        now = datetime.now(timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
 
         # Run fill simulation
         result = simulate_fill(params, orderbook)
@@ -183,7 +184,8 @@ class PaperBroker:
         await self._update_balance(refund)
 
         await self._conn.execute(
-            "UPDATE paper_orders SET status = 'canceled', updated_at = datetime('now') WHERE order_id = ?",
+            "UPDATE paper_orders SET status = 'canceled',"
+            " updated_at = datetime('now') WHERE order_id = ?",
             (order_id,),
         )
         await self._conn.commit()
@@ -314,7 +316,6 @@ class PaperBroker:
             return
 
         count = int(row["count"])
-        avg_price = float(row["avg_price"])
         side = row["side"]
         cost_basis = float(row["cost_basis"])
 
@@ -341,10 +342,9 @@ class PaperBroker:
     # ------------------------------------------------------------------
 
     async def _update_position_from_fills(
-        self, params: CreateOrderParams, fill_result: "FillResult"
+        self, params: CreateOrderParams, fill_result: FillResult
     ) -> None:
         """Update paper_positions after fills."""
-        from gimmes.paper.fill_simulator import FillResult  # noqa: F811
 
         ticker = params.ticker
         side = params.side.value

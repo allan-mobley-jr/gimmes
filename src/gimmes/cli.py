@@ -95,7 +95,9 @@ def scan(
         None, "--series", "-s",
         help="Override series tickers to scan (e.g. -s KXCPI -s KXGDP)",
     ),
-    all_markets: bool = typer.Option(False, "--all", help="Scan all markets (ignore series filter)"),
+    all_markets: bool = typer.Option(
+        False, "--all", help="Scan all markets (ignore series filter)",
+    ),
 ) -> None:
     """Scan markets for gimme candidates (Scout pipeline)."""
     config = load_config()
@@ -576,7 +578,9 @@ def log_trade(
 
 @app.command()
 def discover(
-    category: str = typer.Argument(..., help="Category to explore (Economics, Politics, Financials, etc.)"),
+    category: str = typer.Argument(
+        ..., help="Category to explore (Economics, Politics, Financials, etc.)",
+    ),
 ) -> None:
     """Discover series tickers in a Kalshi category."""
     config = load_config()
