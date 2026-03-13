@@ -14,7 +14,6 @@ dependencies = [
     "python-dotenv>=1.1",
     "websockets>=15.0",
     "rich>=14.0",
-    "tomli>=2.2; python_version < '3.11'",
 ]
 
 [project.scripts]

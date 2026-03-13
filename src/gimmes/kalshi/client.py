@@ -25,18 +25,19 @@ class RateLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self, is_write: bool = False) -> None:
-        async with self._lock:
-            self._refill()
-            if is_write:
-                while self._write_tokens < 1:
-                    await asyncio.sleep(0.05)
-                    self._refill()
-                self._write_tokens -= 1
-            else:
-                while self._read_tokens < 1:
-                    await asyncio.sleep(0.05)
-                    self._refill()
-                self._read_tokens -= 1
+        while True:
+            async with self._lock:
+                self._refill()
+                if is_write:
+                    if self._write_tokens >= 1:
+                        self._write_tokens -= 1
+                        return
+                else:
+                    if self._read_tokens >= 1:
+                        self._read_tokens -= 1
+                        return
+            # Release lock before sleeping so other callers aren't blocked
+            await asyncio.sleep(0.05)
 
     def _refill(self) -> None:
         now = time.monotonic()

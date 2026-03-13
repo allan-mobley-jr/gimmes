@@ -454,10 +454,11 @@ def market_info(
             console.print(f"  Best YES Ask: {orderbook.best_yes_ask}")
             console.print(f"  Depth (YES bids): {len(orderbook.yes_bids)} levels")
 
-            rl = settlement.risk_level
-            close_tag = rl if rl != "low" else "green"
+            risk_color = {"low": "green", "medium": "yellow", "high": "red"}.get(
+                settlement.risk_level, "white"
+            )
             console.print(
-                f"\nSettlement Risk: [{rl}]{settlement.summary}[/{close_tag}]"
+                f"\nSettlement Risk: [{risk_color}]{settlement.summary}[/{risk_color}]"
             )
 
     _run(_info())
