@@ -12,14 +12,20 @@ import typer
 from cryptography.hazmat.primitives import serialization
 from rich.console import Console
 
+from gimmes.config import GIMMES_HOME
+
 console = Console()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Example/template files live in the repo
 ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
-ENV_FILE = PROJECT_ROOT / ".env"
 TOML_EXAMPLE = PROJECT_ROOT / "config" / "gimmes.example.toml"
-TOML_FILE = PROJECT_ROOT / "config" / "gimmes.toml"
-KEYS_DIR = PROJECT_ROOT / "keys"
+
+# User files live in GIMMES_HOME (~/.gimmes/ by default)
+ENV_FILE = GIMMES_HOME / ".env"
+TOML_FILE = GIMMES_HOME / "config" / "gimmes.toml"
+KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
 
 
@@ -31,6 +37,7 @@ def _copy_example_file(example: Path, target: Path, label: str) -> bool:
             console.print(f"[dim]Skipping {label}[/dim]")
             return False
 
+    target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(example, target)
     console.print(f"[green]Created {label}:[/green] {target}")
     return True

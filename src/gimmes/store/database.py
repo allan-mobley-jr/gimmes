@@ -71,12 +71,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 class Database:
     """Async SQLite database wrapper."""
 
-    def __init__(self, db_path: Path | str = "gimmes.db") -> None:
+    def __init__(self, db_path: Path | str | None = None) -> None:
+        if db_path is None:
+            from gimmes.config import GIMMES_HOME
+            db_path = GIMMES_HOME / "gimmes.db"
         self.db_path = Path(db_path)
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
         """Open database connection and initialize schema."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA_SQL)

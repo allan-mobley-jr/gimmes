@@ -20,30 +20,26 @@ GIMMES hunts for mispriced certainty. When a contract is trading at 70¢ but res
 
 ## Quick start
 
-### Prerequisites
+### Install
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (package manager)
-- A [Kalshi](https://kalshi.com) account with API access
-
-### Installation
+One command:
 
 ```bash
-git clone https://github.com/allan-mobley-jr/gimmes.git
-cd gimmes
-uv sync
+curl -fsSL https://raw.githubusercontent.com/allan-mobley-jr/gimmes/main/install.sh | bash
 ```
+
+This clones the repo to `~/.gimmes/repo`, sets up a Python virtual environment, and creates a global `gimmes` command. Restart your terminal after install.
 
 ### Setup
 
 Run the interactive setup wizard — it will create your config files, guide you through Kalshi API key creation, and verify your connection:
 
 ```bash
-python -m gimmes init
+gimmes init
 ```
 
 The wizard will:
-1. Generate `.env` and `config/gimmes.toml` from their example files
+1. Generate `~/.gimmes/.env` and `~/.gimmes/config/gimmes.toml` from example files
 2. Walk you through creating a Kalshi API key (go to Account Settings → API Keys)
 3. Find your downloaded private key, validate it, and install it securely
 4. Verify your credentials work
@@ -51,7 +47,7 @@ The wizard will:
 After setup, confirm everything is connected:
 
 ```bash
-python -m gimmes mode
+gimmes mode
 ```
 
 You should see "DRIVING RANGE — PAPER TRADING" with your paper balance.
@@ -61,22 +57,34 @@ You should see "DRIVING RANGE — PAPER TRADING" with your paper balance.
 Launch the autonomous trading loop in paper mode:
 
 ```bash
-python -m gimmes driving_range
+gimmes driving_range
 ```
 
 That's it. The system will scan markets, research candidates, execute trades, and monitor positions — all with virtual money. Check on performance anytime:
 
 ```bash
-python -m gimmes report
+gimmes report
 ```
 
 When you're ready for real money (after verifying your strategy on the driving range):
 
 ```bash
-python -m gimmes championship
+gimmes championship
 ```
 
 Championship mode requires explicit confirmation at startup since it trades with real money autonomously.
+
+### Update
+
+```bash
+gimmes update
+```
+
+### Help
+
+```bash
+gimmes help
+```
 
 ---
 
@@ -123,9 +131,9 @@ Each `driving_range` or `championship` invocation runs a continuous loop of trad
 The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
 
 ```bash
-python -m gimmes driving_range                # Unlimited cycles, 30s pause
-python -m gimmes driving_range --cycles 5     # Run exactly 5 cycles
-python -m gimmes driving_range --pause 60     # 60s between cycles
+gimmes driving_range                # Unlimited cycles, 30s pause
+gimmes driving_range --cycles 5     # Run exactly 5 cycles
+gimmes driving_range --pause 60     # 60s between cycles
 ```
 
 ---
@@ -134,35 +142,35 @@ python -m gimmes driving_range --pause 60     # 60s between cycles
 
 ### Autonomous trading
 ```bash
-python -m gimmes driving_range     # Start autonomous loop (paper trading)
-python -m gimmes championship      # Start autonomous loop (real money)
+gimmes driving_range     # Start autonomous loop (paper trading)
+gimmes championship      # Start autonomous loop (real money)
 ```
 
 ### Setup & configuration
 ```bash
-python -m gimmes init              # First-time setup wizard
-python -m gimmes config            # Interactive config wizard
-python -m gimmes mode              # Show mode + connection status
+gimmes init              # First-time setup wizard
+gimmes config            # Interactive config wizard
+gimmes mode              # Show mode + connection status
 ```
 
 ### Manual trading
 ```bash
-python -m gimmes scan              # Scan markets for gimme candidates
-python -m gimmes score TICKER      # Score a specific market
-python -m gimmes size TICKER -p P  # Calculate position size
-python -m gimmes validate TICKER   # Pre-trade validation
-python -m gimmes order TICKER      # Place an order (paper or real)
-python -m gimmes cancel ORDER_ID   # Cancel a resting order
+gimmes scan              # Scan markets for gimme candidates
+gimmes score TICKER      # Score a specific market
+gimmes size TICKER -p P  # Calculate position size
+gimmes validate TICKER   # Pre-trade validation
+gimmes order TICKER      # Place an order (paper or real)
+gimmes cancel ORDER_ID   # Cancel a resting order
 ```
 
 ### Monitoring & reporting
 ```bash
-python -m gimmes positions         # List open positions (with mark-to-market)
-python -m gimmes risk-check        # Check risk limits and daily P&L
-python -m gimmes report            # Performance scorecard
-python -m gimmes market-info TICKER # Detailed market info
-python -m gimmes log-trade TICKER  # Log a trade decision
-python -m gimmes discover CATEGORY # Discover series tickers in a category
+gimmes positions         # List open positions (with mark-to-market)
+gimmes risk-check        # Check risk limits and daily P&L
+gimmes report            # Performance scorecard
+gimmes market-info TICKER # Detailed market info
+gimmes log-trade TICKER  # Log a trade decision
+gimmes discover CATEGORY # Discover series tickers in a category
 ```
 
 ---
@@ -259,7 +267,7 @@ Minimum required edge before any trade: **5 percentage points** after fees.
 
 ## Configuration
 
-Strategy parameters live in `config/gimmes.toml`:
+Strategy parameters live in `~/.gimmes/config/gimmes.toml`:
 
 ```toml
 [strategy]
@@ -289,48 +297,48 @@ starting_balance = 10000.00   # Virtual bankroll for driving range mode
 ## Project structure
 
 ```
-gimmes/
-├── src/gimmes/
-│   ├── cli.py              # Typer CLI entry point + trading_context routing
-│   ├── config.py           # Two-layer config (env vars + TOML)
-│   ├── kalshi/
-│   │   ├── client.py       # Authenticated HTTP client (RSA-PSS)
-│   │   ├── auth.py         # RSA-PSS signature generation
-│   │   ├── markets.py      # Market discovery and data endpoints
-│   │   ├── orders.py       # Order placement and management
-│   │   ├── portfolio.py    # Balance, positions, settlements
-│   │   └── websocket.py    # WebSocket client for real-time data
-│   ├── paper/
-│   │   ├── broker.py       # PaperBroker — local order simulation
-│   │   ├── fill_simulator.py # Pure fill logic against orderbook
-│   │   └── schema.py       # SQLite DDL for paper trading tables
-│   ├── strategy/
-│   │   ├── scanner.py      # Market filtering pipeline
-│   │   ├── scorer.py       # Gimme scoring logic
-│   │   ├── kelly.py        # Fractional Kelly sizing
-│   │   └── fees.py         # Kalshi fee calculator
-│   ├── risk/
-│   │   ├── limits.py       # Daily loss, position count checks
-│   │   ├── validator.py    # Pre-trade validation
-│   │   └── settlement.py   # Settlement risk scanner
-│   ├── store/
-│   │   ├── database.py     # Async SQLite wrapper + schema
-│   │   └── queries.py      # Named queries (trades, positions, snapshots)
-│   ├── models/             # Pydantic models (market, order, portfolio, trade)
-│   └── reporting/
-│       ├── formatter.py    # Rich console output
-│       ├── pnl.py          # P&L calculation
-│       └── metrics.py      # Performance metrics
-├── config/
-│   ├── gimmes.toml         # Strategy parameters
-│   └── gimmes.example.toml # Example config
-├── tests/
-│   ├── unit/               # Unit tests (no API needed)
-│   └── integration/        # Integration tests (needs API credentials)
-└── pyproject.toml
+~/.gimmes/                       # User data (created by gimmes init)
+├── bin/gimmes                   # Global CLI command (symlink)
+├── .env                         # API credentials
+├── config/gimmes.toml           # Strategy parameters
+├── keys/kalshi_private.pem      # RSA private key
+├── gimmes.db                    # SQLite database
+└── repo/                        # Cloned source code
+    ├── src/gimmes/
+    │   ├── cli.py               # Typer CLI entry point + trading_context routing
+    │   ├── config.py            # Two-layer config (env vars + TOML)
+    │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
+    │   ├── paper/               # Paper trading engine (fill simulator, broker)
+    │   ├── strategy/            # Scanner, scorer, Kelly sizing, fee calculator
+    │   ├── risk/                # Limits, validator, settlement risk scanner
+    │   ├── store/               # SQLite persistence (trades, positions, snapshots)
+    │   ├── models/              # Pydantic models (market, order, portfolio, trade)
+    │   └── reporting/           # P&L, metrics, Rich console formatting
+    ├── bin/gimmes.sh            # CLI wrapper (symlink target)
+    ├── install.sh               # One-liner installer
+    ├── config/gimmes.example.toml
+    ├── tests/
+    └── pyproject.toml
 ```
 
 ---
+
+## Developer setup
+
+For contributors working directly in the repo (instead of the global install):
+
+```bash
+git clone https://github.com/allan-mobley-jr/gimmes.git
+cd gimmes
+uv sync
+```
+
+Set `GIMMES_HOME` to keep user data separate from the global install:
+
+```bash
+export GIMMES_HOME=./local
+python -m gimmes init
+```
 
 ## Running tests
 
