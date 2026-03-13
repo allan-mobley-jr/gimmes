@@ -598,5 +598,13 @@ def discover(
     _run(_discover())
 
 
+@app.command()
+def init() -> None:
+    """Set up gimmes for first-time use (config files, API credentials)."""
+    from gimmes.init import run_init
+
+    run_init()
+
+
 if __name__ == "__main__":
     app()
