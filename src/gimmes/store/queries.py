@@ -220,14 +220,26 @@ async def insert_candidate(
 
 
 async def get_daily_pnl(db: Database) -> float:
-    """Calculate today's realized P&L from trade records."""
+    """Calculate today's realized P&L from close trades.
+
+    For each close trade today, finds the most recent open trade on the
+    same ticker that occurred before the close, then computes:
+    (close_price - open_price) * count.
+    """
     cursor = await db.conn.execute(
         """SELECT COALESCE(SUM(
-            CASE WHEN action = 'close' THEN (price - edge) * count
-            ELSE 0 END
+            (c.price - COALESCE(
+                (SELECT price FROM trades o
+                 WHERE o.ticker = c.ticker
+                   AND o.action = 'open'
+                   AND o.timestamp <= c.timestamp
+                 ORDER BY o.timestamp DESC
+                 LIMIT 1),
+            0)) * c.count
         ), 0) as daily_pnl
-        FROM trades
-        WHERE date(timestamp) = date('now')"""
+        FROM trades c
+        WHERE c.action = 'close'
+          AND date(c.timestamp) = date('now')"""
     )
     row = await cursor.fetchone()
     return float(row["daily_pnl"]) if row else 0.0
