@@ -111,3 +111,38 @@ class TestValidateTrade:
         )
         assert result.approved is False
         assert any("settlement" in f.lower() for f in result.failures)
+
+    def test_none_probability_skips_edge_check(self, config: GimmesConfig) -> None:
+        """When true_probability is None, edge check is skipped."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=None,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is True
+        assert any("skipped" in c.lower() for c in result.checks)
+        assert not any("edge" in f.lower() for f in result.failures)
+
+    def test_none_probability_still_enforces_other_checks(
+        self, config: GimmesConfig,
+    ) -> None:
+        """Even without probability, other checks still apply."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=None,
+            bankroll=10000,
+            daily_pnl=-2000,  # Exceeds 15% daily loss
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is False
+        assert any("daily loss" in f.lower() for f in result.failures)
