@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import typer
 from rich.console import Console
 
-from gimmes.config import load_config
+from gimmes.config import GimmesConfig, load_config
 
 app = typer.Typer(
     name="gimmes",
@@ -31,6 +32,28 @@ def _championship_warning(config) -> None:  # type: ignore[no-untyped-def]
         )
 
 
+@asynccontextmanager
+async def trading_context(config: GimmesConfig):
+    """Yields (client, broker). broker is None in championship mode.
+
+    Both modes use the prod API client for real market data.
+    In driving range, a PaperBroker handles portfolio operations locally.
+    """
+    from gimmes.kalshi.client import KalshiClient
+
+    async with KalshiClient(config) as client:
+        if config.is_championship:
+            yield client, None
+        else:
+            from gimmes.paper.broker import PaperBroker
+            from gimmes.store.database import Database
+
+            async with Database(config.db_path) as db:
+                broker = PaperBroker(db, config.paper)
+                await broker.initialize()
+                yield client, broker
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -43,7 +66,6 @@ def mode() -> None:
     _championship_warning(config)
 
     async def _check() -> None:
-        from gimmes.kalshi.client import KalshiClient
         from gimmes.reporting.formatter import format_mode_status
 
         connected = False
@@ -51,9 +73,12 @@ def mode() -> None:
 
         if config.api_key and config.private_key_path.exists():
             try:
-                async with KalshiClient(config) as client:
-                    from gimmes.kalshi.portfolio import get_balance
-                    balance = await get_balance(client)
+                async with trading_context(config) as (client, broker):
+                    if broker:
+                        balance = await broker.get_balance()
+                    else:
+                        from gimmes.kalshi.portfolio import get_balance
+                        balance = await get_balance(client)
                     connected = True
             except Exception:
                 pass
@@ -158,15 +183,19 @@ def size(
     config = load_config()
 
     async def _size() -> None:
-        from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import get_market
-        from gimmes.kalshi.portfolio import get_balance
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
         from gimmes.strategy.kelly import kelly_fraction, position_size
 
-        async with KalshiClient(config) as client:
+        async with trading_context(config) as (client, broker):
             market = await get_market(client, ticker)
-            balance = await get_balance(client)
+
+            if broker:
+                balance = await broker.get_balance()
+            else:
+                from gimmes.kalshi.portfolio import get_balance
+                balance = await get_balance(client)
+
             price = market.midpoint or market.last_price
 
             kf = kelly_fraction(price, probability, fraction=config.sizing.kelly_fraction)
@@ -203,18 +232,22 @@ def validate(
     _championship_warning(config)
 
     async def _validate() -> None:
-        from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import get_market
-        from gimmes.kalshi.portfolio import get_all_positions, get_balance
         from gimmes.risk.validator import validate_trade
         from gimmes.store.database import Database
         from gimmes.store.queries import get_daily_pnl
         from gimmes.strategy.kelly import position_size
 
-        async with KalshiClient(config) as client:
+        async with trading_context(config) as (client, broker):
             market = await get_market(client, ticker)
-            balance = await get_balance(client)
-            positions = await get_all_positions(client)
+
+            if broker:
+                balance = await broker.get_balance()
+                positions = await broker.get_positions()
+            else:
+                from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                balance = await get_balance(client)
+                positions = await get_all_positions(client)
 
             price = market.midpoint or market.last_price
             if dollars <= 0:
@@ -273,19 +306,20 @@ def order(
             raise typer.Abort()
 
     async def _order() -> None:
-        from gimmes.kalshi.client import KalshiClient
-        from gimmes.kalshi.markets import get_market
-        from gimmes.kalshi.orders import create_order
-        from gimmes.kalshi.portfolio import get_balance
+        from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.strategy.kelly import position_size
 
-        async with KalshiClient(config) as client:
+        async with trading_context(config) as (client, broker):
             market = await get_market(client, ticker)
             mkt_price = market.midpoint or market.last_price
 
             if count <= 0 and probability > 0:
-                balance = await get_balance(client)
+                if broker:
+                    balance = await broker.get_balance()
+                else:
+                    from gimmes.kalshi.portfolio import get_balance
+                    balance = await get_balance(client)
                 final_count = position_size(
                     balance, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
@@ -312,9 +346,18 @@ def order(
 
             msg = f"Placing order: {final_count}x {ticker} {side.upper()} @ {final_price}¢"
             console.print(msg)
-            result = await create_order(client, params)
+
+            if broker:
+                orderbook = await get_orderbook(client, ticker)
+                result = await broker.create_order(params, orderbook)
+                label = "[yellow]PAPER[/yellow] "
+            else:
+                from gimmes.kalshi.orders import create_order
+                result = await create_order(client, params)
+                label = ""
+
             console.print(
-                f"[green]Order placed:[/green] {result.order_id}"
+                f"[green]{label}Order placed:[/green] {result.order_id}"
                 f" (status: {result.status})"
             )
 
@@ -329,11 +372,12 @@ def cancel(
     config = load_config()
 
     async def _cancel() -> None:
-        from gimmes.kalshi.client import KalshiClient
-        from gimmes.kalshi.orders import cancel_order
-
-        async with KalshiClient(config) as client:
-            await cancel_order(client, order_id)
+        async with trading_context(config) as (client, broker):
+            if broker:
+                await broker.cancel_order(order_id)
+            else:
+                from gimmes.kalshi.orders import cancel_order
+                await cancel_order(client, order_id)
             console.print(f"[green]Canceled order {order_id}[/green]")
 
     _run(_cancel())
@@ -345,12 +389,30 @@ def positions() -> None:
     config = load_config()
 
     async def _positions() -> None:
-        from gimmes.kalshi.client import KalshiClient
-        from gimmes.kalshi.portfolio import get_all_positions
+        from gimmes.kalshi.markets import get_market
+        from gimmes.models.market import MarketStatus
         from gimmes.reporting.formatter import format_positions
 
-        async with KalshiClient(config) as client:
-            pos_list = await get_all_positions(client)
+        async with trading_context(config) as (client, broker):
+            if broker:
+                pos_list = await broker.get_positions()
+                # Mark-to-market + auto-settle with real prices
+                for pos in pos_list:
+                    try:
+                        market = await get_market(client, pos.ticker)
+                        current_price = market.midpoint or market.last_price
+                        await broker.mark_to_market(pos.ticker, current_price)
+                        # Auto-settle if market resolved
+                        if market.status in (MarketStatus.DETERMINED, MarketStatus.FINALIZED):
+                            await broker.settle(pos.ticker, market.result)
+                    except Exception:
+                        pass
+                # Re-fetch after mark-to-market
+                pos_list = await broker.get_positions()
+            else:
+                from gimmes.kalshi.portfolio import get_all_positions
+                pos_list = await get_all_positions(client)
+
             if not pos_list:
                 console.print("[dim]No open positions[/dim]")
                 return
@@ -365,15 +427,18 @@ def risk_check() -> None:
     config = load_config()
 
     async def _check() -> None:
-        from gimmes.kalshi.client import KalshiClient
-        from gimmes.kalshi.portfolio import get_all_positions, get_balance
         from gimmes.risk.limits import check_daily_loss, check_position_count
         from gimmes.store.database import Database
         from gimmes.store.queries import get_daily_pnl
 
-        async with KalshiClient(config) as client:
-            balance = await get_balance(client)
-            pos = await get_all_positions(client)
+        async with trading_context(config) as (client, broker):
+            if broker:
+                balance = await broker.get_balance()
+                pos = await broker.get_positions()
+            else:
+                from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                balance = await get_balance(client)
+                pos = await get_all_positions(client)
 
             daily_pnl = 0.0
             try:

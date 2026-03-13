@@ -1,4 +1,4 @@
-"""Integration tests for order placement (requires demo API credentials)."""
+"""Integration tests for order placement (requires API credentials)."""
 
 import pytest
 
@@ -12,17 +12,17 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def demo_config():
+def api_config():
     config = load_config()
     if not config.api_key or not config.private_key_path.exists():
-        pytest.skip("Demo API credentials not configured")
+        pytest.skip("API credentials not configured")
     return config
 
 
 class TestOrders:
-    async def test_place_and_cancel_order(self, demo_config) -> None:
+    async def test_place_and_cancel_order(self, api_config) -> None:
         """Place a limit order at a low price, then cancel it."""
-        async with KalshiClient(demo_config) as client:
+        async with KalshiClient(api_config) as client:
             # Find an open market
             markets, _ = await list_markets(client, limit=5)
             if not markets:
@@ -46,7 +46,7 @@ class TestOrders:
             # Cancel it
             await cancel_order(client, order.order_id)
 
-    async def test_list_orders(self, demo_config) -> None:
-        async with KalshiClient(demo_config) as client:
+    async def test_list_orders(self, api_config) -> None:
+        async with KalshiClient(api_config) as client:
             orders, cursor = await list_orders(client, limit=5)
             assert isinstance(orders, list)

@@ -1,4 +1,4 @@
-"""Integration tests for WebSocket client (requires demo API credentials)."""
+"""Integration tests for WebSocket client (requires API credentials)."""
 
 
 import pytest
@@ -10,27 +10,26 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def demo_config():
+def api_config():
     config = load_config()
     if not config.api_key or not config.private_key_path.exists():
-        pytest.skip("Demo API credentials not configured")
+        pytest.skip("API credentials not configured")
     return config
 
 
 class TestWebSocket:
-    async def test_connect_and_subscribe(self, demo_config) -> None:
+    async def test_connect_and_subscribe(self, api_config) -> None:
         """Connect, subscribe to ticker, receive at least one message."""
-        async with KalshiWebSocket(demo_config) as ws:
+        async with KalshiWebSocket(api_config) as ws:
             await ws.subscribe(["ticker"])
             # Try to get one message within 5 seconds
             async for msg in ws.messages():
                 assert isinstance(msg, dict)
                 break  # Just need one message
-            # It's OK if no messages arrive on demo — the connection itself is the test
 
-    async def test_subscribe_unsubscribe(self, demo_config) -> None:
+    async def test_subscribe_unsubscribe(self, api_config) -> None:
         """Subscribe and unsubscribe from channels."""
-        async with KalshiWebSocket(demo_config) as ws:
+        async with KalshiWebSocket(api_config) as ws:
             await ws.subscribe(["orderbook_delta", "ticker"])
             assert "orderbook_delta" in ws._subscriptions
             assert "ticker" in ws._subscriptions

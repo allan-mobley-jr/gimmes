@@ -15,18 +15,25 @@ console = Console()
 def format_mode_status(mode: str, connected: bool, balance: float | None = None) -> None:
     """Display current mode and connection status."""
     mode_color = "red bold" if mode == "championship" else "green bold"
-    mode_display = mode.upper().replace("_", " ")
     status = "[green]Connected[/green]" if connected else "[red]Disconnected[/red]"
+
+    if mode == "championship":
+        mode_display = "CHAMPIONSHIP"
+    else:
+        mode_display = "DRIVING RANGE — PAPER TRADING"
 
     lines = [
         f"Mode: [{mode_color}]{mode_display}[/{mode_color}]",
         f"Status: {status}",
     ]
     if balance is not None:
-        lines.append(f"Balance: ${balance:,.2f}")
+        label = "Paper Balance" if mode != "championship" else "Balance"
+        lines.append(f"{label}: ${balance:,.2f}")
 
     if mode == "championship":
         lines.append("\n[red bold]WARNING: REAL MONEY MODE[/red bold]")
+    else:
+        lines.append("\n[dim]Market data from prod API — orders simulated locally[/dim]")
 
     console.print(Panel("\n".join(lines), title="GIMMES", border_style="blue"))
 

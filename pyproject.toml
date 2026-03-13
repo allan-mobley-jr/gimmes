@@ -39,7 +39,7 @@ packages = ["src/gimmes"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "integration: marks tests requiring Kalshi demo API access",
+    "integration: marks tests requiring Kalshi API credentials",
 ]
 
 [tool.ruff]

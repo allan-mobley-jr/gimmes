@@ -18,6 +18,61 @@ GIMMES hunts for mispriced certainty. When a contract is trading at 70¢ but res
 
 ---
 
+## Quick start
+
+### Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (package manager)
+- A [Kalshi](https://kalshi.com) account with API access
+
+### Installation
+
+```bash
+git clone https://github.com/allan-mobley-jr/gimmes.git
+cd gimmes
+uv sync
+```
+
+### API key setup
+
+1. Generate an RSA key pair and register it with Kalshi ([docs](https://trading-api.readme.io/reference/authentication))
+2. Save your private key to `~/.kalshi/prod_private.pem`
+3. Copy `.env.example` to `.env` and fill in your credentials:
+
+```bash
+cp .env.example .env
+```
+
+```env
+GIMMES_MODE=driving_range
+KALSHI_PROD_API_KEY=your-api-key-uuid
+KALSHI_PROD_PRIVATE_KEY_PATH=~/.kalshi/prod_private.pem
+```
+
+### Verify connection
+
+```bash
+python -m gimmes mode
+```
+
+You should see "DRIVING RANGE — PAPER TRADING" with your paper balance.
+
+---
+
+## Two modes
+
+| Mode | Env var | Market data | Orders | Balance |
+|---|---|---|---|---|
+| **Driving Range** (default) | `driving_range` | Real (prod API) | Simulated locally | Virtual $10,000 |
+| **Championship** | `championship` | Real (prod API) | Real (prod API) | Real money |
+
+Both modes use the same prod API credentials for market data. The only difference is where portfolio operations are routed — the `PaperBroker` in driving range vs. Kalshi's API in championship. CLI commands and agents work identically in both modes.
+
+**Always start in Driving Range.** Championship mode requires explicit confirmation before every order.
+
+---
+
 ## Agent team
 
 | Agent | Role | Responsibilities |
@@ -25,8 +80,28 @@ GIMMES hunts for mispriced certainty. When a contract is trading at 70¢ but res
 | **The Scout** | Opportunity discovery | Scans Kalshi for markets above 55¢, scores each for gimme potential |
 | **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns |
 | **The Closer** | Trade execution | Sizes positions using fractional Kelly, places maker limit orders |
-| **The Caddie Monitor** | Position watching | Monitors open contracts, flags early-close opportunities |
+| **The Monitor** | Position watching | Monitors open contracts, flags early-close opportunities |
 | **The Scorecard** | Reporting | Tracks P&L, win rate, edge accuracy, and strategy performance |
+
+---
+
+## CLI commands
+
+```bash
+python -m gimmes mode              # Show mode + connection status
+python -m gimmes scan              # Scan markets for gimme candidates
+python -m gimmes score TICKER      # Score a specific market
+python -m gimmes size TICKER -p P  # Calculate position size
+python -m gimmes validate TICKER   # Pre-trade validation
+python -m gimmes order TICKER      # Place an order (paper or real)
+python -m gimmes cancel ORDER_ID   # Cancel a resting order
+python -m gimmes positions         # List open positions (with mark-to-market)
+python -m gimmes risk-check        # Check risk limits and daily P&L
+python -m gimmes report            # Performance scorecard
+python -m gimmes market-info TICKER # Detailed market info
+python -m gimmes log-trade TICKER  # Log a trade decision
+python -m gimmes discover CATEGORY # Discover series tickers in a category
+```
 
 ---
 
@@ -120,14 +195,32 @@ Minimum required edge before any trade: **5 percentage points** after fees.
 
 ---
 
-## Tech stack
+## Configuration
 
-- **Runtime:** Claude Code (interactive session, Claude Max)
-- **Platform:** Kalshi (CFTC-regulated DCM)
-- **API:** Kalshi REST + WebSocket, RSA-PSS authentication
-- **State:** GitHub Issues (trade log, open positions, agent decisions)
-- **Language:** Python 3.11+
-- **Key dependencies:** `kalshi-python-async`, `anthropic`, `httpx`, `pydantic`
+Strategy parameters live in `config/gimmes.toml`:
+
+```toml
+[strategy]
+gimme_threshold = 75          # Minimum GimmeScore to execute (0-100)
+min_market_price = 0.55       # Only scan markets above this price
+max_market_price = 0.85       # Only scan markets below this price
+min_true_probability = 0.90   # Model must see >=90% to qualify
+min_edge_after_fees = 0.05    # 5pp minimum edge after fee math
+
+[sizing]
+kelly_fraction = 0.25         # Conservative quarter-Kelly
+max_position_pct = 0.05       # Max 5% of bankroll per position
+
+[risk]
+max_open_positions = 15       # Concurrent position limit
+daily_loss_limit_pct = 0.15   # Auto-stop at 15% daily drawdown
+
+[orders]
+preferred_order_type = "maker" # Limit orders; no takers by default
+
+[paper]
+starting_balance = 10000.00   # Virtual bankroll for driving range mode
+```
 
 ---
 
@@ -135,42 +228,67 @@ Minimum required edge before any trade: **5 percentage points** after fees.
 
 ```
 gimmes/
-├── agents/
-│   ├── scout.py          # Market scanning and initial scoring
-│   ├── caddie.py         # Research and Gimme Score generation
-│   ├── closer.py         # Trade execution and order management
-│   ├── monitor.py        # Open position watching
-│   └── scorecard.py      # P&L and performance reporting
-├── kalshi/
-│   ├── client.py         # Authenticated API client (REST + WebSocket)
-│   ├── orders.py         # Order placement and management
-│   └── markets.py        # Market discovery and data
-├── strategies/
-│   └── gimme.py          # Gimme scoring logic and thresholds
-├── sizing/
-│   └── kelly.py          # Fractional Kelly with fee adjustment
-├── config.py             # Thresholds, limits, agent parameters
-├── AGENTS.md             # Agent instructions for Claude Code
-└── README.md
+├── src/gimmes/
+│   ├── cli.py              # Typer CLI entry point + trading_context routing
+│   ├── config.py           # Two-layer config (env vars + TOML)
+│   ├── kalshi/
+│   │   ├── client.py       # Authenticated HTTP client (RSA-PSS)
+│   │   ├── auth.py         # RSA-PSS signature generation
+│   │   ├── markets.py      # Market discovery and data endpoints
+│   │   ├── orders.py       # Order placement and management
+│   │   ├── portfolio.py    # Balance, positions, settlements
+│   │   └── websocket.py    # WebSocket client for real-time data
+│   ├── paper/
+│   │   ├── broker.py       # PaperBroker — local order simulation
+│   │   ├── fill_simulator.py # Pure fill logic against orderbook
+│   │   └── schema.py       # SQLite DDL for paper trading tables
+│   ├── strategy/
+│   │   ├── scanner.py      # Market filtering pipeline
+│   │   ├── scorer.py       # Gimme scoring logic
+│   │   ├── kelly.py        # Fractional Kelly sizing
+│   │   └── fees.py         # Kalshi fee calculator
+│   ├── risk/
+│   │   ├── limits.py       # Daily loss, position count checks
+│   │   ├── validator.py    # Pre-trade validation
+│   │   └── settlement.py   # Settlement risk scanner
+│   ├── store/
+│   │   ├── database.py     # Async SQLite wrapper + schema
+│   │   └── queries.py      # Named queries (trades, positions, snapshots)
+│   ├── models/             # Pydantic models (market, order, portfolio, trade)
+│   └── reporting/
+│       ├── formatter.py    # Rich console output
+│       ├── pnl.py          # P&L calculation
+│       └── metrics.py      # Performance metrics
+├── config/
+│   ├── gimmes.toml         # Strategy parameters
+│   └── gimmes.example.toml # Example config
+├── tests/
+│   ├── unit/               # Unit tests (no API needed)
+│   └── integration/        # Integration tests (needs API credentials)
+└── pyproject.toml
 ```
 
 ---
 
-## Configuration
+## Running tests
 
-```python
-# config.py
-GIMME_THRESHOLD       = 75       # Minimum Gimme Score to execute
-MIN_MARKET_PRICE      = 0.55     # Only scan markets above this
-MAX_MARKET_PRICE      = 0.85     # Only scan markets below this
-MIN_TRUE_PROBABILITY  = 0.90     # Model must see ≥90% to qualify
-KELLY_FRACTION        = 0.25     # Conservative fractional Kelly
-MAX_POSITION_PCT      = 0.05     # Max 5% of bankroll per trade
-MAX_OPEN_POSITIONS    = 15       # Concurrent position limit
-DAILY_LOSS_LIMIT_PCT  = 0.15     # Auto-stop at 15% daily drawdown
-MIN_EDGE_AFTER_FEES   = 0.05     # 5pp minimum edge after fee math
-PREFERRED_ORDER_TYPE  = "maker"  # Limit orders only; no takers by default
+```bash
+uv run pytest tests/unit/                          # Unit tests (no API needed)
+uv run pytest tests/integration/ -m integration    # Integration tests (needs API credentials)
+uv run pytest                                      # All tests
 ```
+
+---
+
+## Tech stack
+
+- **Runtime:** Claude Code (interactive session, Claude Max)
+- **Platform:** Kalshi (CFTC-regulated DCM)
+- **API:** Kalshi REST + WebSocket, RSA-PSS authentication
+- **State:** SQLite (trades, positions, snapshots, paper trading)
+- **Language:** Python 3.11+
+- **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`
+- **Dev tools:** `uv`, `pytest`, `ruff`, `mypy`
 
 ---
 
@@ -189,12 +307,6 @@ PREFERRED_ORDER_TYPE  = "maker"  # Limit orders only; no takers by default
 - Not a high-frequency trading system
 - Not a market making bot
 - Not financial advice
-
----
-
-## Status
-
-`[ ] Scaffolding` → `[ ] Scout agent` → `[ ] Kalshi client` → `[ ] Caddie research loop` → `[ ] Closer + sizing` → `[ ] Monitor` → `[ ] Paper trading` → `[ ] Live`
 
 ---
 

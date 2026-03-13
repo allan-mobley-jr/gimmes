@@ -47,6 +47,9 @@ series = [
     "CONTROLH", "CONTROLS",
 ]
 
+[paper]
+starting_balance = 10000.00    # Virtual bankroll for driving range mode
+
 [scoring.weights]
 edge_size = 0.30              # Larger edge = higher score
 signal_strength = 0.25        # More/stronger confirming signals
