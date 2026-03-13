@@ -599,6 +599,19 @@ def discover(
 
 
 @app.command()
+def config(
+    section: str = typer.Option(
+        None, "--section", "-s",
+        help="Jump to a specific section (paper, strategy, sizing, risk, orders, scanner, scoring)",
+    ),
+) -> None:
+    """Interactive configuration wizard — walk through every setting."""
+    from gimmes.config_wizard import run_config_wizard
+
+    run_config_wizard(section_filter=section)
+
+
+@app.command()
 def init() -> None:
     """Set up gimmes for first-time use (config files, API credentials)."""
     from gimmes.init import run_init
