@@ -70,6 +70,6 @@ uv run pytest                          # All tests
 
 - Python 3.11+, Pydantic v2 models, async/await throughout
 - `uv` for package management
-- Prices in dollars (0.00-1.00) internally, cents (1-99) for Kalshi API
+- Prices in dollars (0.00-1.00) internally; Kalshi API uses dollar-string format (`yes_price_dollars`, `initial_count_fp`)
 - All Kalshi API interactions through the CLI — agents don't call the API directly
 - Tests with pytest, formatting with ruff
