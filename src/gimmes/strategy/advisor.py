@@ -63,7 +63,7 @@ def analyze_threshold_sweep(
 
     current_threshold = config.strategy.gimme_threshold
     best_threshold = current_threshold
-    best_ev = -999.0
+    best_wr = -1.0
     sweep_data: list[dict] = []  # type: ignore[type-arg]
 
     for threshold in range(50, 96, 5):
@@ -72,15 +72,15 @@ def analyze_threshold_sweep(
             continue
         wins = sum(1 for s in taken if s["won"])
         win_rate = wins / len(taken)
-        ev = win_rate * len(taken)  # simple expected wins
         sweep_data.append({
             "threshold": threshold,
             "trades_taken": len(taken),
             "wins": wins,
             "win_rate": round(win_rate, 3),
         })
-        if ev > best_ev:
-            best_ev = ev
+        # Maximize win rate, with tie-breaking by trade count
+        if win_rate > best_wr or (win_rate == best_wr and len(taken) > 5):
+            best_wr = win_rate
             best_threshold = threshold
 
     if best_threshold == current_threshold:
@@ -151,7 +151,10 @@ def analyze_edge_decay(
     avg_second = sum(second_half) / len(second_half) if second_half else 0
 
     decay = avg_first - avg_second
-    decay_pct = decay / avg_first if avg_first != 0 else 0
+    # Guard against false positives: need meaningful absolute edge to compare
+    if abs(avg_first) < 0.01:
+        return None
+    decay_pct = decay / avg_first
 
     if decay_pct < 0.15:  # Less than 15% decay — not significant
         return None

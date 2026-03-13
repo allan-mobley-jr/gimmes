@@ -63,7 +63,7 @@ def _make_trades(
         trades.append({
             "ticker": ticker, "action": "open", "side": "yes", "count": 10,
             "price": loss_price, "model_probability": 0.85, "gimme_score": loss_score,
-            "edge": abs(loss_edge), "rationale": "test", "agent": "closer",
+            "edge": loss_edge, "rationale": "test", "agent": "closer",
             "timestamp": f"2026-02-{(i % 28) + 1:02d}T10:00:00",
         })
         trades.append({

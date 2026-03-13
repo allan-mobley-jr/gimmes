@@ -819,11 +819,18 @@ def lesson(
                 )
                 console.print(f"  {rec.rationale}\n")
 
-            # Persist recommendations
+            # Persist recommendations (skip if pending rec already exists for same parameter)
             if not dry_run:
-                for rec in recs:
+                existing = await get_recommendations(db, status="pending", limit=100)
+                existing_params = {r["parameter_path"] for r in existing}
+                new_recs = [r for r in recs if r.parameter_path not in existing_params]
+                for rec in new_recs:
                     await insert_recommendation(db, rec)
-                console.print(f"[green]Saved {len(recs)} recommendation(s) to database[/green]")
+                if new_recs:
+                    console.print(f"[green]Saved {len(new_recs)} recommendation(s) to database[/green]")
+                skipped = len(recs) - len(new_recs)
+                if skipped:
+                    console.print(f"[dim]Skipped {skipped} duplicate(s) (pending recs already exist)[/dim]")
 
             # Show past recommendations
             past = await get_recommendations(db, status="pending", limit=10)
