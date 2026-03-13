@@ -261,17 +261,16 @@ class TestRunConfigWizard:
 
     def test_no_changes_when_all_defaults_kept(self, tmp_path: Path) -> None:
         f = tmp_path / "gimmes.toml"
-        original = "[paper]\nstarting_balance = 10000.00\n"
-        f.write_text(original)
+        f.write_text("[paper]\nstarting_balance = 10000.00\n")
 
         with (
             patch("gimmes.config_wizard.TOML_FILE", f),
             patch("gimmes.config_wizard._prompt_setting", return_value=10000.0),
+            patch("gimmes.config_wizard._save_toml") as mock_save,
         ):
             run_config_wizard(section_filter="paper")
 
-        # File should be unchanged
-        assert f.read_text() == original
+        mock_save.assert_not_called()
 
     def test_saves_changed_value(self, tmp_path: Path) -> None:
         f = tmp_path / "gimmes.toml"

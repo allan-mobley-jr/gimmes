@@ -651,10 +651,7 @@ def run_config_wizard(section_filter: str | None = None) -> None:
         header = Text(f" {section_name} ", style="bold white on blue")
         console.print(Panel(header, subtitle=section_desc, expand=False))
 
-        section_settings = [s for s in SETTINGS if s.section == section_key]
-        # scoring.weights has section "scoring" — match sub-keys too
-        if section_key == "scoring":
-            section_settings = [s for s in SETTINGS if s.key.startswith("scoring.")]
+        section_settings = [s for s in SETTINGS if s.key.startswith(f"{section_key}.")]
 
         for setting in section_settings:
             current = _get_nested(doc, setting.key)
