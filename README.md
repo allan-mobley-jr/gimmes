@@ -34,23 +34,21 @@ cd gimmes
 uv sync
 ```
 
-### API key setup
+### Setup
 
-1. Generate an RSA key pair and register it with Kalshi ([docs](https://trading-api.readme.io/reference/authentication))
-2. Save your private key to `~/.kalshi/prod_private.pem`
-3. Copy `.env.example` to `.env` and fill in your credentials:
+Run the interactive setup wizard — it will create your config files, guide you through Kalshi API key creation, and verify your connection:
 
 ```bash
-cp .env.example .env
+python -m gimmes init
 ```
 
-```env
-GIMMES_MODE=driving_range
-KALSHI_PROD_API_KEY=your-api-key-uuid
-KALSHI_PROD_PRIVATE_KEY_PATH=~/.kalshi/prod_private.pem
-```
+The wizard will:
+1. Generate `.env` and `config/gimmes.toml` from their example files
+2. Walk you through creating a Kalshi API key (go to Account Settings → API Keys)
+3. Find your downloaded private key, validate it, and install it securely
+4. Verify your credentials work
 
-### Verify connection
+After setup, confirm everything is connected:
 
 ```bash
 python -m gimmes mode
@@ -88,6 +86,7 @@ Both modes use the same prod API credentials for market data. The only differenc
 ## CLI commands
 
 ```bash
+python -m gimmes init              # First-time setup wizard
 python -m gimmes mode              # Show mode + connection status
 python -m gimmes scan              # Scan markets for gimme candidates
 python -m gimmes score TICKER      # Score a specific market

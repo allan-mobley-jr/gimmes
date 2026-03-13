@@ -37,6 +37,7 @@ Both modes use the same prod API credentials for market data. The only differenc
 ## CLI Commands
 
 ```bash
+python -m gimmes init              # First-time setup wizard
 python -m gimmes mode              # Show mode + connection status
 python -m gimmes scan              # Scan markets (Scout pipeline)
 python -m gimmes score TICKER      # Score a specific market
