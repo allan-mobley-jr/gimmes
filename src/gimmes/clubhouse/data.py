@@ -10,8 +10,6 @@ from pathlib import Path
 
 import aiosqlite
 
-logger = logging.getLogger("gimmes.clubhouse")
-
 from gimmes.clubhouse.models import (
     ActivityItem,
     CandidateItem,
@@ -26,6 +24,8 @@ from gimmes.clubhouse.models import (
 )
 from gimmes.config import GimmesConfig, load_config
 from gimmes.reporting.metrics import calculate_metrics
+
+logger = logging.getLogger("gimmes.clubhouse")
 
 
 def _config() -> GimmesConfig:

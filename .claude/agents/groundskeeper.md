@@ -57,7 +57,7 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 
 **Issue body format:**
 
-```markdown
+~~~markdown
 ## Error Escalation
 
 **Severity:** [severity]
@@ -76,7 +76,7 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 
 ### Suggested Action
 [based on category]
-```
+~~~
 
 **Suggested actions by category:**
 - `api_error` → Check Kalshi API status and endpoint changes
