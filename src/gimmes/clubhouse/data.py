@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC
@@ -13,6 +14,7 @@ from gimmes.clubhouse.models import (
     ActivityItem,
     CandidateItem,
     ConfigResponse,
+    ErrorItem,
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
@@ -22,6 +24,8 @@ from gimmes.clubhouse.models import (
 )
 from gimmes.config import GimmesConfig, load_config
 from gimmes.reporting.metrics import calculate_metrics
+
+logger = logging.getLogger("gimmes.clubhouse")
 
 
 def _config() -> GimmesConfig:
@@ -76,7 +80,7 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
                 except (ValueError, TypeError):
                     pass
     except Exception:
-        pass
+        logger.debug("get_status failed", exc_info=True)
 
     return resp
 
@@ -124,7 +128,7 @@ async def get_portfolio(db_path: Path) -> PortfolioResponse:
             if resp.balance > 0:
                 resp.total_equity = resp.balance + resp.unrealized_pnl
     except Exception:
-        pass
+        logger.debug("get_portfolio failed", exc_info=True)
 
     return resp
 
@@ -163,7 +167,7 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
                     realized_pnl=row["realized_pnl"],
                 ))
     except Exception:
-        pass
+        logger.debug("get_positions failed", exc_info=True)
 
     return items
 
@@ -194,7 +198,7 @@ async def get_trades(db_path: Path, limit: int = 50) -> list[TradeItem]:
                     timestamp=row["timestamp"],
                 ))
     except Exception:
-        pass
+        logger.debug("get_trades failed", exc_info=True)
 
     return items
 
@@ -221,7 +225,7 @@ async def get_candidates(db_path: Path, limit: int = 20) -> list[CandidateItem]:
                     scanned_at=row["scanned_at"],
                 ))
     except Exception:
-        pass
+        logger.debug("get_candidates failed", exc_info=True)
 
     return items
 
@@ -261,7 +265,7 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
                 for s in snapshots
             ]
     except Exception:
-        pass
+        logger.debug("get_metrics failed", exc_info=True)
 
     return resp
 
@@ -317,7 +321,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
             if row and row["largest"] and balance > 0:
                 resp.largest_position_pct = row["largest"] / balance
     except Exception:
-        pass
+        logger.debug("get_risk failed", exc_info=True)
 
     return resp
 
@@ -347,7 +351,41 @@ async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
                     timestamp=row["timestamp"],
                 ))
     except Exception:
-        pass
+        logger.debug("get_activity failed", exc_info=True)
+
+    return items
+
+
+async def get_errors_data(db_path: Path, limit: int = 20) -> list[ErrorItem]:
+    """Get recent error log entries."""
+    items: list[ErrorItem] = []
+
+    try:
+        async with _connect(db_path) as conn:
+            cursor = await conn.execute(_table_exists_sql("error_log"))
+            if not await cursor.fetchone():
+                return items
+
+            cursor = await conn.execute(
+                "SELECT * FROM error_log ORDER BY id DESC LIMIT ?", (limit,)
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                items.append(ErrorItem(
+                    id=row["id"],
+                    timestamp=row["timestamp"],
+                    severity=row["severity"],
+                    category=row["category"],
+                    error_code=row["error_code"],
+                    component=row["component"],
+                    agent=row["agent"],
+                    cycle=row["cycle"],
+                    message=row["message"],
+                    resolved=bool(row["resolved"]),
+                    github_issue_url=row["github_issue_url"],
+                ))
+    except Exception:
+        logger.debug("get_errors_data failed", exc_info=True)
 
     return items
 
@@ -405,7 +443,17 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 parts.append(f"{row['balance']:.2f}" if row else "0")
             except Exception:
                 parts.append("0")
+
+            # error_log changes
+            cursor = await conn.execute(_table_exists_sql("error_log"))
+            if await cursor.fetchone():
+                cursor = await conn.execute("SELECT MAX(id) as m FROM error_log")
+                row = await cursor.fetchone()
+                parts.append(str(row["m"] if row and row["m"] else 0))
+            else:
+                parts.append("0")
     except Exception:
+        logger.debug("get_change_fingerprint failed", exc_info=True)
         parts = ["err"]
 
     return "|".join(parts)

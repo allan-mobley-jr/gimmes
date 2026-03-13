@@ -11,6 +11,7 @@ from gimmes.clubhouse.data import (
     get_candidates,
     get_change_fingerprint,
     get_config_data,
+    get_errors_data,
     get_metrics,
     get_portfolio,
     get_positions,
@@ -20,6 +21,7 @@ from gimmes.clubhouse.data import (
 )
 from gimmes.clubhouse.models import (
     ConfigResponse,
+    ErrorItem,
     MetricsResponse,
     PortfolioResponse,
     StatusResponse,
@@ -56,6 +58,12 @@ async def db_path(tmp_path: Path) -> Path:
         await db.conn.execute(
             """INSERT INTO activity_log (cycle, agent, phase, message) VALUES
                (1, 'scout', 'complete', 'Found 3 candidates')"""
+        )
+        await db.conn.execute(
+            """INSERT INTO error_log (severity, category, error_code, component,
+               agent, cycle, message) VALUES
+               ('error', 'api_error', 'KALSHI_500', 'kalshi.client', 'scout', 1,
+                'Internal server error from /markets endpoint')"""
         )
         await db.conn.execute(
             """INSERT INTO paper_balance (id, balance, starting_balance) VALUES
@@ -138,6 +146,20 @@ class TestDataLayer:
         assert activity[0].agent == "scout"
         assert activity[0].cycle == 1
 
+    async def test_get_errors_data(self, db_path: Path) -> None:
+        errors = await get_errors_data(db_path)
+        assert len(errors) == 1
+        assert errors[0].severity == "error"
+        assert errors[0].category == "api_error"
+        assert errors[0].error_code == "KALSHI_500"
+        assert errors[0].agent == "scout"
+        assert not errors[0].resolved
+
+    async def test_get_errors_nonexistent_db(self, tmp_path: Path) -> None:
+        bad_path = tmp_path / "nonexistent.db"
+        errors = await get_errors_data(bad_path)
+        assert errors == []
+
     async def test_get_config_data(self) -> None:
         config = await get_config_data()
         assert config.mode in ("driving_range", "championship")
@@ -207,5 +229,6 @@ class TestFastAPIApp:
         assert "/api/metrics" in routes
         assert "/api/risk" in routes
         assert "/api/activity" in routes
+        assert "/api/errors" in routes
         assert "/api/config" in routes
         assert "/api/stream" in routes

@@ -90,6 +90,20 @@ class ActivityItem(BaseModel):
     timestamp: str = ""
 
 
+class ErrorItem(BaseModel):
+    id: int = 0
+    timestamp: str = ""
+    severity: str = ""
+    category: str = ""
+    error_code: str = ""
+    component: str = ""
+    agent: str = ""
+    cycle: int = 0
+    message: str = ""
+    resolved: bool = False
+    github_issue_url: str = ""
+
+
 class ConfigResponse(BaseModel):
     mode: str = "driving_range"
     strategy: dict = {}

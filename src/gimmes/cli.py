@@ -80,8 +80,9 @@ def mode() -> None:
                         from gimmes.kalshi.portfolio import get_balance
                         balance = await get_balance(client)
                     connected = True
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger("gimmes").debug("mode: connection check failed: %s", exc)
 
         format_mode_status(config.mode.value, connected, balance)
 
@@ -262,13 +263,19 @@ def validate(
             else:
                 trade_dollars = dollars
 
-            # Get daily P&L from local DB
-            daily_pnl = 0.0
+            # Get daily P&L from local DB — MUST succeed for safe validation
             try:
                 async with Database(config.db_path) as db:
                     daily_pnl = await get_daily_pnl(db)
-            except Exception:
-                pass
+            except Exception as exc:
+                console.print(
+                    f"[red bold]VALIDATION FAILED: Could not query daily P&L — {exc}[/red bold]"
+                )
+                console.print(
+                    "[red]Refusing to validate with unknown P&L "
+                    "(daily loss limit may be breached)[/red]"
+                )
+                raise typer.Exit(1)
 
             existing_tickers = [p.ticker for p in positions]
             result = validate_trade(
@@ -412,8 +419,10 @@ def positions() -> None:
                         # Auto-settle if market resolved
                         if market.status in (MarketStatus.DETERMINED, MarketStatus.FINALIZED):
                             await broker.settle(pos.ticker, market.result)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        console.print(
+                            f"[yellow]Warning: could not update {pos.ticker}: {exc}[/yellow]"
+                        )
                 # Re-fetch after mark-to-market
                 pos_list = await broker.get_positions()
             else:
@@ -447,12 +456,17 @@ def risk_check() -> None:
                 balance = await get_balance(client)
                 pos = await get_all_positions(client)
 
-            daily_pnl = 0.0
             try:
                 async with Database(config.db_path) as db:
                     daily_pnl = await get_daily_pnl(db)
-            except Exception:
-                pass
+            except Exception as exc:
+                console.print(
+                    f"[red bold]RISK CHECK FAILED: Could not query daily P&L — {exc}[/red bold]"
+                )
+                console.print(
+                    "[red]Cannot verify risk limits with unknown P&L[/red]"
+                )
+                raise typer.Exit(1)
 
             console.print("\n[bold]Risk Check[/bold]")
             console.print(f"Balance: ${balance:,.2f}")
@@ -487,7 +501,9 @@ def report() -> None:
                 trades = await get_trades(db, limit=1000)
                 summary = calculate_pnl(trades)
                 format_pnl_summary(summary)
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger("gimmes").warning("report: failed to load trades: %s", exc)
             format_pnl_summary(PnLSummary())
             console.print("[dim]No trade data yet[/dim]")
 
@@ -599,6 +615,156 @@ def log_activity(
             console.print(f"[green]Logged activity #{row_id}[/green]")
 
     _run(_log())
+
+
+@app.command(name="log-error")
+def log_error(
+    severity: str = typer.Option("error", "--severity", "-s", help="debug/info/warning/error/critical"),
+    category: str = typer.Option("api_error", "--category", help="Error category"),
+    code: str = typer.Option("", "--code", help="Error code identifier"),
+    component: str = typer.Option("", "--component", help="Component that raised the error"),
+    agent: str = typer.Option("", "--agent", "-a", help="Agent name"),
+    cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
+    message: str = typer.Option("", "--message", "-m", help="Error message"),
+    stack_trace: str = typer.Option("", "--stack-trace", help="Stack trace"),
+    context: str = typer.Option("{}", "--context", help="JSON context blob"),
+) -> None:
+    """Log a structured error to the error_log table."""
+    config = load_config()
+
+    async def _log() -> None:
+        from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
+        from gimmes.store.database import Database
+        from gimmes.store.queries import insert_error
+
+        entry = ErrorLogEntry(
+            severity=ErrorSeverity(severity),
+            category=ErrorCategory(category),
+            error_code=code,
+            component=component,
+            agent=agent,
+            cycle=cycle,
+            message=message,
+            stack_trace=stack_trace,
+            context=context,
+        )
+
+        async with Database(config.db_path) as db:
+            row_id = await insert_error(db, entry)
+            console.print(
+                f"[red]Logged error #{row_id}:[/red] [{severity}] {category} — {message}"
+            )
+
+    _run(_log())
+
+
+@app.command(name="errors")
+def errors(
+    severity: str | None = typer.Option(None, "--severity", "-s", help="Filter by severity"),
+    category: str | None = typer.Option(None, "--category", help="Filter by category"),
+    unresolved: bool = typer.Option(False, "--unresolved", "-u", help="Only unresolved errors"),
+    summary: bool = typer.Option(False, "--summary", help="Aggregate summary view"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
+) -> None:
+    """View error logs with optional filters."""
+    config = load_config()
+
+    async def _errors() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_error_summary, get_errors
+
+        async with Database(config.db_path) as db:
+            if summary:
+                rows = await get_error_summary(db)
+                if not rows:
+                    console.print("[dim]No errors logged[/dim]")
+                    return
+
+                table = Table(title="Error Summary")
+                table.add_column("Severity", style="bold")
+                table.add_column("Category")
+                table.add_column("Total", justify="right")
+                table.add_column("Unresolved", justify="right")
+
+                for row in rows:
+                    sev = row["severity"]
+                    sev_color = {
+                        "critical": "red bold",
+                        "error": "red",
+                        "warning": "yellow",
+                        "info": "blue",
+                        "debug": "dim",
+                    }.get(sev, "white")
+                    table.add_row(
+                        f"[{sev_color}]{sev}[/{sev_color}]",
+                        row["category"],
+                        str(row["count"]),
+                        str(row["unresolved"]),
+                    )
+                console.print(table)
+            else:
+                rows = await get_errors(
+                    db, severity=severity, category=category,
+                    unresolved=unresolved, limit=limit,
+                )
+                if not rows:
+                    console.print("[dim]No errors found[/dim]")
+                    return
+
+                table = Table(title="Error Log")
+                table.add_column("ID", justify="right")
+                table.add_column("Time")
+                table.add_column("Severity", style="bold")
+                table.add_column("Category")
+                table.add_column("Code")
+                table.add_column("Message", max_width=50)
+                table.add_column("Resolved")
+
+                for row in rows:
+                    sev = row["severity"]
+                    sev_color = {
+                        "critical": "red bold",
+                        "error": "red",
+                        "warning": "yellow",
+                        "info": "blue",
+                        "debug": "dim",
+                    }.get(sev, "white")
+                    resolved = "[green]Yes[/green]" if row["resolved"] else "[red]No[/red]"
+                    table.add_row(
+                        str(row["id"]),
+                        row["timestamp"],
+                        f"[{sev_color}]{sev}[/{sev_color}]",
+                        row["category"],
+                        row.get("error_code", ""),
+                        row["message"][:50],
+                        resolved,
+                    )
+                console.print(table)
+
+    _run(_errors())
+
+
+@app.command(name="resolve-error")
+def resolve_error_cmd(
+    error_id: int = typer.Argument(..., help="Error ID to mark as resolved"),
+    issue_url: str = typer.Option("", "--issue-url", "-u", help="GitHub issue URL"),
+) -> None:
+    """Mark an error log entry as resolved."""
+    config = load_config()
+
+    async def _resolve() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import resolve_error
+
+        async with Database(config.db_path) as db:
+            await resolve_error(db, error_id, issue_url)
+            console.print(f"[green]Resolved error #{error_id}[/green]")
+            if issue_url:
+                console.print(f"  Linked to: {issue_url}")
+
+    _run(_resolve())
 
 
 @app.command()

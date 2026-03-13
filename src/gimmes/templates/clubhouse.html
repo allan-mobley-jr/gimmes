@@ -228,6 +228,18 @@
         </div>
 
         <!-- ================================================================ -->
+        <!-- ROW 5.5: ERROR LOG                                              -->
+        <!-- ================================================================ -->
+        <div id="errors-panel" class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5 hidden">
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
+                Error Log
+                <span id="error-count" class="ml-2 px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400"></span>
+            </h2>
+            <div id="errors-container" class="max-h-[200px] overflow-y-auto scrollbar-thin space-y-1.5">
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
         <!-- ROW 6: RECENT TRADES + CANDIDATE PIPELINE                       -->
         <!-- ================================================================ -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -446,6 +458,7 @@
                 updatePerformance(data.metrics);
             }
             if (data.activity) updateActivity(data.activity);
+            if (data.errors) updateErrors(data.errors);
             if (data.trades) updateTrades(data.trades);
             if (data.candidates) updateCandidates(data.candidates);
             if (data.config) updateConfig(data.config);
@@ -599,6 +612,45 @@
                     + '</div>';
             });
             feed.innerHTML = html;
+        }
+
+        function updateErrors(errors) {
+            const panel = document.getElementById('errors-panel');
+            const container = document.getElementById('errors-container');
+            const countBadge = document.getElementById('error-count');
+
+            if (!errors || errors.length === 0) {
+                panel.classList.add('hidden');
+                return;
+            }
+
+            panel.classList.remove('hidden');
+            const unresolved = errors.filter(function(e) { return !e.resolved; }).length;
+            countBadge.textContent = unresolved > 0 ? unresolved + ' unresolved' : errors.length + ' total';
+
+            const sevColors = {
+                critical: 'bg-red-500/30 text-red-300 border-red-500/50',
+                error: 'bg-red-500/20 text-red-400 border-red-500/30',
+                warning: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+                info: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+                debug: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
+            };
+
+            let html = '';
+            errors.forEach(function(e) {
+                const cls = sevColors[e.severity] || sevColors.error;
+                const resolvedIcon = e.resolved
+                    ? '<span class="text-emerald-400 text-xs" title="Resolved">&#10003;</span>'
+                    : '<span class="text-red-400 text-xs" title="Unresolved">&#9679;</span>';
+                html += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-slate-700/20 transition-colors text-sm">'
+                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[65px]">' + formatTimestamp(e.timestamp) + '</span>'
+                    + resolvedIcon
+                    + '<span class="px-1.5 py-0.5 rounded border text-xs font-medium shrink-0 ' + cls + '">' + escapeHtml(e.severity) + '</span>'
+                    + '<span class="text-slate-500 text-xs shrink-0">' + escapeHtml(e.category) + '</span>'
+                    + '<span class="text-slate-300 break-words">' + escapeHtml(e.message || '') + '</span>'
+                    + '</div>';
+            });
+            container.innerHTML = html;
         }
 
         function updateTrades(trades) {

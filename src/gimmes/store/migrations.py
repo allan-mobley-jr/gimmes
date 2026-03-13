@@ -18,6 +18,30 @@ MIGRATIONS: list[tuple[int, str]] = [
             timestamp TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """),
+    (3, """
+        CREATE TABLE IF NOT EXISTS error_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            severity TEXT NOT NULL CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+            category TEXT NOT NULL CHECK (category IN (
+                'api_error', 'auth_failure', 'data_integrity', 'agent_failure',
+                'order_failure', 'risk_breach', 'config_error', 'network_error', 'paper_broker'
+            )),
+            error_code TEXT NOT NULL DEFAULT '',
+            component TEXT NOT NULL DEFAULT '',
+            agent TEXT NOT NULL DEFAULT '',
+            cycle INTEGER NOT NULL DEFAULT 0,
+            message TEXT NOT NULL,
+            stack_trace TEXT NOT NULL DEFAULT '',
+            context TEXT NOT NULL DEFAULT '{}',
+            resolved INTEGER NOT NULL DEFAULT 0,
+            github_issue_url TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_severity ON error_log(severity);
+        CREATE INDEX IF NOT EXISTS idx_error_category ON error_log(category);
+        CREATE INDEX IF NOT EXISTS idx_error_timestamp ON error_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_error_resolved ON error_log(resolved);
+    """),
 ]
 
 

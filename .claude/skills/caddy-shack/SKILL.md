@@ -111,6 +111,16 @@ Launch the Scorecard agent (`scorecard.md`) to:
 2. Report performance metrics
 3. Assess strategy health
 
+### Step 6.5: Groundskeeper
+
+Dispatch the **Groundskeeper** agent for error review and escalation.
+
+Launch the Groundskeeper agent (`groundskeeper.md`) to:
+1. Review unresolved errors from this cycle
+2. Apply escalation rules (critical/risk_breach → immediate; recurring patterns → threshold)
+3. File GitHub issues for escalation-worthy errors
+4. Mark escalated errors as resolved
+
 Log cycle completion:
 ```bash
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase complete --message "Cycle $GIMMES_CYCLE complete"
