@@ -157,6 +157,51 @@ class TestInstallPrivateKey:
         assert not (mode & stat.S_IRGRP)  # Group can't read
         assert not (mode & stat.S_IROTH)  # Others can't read
 
+    def test_overwrites_existing_key_when_confirmed(
+        self, tmp_path: Path, sample_pem: bytes
+    ) -> None:
+        keys_dir = tmp_path / "keys"
+        keys_dir.mkdir()
+        existing = keys_dir / "kalshi_private.pem"
+        existing.write_bytes(b"old key content")
+        existing.chmod(stat.S_IRUSR)  # 0400, like a previous install
+
+        source = tmp_path / "gimmes.txt"
+        source.write_bytes(sample_pem)
+
+        with patch("gimmes.init.KEYS_DIR", keys_dir), patch(
+            "gimmes.init.typer.confirm", return_value=True
+        ):
+            result = _install_private_key(source)
+
+        assert result is not None
+        assert result.read_bytes() == sample_pem
+        mode = result.stat().st_mode
+        assert mode & stat.S_IRUSR
+        assert not (mode & stat.S_IWUSR)
+
+    def test_keeps_existing_key_when_declined(
+        self, tmp_path: Path, sample_pem: bytes
+    ) -> None:
+        keys_dir = tmp_path / "keys"
+        keys_dir.mkdir()
+        existing = keys_dir / "kalshi_private.pem"
+        existing.write_bytes(b"old key content")
+        existing.chmod(stat.S_IRUSR)
+
+        source = tmp_path / "gimmes.txt"
+        source.write_bytes(sample_pem)
+
+        with patch("gimmes.init.KEYS_DIR", keys_dir), patch(
+            "gimmes.init.typer.confirm", return_value=False
+        ):
+            result = _install_private_key(source)
+
+        assert result is not None
+        # Should still have old content
+        existing.chmod(stat.S_IRUSR | stat.S_IWUSR)  # make readable for assertion
+        assert existing.read_bytes() == b"old key content"
+
     def test_rejects_invalid_key(self, tmp_path: Path) -> None:
         source = tmp_path / "gimmes.txt"
         source.write_bytes(b"not a valid key")

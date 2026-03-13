@@ -94,7 +94,9 @@ def _install_private_key(source: Path) -> Path | None:
             console.print("[dim]Keeping existing private key[/dim]")
             return pem_path
 
-    # Write with restrictive permissions from the start
+    # Ensure writable before writing (previous install leaves file at 0400)
+    if pem_path.exists():
+        pem_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     pem_path.touch(mode=0o600, exist_ok=True)
     pem_path.write_bytes(content)
     pem_path.chmod(stat.S_IRUSR)
@@ -176,7 +178,7 @@ async def _verify_connection() -> bool:
     from gimmes.config import load_config
 
     # Re-read .env since we may have just written new credentials
-    load_dotenv(override=True)
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
     config = load_config()
 
     if not config.api_key or config.api_key == "your-prod-api-key-uuid":
@@ -208,9 +210,11 @@ def run_init() -> None:
     # Step 1: Copy example files
     console.print("[bold]Step 1: Configuration files[/bold]\n")
 
-    if not ENV_EXAMPLE.exists():
-        console.print(f"[red]Missing {ENV_EXAMPLE} — is this the gimmes project root?[/red]")
-        raise typer.Exit(1)
+    required_examples = [(ENV_EXAMPLE, ".env.example"), (TOML_EXAMPLE, "gimmes.example.toml")]
+    for example, label in required_examples:
+        if not example.exists():
+            console.print(f"[red]Missing {example} — is this the gimmes project root?[/red]")
+            raise typer.Exit(1)
 
     _copy_example_file(ENV_EXAMPLE, ENV_FILE, ".env")
     _copy_example_file(TOML_EXAMPLE, TOML_FILE, "config/gimmes.toml")
