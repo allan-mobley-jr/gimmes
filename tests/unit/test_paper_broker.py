@@ -9,6 +9,7 @@ from gimmes.models.market import Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
 from gimmes.paper.broker import PaperBroker
 from gimmes.store.database import Database
+from gimmes.strategy.fees import fee_for_order
 
 
 @pytest.fixture
@@ -365,3 +366,170 @@ class TestListOrders:
         executed = await broker.list_orders(status="executed")
         assert len(executed) == 1
         assert executed[0].status == "executed"
+
+
+# ---------------------------------------------------------------------------
+# SELL orders
+# ---------------------------------------------------------------------------
+
+
+class TestSellOrder:
+    @pytest.mark.asyncio
+    async def test_sell_credits_balance(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Buy 10 YES, sell 5 YES — balance increases by proceeds minus fees."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+        balance_after_buy = await broker.get_balance()
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=68,  # At YES best bid
+            post_only=True,
+        )
+        await broker.create_order(sell_params, orderbook)
+        balance_after_sell = await broker.get_balance()
+
+        # SELL should credit balance (proceeds - fee > 0)
+        assert balance_after_sell > balance_after_buy
+
+        # Verify exact credit: 5 * $0.68 - maker_fee(5, 0.68)
+        sell_notional = 5 * 0.68
+        sell_fee = fee_for_order(5, 0.68, is_taker=False)
+        expected_credit = sell_notional - sell_fee
+        assert balance_after_sell == pytest.approx(balance_after_buy + expected_credit)
+
+    @pytest.mark.asyncio
+    async def test_sell_reduces_position_and_cost_basis(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Buy 10, sell 5 → position count=5, cost_basis halved."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+
+        positions = await broker.get_positions()
+        original_cost = positions[0].cost_basis
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=68,
+            post_only=True,
+        )
+        await broker.create_order(sell_params, orderbook)
+
+        positions = await broker.get_positions()
+        assert len(positions) == 1
+        pos = positions[0]
+        assert pos.count == 5
+        assert pos.cost_basis == pytest.approx(original_cost / 2)
+
+    @pytest.mark.asyncio
+    async def test_settlement_after_partial_sell(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Buy 10 at 70c, sell 5 at 68c, settle YES. Verify final balance."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=68,
+            post_only=True,
+        )
+        await broker.create_order(sell_params, orderbook)
+        balance_before_settle = await broker.get_balance()
+
+        await broker.settle("TEST-MKT", "yes")
+        balance_after_settle = await broker.get_balance()
+
+        # 5 remaining contracts settle at $1 each
+        assert balance_after_settle == pytest.approx(balance_before_settle + 5.0)
+
+    @pytest.mark.asyncio
+    async def test_sell_without_position_is_noop(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """SELL on a ticker with no position should not crash or create a ghost position."""
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=68,
+            post_only=True,
+        )
+        # Should not raise
+        await broker.create_order(sell_params, orderbook)
+
+        # No position should be created
+        positions = await broker.get_positions()
+        assert len(positions) == 0
+
+
+# ---------------------------------------------------------------------------
+# Taker partial fills
+# ---------------------------------------------------------------------------
+
+
+class TestTakerPartialFill:
+    @pytest.mark.asyncio
+    async def test_taker_partial_fill_no_balance_reservation(
+        self, broker: PaperBroker
+    ) -> None:
+        """Taker BUY 500 YES (only 180 available) — no reservation for unfilled."""
+        limited_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.30, quantity=180)],  # YES ask = 0.70
+        )
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=500,
+            yes_price=70,
+            post_only=False,  # taker order
+        )
+        order = await broker.create_order(params, limited_ob)
+
+        # Only 180 should fill
+        assert order.remaining_count == 320
+
+        # Balance should only be debited for 180 filled contracts (notional + fees)
+        # NOT an additional reservation for 320 unfilled
+        notional = 180 * 0.70
+        fee = fee_for_order(180, 0.70, is_taker=True)
+        expected_balance = 10_000.00 - notional - fee
+        balance = await broker.get_balance()
+        assert balance == pytest.approx(expected_balance)

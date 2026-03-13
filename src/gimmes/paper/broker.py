@@ -84,20 +84,23 @@ class PaperBroker:
         if result.total_filled == params.count:
             status = "executed"
         elif result.total_filled > 0:
-            status = "executed"  # Partial fills still mark executed for paper
+            status = "executed"  # Partial taker fill — remainder abandoned
+        elif params.post_only:
+            status = "resting"  # Maker order rests on book
         else:
-            status = "resting"
+            status = "canceled"  # Taker found nothing
 
-        # Debit balance for filled portion
-        if result.total_cost > 0:
-            await self._update_balance(-result.total_cost)
+        # Balance delta for filled portion
+        if result.total_filled > 0:
+            if params.action == OrderAction.BUY:
+                await self._update_balance(-(result.total_notional + result.total_fees))
+            else:  # SELL — credit proceeds minus fees
+                await self._update_balance(result.total_notional - result.total_fees)
 
-        # Also reserve balance for resting portion (unfilled maker orders)
-        resting_cost = 0.0
-        if result.remaining_count > 0:
+        # Reserve balance only for resting BUY maker orders
+        if result.remaining_count > 0 and params.post_only and params.action == OrderAction.BUY:
             resting_price = params.price_cents / 100.0
-            resting_cost = result.remaining_count * resting_price
-            await self._update_balance(-resting_cost)
+            await self._update_balance(-(result.remaining_count * resting_price))
 
         # Insert order record
         await self._conn.execute(
@@ -390,20 +393,25 @@ class PaperBroker:
                     (ticker, side, filled, avg_price, cost_basis, fill_price),
                 )
         else:
-            # SELL — reduce position, realize P&L
+            # SELL — reduce position, realize P&L, reduce cost_basis proportionally
             if existing and int(existing["count"]) > 0:
                 old_count = int(existing["count"])
                 old_avg = float(existing["avg_price"])
+                old_cost = float(existing["cost_basis"])
                 sell_count = min(filled, old_count)
                 sell_proceeds = total_fill_cost - total_fees
                 realized = sell_proceeds - (old_avg * sell_count)
 
                 new_count = old_count - sell_count
+                # Reduce cost_basis proportionally to contracts sold
+                new_cost = old_cost * (new_count / old_count) if old_count > 0 else 0.0
+                new_avg = new_cost / new_count if new_count > 0 else 0.0
                 old_realized = float(existing["realized_pnl"])
 
                 await self._conn.execute(
                     """UPDATE paper_positions
-                       SET count = ?, realized_pnl = ?, updated_at = datetime('now')
+                       SET count = ?, avg_price = ?, cost_basis = ?, realized_pnl = ?,
+                           updated_at = datetime('now')
                        WHERE ticker = ?""",
-                    (new_count, old_realized + realized, ticker),
+                    (new_count, new_avg, new_cost, old_realized + realized, ticker),
                 )

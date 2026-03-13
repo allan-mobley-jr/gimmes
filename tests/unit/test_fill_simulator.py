@@ -48,7 +48,8 @@ class TestMakerFill:
         assert len(result.fills) == 1
         assert result.fills[0].price_cents == 70
         assert result.fills[0].is_taker is False
-        assert result.total_cost > 0
+        assert result.total_notional > 0
+        assert result.total_fees > 0
 
     def test_maker_buy_yes_above_ask_fills(self, orderbook: Orderbook) -> None:
         """Maker buy YES at 75c (above best ask 70c) fills at limit price."""
@@ -78,7 +79,8 @@ class TestMakerFill:
         assert result.total_filled == 0
         assert result.remaining_count == 10
         assert len(result.fills) == 0
-        assert result.total_cost == 0.0
+        assert result.total_notional == 0.0
+        assert result.total_fees == 0.0
 
     def test_maker_sell_yes_at_bid_fills(self, orderbook: Orderbook) -> None:
         """Maker sell YES at 68c (at best bid) fills."""
@@ -264,8 +266,8 @@ class TestEdgeCases:
         assert result.total_filled == 0
         assert result.remaining_count == 10
 
-    def test_total_cost_includes_fees(self, orderbook: Orderbook) -> None:
-        """total_cost = sum of (count * price + fee) across fills."""
+    def test_notional_and_fees_are_separated(self, orderbook: Orderbook) -> None:
+        """total_notional and total_fees match individual fill sums."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
@@ -275,7 +277,9 @@ class TestEdgeCases:
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
-        expected_cost = sum(
-            f.count * (f.price_cents / 100.0) + f.fee for f in result.fills
+        expected_notional = sum(
+            f.count * (f.price_cents / 100.0) for f in result.fills
         )
-        assert abs(result.total_cost - expected_cost) < 0.001
+        expected_fees = sum(f.fee for f in result.fills)
+        assert abs(result.total_notional - expected_notional) < 0.001
+        assert abs(result.total_fees - expected_fees) < 0.001

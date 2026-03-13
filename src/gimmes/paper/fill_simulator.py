@@ -29,7 +29,8 @@ class FillResult:
     fills: list[SimulatedFill]
     remaining_count: int  # Unfilled contracts that rest on the book
     total_filled: int
-    total_cost: float  # Total dollars spent (price * count + fees)
+    total_notional: float  # Sum of count * price across fills (always positive)
+    total_fees: float  # Sum of fees across fills (always positive)
 
 
 def simulate_fill(params: CreateOrderParams, orderbook: Orderbook) -> FillResult:
@@ -87,7 +88,8 @@ def _simulate_maker_fill(
     if not marketable:
         # Order rests on the book
         return FillResult(
-            fills=[], remaining_count=params.count, total_filled=0, total_cost=0.0
+            fills=[], remaining_count=params.count, total_filled=0,
+            total_notional=0.0, total_fees=0.0,
         )
 
     # Maker fill at limit price (not taker even though marketable — post_only guarantee)
@@ -98,9 +100,10 @@ def _simulate_maker_fill(
         fee=fee,
         is_taker=False,
     )
-    total_cost = params.count * price_dollars + fee
+    notional = params.count * price_dollars
     return FillResult(
-        fills=[fill], remaining_count=0, total_filled=params.count, total_cost=total_cost
+        fills=[fill], remaining_count=0, total_filled=params.count,
+        total_notional=notional, total_fees=fee,
     )
 
 
@@ -113,7 +116,8 @@ def _simulate_taker_fill(
     """Taker order: walks the book until filled or limit price exceeded."""
     fills: list[SimulatedFill] = []
     remaining = params.count
-    total_cost = 0.0
+    total_notional = 0.0
+    total_fees = 0.0
 
     # Get the levels to walk
     if params.action == OrderAction.BUY:
@@ -164,7 +168,8 @@ def _simulate_taker_fill(
                 is_taker=True,
             )
         )
-        total_cost += fill_count * level_price + fee
+        total_notional += fill_count * level_price
+        total_fees += fee
         remaining -= fill_count
 
     total_filled = params.count - remaining
@@ -172,5 +177,6 @@ def _simulate_taker_fill(
         fills=fills,
         remaining_count=remaining,
         total_filled=total_filled,
-        total_cost=total_cost,
+        total_notional=total_notional,
+        total_fees=total_fees,
     )
