@@ -294,13 +294,18 @@ def order(
     side: str = typer.Option("yes", "--side", "-s", help="Order side (yes/no)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(0, "--price", help="Price in cents (0=use market price)"),
-    probability: float = typer.Option(0, "--prob", "-p", help="True probability (for auto-sizing)"),
+    probability: float = typer.Option(
+        0, "--prob", "-p", help="True probability (for auto-sizing)",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
+    ),
 ) -> None:
     """Place an order on Kalshi."""
     config = load_config()
     _championship_warning(config)
 
-    if config.is_championship:
+    if config.is_championship and not yes:
         confirm = typer.confirm("You are in CHAMPIONSHIP mode. Place a REAL MONEY order?")
         if not confirm:
             raise typer.Abort()
@@ -632,9 +637,9 @@ def _autonomous_loop(
 ) -> None:
     """Run the caddy-shack orchestrator skill via claude -p in a loop.
 
-    Each cycle invokes one complete trading pipeline (Scout → Caddie → Closer
-    → Monitor → Scorecard). On exit or crash, the loop re-invokes and the
-    orchestrator picks up where it left off by reading SQLite state.
+    Each cycle invokes one complete trading pipeline (Monitor → Scout →
+    Caddie → Closer → Scorecard). On exit or crash, the loop re-invokes
+    and the orchestrator picks up where it left off by reading SQLite state.
     """
     import os
     import shutil
@@ -665,15 +670,21 @@ def _autonomous_loop(
             cycle += 1
             console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
 
-            subprocess.run(
+            result = subprocess.run(
                 [
                     claude_path, "-p", "/caddy-shack",
-                    "--allowedTools", "Bash,Read,Glob,Grep,Agent",
+                    "--allowedTools",
+                    "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
                 ],
                 env=env,
                 cwd=project_root,
                 check=False,
             )
+            if result.returncode != 0:
+                console.print(
+                    f"[yellow]Cycle {cycle} exited with code"
+                    f" {result.returncode}[/yellow]"
+                )
 
             if max_cycles > 0 and cycle >= max_cycles:
                 break
@@ -688,8 +699,10 @@ def _autonomous_loop(
 
 @app.command(name="driving_range")
 def driving_range(
-    cycles: int = typer.Option(0, "--cycles", "-n", help="Max cycles to run (0=unlimited)"),
-    pause: int = typer.Option(30, "--pause", help="Seconds between cycles"),
+    cycles: int = typer.Option(
+        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+    ),
+    pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
 ) -> None:
     """Start autonomous trading loop in Driving Range mode (paper trading)."""
     _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause)
@@ -697,8 +710,10 @@ def driving_range(
 
 @app.command(name="championship")
 def championship(
-    cycles: int = typer.Option(0, "--cycles", "-n", help="Max cycles to run (0=unlimited)"),
-    pause: int = typer.Option(30, "--pause", help="Seconds between cycles"),
+    cycles: int = typer.Option(
+        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+    ),
+    pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
 ) -> None:
     """Start autonomous trading loop in Championship mode (REAL MONEY)."""
     console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")

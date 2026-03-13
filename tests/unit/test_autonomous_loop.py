@@ -60,16 +60,34 @@ class TestAutonomousLoop:
         assert cmd[0] == "/opt/bin/claude"
         assert "-p" in cmd
         assert "/caddy-shack" in cmd
-        assert "--allowedTools" in cmd
+        idx = cmd.index("--allowedTools")
+        allowed = cmd[idx + 1]
+        assert "WebSearch" in allowed
+        assert "WebFetch" in allowed
+
+    def test_warns_on_nonzero_exit(self, capsys) -> None:  # type: ignore[no-untyped-def]
+        mock_result = MagicMock()
+        mock_result.returncode = 2
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        output = capsys.readouterr().out
+        assert "exited with code 2" in output
 
     def test_keyboard_interrupt_stops_loop(self) -> None:
         call_count = 0
+        ok = MagicMock(returncode=0)
 
         def side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
                 raise KeyboardInterrupt
+            return ok
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
@@ -110,7 +128,7 @@ class TestDrivingRangeCommand:
             runner.invoke(app, ["driving_range", "--cycles", "1"])
 
         mock_loop.assert_called_once_with(
-            "driving_range", max_cycles=1, pause_seconds=30,
+            "driving_range", max_cycles=1, pause_seconds=0,
         )
 
 
@@ -136,8 +154,17 @@ class TestChampionshipCommand:
             runner.invoke(app, ["championship", "--cycles", "1"], input="y\n")
 
         mock_loop.assert_called_once_with(
-            "championship", max_cycles=1, pause_seconds=30,
+            "championship", max_cycles=1, pause_seconds=0,
         )
+
+
+class TestOrderYesFlag:
+    def test_order_command_has_yes_option(self) -> None:
+        from typer.testing import CliRunner
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["order", "--help"])
+        assert "--yes" in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 ---
 name: caddy-shack
-description: Autonomous trading cycle orchestrator — runs one complete Scout → Caddie → Closer → Monitor → Scorecard pipeline cycle
+description: Autonomous trading cycle orchestrator — runs one complete Monitor → Scout → Caddie → Closer → Scorecard pipeline cycle
 user_invocable: true
 ---
 
@@ -74,7 +74,7 @@ For each approved candidate (GimmeScore >= 75, recommendation = PROCEED), dispat
 Launch the Closer agent (`closer.md`) to:
 1. Run `python -m gimmes validate TICKER --prob P` for each candidate
 2. If validation passes, run `python -m gimmes size TICKER --prob P`
-3. Place the order: `python -m gimmes order TICKER --prob P`
+3. Place the order: `python -m gimmes order TICKER --prob P --yes`
 4. Log the trade: `python -m gimmes log-trade TICKER --action open --prob P --score S --rationale "..."`
 
 **Safety**: The Closer must pass all 7 validation checks before any trade. Never override risk limits.
