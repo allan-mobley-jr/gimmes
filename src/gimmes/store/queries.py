@@ -1,7 +1,8 @@
-"""Named database queries for trades, positions, snapshots."""
+"""Named database queries for trades, positions, snapshots, errors."""
 
 from __future__ import annotations
 
+from gimmes.models.error import ErrorLogEntry
 from gimmes.models.portfolio import PortfolioSnapshot, Position
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
@@ -271,3 +272,84 @@ async def get_trade_count(db: Database, action: str | None = None) -> int:
         cursor = await db.conn.execute("SELECT COUNT(*) as cnt FROM trades")
     row = await cursor.fetchone()
     return int(row["cnt"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Error log
+# ---------------------------------------------------------------------------
+
+
+async def insert_error(db: Database, entry: ErrorLogEntry) -> int:
+    """Insert an error log entry. Returns the row ID."""
+    cursor = await db.conn.execute(
+        """INSERT INTO error_log
+           (severity, category, error_code, component, agent, cycle,
+            message, stack_trace, context, resolved, github_issue_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            entry.severity.value,
+            entry.category.value,
+            entry.error_code,
+            entry.component,
+            entry.agent,
+            entry.cycle,
+            entry.message,
+            entry.stack_trace,
+            entry.context,
+            int(entry.resolved),
+            entry.github_issue_url,
+        ),
+    )
+    await db.conn.commit()
+    return cursor.lastrowid or 0
+
+
+async def get_errors(
+    db: Database,
+    *,
+    severity: str | None = None,
+    category: str | None = None,
+    unresolved: bool = False,
+    limit: int = 50,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Query error log entries with optional filters."""
+    query = "SELECT * FROM error_log WHERE 1=1"
+    params: list[object] = []
+
+    if severity:
+        query += " AND severity = ?"
+        params.append(severity)
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if unresolved:
+        query += " AND resolved = 0"
+
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    cursor = await db.conn.execute(query, params)
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_error_summary(db: Database) -> list[dict]:  # type: ignore[type-arg]
+    """Get error counts grouped by severity and category."""
+    cursor = await db.conn.execute(
+        """SELECT severity, category, COUNT(*) as count,
+                  SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) as unresolved
+           FROM error_log
+           GROUP BY severity, category
+           ORDER BY count DESC"""
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def resolve_error(db: Database, error_id: int, github_issue_url: str = "") -> None:
+    """Mark an error as resolved, optionally linking a GitHub issue."""
+    await db.conn.execute(
+        "UPDATE error_log SET resolved = 1, github_issue_url = ? WHERE id = ?",
+        (github_issue_url, error_id),
+    )
+    await db.conn.commit()

@@ -120,6 +120,7 @@ The autonomous loop is orchestrated by the **caddy-shack** skill, which dispatch
 | **The Closer** | Trade execution | Bash, Read, Glob, Grep | Sizes positions using fractional Kelly, places maker limit orders |
 | **The Monitor** | Position watching | + WebSearch, WebFetch | Monitors open contracts, flags early-close opportunities |
 | **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
+| **The Groundskeeper** | Error escalation | Bash, Read, Glob, Grep | Reviews error logs, escalates critical/recurring errors to GitHub issues |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
@@ -135,6 +136,7 @@ Each `driving_range` or `championship` invocation runs a continuous loop of trad
 4. **Caddie** — deep-researches each candidate with web search, estimates true probability
 5. **Closer** — validates, sizes (quarter-Kelly), and executes approved trades
 6. **Scorecard** — reports P&L, win rate, and strategy health
+7. **Groundskeeper** — reviews error logs, escalates critical or recurring errors to GitHub issues
 
 The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
 
@@ -166,6 +168,7 @@ The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `g
 | **Equity Curve** | Historical portfolio value chart (Chart.js) |
 | **Performance Metrics** | Win rate, Sharpe ratio, max drawdown, total return |
 | **Agent Activity Feed** | Live cycle events — which agent is running, what it found |
+| **Error Log** | Recent errors with severity color-coding (hidden when no errors) |
 | **Recent Trades** | Trade log with action, price, score, agent |
 | **Candidate Pipeline** | Scout shortlist with scores, edge, and Caddie research memos |
 | **Configuration** | Current strategy settings (collapsible, read-only) |
@@ -223,6 +226,8 @@ gimmes report            # Performance scorecard
 gimmes market-info TICKER # Detailed market info
 gimmes log-trade TICKER  # Log a trade decision
 gimmes discover CATEGORY # Discover series tickers in a category
+gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
+gimmes log-error         # Log a structured error (used by agents/system)
 ```
 
 ---
@@ -409,7 +414,7 @@ uv run pytest                                      # All tests
 - **Runtime:** Claude Code (interactive session, Claude Max)
 - **Platform:** Kalshi (CFTC-regulated DCM)
 - **API:** Kalshi REST + WebSocket, RSA-PSS authentication
-- **State:** SQLite (trades, positions, snapshots, paper trading)
+- **State:** SQLite (trades, positions, snapshots, error log, paper trading)
 - **Language:** Python 3.11+
 - **Dashboard:** FastAPI + Uvicorn + Jinja2 (Tailwind CSS + Chart.js via CDN)
 - **Key dependencies:** `httpx`, `pydantic`, `typer`, `rich`, `aiosqlite`, `cryptography`, `websockets`, `fastapi`, `uvicorn`, `jinja2`

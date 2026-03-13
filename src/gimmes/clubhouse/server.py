@@ -17,6 +17,7 @@ from gimmes.clubhouse.models import (
     ActivityItem,
     CandidateItem,
     ConfigResponse,
+    ErrorItem,
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
@@ -102,6 +103,11 @@ async def api_activity() -> list[ActivityItem]:
     return await data.get_activity(_db_path)
 
 
+@app.get("/api/errors")
+async def api_errors() -> list[ErrorItem]:
+    return await data.get_errors_data(_db_path)
+
+
 @app.get("/api/config")
 async def api_config() -> ConfigResponse:
     return await data.get_config_data()
@@ -115,6 +121,9 @@ async def api_config() -> ConfigResponse:
 @app.get("/api/stream")
 async def api_stream() -> StreamingResponse:
     async def event_generator():
+        import logging
+
+        sse_logger = logging.getLogger("gimmes.clubhouse.sse")
         last_fingerprint = ""
         while True:
             try:
@@ -130,6 +139,7 @@ async def api_stream() -> StreamingResponse:
                     trades = await data.get_trades(_db_path, limit=20)
                     candidates = await data.get_candidates(_db_path, limit=10)
                     metrics = await data.get_metrics(_db_path)
+                    errors = await data.get_errors_data(_db_path, limit=10)
 
                     payload = json.dumps({
                         "status": status.model_dump(),
@@ -140,11 +150,12 @@ async def api_stream() -> StreamingResponse:
                         "trades": [t.model_dump() for t in trades],
                         "candidates": [c.model_dump() for c in candidates],
                         "metrics": metrics.model_dump(),
+                        "errors": [e.model_dump() for e in errors],
                     })
 
                     yield f"data: {payload}\n\n"
             except Exception:
-                pass
+                sse_logger.debug("SSE event generation failed", exc_info=True)
 
             await asyncio.sleep(2)
 
