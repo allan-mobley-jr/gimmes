@@ -62,6 +62,18 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_rec_status ON recommendations(status);
         CREATE INDEX IF NOT EXISTS idx_rec_parameter ON recommendations(parameter_path);
     """),
+    # Version 5 uses _run_alter_columns below (ALTER TABLE is not idempotent).
+]
+
+# ALTER TABLE ADD COLUMN statements for v5. Each is run individually so that
+# a partial failure on a previous attempt doesn't leave the schema stuck.
+_V5_COLUMNS: list[str] = [
+    "ALTER TABLE trades ADD COLUMN resolved_outcome TEXT DEFAULT NULL CHECK (resolved_outcome IN ('yes', 'no'))",
+    "ALTER TABLE candidates ADD COLUMN edge_size_score REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE candidates ADD COLUMN signal_strength_score REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE candidates ADD COLUMN liquidity_depth_score REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE candidates ADD COLUMN settlement_clarity_score REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE candidates ADD COLUMN time_to_resolution_score REAL NOT NULL DEFAULT 0",
 ]
 
 
@@ -79,6 +91,17 @@ async def get_schema_version(db: Database) -> int:
     return 1
 
 
+async def _run_alter_columns(db: Database, statements: list[str]) -> None:
+    """Run ALTER TABLE statements, ignoring 'duplicate column name' errors."""
+    for stmt in statements:
+        try:
+            await db.conn.execute(stmt)
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate column name" in str(exc).lower():
+                continue
+            raise
+
+
 async def run_migrations(db: Database) -> int:
     """Run any pending migrations. Returns final schema version."""
     current = await get_schema_version(db)
@@ -91,5 +114,14 @@ async def run_migrations(db: Database) -> int:
             )
             await db.conn.commit()
             current = version
+
+    # Version 5: ALTER TABLE columns (handled separately for idempotency)
+    if current < 5:
+        await _run_alter_columns(db, _V5_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (5,)
+        )
+        await db.conn.commit()
+        current = 5
 
     return current

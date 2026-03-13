@@ -592,6 +592,34 @@ def log_trade(
     _run(_log())
 
 
+@app.command(name="log-outcome")
+def log_outcome(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+    outcome: str = typer.Option(..., "--outcome", "-o", help="Resolution outcome (yes/no)"),
+) -> None:
+    """Record a market's resolution outcome for trades on that ticker."""
+    if outcome not in ("yes", "no"):
+        console.print(f"[red]Invalid outcome '{outcome}': must be 'yes' or 'no'[/red]")
+        raise typer.Exit(1)
+
+    config = load_config()
+
+    async def _log() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import update_trade_outcome
+
+        async with Database(config.db_path) as db:
+            updated = await update_trade_outcome(db, ticker, outcome)
+            if updated:
+                console.print(
+                    f"[green]Recorded outcome '{outcome}' for {updated} trade(s) on {ticker}[/green]"
+                )
+            else:
+                console.print(f"[yellow]No trades found for {ticker} (or already recorded)[/yellow]")
+
+    _run(_log())
+
+
 @app.command(name="log-activity")
 def log_activity(
     cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),

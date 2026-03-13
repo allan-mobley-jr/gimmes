@@ -58,6 +58,7 @@ python -m gimmes risk-check        # Check risk limits
 python -m gimmes report            # Performance scorecard
 python -m gimmes market-info TICKER # Detailed market info
 python -m gimmes log-trade TICKER  # Log a trade decision
+python -m gimmes log-outcome TICKER # Record a market's resolution outcome (--outcome yes/no)
 python -m gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
 python -m gimmes log-error         # Log a structured error (used by agents/system)
 python -m gimmes resolve-error ID  # Mark an error resolved (--issue-url to link issue)

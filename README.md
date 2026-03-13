@@ -228,6 +228,7 @@ gimmes risk-check        # Check risk limits and daily P&L
 gimmes report            # Performance scorecard
 gimmes market-info TICKER # Detailed market info
 gimmes log-trade TICKER  # Log a trade decision
+gimmes log-outcome TICKER # Record a market's resolution outcome (--outcome yes/no)
 gimmes discover CATEGORY # Discover series tickers in a category
 gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
 gimmes log-error         # Log a structured error (used by agents/system)

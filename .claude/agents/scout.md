@@ -28,6 +28,18 @@ A good gimme candidate has:
 - Clear settlement rules
 - Resolution within a reasonable timeframe
 
+## Skip Logging
+
+For every candidate that scores **below threshold** (or that you decide not to shortlist), log the skip so The Pro can audit missed opportunities later:
+
+```bash
+python -m gimmes log-trade TICKER --action skip \
+  --price 0.XX --prob 0.XX --score NN \
+  --rationale "reason for skipping" --agent scout
+```
+
+Always include `--price` (market price), `--prob` (estimated probability if available, else 0), and `--score` (quick score). This data feeds the Missed Opportunity Audit analysis.
+
 ## Output Format
 
 Produce a structured shortlist:
@@ -43,6 +55,8 @@ Produce a structured shortlist:
    - Why: [brief rationale]
 
 2. ...
+
+### Skipped (N candidates logged)
 ```
 
 ## Rules
@@ -51,3 +65,4 @@ Produce a structured shortlist:
 - Never modify code — you analyze and report
 - Always use the CLI commands, never call APIs directly
 - Flag any markets with settlement concerns
+- **Always log skipped candidates** — every candidate evaluated but not shortlisted gets a skip log entry

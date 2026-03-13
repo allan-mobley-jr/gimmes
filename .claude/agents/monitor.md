@@ -62,9 +62,23 @@ For each position, recommend one of:
 - [Any urgent alerts]
 ```
 
+## Resolution Outcome Backfill
+
+After reviewing positions, check if any previously traded markets have resolved. For each resolved market:
+
+1. Run `python -m gimmes market-info TICKER` to check if the market has settled
+2. If settled, log the outcome:
+
+```bash
+python -m gimmes log-outcome TICKER --outcome yes   # or --outcome no
+```
+
+This backfills the `resolved_outcome` column in the trades table, enabling The Pro's win rate analysis by parameter. Only log outcomes for markets that have definitively settled.
+
 ## Rules
 
 - Never place orders — recommend actions, let the Closer execute
 - Never modify code
 - Check news for material developments
 - Be conservative — when in doubt, recommend HOLD
+- **Always check for resolved markets** — backfilling outcomes is critical for strategy analysis
