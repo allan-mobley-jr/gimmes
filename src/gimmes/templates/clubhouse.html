@@ -438,19 +438,21 @@
         // ------------------------------------------------------------------
         function updateDashboard(data) {
             lastUpdateTime = Date.now();
-            if (data.portfolio) updateKPIs(data.portfolio);
+            if (data.portfolio) updateKPIs(data.portfolio, data.risk);
             if (data.positions) updatePositions(data.positions);
             if (data.risk) updateRisk(data.risk);
-            if (data.metrics) updateChart(data.metrics);
+            if (data.metrics) {
+                updateChart(data.metrics);
+                updatePerformance(data.metrics);
+            }
             if (data.activity) updateActivity(data.activity);
             if (data.trades) updateTrades(data.trades);
             if (data.candidates) updateCandidates(data.candidates);
             if (data.config) updateConfig(data.config);
             if (data.status) updateStatus(data.status);
-            if (data.performance) updatePerformance(data.performance);
         }
 
-        function updateKPIs(portfolio) {
+        function updateKPIs(portfolio, risk) {
             const balanceEl = document.getElementById('kpi-balance');
             const equityEl = document.getElementById('kpi-equity');
             const pnlEl = document.getElementById('kpi-pnl');
@@ -460,17 +462,17 @@
             if (portfolio.balance != null) {
                 balanceEl.textContent = formatCurrencyPlain(portfolio.balance);
             }
-            if (portfolio.equity != null) {
-                equityEl.textContent = formatCurrencyPlain(portfolio.equity);
+            if (portfolio.total_equity != null) {
+                equityEl.textContent = formatCurrencyPlain(portfolio.total_equity);
             }
             if (portfolio.daily_pnl != null) {
                 const pnl = parseFloat(portfolio.daily_pnl);
                 pnlEl.textContent = formatCurrency(pnl);
                 pnlEl.className = 'text-2xl font-bold font-mono ' + colorForPnl(pnl);
             }
-            if (portfolio.position_count != null) {
-                const count = parseInt(portfolio.position_count);
-                const limit = portfolio.position_limit || 15;
+            if (risk && risk.position_count != null) {
+                const count = parseInt(risk.position_count);
+                const limit = risk.max_positions || 15;
                 posTextEl.textContent = count + ' / ' + limit;
                 const pct = Math.min((count / limit) * 100, 100);
                 posBarEl.style.width = pct + '%';
@@ -491,7 +493,7 @@
                 html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
                     + '<td class="py-2 pr-3 text-cyan-400 font-semibold">' + escapeHtml(p.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-slate-300">' + escapeHtml(p.side || '--') + '</td>'
-                    + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.quantity != null ? p.quantity : '--') + '</td>'
+                    + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.count != null ? p.count : '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.avg_price) + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.market_price) + '</td>'
                     + '<td class="py-2 pr-3 text-right ' + pnlClass + '">' + formatCurrency(pnl) + '</td>'
@@ -502,12 +504,12 @@
         }
 
         function updateRisk(risk) {
-            // Daily Loss
+            // Daily Loss — API sends fractional values (0.05 = 5%)
             if (risk.daily_loss_pct != null) {
                 const pct = parseFloat(risk.daily_loss_pct);
-                const limit = risk.daily_loss_limit || 15;
-                const ratio = Math.min(pct / limit, 1);
-                document.getElementById('risk-daily-label').textContent = formatPercent(pct) + ' / ' + limit + '%';
+                const limit = parseFloat(risk.daily_loss_limit_pct || 0.15);
+                const ratio = limit > 0 ? Math.min(pct / limit, 1) : 0;
+                document.getElementById('risk-daily-label').textContent = formatPercent(pct) + ' / ' + formatPercent(limit);
                 const bar = document.getElementById('risk-daily-bar');
                 bar.style.width = (ratio * 100) + '%';
                 bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
@@ -515,19 +517,19 @@
             // Positions
             if (risk.position_count != null) {
                 const count = parseInt(risk.position_count);
-                const limit = risk.position_limit || 15;
+                const limit = risk.max_positions || 15;
                 const ratio = Math.min(count / limit, 1);
                 document.getElementById('risk-positions-label').textContent = count + ' / ' + limit;
                 const bar = document.getElementById('risk-positions-bar');
                 bar.style.width = (ratio * 100) + '%';
                 bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
             }
-            // Largest Position
+            // Largest Position — API sends fractional (0.03 = 3%)
             if (risk.largest_position_pct != null) {
                 const pct = parseFloat(risk.largest_position_pct);
-                const limit = risk.largest_position_limit || 5;
-                const ratio = Math.min(pct / limit, 1);
-                document.getElementById('risk-largest-label').textContent = formatPercent(pct) + ' / ' + limit + '%';
+                const limit = parseFloat(risk.max_position_pct || 0.05);
+                const ratio = limit > 0 ? Math.min(pct / limit, 1) : 0;
+                document.getElementById('risk-largest-label').textContent = formatPercent(pct) + ' / ' + formatPercent(limit);
                 const bar = document.getElementById('risk-largest-bar');
                 bar.style.width = (ratio * 100) + '%';
                 bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
@@ -612,9 +614,9 @@
                     + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-2">' + actionBadge(t.action) + '</td>'
                     + '<td class="py-2 pr-2 text-slate-300">' + escapeHtml(t.side || '--') + '</td>'
-                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.quantity != null ? t.quantity : '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.count != null ? t.count : '--') + '</td>'
                     + '<td class="py-2 pr-2 text-right text-slate-200">' + formatPrice(t.price) + '</td>'
-                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.score != null ? parseFloat(t.score).toFixed(1) : '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.gimme_score != null ? parseFloat(t.gimme_score).toFixed(1) : '--') + '</td>'
                     + '<td class="py-2">' + escapeHtml(t.agent || '--') + '</td>'
                     + '</tr>';
             });
@@ -639,15 +641,15 @@
                     + '<span class="text-cyan-400 font-mono font-semibold text-sm">' + escapeHtml(c.ticker || '--') + '</span>'
                     + '<div class="flex items-center gap-3 text-xs font-mono">'
                     + '<span class="text-slate-400">Mkt: ' + formatPrice(c.market_price) + '</span>'
-                    + '<span class="text-slate-300">Score: ' + (c.score != null ? parseFloat(c.score).toFixed(1) : '--') + '</span>'
+                    + '<span class="text-slate-300">Score: ' + (c.gimme_score != null ? parseFloat(c.gimme_score).toFixed(1) : '--') + '</span>'
                     + '<span class="' + edgeClass + '">Edge: ' + (c.edge != null ? formatPercent(c.edge) : '--') + '</span>'
                     + '</div>'
                     + '</div>'
                     + '<p class="text-xs text-slate-400 truncate">' + escapeHtml(c.title || '') + '</p>';
-                if (c.memo) {
+                if (c.research_memo) {
                     html += '<details class="mt-2">'
                         + '<summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors">Research memo</summary>'
-                        + '<p class="mt-1 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">' + escapeHtml(c.memo) + '</p>'
+                        + '<p class="mt-1 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">' + escapeHtml(c.research_memo) + '</p>'
                         + '</details>';
                 }
                 html += '</div>';

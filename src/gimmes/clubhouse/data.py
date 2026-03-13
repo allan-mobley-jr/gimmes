@@ -373,12 +373,17 @@ async def get_change_fingerprint(db_path: Path) -> str:
     Returns a string of max IDs from key tables. When this changes,
     the dashboard should push an update.
     """
+    config = _config()
     parts: list[str] = []
 
     try:
         async with _connect(db_path) as conn:
-            for table in ("trades", "positions", "snapshots", "candidates"):
-                cursor = await conn.execute(f"SELECT MAX(id) as m FROM {table}")
+            # Use the correct positions table for the current mode
+            pos_table = "paper_positions" if not config.is_championship else "positions"
+            for table in ("trades", pos_table, "snapshots", "candidates"):
+                # paper_positions uses ticker as PK, not id
+                col = "MAX(rowid)" if table == "paper_positions" else "MAX(id)"
+                cursor = await conn.execute(f"SELECT {col} as m FROM {table}")
                 row = await cursor.fetchone()
                 parts.append(str(row["m"] if row and row["m"] else 0))
 

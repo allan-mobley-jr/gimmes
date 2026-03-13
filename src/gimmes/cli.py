@@ -703,8 +703,10 @@ def _autonomous_loop(
     project_root = Path(__file__).resolve().parent.parent.parent
     config = load_config()
 
+    # Set mode in process env so the in-process dashboard reads the correct mode
+    os.environ["GIMMES_MODE"] = mode
+
     env = os.environ.copy()
-    env["GIMMES_MODE"] = mode
 
     # Auto-start Clubhouse dashboard
     if not no_dashboard:
