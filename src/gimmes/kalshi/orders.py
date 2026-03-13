@@ -11,10 +11,10 @@ from gimmes.models.order import CreateOrderParams, Fill, Order, OrderAction, Ord
 def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
     """Parse an order from Kalshi API response."""
     # API returns dollar strings (e.g. "0.2500") — convert to int cents
-    yes_price = int(float(data.get("yes_price_dollars", "0")) * 100)
-    no_price = int(float(data.get("no_price_dollars", "0")) * 100)
-    count = int(float(data.get("initial_count_fp", "0")))
-    remaining = int(float(data.get("remaining_count_fp", "0")))
+    yes_price = int(round(float(data.get("yes_price_dollars", "0")) * 100))
+    no_price = int(round(float(data.get("no_price_dollars", "0")) * 100))
+    count = int(round(float(data.get("initial_count_fp", "0"))))
+    remaining = int(round(float(data.get("remaining_count_fp", "0"))))
     return Order(
         order_id=data.get("order_id", ""),
         ticker=data.get("ticker", ""),
@@ -32,9 +32,9 @@ def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
 
 def _parse_fill(data: dict) -> Fill:  # type: ignore[type-arg]
     """Parse a fill from Kalshi API response."""
-    yes_price = int(float(data.get("yes_price_dollars", "0")) * 100)
-    no_price = int(float(data.get("no_price_dollars", "0")) * 100)
-    count = int(float(data.get("count_fp", data.get("count", "0"))))
+    yes_price = int(round(float(data.get("yes_price_dollars", "0")) * 100))
+    no_price = int(round(float(data.get("no_price_dollars", "0")) * 100))
+    count = int(round(float(data.get("count_fp", data.get("count", "0")))))
     return Fill(
         trade_id=data.get("trade_id", ""),
         order_id=data.get("order_id", ""),
@@ -55,12 +55,12 @@ async def create_order(client: KalshiClient, params: CreateOrderParams) -> Order
         "ticker": params.ticker,
         "action": params.action.value,
         "side": params.side.value,
-        "count": params.count,
+        "count_fp": f"{params.count:.2f}",
     }
     if params.yes_price is not None:
-        body["yes_price"] = params.yes_price
+        body["yes_price_dollars"] = f"{params.yes_price / 100:.4f}"
     if params.no_price is not None:
-        body["no_price"] = params.no_price
+        body["no_price_dollars"] = f"{params.no_price / 100:.4f}"
     if params.client_order_id:
         body["client_order_id"] = params.client_order_id
     else:
