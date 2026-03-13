@@ -9,13 +9,14 @@ from pydantic import BaseModel, Field
 
 
 class MarketStatus(StrEnum):
-    ACTIVE = "active"
     INITIALIZED = "initialized"
-    FINALIZED = "finalized"
-    # Legacy / fallback
-    OPEN = "open"
+    INACTIVE = "inactive"
+    ACTIVE = "active"
     CLOSED = "closed"
-    SETTLED = "settled"
+    DETERMINED = "determined"
+    DISPUTED = "disputed"
+    AMENDED = "amended"
+    FINALIZED = "finalized"
 
 
 class Market(BaseModel):
@@ -25,7 +26,7 @@ class Market(BaseModel):
     event_ticker: str = ""
     title: str = ""
     subtitle: str = ""
-    status: MarketStatus = MarketStatus.OPEN
+    status: MarketStatus = MarketStatus.ACTIVE
     yes_bid: float = 0.0
     yes_ask: float = 0.0
     no_bid: float = 0.0
@@ -37,7 +38,6 @@ class Market(BaseModel):
     close_time: datetime | None = None
     expiration_time: datetime | None = None
     result: str = ""
-    category: str = ""
     rules_primary: str = ""
     settlement_value: float | None = None
 

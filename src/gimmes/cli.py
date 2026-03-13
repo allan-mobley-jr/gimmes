@@ -427,7 +427,6 @@ def market_info(
             console.print(f"Ticker: {market.ticker}")
             console.print(f"Event: {market.event_ticker}")
             console.print(f"Status: {market.status.value}")
-            console.print(f"Category: {market.category}")
             console.print(f"\nYES Bid: ${market.yes_bid:.2f}  |  YES Ask: ${market.yes_ask:.2f}")
             console.print(f"Last Price: ${market.last_price:.2f}  |  Spread: ${market.spread:.2f}")
             console.print(f"Volume: {market.volume}  |  24h Vol: {market.volume_24h}")

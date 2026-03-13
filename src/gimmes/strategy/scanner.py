@@ -36,8 +36,8 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
     candidates: list[Market] = []
 
     for m in markets:
-        # Must be active/open
-        if m.status not in (MarketStatus.ACTIVE, MarketStatus.OPEN):
+        # Must be active
+        if m.status != MarketStatus.ACTIVE:
             continue
 
         # Price range check (use midpoint or last_price)
@@ -60,12 +60,6 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
             if days < sc.min_days_to_resolution:
                 continue
             if days > sc.max_days_to_resolution:
-                continue
-
-        # Category filter (empty = all)
-        if sc.categories and m.category:
-            allowed = [c.lower() for c in sc.categories]
-            if m.category.lower() not in allowed:
                 continue
 
         candidates.append(m)

@@ -20,7 +20,7 @@ DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
 PROD_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 DEMO_WS_URL = "wss://demo-api.kalshi.co/trade-api/ws/v2"
-PROD_WS_URL = "wss://api.kalshi.com/trade-api/ws/v2"
+PROD_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 
 DEFAULT_CONFIG_PATH = Path("config/gimmes.toml")
 

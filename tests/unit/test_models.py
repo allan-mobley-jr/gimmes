@@ -19,8 +19,8 @@ class TestMarket:
         assert m.midpoint == 0.50
 
     def test_market_status_enum(self) -> None:
-        m = Market(ticker="X", status=MarketStatus.SETTLED)
-        assert m.status == MarketStatus.SETTLED
+        m = Market(ticker="X", status=MarketStatus.FINALIZED)
+        assert m.status == MarketStatus.FINALIZED
 
 
 class TestOrderbook:

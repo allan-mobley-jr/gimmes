@@ -20,7 +20,6 @@ def _parse_order(data: dict) -> Order:  # type: ignore[type-arg]
         ticker=data.get("ticker", ""),
         action=OrderAction(data.get("action", "buy")),
         side=OrderSide(data.get("side", "yes")),
-        type=data.get("type", "limit"),
         status=data.get("status", ""),
         yes_price=yes_price,
         no_price=no_price,
@@ -56,7 +55,6 @@ async def create_order(client: KalshiClient, params: CreateOrderParams) -> Order
         "ticker": params.ticker,
         "action": params.action.value,
         "side": params.side.value,
-        "type": params.type,
         "count": params.count,
     }
     if params.yes_price is not None:

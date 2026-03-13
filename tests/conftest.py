@@ -26,14 +26,13 @@ def sample_market() -> Market:
         ticker="KXTEST-26MAR-T50",
         event_ticker="KXTEST-26MAR",
         title="Test Market: Will X happen?",
-        status=MarketStatus.OPEN,
+        status=MarketStatus.ACTIVE,
         yes_bid=0.68,
         yes_ask=0.72,
         last_price=0.70,
         volume=5000,
         volume_24h=1200,
         open_interest=800,
-        category="economics",
         rules_primary="This market resolves YES if X happens before March 31, 2026.",
     )
 

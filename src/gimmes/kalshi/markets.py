@@ -43,7 +43,6 @@ def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         close_time=data.get("close_time"),
         expiration_time=data.get("expiration_time"),
         result=data.get("result", ""),
-        category=data.get("category", ""),
         rules_primary=data.get("rules_primary", ""),
     )
 

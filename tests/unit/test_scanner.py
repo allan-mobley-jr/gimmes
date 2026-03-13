@@ -8,7 +8,7 @@ from gimmes.strategy.scanner import filter_markets
 def _make_market(**kwargs) -> Market:  # type: ignore[no-untyped-def]
     defaults = {
         "ticker": "TEST",
-        "status": MarketStatus.OPEN,
+        "status": MarketStatus.ACTIVE,
         "yes_bid": 0.68,
         "yes_ask": 0.72,
         "last_price": 0.70,

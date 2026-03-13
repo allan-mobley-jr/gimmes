@@ -24,7 +24,6 @@ class CreateOrderParams(BaseModel):
     ticker: str
     action: OrderAction = OrderAction.BUY
     side: OrderSide = OrderSide.YES
-    type: str = "limit"
     count: int = Field(gt=0)
     yes_price: int | None = None  # Price in cents (1-99)
     no_price: int | None = None
@@ -49,8 +48,7 @@ class Order(BaseModel):
     ticker: str
     action: OrderAction
     side: OrderSide
-    type: str = "limit"
-    status: str = ""  # resting, canceled, executed, pending
+    status: str = ""  # resting, canceled, executed
     yes_price: int = 0
     no_price: int = 0
     count: int = 0
@@ -60,7 +58,7 @@ class Order(BaseModel):
 
     @property
     def is_open(self) -> bool:
-        return self.status in ("resting", "pending")
+        return self.status == "resting"
 
 
 class Fill(BaseModel):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from types import TracebackType
-
 from urllib.parse import urlparse
 
 import httpx

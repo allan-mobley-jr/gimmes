@@ -8,7 +8,7 @@ from gimmes.risk.validator import validate_trade
 def _make_market(**kwargs) -> Market:  # type: ignore[no-untyped-def]
     defaults = {
         "ticker": "KXTEST",
-        "status": MarketStatus.OPEN,
+        "status": MarketStatus.ACTIVE,
         "yes_bid": 0.68,
         "yes_ask": 0.72,
         "last_price": 0.70,
