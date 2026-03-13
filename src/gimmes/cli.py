@@ -770,7 +770,6 @@ def resolve_error_cmd(
 @app.command()
 def lesson(
     analysis: str | None = typer.Option(None, "--analysis", "-a", help="Run specific analysis (threshold/edge_decay/kelly/scanner/missed)"),
-    min_trades: int = typer.Option(0, "--min-trades", help="Override minimum sample size"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show recommendations without persisting"),
 ) -> None:
     """Run strategy analysis and show parameter recommendations."""
@@ -974,7 +973,7 @@ def _apply_toml_change(toml_path: "Path", parameter_path: str, new_value: str) -
     text = path.read_text()
     parts = parameter_path.split(".")
     if len(parts) != 2:
-        return
+        raise ValueError(f"Unsupported parameter path '{parameter_path}': expected 'section.key' format")
 
     section, key = parts
 

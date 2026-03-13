@@ -9,7 +9,6 @@ import pytest
 from gimmes.config import GimmesConfig
 from gimmes.models.recommendation import AnalysisType, Confidence, Recommendation, RecStatus
 from gimmes.store.database import Database
-from gimmes.store.migrations import run_migrations
 from gimmes.store.queries import (
     get_recommendations,
     insert_recommendation,
@@ -137,9 +136,8 @@ class TestThresholdSweep:
         # All trades at exactly the threshold — no improvement possible
         trades = _make_trades(n_wins=20, n_losses=10, win_score=75, loss_score=75)
         rec = analyze_threshold_sweep(trades, config)
-        # Either None or same threshold
-        if rec is not None:
-            assert int(rec.recommended_value) != config.strategy.gimme_threshold
+        # Same score for wins and losses means no threshold can improve win rate
+        assert rec is None
 
 
 class TestEdgeDecay:
@@ -166,11 +164,15 @@ class TestEdgeDecay:
         assert "decaying" in rec.rationale.lower()
 
     def test_no_decay(self, config: GimmesConfig) -> None:
-        trades = _make_trades(n_wins=20, n_losses=10)
-        # All close trades have same edge magnitude — no decay
+        # Consistent edge across both halves — no decay
+        trades: list[dict] = []
+        for i in range(40):
+            trades.append({
+                "ticker": f"CONSISTENT-{i}", "action": "close", "edge": 0.15,
+                "timestamp": f"2026-0{(i // 28) + 1}-{(i % 28) + 1:02d}T10:00:00",
+            })
         rec = analyze_edge_decay(trades, config)
-        # Should be None since edges are consistent
-        # (wins have 0.15, losses have -0.05 — but sorted by time they alternate)
+        assert rec is None
 
 
 class TestKellyOptimization:

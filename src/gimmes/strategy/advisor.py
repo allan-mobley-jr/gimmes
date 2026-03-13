@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 
 from gimmes.config import GimmesConfig
 from gimmes.models.recommendation import (
@@ -64,6 +63,7 @@ def analyze_threshold_sweep(
     current_threshold = config.strategy.gimme_threshold
     best_threshold = current_threshold
     best_wr = -1.0
+    best_count = 0
     sweep_data: list[dict] = []  # type: ignore[type-arg]
 
     for threshold in range(50, 96, 5):
@@ -79,8 +79,9 @@ def analyze_threshold_sweep(
             "win_rate": round(win_rate, 3),
         })
         # Maximize win rate, with tie-breaking by trade count
-        if win_rate > best_wr or (win_rate == best_wr and len(taken) > 5):
+        if win_rate > best_wr or (win_rate == best_wr and len(taken) > best_count):
             best_wr = win_rate
+            best_count = len(taken)
             best_threshold = threshold
 
     if best_threshold == current_threshold:
@@ -96,13 +97,13 @@ def analyze_threshold_sweep(
     best_wr = sum(1 for s in best_taken if s["won"]) / len(best_taken)
     improvement = best_wr - current_wr
 
-    if abs(improvement) < 0.02:
+    if improvement < 0.02:
         return None
 
     confidence = Confidence.LOW
-    if len(best_taken) >= 20 and abs(improvement) >= 0.05:
+    if len(best_taken) >= 20 and improvement >= 0.05:
         confidence = Confidence.HIGH
-    elif len(best_taken) >= 10 and abs(improvement) >= 0.03:
+    elif len(best_taken) >= 10 and improvement >= 0.03:
         confidence = Confidence.MEDIUM
 
     return Recommendation(
@@ -151,8 +152,8 @@ def analyze_edge_decay(
     avg_second = sum(second_half) / len(second_half) if second_half else 0
 
     decay = avg_first - avg_second
-    # Guard against false positives: need meaningful absolute edge to compare
-    if abs(avg_first) < 0.01:
+    # Guard against false positives: need meaningful positive edge to compare
+    if avg_first < 0.01:
         return None
     decay_pct = decay / avg_first
 
