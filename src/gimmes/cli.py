@@ -363,12 +363,23 @@ def order(
             try:
                 async with Database(config.db_path) as db:
                     daily_pnl = await get_daily_pnl(db)
-            except Exception:
-                daily_pnl = 0.0
-                console.print(
-                    "[yellow]Warning: Could not query daily P&L — "
-                    "using 0.0 (daily loss limit may not be enforced)[/yellow]"
-                )
+            except Exception as exc:
+                if force:
+                    daily_pnl = 0.0
+                    console.print(
+                        f"[yellow]Warning: Could not query daily P&L"
+                        f" ({exc}) — using 0.0 (--force)[/yellow]"
+                    )
+                else:
+                    console.print(
+                        f"[red bold]Cannot query daily P&L: {exc}[/red bold]"
+                    )
+                    console.print(
+                        "[red]Refusing to order with unknown P&L "
+                        "(daily loss limit may be breached). "
+                        "Use --force to override.[/red]"
+                    )
+                    return
 
             true_prob = probability if probability > 0 else None
             existing_tickers = [p.ticker for p in positions]
