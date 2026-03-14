@@ -31,6 +31,23 @@ class TestLoadConfigMalformedToml:
         assert config.strategy is not None
 
 
+class TestPrivateKeyPasswordConfig:
+    def test_reads_password_from_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KALSHI_PRIVATE_KEY_PASSWORD", "my-secret")
+        config = load_config(config_path=tmp_path / "nonexistent.toml")
+        assert config.private_key_password == "my-secret"
+
+    def test_password_none_when_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KALSHI_PRIVATE_KEY_PASSWORD", raising=False)
+        config = load_config(config_path=tmp_path / "nonexistent.toml")
+        assert config.private_key_password is None
+
+    def test_empty_password_treated_as_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KALSHI_PRIVATE_KEY_PASSWORD", "")
+        config = load_config(config_path=tmp_path / "nonexistent.toml")
+        assert config.private_key_password is None
+
+
 class TestApplyTomlChange:
     def test_simple_key(self, tmp_path):
         """Should update a simple section.key path."""

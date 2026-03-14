@@ -21,7 +21,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from gimmes.config import GimmesConfig
-from gimmes.kalshi.auth import auth_headers, load_private_key
+from gimmes.kalshi.auth import auth_headers, load_private_key_for_config
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,12 @@ class KalshiWebSocket:
         self.config = config
         self._ws_url = config.ws_url
         self._api_key = config.api_key
-        self._private_key = (
-            load_private_key(config.private_key_path)
-            if config.private_key_path.exists()
-            else None
-        )
+        if config.private_key_path.exists():
+            self._private_key = load_private_key_for_config(
+                config.private_key_path, config.private_key_password
+            )
+        else:
+            self._private_key = None
         self._connection: ClientConnection | None = None
         self._running = False
         self._message_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

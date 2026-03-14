@@ -15,6 +15,8 @@ from gimmes.kalshi.websocket import (
     KalshiWebSocket,
 )
 
+_LOAD_KEY = "gimmes.kalshi.websocket.load_private_key_for_config"
+
 
 @pytest.fixture
 def mock_config():
@@ -22,13 +24,47 @@ def mock_config():
     config.ws_url = "wss://test.example.com/trade-api/ws/v2"
     config.api_key = "test-key"
     config.private_key_path.exists.return_value = True
+    config.private_key_password = None
     return config
 
 
 @pytest.fixture
 def ws(mock_config):
-    with patch("gimmes.kalshi.websocket.load_private_key", return_value=MagicMock()):
+    with patch(_LOAD_KEY, return_value=MagicMock()):
         return KalshiWebSocket(mock_config)
+
+
+class TestPrivateKeyPassword:
+    def test_passes_none_when_no_password(self, mock_config):
+        with patch(
+            _LOAD_KEY,
+            return_value=MagicMock(),
+        ) as mock_load:
+            KalshiWebSocket(mock_config)
+        mock_load.assert_called_once_with(
+            mock_config.private_key_path, None
+        )
+
+    def test_passes_password_string(self, mock_config):
+        mock_config.private_key_password = "my-secret"
+        with patch(
+            _LOAD_KEY,
+            return_value=MagicMock(),
+        ) as mock_load:
+            KalshiWebSocket(mock_config)
+        mock_load.assert_called_once_with(
+            mock_config.private_key_path, "my-secret"
+        )
+
+    def test_propagates_key_load_error(self, mock_config):
+        with patch(
+            _LOAD_KEY,
+            side_effect=ValueError("set KALSHI_PRIVATE_KEY_PASSWORD"),
+        ):
+            with pytest.raises(
+                ValueError, match="KALSHI_PRIVATE_KEY_PASSWORD"
+            ):
+                KalshiWebSocket(mock_config)
 
 
 class TestChannelNames:

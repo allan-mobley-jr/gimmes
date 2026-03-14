@@ -24,6 +24,33 @@ def load_private_key(key_path: Path, password: bytes | None = None) -> RSAPrivat
     return private_key
 
 
+def load_private_key_for_config(
+    key_path: Path, password_str: str | None
+) -> RSAPrivateKey:
+    """Load a private key using config-style password, with user-friendly errors.
+
+    Wraps load_private_key with clear error messages that guide the user
+    to set or check KALSHI_PRIVATE_KEY_PASSWORD.
+    """
+    password = password_str.encode() if password_str else None
+    try:
+        return load_private_key(key_path, password=password)
+    except TypeError as e:
+        raise ValueError(
+            f"Failed to load private key from {key_path}: {e} "
+            "(key appears encrypted — set KALSHI_PRIVATE_KEY_PASSWORD)"
+        ) from e
+    except ValueError as e:
+        msg = f"Failed to load private key from {key_path}: {e}"
+        if password is not None:
+            msg += " (check KALSHI_PRIVATE_KEY_PASSWORD)"
+        raise ValueError(msg) from e
+    except Exception as e:
+        raise ValueError(
+            f"Failed to load private key from {key_path}: {e}"
+        ) from e
+
+
 def create_signature(private_key: RSAPrivateKey, timestamp_ms: str, method: str, path: str) -> str:
     """Create a Kalshi API signature.
 

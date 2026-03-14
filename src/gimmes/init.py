@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import glob
 import os
+import platform
 import stat
+import subprocess
 from pathlib import Path
 
 import typer
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from rich.console import Console
 
 from gimmes.config import GIMMES_HOME
@@ -30,6 +34,9 @@ GIMMES_MODE=driving_range
 # Driving range reads real market data but simulates orders locally
 KALSHI_PROD_API_KEY=your-prod-api-key-uuid
 KALSHI_PROD_PRIVATE_KEY_PATH=~/.gimmes/keys/kalshi_private.pem
+
+# Password for encrypted private key (set automatically by gimmes init)
+# KALSHI_PRIVATE_KEY_PASSWORD=
 """
 
 _DEFAULT_TOML = """\
@@ -123,26 +130,63 @@ def _find_downloaded_key() -> Path | None:
     return Path(unique[0])
 
 
-def _validate_pem_content(content: bytes) -> bool:
+def _validate_pem_content(
+    content: bytes, password: bytes | None = None
+) -> bool:
     """Validate that the content is a valid RSA private key in PEM format."""
     try:
-        key = serialization.load_pem_private_key(content, password=None)
-        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-
+        key = serialization.load_pem_private_key(content, password=password)
         return isinstance(key, RSAPrivateKey)
-    except Exception:
+    except TypeError:
+        # Encrypted key, no password provided — structurally valid if header present
+        if password is None and b"ENCRYPTED" in content:
+            return True
+        return False
+    except (ValueError, UnsupportedAlgorithm):
         return False
 
 
-def _install_private_key(source: Path) -> Path | None:
-    """Validate, copy, and secure the private key. Returns the PEM path or None."""
+def _encrypt_private_key(content: bytes, password: bytes) -> bytes:
+    """Encrypt an unencrypted RSA private key PEM with a password."""
+    key = serialization.load_pem_private_key(content, password=None)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(password),
+    )
+
+
+def _install_private_key(
+    source: Path, password: bytes
+) -> Path | None:
+    """Validate, encrypt, and install the private key. Returns the PEM path or None."""
     content = source.read_bytes()
 
     if not _validate_pem_content(content):
         console.print(
-            f"[red]The file {source.name} does not contain a valid RSA private key.[/red]"
+            f"[red]The file {source.name} does not contain "
+            "a valid RSA private key.[/red]"
         )
-        console.print("Make sure you downloaded the private key file from Kalshi, not the API key.")
+        console.print(
+            "Make sure you downloaded the private key file "
+            "from Kalshi, not the API key."
+        )
+        return None
+
+    # Detect already-encrypted keys (e.g., user re-running init)
+    if b"ENCRYPTED" in content:
+        console.print(
+            f"[red]The file {source.name} is already encrypted.[/red]\n"
+            "Please use the original unencrypted key file "
+            "downloaded from Kalshi."
+        )
+        return None
+
+    # Encrypt the key before writing to disk
+    try:
+        encrypted = _encrypt_private_key(content, password)
+    except Exception as e:
+        console.print(f"[red]Failed to encrypt private key:[/red] {e}")
         return None
 
     KEYS_DIR.mkdir(exist_ok=True)
@@ -160,20 +204,23 @@ def _install_private_key(source: Path) -> Path | None:
     if pem_path.exists():
         pem_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     pem_path.touch(mode=0o600, exist_ok=True)
-    pem_path.write_bytes(content)
+    pem_path.write_bytes(encrypted)
     pem_path.chmod(stat.S_IRUSR)
 
-    console.print(f"[green]Private key installed:[/green] {pem_path}")
+    console.print(f"[green]Private key encrypted and installed:[/green] {pem_path}")
     console.print("[dim]Permissions set to 0400 (owner read-only)[/dim]")
     return pem_path
 
 
-def _update_env_key_path(pem_path: Path) -> None:
-    """Update KALSHI_PROD_PRIVATE_KEY_PATH in the .env file."""
+def _update_env_var(
+    var_name: str, value: str, *, sensitive: bool = False
+) -> None:
+    """Update or append a variable in the .env file."""
     if not ENV_FILE.exists():
+        display = "****" if sensitive else value
         console.print(
-            "[yellow]Warning: .env not found — set KALSHI_PROD_PRIVATE_KEY_PATH"
-            f"={pem_path} manually.[/yellow]"
+            f"[yellow]Warning: .env not found — set {var_name}"
+            f"={display} manually.[/yellow]"
         )
         return
 
@@ -182,57 +229,128 @@ def _update_env_key_path(pem_path: Path) -> None:
     updated = False
 
     for i, line in enumerate(lines):
-        if line.startswith("KALSHI_PROD_PRIVATE_KEY_PATH"):
-            lines[i] = f"KALSHI_PROD_PRIVATE_KEY_PATH={pem_path}"
+        # Strip leading comment markers: "# ", "#", or just whitespace
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            stripped = stripped[1:].lstrip()
+        if stripped.startswith(f"{var_name}=") or stripped.startswith(
+            f"{var_name} ="
+        ):
+            lines[i] = f"{var_name}={value}"
             updated = True
             break
 
     if not updated:
-        lines.append(f"KALSHI_PROD_PRIVATE_KEY_PATH={pem_path}")
+        lines.append(f"{var_name}={value}")
 
     ENV_FILE.write_text("\n".join(lines) + "\n")
     _secure_env_file()
-    console.print(f"[green]Updated .env:[/green] KALSHI_PROD_PRIVATE_KEY_PATH={pem_path}")
 
 
-def _offer_api_key_paste() -> None:
-    """Offer the user the option to paste their API key or edit .env manually."""
+def _prompt_password() -> str:
+    """Prompt the user to create a password for encrypting the private key."""
     console.print(
-        "\n[bold]API Key Setup[/bold]"
-        "\n\nYou also need to set your API key in the .env file."
-        "\nOpen .env in your editor and paste your API key as the value for KALSHI_PROD_API_KEY."
+        "\n[bold]Private Key Encryption[/bold]\n"
+        "\nYour private key will be encrypted at rest with a password."
+        "\nChoose a strong password — it will be stored in your .env file"
+        " (which is secured with 0600 permissions).\n"
     )
+    while True:
+        password = typer.prompt("Create a password for your private key", hide_input=True)
+        if not password.strip():
+            console.print("[red]Password cannot be empty.[/red]")
+            continue
+        confirm = typer.prompt("Confirm password", hide_input=True)
+        if password != confirm:
+            console.print("[red]Passwords do not match. Try again.[/red]")
+            continue
+        return password
 
-    paste_now = typer.confirm(
-        "\nAlternatively, paste it here now? (input will be hidden)",
-        default=False,
+
+def _prompt_api_key() -> str | None:
+    """Prompt the user to paste their API key."""
+    console.print("\n[bold]API Key[/bold]\n")
+    api_key = typer.prompt("Paste your Kalshi API key", hide_input=True)
+    if not api_key.strip():
+        console.print("[red]No API key provided.[/red]")
+        return None
+    return api_key.strip()
+
+
+def _clear_shell_history() -> None:
+    """Clear shell history to remove any pasted secrets.
+
+    Prompts the user before truncating history files on disk.
+    Note: typer.prompt(hide_input=True) prevents most shells from
+    recording the pasted values, but this provides defense in depth.
+    """
+    shell = os.environ.get("SHELL", "")
+    system = platform.system()
+
+    home = Path.home()
+    history_files: list[Path] = []
+
+    if "zsh" in shell:
+        history_files.append(home / ".zsh_history")
+    elif "bash" in shell:
+        history_files.append(home / ".bash_history")
+    else:
+        history_files.extend([home / ".bash_history", home / ".zsh_history"])
+
+    # Only target files that actually exist
+    targets = [hf for hf in history_files if hf.exists()]
+    if not targets:
+        return
+
+    if system not in ("Darwin", "Linux"):
+        console.print(
+            "\n[yellow]Could not clear shell history automatically.[/yellow]"
+            "\nClear your shell history manually to remove any "
+            "pasted credentials."
+        )
+        return
+
+    console.print(
+        "\n[bold]Shell History[/bold]\n"
+        "\nAs a security precaution, shell history can be cleared "
+        "to ensure no credentials remain on disk."
     )
+    if not typer.confirm("Clear shell history?", default=True):
+        console.print(
+            "[dim]Skipped. You can clear history manually later.[/dim]"
+        )
+        return
 
-    if paste_now:
-        if not ENV_FILE.exists():
-            console.print("[red].env not found — run gimmes init again to create it first.[/red]")
-            return
-        api_key = typer.prompt("Paste your Kalshi API key", hide_input=True)
-        if not api_key.strip():
-            console.print("[red]No API key provided. You can set it in .env later.[/red]")
-            return
+    cleared: list[str] = []
+    failed: list[str] = []
+    for hf in targets:
+        try:
+            subprocess.run(
+                ["truncate", "-s", "0", str(hf)],
+                check=True,
+                capture_output=True,
+            )
+            cleared.append(str(hf))
+        except (OSError, subprocess.CalledProcessError):
+            failed.append(str(hf))
 
-        content = ENV_FILE.read_text()
-        lines = content.splitlines()
-        updated = False
-
-        for i, line in enumerate(lines):
-            if line.startswith("KALSHI_PROD_API_KEY"):
-                lines[i] = f"KALSHI_PROD_API_KEY={api_key.strip()}"
-                updated = True
-                break
-
-        if not updated:
-            lines.append(f"KALSHI_PROD_API_KEY={api_key.strip()}")
-
-        ENV_FILE.write_text("\n".join(lines) + "\n")
-        _secure_env_file()
-        console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
+    if cleared:
+        console.print(
+            "\n[yellow]Shell history cleared:[/yellow] "
+            + ", ".join(cleared)
+        )
+        console.print(
+            "[dim]Start a new shell session to ensure in-memory "
+            "history is also cleared.[/dim]"
+        )
+    if failed:
+        console.print(
+            "\n[red]Failed to clear:[/red] " + ", ".join(failed)
+        )
+        console.print(
+            "Clear these files manually to remove "
+            "pasted credentials."
+        )
 
 
 async def _verify_connection() -> bool:
@@ -301,15 +419,35 @@ def run_init() -> None:
         )
         raise typer.Exit(0)
 
-    # Search for the downloaded key
-    console.print("\n[cyan]Searching for private key in ~/Downloads...[/cyan]")
+    # Step 3: Locate and install the private key
+    console.print("\n[bold]Step 3: Private key[/bold]\n")
+    console.print("[cyan]Searching for private key in ~/Downloads...[/cyan]")
     key_path = _find_downloaded_key()
+
+    pem_path: Path | None = None
 
     if key_path:
         console.print(f"[green]Found:[/green] {key_path}")
-        pem_path = _install_private_key(key_path)
+
+        # Prompt for password before installing (key will be encrypted)
+        password = _prompt_password()
+
+        pem_path = _install_private_key(key_path, password.encode())
         if pem_path:
-            _update_env_key_path(pem_path)
+            _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
+            _update_env_var(
+                "KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True
+            )
+            console.print(
+                "[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set"
+            )
+            # Warn about the unencrypted source file
+            console.print(
+                f"\n[yellow bold]Security reminder:[/yellow bold] "
+                f"The original unencrypted key file is still at:\n"
+                f"  {key_path}\n"
+                f"Delete it now that the encrypted copy is installed."
+            )
     else:
         console.print(
             "[yellow]Could not find a file matching gimmes*.txt in ~/Downloads.[/yellow]\n"
@@ -320,16 +458,22 @@ def run_init() -> None:
             " KALSHI_PROD_PRIVATE_KEY_PATH in .env\n"
         )
 
-    # Step 3: API key
-    console.print("\n[bold]Step 3: API key[/bold]")
-    _offer_api_key_paste()
+    # Step 4: API key
+    console.print("\n[bold]Step 4: API key[/bold]")
+    api_key = _prompt_api_key()
+    if api_key:
+        _update_env_var("KALSHI_PROD_API_KEY", api_key, sensitive=True)
+        console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
 
-    # Step 4: Verify connection
-    console.print("\n[bold]Step 4: Verify connection[/bold]\n")
+    # Step 5: Verify connection
+    console.print("\n[bold]Step 5: Verify connection[/bold]\n")
 
     import asyncio
 
     asyncio.run(_verify_connection())
+
+    # Step 6: Clear shell history (secrets may have been pasted)
+    _clear_shell_history()
 
     # Done
     console.print(

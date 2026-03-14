@@ -2,11 +2,17 @@
 
 import base64
 
+import pytest
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from gimmes.kalshi.auth import auth_headers, create_signature
+from gimmes.kalshi.auth import (
+    auth_headers,
+    create_signature,
+    load_private_key,
+    load_private_key_for_config,
+)
 
 
 def _generate_test_key() -> rsa.RSAPrivateKey:
@@ -16,6 +22,116 @@ def _generate_test_key() -> rsa.RSAPrivateKey:
         key_size=2048,
         backend=default_backend(),
     )
+
+
+class TestLoadPrivateKey:
+    def test_loads_unencrypted_key(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+        key_file = tmp_path / "test.pem"
+        key_file.write_bytes(pem)
+
+        loaded = load_private_key(key_file)
+        assert isinstance(loaded, rsa.RSAPrivateKey)
+
+    def test_loads_encrypted_key_with_password(self, tmp_path) -> None:
+        key = _generate_test_key()
+        password = b"test-password-123"
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(password),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        loaded = load_private_key(key_file, password=password)
+        assert isinstance(loaded, rsa.RSAPrivateKey)
+
+    def test_encrypted_key_without_password_raises(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"secret"),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        with pytest.raises(TypeError):
+            load_private_key(key_file)
+
+    def test_encrypted_key_wrong_password_raises(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"correct"),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        with pytest.raises(ValueError):
+            load_private_key(key_file, password=b"wrong")
+
+
+class TestLoadPrivateKeyForConfig:
+    def test_passes_none_when_no_password(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+        key_file = tmp_path / "test.pem"
+        key_file.write_bytes(pem)
+
+        loaded = load_private_key_for_config(key_file, None)
+        assert isinstance(loaded, rsa.RSAPrivateKey)
+
+    def test_encodes_password_string(self, tmp_path) -> None:
+        key = _generate_test_key()
+        password = "test-password-123"
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(password.encode()),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        loaded = load_private_key_for_config(key_file, password)
+        assert isinstance(loaded, rsa.RSAPrivateKey)
+
+    def test_hints_encrypted_key_without_password(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"secret"),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        with pytest.raises(ValueError, match="set KALSHI_PRIVATE_KEY_PASSWORD"):
+            load_private_key_for_config(key_file, None)
+
+    def test_hints_wrong_password(self, tmp_path) -> None:
+        key = _generate_test_key()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"correct"),
+        )
+        key_file = tmp_path / "test_enc.pem"
+        key_file.write_bytes(pem)
+
+        with pytest.raises(ValueError, match="check KALSHI_PRIVATE_KEY_PASSWORD"):
+            load_private_key_for_config(key_file, "wrong")
 
 
 class TestCreateSignature:
