@@ -131,8 +131,8 @@ def load_config(config_path: Path | None = None) -> GimmesConfig:
             with open(toml_path, "rb") as f:
                 toml_data = tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
-            raise SystemExit(
-                f"Error: Failed to parse {toml_path}: {e}\n"
+            raise ValueError(
+                f"Failed to parse {toml_path}: {e}. "
                 "Fix or delete the TOML file to continue."
             ) from e
 

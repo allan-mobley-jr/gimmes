@@ -1114,6 +1114,11 @@ def _apply_toml_change(
     for part in parts[:-1]:
         if part not in current:
             current[part] = tomlkit.table()
+        elif not isinstance(current[part], dict):
+            raise ValueError(
+                f"Cannot set '{parameter_path}': "
+                f"'{part}' is a scalar, not a table"
+            )
         current = current[part]
     current[parts[-1]] = typed_value
 
@@ -1123,6 +1128,9 @@ def _apply_toml_change(
         tomllib.loads(new_text)
     except tomllib.TOMLDecodeError as e:
         raise ValueError(f"Generated invalid TOML: {e}") from e
+
+    # Ensure parent directory exists
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     # Backup original if it exists
     if path.exists():
