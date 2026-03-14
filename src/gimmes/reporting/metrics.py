@@ -75,9 +75,25 @@ def calculate_metrics(
     """Calculate performance metrics from trades and snapshots."""
     metrics = PerformanceMetrics()
 
-    # Win rate
-    wins = sum(1 for t in trades if t.get("action") == "close" and t.get("edge", 0) > 0)
-    losses = sum(1 for t in trades if t.get("action") == "close" and t.get("edge", 0) < 0)
+    # Win rate — based on realized P&L (matching pnl.py definition)
+    # Group opens by ticker for P&L calculation
+    open_prices: dict[str, float] = {}
+    for t in trades:
+        if t.get("action") == "open":
+            open_prices.setdefault(t.get("ticker", ""), t.get("price", 0.0))
+
+    wins = 0
+    losses = 0
+    for t in trades:
+        if t.get("action") != "close":
+            continue
+        close_price = t.get("price", 0.0)
+        open_price = open_prices.get(t.get("ticker", ""), 0.0)
+        pnl = (close_price - open_price) * t.get("count", 0)
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
     total = wins + losses
     metrics.win_rate = wins / total if total > 0 else 0.0
 

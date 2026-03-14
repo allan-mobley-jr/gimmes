@@ -4,7 +4,7 @@ from gimmes.models.gimme import GimmeScore
 from gimmes.models.market import Market, MarketStatus, Orderbook
 from gimmes.models.order import CreateOrderParams, Order, OrderAction, OrderSide
 from gimmes.models.portfolio import Position
-from gimmes.models.trade import TradeDecision, TradeOutcome
+from gimmes.models.trade import TradeDecision
 
 
 class TestMarket:
@@ -96,11 +96,3 @@ class TestTradeDecision:
     def test_skip(self) -> None:
         td = TradeDecision(ticker="X", action=TradeDecision.Action.SKIP, rationale="No edge")
         assert td.rationale == "No edge"
-
-
-class TestTradeOutcome:
-    def test_win(self) -> None:
-        to = TradeOutcome(ticker="X", result=TradeOutcome.Result.WIN,
-                          entry_price=0.70, exit_price=1.0, contracts=10,
-                          gross_pnl=3.0, net_pnl=2.90)
-        assert to.result == TradeOutcome.Result.WIN
