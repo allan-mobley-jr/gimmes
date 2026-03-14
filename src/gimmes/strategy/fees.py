@@ -3,7 +3,6 @@
 Fee formula: round_up(multiplier * contracts * price * (1 - price))
 - Taker multiplier: 0.07
 - Maker multiplier: 0.0175 (75% cheaper)
-- S&P 500 / Nasdaq-100 taker multiplier: 0.035 (halved)
 
 Prices are in dollars (0.01 to 0.99). Fees are in dollars.
 """
@@ -14,7 +13,6 @@ import math
 
 TAKER_MULTIPLIER = 0.07
 MAKER_MULTIPLIER = 0.0175
-INDEX_TAKER_MULTIPLIER = 0.035  # S&P 500, Nasdaq-100
 
 
 def _round_up_cents(value: float) -> float:
@@ -56,12 +54,11 @@ def maker_fee(contracts: int, price: float) -> float:
 
 
 def fee_for_order(
-    contracts: int, price: float, is_taker: bool = False, is_index: bool = False
+    contracts: int, price: float, is_taker: bool = False
 ) -> float:
     """Calculate fee based on order type."""
     if is_taker:
-        mult = INDEX_TAKER_MULTIPLIER if is_index else TAKER_MULTIPLIER
-        return taker_fee(contracts, price, mult)
+        return taker_fee(contracts, price)
     return maker_fee(contracts, price)
 
 

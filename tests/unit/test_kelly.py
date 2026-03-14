@@ -1,5 +1,6 @@
 """Unit tests for Kelly criterion sizing."""
 
+from gimmes.strategy.fees import fee_for_order
 from gimmes.strategy.kelly import kelly_fraction, position_size
 
 
@@ -48,9 +49,10 @@ class TestPositionSize:
         assert contracts > 0
 
     def test_max_position_pct(self) -> None:
-        # Max 5% of $10k = $500, at $0.65/contract = 769 max contracts
+        # Max 5% of $10k = $500, cost per contract = price + fee
         contracts = position_size(10000, 0.65, 0.99, max_position_pct=0.05)
-        max_contracts = int(0.05 * 10000 / 0.65)
+        fee = fee_for_order(1, 0.65)
+        max_contracts = int(0.05 * 10000 / (0.65 + fee))
         assert contracts <= max_contracts
 
     def test_zero_bankroll(self) -> None:
@@ -64,4 +66,5 @@ class TestPositionSize:
             100000, 0.65, 0.95,
             max_position_dollars=500,
         )
-        assert contracts * 0.65 <= 500
+        fee = fee_for_order(1, 0.65)
+        assert contracts * (0.65 + fee) <= 500
