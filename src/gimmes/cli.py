@@ -35,24 +35,25 @@ def _championship_warning(config) -> None:  # type: ignore[no-untyped-def]
 
 @asynccontextmanager
 async def trading_context(config: GimmesConfig):
-    """Yields (client, broker). broker is None in championship mode.
+    """Yields (client, broker, db). broker is None in championship mode.
 
     Both modes use the prod API client for real market data.
     In driving range, a PaperBroker handles portfolio operations locally.
+    Both modes open a Database for position syncing and snapshots.
     """
     from gimmes.kalshi.client import KalshiClient
+    from gimmes.store.database import Database
 
     async with KalshiClient(config) as client:
-        if config.is_championship:
-            yield client, None
-        else:
-            from gimmes.paper.broker import PaperBroker
-            from gimmes.store.database import Database
+        async with Database(config.db_path) as db:
+            if config.is_championship:
+                yield client, None, db
+            else:
+                from gimmes.paper.broker import PaperBroker
 
-            async with Database(config.db_path) as db:
                 broker = PaperBroker(db, config.paper)
                 await broker.initialize()
-                yield client, broker
+                yield client, broker, db
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ def mode() -> None:
 
         if config.api_key and config.private_key_path.exists():
             try:
-                async with trading_context(config) as (client, broker):
+                async with trading_context(config) as (client, broker, _db):
                     if broker:
                         balance = await broker.get_balance()
                     else:
@@ -191,7 +192,7 @@ def size(
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
         from gimmes.strategy.kelly import kelly_fraction, position_size
 
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, _db):
             market = await get_market(client, ticker)
 
             if broker:
@@ -238,11 +239,10 @@ def validate(
     async def _validate() -> None:
         from gimmes.kalshi.markets import get_market
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.database import Database
         from gimmes.store.queries import get_daily_pnl
         from gimmes.strategy.kelly import position_size
 
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
 
             if broker:
@@ -250,8 +250,10 @@ def validate(
                 positions = await broker.get_positions()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.store.queries import sync_positions
                 balance = await get_balance(client)
                 positions = await get_all_positions(client)
+                await sync_positions(db, positions)
 
             price = market.midpoint or market.last_price
             if dollars <= 0:
@@ -266,8 +268,7 @@ def validate(
 
             # Get daily P&L from local DB — MUST succeed for safe validation
             try:
-                async with Database(config.db_path) as db:
-                    daily_pnl = await get_daily_pnl(db)
+                daily_pnl = await get_daily_pnl(db)
             except Exception as exc:
                 console.print(
                     f"[red bold]VALIDATION FAILED: Could not query daily P&L — {exc}[/red bold]"
@@ -328,11 +329,10 @@ def order(
         from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.database import Database
         from gimmes.store.queries import get_daily_pnl
         from gimmes.strategy.kelly import position_size
 
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
             mkt_price = market.midpoint or market.last_price
 
@@ -342,8 +342,10 @@ def order(
                 positions = await broker.get_positions()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.store.queries import sync_positions
                 balance = await get_balance(client)
                 positions = await get_all_positions(client)
+                await sync_positions(db, positions)
 
             is_buy = action == "buy"
 
@@ -370,8 +372,7 @@ def order(
             # --- Pre-trade validation (buy orders only) ---
             if is_buy:
                 try:
-                    async with Database(config.db_path) as db:
-                        daily_pnl = await get_daily_pnl(db)
+                    daily_pnl = await get_daily_pnl(db)
                 except Exception as exc:
                     if force:
                         daily_pnl = 0.0
@@ -453,8 +454,13 @@ def order(
                 label = "[yellow]PAPER[/yellow] "
             else:
                 from gimmes.kalshi.orders import create_order
+                from gimmes.kalshi.portfolio import get_all_positions as refresh_pos
+                from gimmes.store.queries import sync_positions
                 result = await create_order(client, params)
                 label = ""
+                # Sync positions to local DB after championship order
+                pos_list = await refresh_pos(client)
+                await sync_positions(db, pos_list)
 
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
@@ -472,7 +478,7 @@ def cancel(
     config = load_config()
 
     async def _cancel() -> None:
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, _db):
             if broker:
                 await broker.cancel_order(order_id)
             else:
@@ -493,7 +499,7 @@ def positions() -> None:
         from gimmes.models.market import MarketStatus
         from gimmes.reporting.formatter import format_positions
 
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, db):
             if broker:
                 pos_list = await broker.get_positions()
                 # Mark-to-market + auto-settle with real prices
@@ -513,7 +519,9 @@ def positions() -> None:
                 pos_list = await broker.get_positions()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
+                from gimmes.store.queries import sync_positions
                 pos_list = await get_all_positions(client)
+                await sync_positions(db, pos_list)
 
             if not pos_list:
                 console.print("[dim]No open positions[/dim]")
@@ -530,21 +538,21 @@ def risk_check() -> None:
 
     async def _check() -> None:
         from gimmes.risk.limits import check_daily_loss, check_position_count
-        from gimmes.store.database import Database
         from gimmes.store.queries import get_daily_pnl
 
-        async with trading_context(config) as (client, broker):
+        async with trading_context(config) as (client, broker, db):
             if broker:
                 balance = await broker.get_balance()
                 pos = await broker.get_positions()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.store.queries import sync_positions
                 balance = await get_balance(client)
                 pos = await get_all_positions(client)
+                await sync_positions(db, pos)
 
             try:
-                async with Database(config.db_path) as db:
-                    daily_pnl = await get_daily_pnl(db)
+                daily_pnl = await get_daily_pnl(db)
             except Exception as exc:
                 console.print(
                     f"[red bold]RISK CHECK FAILED: Could not query daily P&L — {exc}[/red bold]"

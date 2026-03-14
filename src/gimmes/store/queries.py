@@ -118,6 +118,45 @@ async def upsert_position(db: Database, pos: Position) -> None:
     await db.conn.commit()
 
 
+async def sync_positions(db: Database, positions: list[Position]) -> None:
+    """Replace all positions with the given list (for championship API sync).
+
+    Runs as a single atomic transaction — clears stale positions and upserts
+    current ones so the local DB always reflects the API state.
+    """
+    current_tickers = {p.ticker for p in positions}
+    async with db.transaction():
+        # Remove positions that no longer exist
+        cursor = await db.conn.execute("SELECT ticker FROM positions")
+        for row in await cursor.fetchall():
+            if row["ticker"] not in current_tickers:
+                await db.conn.execute(
+                    "DELETE FROM positions WHERE ticker = ?", (row["ticker"],)
+                )
+        # Upsert current positions (inline SQL to avoid per-row commits)
+        for pos in positions:
+            await db.conn.execute(
+                """INSERT INTO positions
+                   (ticker, title, side, count, avg_price, market_price,
+                    cost_basis, market_value, unrealized_pnl, realized_pnl)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(ticker) DO UPDATE SET
+                    title=excluded.title, side=excluded.side,
+                    count=excluded.count, avg_price=excluded.avg_price,
+                    market_price=excluded.market_price,
+                    cost_basis=excluded.cost_basis,
+                    market_value=excluded.market_value,
+                    unrealized_pnl=excluded.unrealized_pnl,
+                    realized_pnl=excluded.realized_pnl,
+                    updated_at=datetime('now')""",
+                (
+                    pos.ticker, pos.title, pos.side, pos.count,
+                    pos.avg_price, pos.market_price, pos.cost_basis,
+                    pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
+                ),
+            )
+
+
 async def get_positions(db: Database) -> list[Position]:
     """Get all stored positions."""
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
