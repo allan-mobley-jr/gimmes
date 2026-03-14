@@ -54,13 +54,16 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
         if m.open_interest < sc.min_open_interest:
             continue
 
-        # Time to resolution
-        days = days_until(m.close_time) or days_until(m.expiration_time)
-        if days is not None:
-            if days < sc.min_days_to_resolution:
-                continue
-            if days > sc.max_days_to_resolution:
-                continue
+        # Time to resolution — reject markets with no time info
+        days = days_until(m.close_time)
+        if days is None:
+            days = days_until(m.expiration_time)
+        if days is None:
+            continue  # Perpetual or unknown — skip
+        if days < sc.min_days_to_resolution:
+            continue
+        if days > sc.max_days_to_resolution:
+            continue
 
         candidates.append(m)
 
