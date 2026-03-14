@@ -31,26 +31,3 @@ class TradeDecision(BaseModel):
     agent: str = ""  # Which agent made the decision
     timestamp: datetime = Field(default_factory=datetime.now)
     order_id: str = ""
-
-
-class TradeOutcome(BaseModel):
-    """Final outcome of a completed trade."""
-
-    class Result(StrEnum):
-        WIN = "win"
-        LOSS = "loss"
-        SCRATCH = "scratch"  # Broke even or canceled
-
-    ticker: str
-    result: Result
-    entry_price: float = 0.0
-    exit_price: float = 0.0
-    contracts: int = 0
-    gross_pnl: float = 0.0
-    fees_paid: float = 0.0
-    net_pnl: float = 0.0
-    predicted_edge: float = 0.0
-    realized_edge: float = 0.0
-    hold_duration_hours: float = 0.0
-    opened_at: datetime | None = None
-    closed_at: datetime | None = None

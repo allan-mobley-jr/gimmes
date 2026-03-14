@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gimmes.strategy.fees import fee_for_order
+
 
 @dataclass
 class PnLSummary:
@@ -56,6 +58,10 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]
             count = close.get("count", 0)
 
             pnl = (close_price - open_price) * count
+            # Estimate fees for both legs (open + close)
+            open_fee = fee_for_order(count, open_price) if open_price > 0 else 0.0
+            close_fee = fee_for_order(count, close_price) if close_price > 0 else 0.0
+            summary.total_fees += open_fee + close_fee
             summary.total_trades += 1
             summary.gross_pnl += pnl
 

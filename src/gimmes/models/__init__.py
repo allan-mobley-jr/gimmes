@@ -4,7 +4,7 @@ from gimmes.models.gimme import ConfidenceSignal, GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, Fill, Order, OrderAction, OrderSide
 from gimmes.models.portfolio import PortfolioSnapshot, Position
-from gimmes.models.trade import TradeDecision, TradeOutcome
+from gimmes.models.trade import TradeDecision
 
 __all__ = [
     "ConfidenceSignal",
@@ -22,5 +22,4 @@ __all__ = [
     "PortfolioSnapshot",
     "Position",
     "TradeDecision",
-    "TradeOutcome",
 ]
