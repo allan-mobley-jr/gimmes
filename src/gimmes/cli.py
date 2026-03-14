@@ -20,8 +20,18 @@ console = Console()
 
 
 def _run(coro):  # type: ignore[no-untyped-def]
-    """Run an async coroutine from sync CLI context."""
-    return asyncio.run(coro)
+    """Run an async coroutine from sync CLI context with error handling."""
+    import logging
+
+    logger = logging.getLogger("gimmes.cli")
+    try:
+        return asyncio.run(coro)
+    except KeyboardInterrupt:
+        raise typer.Exit(130)
+    except (ConnectionError, ValueError, RuntimeError) as e:
+        logger.debug("CLI error", exc_info=True)
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 def _championship_warning(config) -> None:  # type: ignore[no-untyped-def]
@@ -132,10 +142,10 @@ def scan(
             candidates = filter_markets(markets, config)
             console.print(f"Filtered to {len(candidates)} candidates")
 
-            results = []
-            for m in candidates[:top_n]:
+            scored = []
+            for m in candidates:
                 qs = quick_score(m, config)
-                results.append({
+                scored.append({
                     "ticker": m.ticker,
                     "title": m.title,
                     "price": m.midpoint or m.last_price,
@@ -144,7 +154,8 @@ def scan(
                     "score": qs,
                 })
 
-            format_scan_results(results)
+            scored.sort(key=lambda r: r["score"], reverse=True)
+            format_scan_results(scored[:top_n])
 
     _run(_scan())
 
@@ -305,7 +316,9 @@ def order(
     action: str = typer.Option("buy", "--action", "-a", help="Order action (buy/sell)"),
     side: str = typer.Option("yes", "--side", "-s", help="Order side (yes/no)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
-    price: int = typer.Option(0, "--price", help="Price in cents (0=use market price)"),
+    price: int = typer.Option(
+        0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
+    ),
     probability: float = typer.Option(
         0, "--prob", "-p", help="True probability (for auto-sizing and edge check)",
     ),
