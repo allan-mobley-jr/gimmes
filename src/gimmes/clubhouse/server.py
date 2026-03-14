@@ -162,8 +162,14 @@ async def api_stream() -> StreamingResponse:
                     })
 
                     yield f"data: {payload}\n\n"
+            except asyncio.CancelledError:
+                sse_logger.info("SSE stream cancelled (client disconnected)")
+                raise
+            except ConnectionResetError:
+                sse_logger.info("SSE client disconnected")
+                return
             except Exception:
-                sse_logger.debug("SSE event generation failed", exc_info=True)
+                sse_logger.warning("SSE event generation failed", exc_info=True)
 
             await asyncio.sleep(2)
 
