@@ -15,6 +15,7 @@ from gimmes.init import (
     _copy_example_file,
     _find_downloaded_key,
     _install_private_key,
+    _secure_env_file,
     _validate_pem_content,
 )
 
@@ -64,6 +65,31 @@ class TestCopyExampleFile:
 
         assert result is True
         assert target.read_text() == "new content"
+
+
+class TestSecureEnvFile:
+    def test_sets_600_permissions(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env"
+        env_file.write_text("KALSHI_PROD_API_KEY=secret")
+        env_file.chmod(0o644)  # World-readable
+
+        with patch("gimmes.init.ENV_FILE", env_file):
+            _secure_env_file()
+
+        mode = env_file.stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_copy_example_secures_env_file(self, tmp_path: Path) -> None:
+        example = tmp_path / ".env.example"
+        example.write_text("KALSHI_PROD_API_KEY=placeholder")
+        example.chmod(0o644)
+        target = tmp_path / ".env"
+
+        with patch("gimmes.init.ENV_FILE", target):
+            _copy_example_file(example, target, ".env")
+
+        mode = target.stat().st_mode & 0o777
+        assert mode == 0o600
 
 
 class TestFindDownloadedKey:
