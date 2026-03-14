@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -33,7 +33,7 @@ def _trade(
         price=price,
         count=count,
         edge=edge,
-        timestamp=timestamp or datetime.now(),
+        timestamp=timestamp or datetime.now(UTC),
     )
 
 
@@ -129,7 +129,7 @@ class TestGetDailyPnl:
 
     async def test_multi_cycle_same_ticker(self, db: Database) -> None:
         """Two open/close cycles on the same ticker use correct entries."""
-        now = datetime.now()
+        now = datetime.now(UTC)
         # Cycle 1: open at 0.50, close at 0.70
         await insert_trade(db, _trade(
             action="open", price=0.50, count=5,
