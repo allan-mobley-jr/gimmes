@@ -29,8 +29,19 @@ from gimmes.reporting.metrics import calculate_metrics
 logger = logging.getLogger("gimmes.clubhouse")
 
 
+_cached_config: GimmesConfig | None = None
+_config_loaded_at: float = 0.0
+_CONFIG_TTL = 30.0
+
+
 def _config() -> GimmesConfig:
-    return load_config()
+    import time
+    global _cached_config, _config_loaded_at  # noqa: PLW0603
+    now = time.monotonic()
+    if _cached_config is None or (now - _config_loaded_at) > _CONFIG_TTL:
+        _cached_config = load_config()
+        _config_loaded_at = now
+    return _cached_config
 
 
 @asynccontextmanager
@@ -81,7 +92,7 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
                 except (ValueError, TypeError):
                     pass
     except Exception:
-        logger.debug("get_status failed", exc_info=True)
+        logger.warning("get_status failed", exc_info=True)
 
     return resp
 
@@ -129,7 +140,7 @@ async def get_portfolio(db_path: Path) -> PortfolioResponse:
             if resp.balance > 0:
                 resp.total_equity = resp.balance + resp.unrealized_pnl
     except Exception:
-        logger.debug("get_portfolio failed", exc_info=True)
+        logger.warning("get_portfolio failed", exc_info=True)
 
     return resp
 
@@ -168,7 +179,7 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
                     realized_pnl=row["realized_pnl"],
                 ))
     except Exception:
-        logger.debug("get_positions failed", exc_info=True)
+        logger.warning("get_positions failed", exc_info=True)
 
     return items
 
@@ -199,7 +210,7 @@ async def get_trades(db_path: Path, limit: int = 50) -> list[TradeItem]:
                     timestamp=row["timestamp"],
                 ))
     except Exception:
-        logger.debug("get_trades failed", exc_info=True)
+        logger.warning("get_trades failed", exc_info=True)
 
     return items
 
@@ -226,7 +237,7 @@ async def get_candidates(db_path: Path, limit: int = 20) -> list[CandidateItem]:
                     scanned_at=row["scanned_at"],
                 ))
     except Exception:
-        logger.debug("get_candidates failed", exc_info=True)
+        logger.warning("get_candidates failed", exc_info=True)
 
     return items
 
@@ -266,7 +277,7 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
                 for s in snapshots
             ]
     except Exception:
-        logger.debug("get_metrics failed", exc_info=True)
+        logger.warning("get_metrics failed", exc_info=True)
 
     return resp
 
@@ -322,7 +333,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
             if row and row["largest"] and balance > 0:
                 resp.largest_position_pct = row["largest"] / balance
     except Exception:
-        logger.debug("get_risk failed", exc_info=True)
+        logger.warning("get_risk failed", exc_info=True)
 
     return resp
 
@@ -352,7 +363,7 @@ async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
                     timestamp=row["timestamp"],
                 ))
     except Exception:
-        logger.debug("get_activity failed", exc_info=True)
+        logger.warning("get_activity failed", exc_info=True)
 
     return items
 
@@ -386,7 +397,7 @@ async def get_errors_data(db_path: Path, limit: int = 20) -> list[ErrorItem]:
                     github_issue_url=row["github_issue_url"],
                 ))
     except Exception:
-        logger.debug("get_errors_data failed", exc_info=True)
+        logger.warning("get_errors_data failed", exc_info=True)
 
     return items
 
@@ -419,7 +430,7 @@ async def get_recommendations_data(db_path: Path, limit: int = 10) -> list[Recom
                     status=row["status"],
                 ))
     except Exception:
-        logger.debug("get_recommendations_data failed", exc_info=True)
+        logger.warning("get_recommendations_data failed", exc_info=True)
 
     return items
 
@@ -496,7 +507,7 @@ async def get_change_fingerprint(db_path: Path) -> str:
             else:
                 parts.append("0")
     except Exception:
-        logger.debug("get_change_fingerprint failed", exc_info=True)
+        logger.warning("get_change_fingerprint failed", exc_info=True)
         parts = ["err"]
 
     return "|".join(parts)
