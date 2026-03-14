@@ -75,7 +75,7 @@ class TestCreateOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
@@ -97,7 +97,7 @@ class TestCreateOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -119,7 +119,7 @@ class TestCreateOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=65,  # Below ask — rests
+            yes_price=0.65,  # Below ask — rests
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
@@ -140,7 +140,7 @@ class TestCreateOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
@@ -160,7 +160,7 @@ class TestCreateOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=5,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -187,7 +187,7 @@ class TestCancel:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=65,  # Rests
+            yes_price=0.65,  # Rests
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
@@ -224,7 +224,7 @@ class TestMarkToMarket:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -247,7 +247,7 @@ class TestMarkToMarket:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -280,7 +280,7 @@ class TestSettlement:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -306,7 +306,7 @@ class TestSettlement:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(params, orderbook)
@@ -343,7 +343,7 @@ class TestListOrders:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=5,
-            yes_price=65,
+            yes_price=0.65,
             post_only=True,
         )
         await broker.create_order(resting_params, orderbook)
@@ -354,7 +354,7 @@ class TestListOrders:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=5,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(filled_params, orderbook)
@@ -384,7 +384,7 @@ class TestSellOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(buy_params, orderbook)
@@ -395,7 +395,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=5,
-            yes_price=68,  # At YES best bid
+            yes_price=0.68,  # At YES best bid
             post_only=True,
         )
         await broker.create_order(sell_params, orderbook)
@@ -420,7 +420,7 @@ class TestSellOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(buy_params, orderbook)
@@ -433,7 +433,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=5,
-            yes_price=68,
+            yes_price=0.68,
             post_only=True,
         )
         await broker.create_order(sell_params, orderbook)
@@ -454,7 +454,7 @@ class TestSellOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(buy_params, orderbook)
@@ -464,7 +464,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=5,
-            yes_price=68,
+            yes_price=0.68,
             post_only=True,
         )
         await broker.create_order(sell_params, orderbook)
@@ -488,7 +488,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=5,
-            yes_price=68,
+            yes_price=0.68,
             post_only=True,
         )
         order = await broker.create_order(sell_params, orderbook)
@@ -515,7 +515,7 @@ class TestSellOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(buy_params, orderbook)
@@ -526,7 +526,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.NO,
             count=5,
-            no_price=30,
+            no_price=0.30,
             post_only=True,
         )
         order = await broker.create_order(sell_params, orderbook)
@@ -546,7 +546,7 @@ class TestSellOrder:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=5,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         await broker.create_order(buy_params, orderbook)
@@ -557,7 +557,7 @@ class TestSellOrder:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=10,  # More than the 5 held
-            yes_price=68,
+            yes_price=0.68,
             post_only=True,
         )
         order = await broker.create_order(sell_params, orderbook)
@@ -588,7 +588,7 @@ class TestTakerPartialFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=500,
-            yes_price=70,
+            yes_price=0.70,
             post_only=False,  # taker order
         )
         order = await broker.create_order(params, limited_ob)
@@ -625,7 +625,7 @@ class TestNegativeBalanceGuard:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=20_000,
-            yes_price=70,
+            yes_price=0.70,
             post_only=False,
         )
         order = await broker.create_order(params, ob)
@@ -650,7 +650,7 @@ class TestNegativeBalanceGuard:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=20_000,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         order = await broker.create_order(params, ob)

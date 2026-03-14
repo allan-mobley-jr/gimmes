@@ -152,7 +152,7 @@ class PaperBroker:
             resting_cost = 0.0
             if result.remaining_count > 0 and params.post_only:
                 resting_cost = result.remaining_count * (
-                    params.price_cents / 100.0
+                    params.price
                 )
             balance = await self.get_balance()
             if balance < cost + resting_cost:
@@ -164,7 +164,7 @@ class PaperBroker:
             and result.total_filled == 0
         ):
             resting_cost = result.remaining_count * (
-                params.price_cents / 100.0
+                params.price
             )
             balance = await self.get_balance()
             if balance < resting_cost:
@@ -188,7 +188,7 @@ class PaperBroker:
                 and params.post_only
                 and params.action == OrderAction.BUY
             ):
-                resting_price = params.price_cents / 100.0
+                resting_price = params.price
                 await self._update_balance(
                     -(result.remaining_count * resting_price)
                 )
@@ -206,8 +206,8 @@ class PaperBroker:
                     params.side.value,
                     params.count,
                     result.remaining_count,
-                    params.yes_price or 0,
-                    params.no_price or 0,
+                    int(round((params.yes_price or 0) * 100)),
+                    int(round((params.no_price or 0) * 100)),
                     status,
                     1 if params.post_only else 0,
                     now.isoformat(),
@@ -218,6 +218,7 @@ class PaperBroker:
             # Insert fills and update positions
             for fill in result.fills:
                 trade_id = f"paper-fill-{uuid.uuid4().hex[:12]}"
+                fill_cents = int(round(fill.price * 100))
                 await self._conn.execute(
                     """INSERT INTO paper_fills
                        (trade_id, order_id, ticker, action, side, count,
@@ -230,8 +231,8 @@ class PaperBroker:
                         params.action.value,
                         params.side.value,
                         fill.count,
-                        fill.price_cents if params.side == OrderSide.YES else 0,
-                        fill.price_cents if params.side == OrderSide.NO else 0,
+                        fill_cents if params.side == OrderSide.YES else 0,
+                        fill_cents if params.side == OrderSide.NO else 0,
                         fill.fee,
                         1 if fill.is_taker else 0,
                         now.isoformat(),
@@ -248,8 +249,8 @@ class PaperBroker:
             action=params.action,
             side=params.side,
             status=status,
-            yes_price=params.yes_price or 0,
-            no_price=params.no_price or 0,
+            yes_price=params.yes_price or 0.0,
+            no_price=params.no_price or 0.0,
             count=params.count,
             remaining_count=result.remaining_count,
             created_time=now,
@@ -269,7 +270,7 @@ class PaperBroker:
             # Refund reserved balance for unfilled contracts
             remaining = int(row["remaining_count"])
             price_cents = max(int(row["yes_price"]), int(row["no_price"]))
-            refund = remaining * (price_cents / 100.0)
+            refund = remaining * price_cents / 100.0
             await self._update_balance(refund)
 
             await self._conn.execute(
@@ -302,8 +303,8 @@ class PaperBroker:
                 action=OrderAction(row["action"]),
                 side=OrderSide(row["side"]),
                 status=row["status"],
-                yes_price=int(row["yes_price"]),
-                no_price=int(row["no_price"]),
+                yes_price=int(row["yes_price"]) / 100.0,
+                no_price=int(row["no_price"]) / 100.0,
                 count=int(row["count"]),
                 remaining_count=int(row["remaining_count"]),
                 created_time=row["created_at"],
@@ -329,8 +330,8 @@ class PaperBroker:
                 action=OrderAction(row["action"]),
                 side=OrderSide(row["side"]),
                 count=int(row["count"]),
-                yes_price=int(row["yes_price"]),
-                no_price=int(row["no_price"]),
+                yes_price=int(row["yes_price"]) / 100.0,
+                no_price=int(row["no_price"]) / 100.0,
                 is_taker=bool(row["is_taker"]),
                 created_time=row["created_at"],
             )
@@ -449,8 +450,8 @@ class PaperBroker:
                 params.side.value,
                 params.count,
                 params.count,
-                params.yes_price or 0,
-                params.no_price or 0,
+                int(round((params.yes_price or 0) * 100)),
+                int(round((params.no_price or 0) * 100)),
                 1 if params.post_only else 0,
                 now.isoformat(),
                 now.isoformat(),
@@ -463,8 +464,8 @@ class PaperBroker:
             action=params.action,
             side=params.side,
             status="canceled",
-            yes_price=params.yes_price or 0,
-            no_price=params.no_price or 0,
+            yes_price=params.yes_price or 0.0,
+            no_price=params.no_price or 0.0,
             count=params.count,
             remaining_count=params.count,
             created_time=now,
@@ -485,7 +486,7 @@ class PaperBroker:
 
         # Calculate weighted average fill price
         total_fill_cost = sum(
-            f.count * (f.price_cents / 100.0) for f in fill_result.fills
+            f.count * (f.price) for f in fill_result.fills
         )
         total_fees = sum(f.fee for f in fill_result.fills)
         filled = fill_result.total_filled

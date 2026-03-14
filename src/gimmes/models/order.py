@@ -1,4 +1,8 @@
-"""Order and fill models."""
+"""Order and fill models.
+
+All prices are in dollars (0.00–1.00). Cents conversion happens only at
+the API boundary (kalshi/orders.py) and paper DB boundary (paper/broker.py).
+"""
 
 from __future__ import annotations
 
@@ -25,20 +29,20 @@ class CreateOrderParams(BaseModel):
     action: OrderAction = OrderAction.BUY
     side: OrderSide = OrderSide.YES
     count: int = Field(gt=0)
-    yes_price: int | None = None  # Price in cents (1-99)
-    no_price: int | None = None
+    yes_price: float | None = Field(default=None, ge=0.0, le=1.0)
+    no_price: float | None = Field(default=None, ge=0.0, le=1.0)
     client_order_id: str = ""
     time_in_force: str = "gtc"  # gtc, fok, ioc
     post_only: bool = True  # Maker guarantee
 
     @property
-    def price_cents(self) -> int:
-        """Effective price in cents."""
+    def price(self) -> float:
+        """Effective price in dollars."""
         if self.yes_price is not None:
             return self.yes_price
         if self.no_price is not None:
             return self.no_price
-        return 0
+        return 0.0
 
 
 class Order(BaseModel):
@@ -49,8 +53,8 @@ class Order(BaseModel):
     action: OrderAction
     side: OrderSide
     status: str = ""  # resting, canceled, executed
-    yes_price: int = 0
-    no_price: int = 0
+    yes_price: float = 0.0
+    no_price: float = 0.0
     count: int = 0
     remaining_count: int = 0
     created_time: datetime | None = None
@@ -70,7 +74,7 @@ class Fill(BaseModel):
     action: OrderAction = OrderAction.BUY
     side: OrderSide = OrderSide.YES
     count: int = 0
-    yes_price: int = 0
-    no_price: int = 0
+    yes_price: float = 0.0
+    no_price: float = 0.0
     created_time: datetime | None = None
     is_taker: bool = False

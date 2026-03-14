@@ -39,14 +39,14 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
         assert result.total_filled == 10
         assert result.remaining_count == 0
         assert len(result.fills) == 1
-        assert result.fills[0].price_cents == 70
+        assert result.fills[0].price == 0.70
         assert result.fills[0].is_taker is False
         assert result.total_notional > 0
         assert result.total_fees > 0
@@ -58,12 +58,12 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=5,
-            yes_price=75,
+            yes_price=0.75,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
         assert result.total_filled == 5
-        assert result.fills[0].price_cents == 75
+        assert result.fills[0].price == 0.75
 
     def test_maker_buy_yes_below_ask_rests(self, orderbook: Orderbook) -> None:
         """Maker buy YES at 65c (below best ask 70c) rests on book."""
@@ -72,7 +72,7 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=65,
+            yes_price=0.65,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
@@ -89,7 +89,7 @@ class TestMakerFill:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=10,
-            yes_price=68,
+            yes_price=0.68,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
@@ -102,7 +102,7 @@ class TestMakerFill:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=10,
-            yes_price=72,
+            yes_price=0.72,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
@@ -116,12 +116,10 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=500,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
-        # Only NO bid at 0.30 (ask=0.70) is eligible, qty=180
-        # NO bid at 0.28 (ask=0.72) exceeds limit
         assert result.total_filled == 180
         assert result.remaining_count == 320
 
@@ -134,11 +132,10 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=500,
-            yes_price=75,
+            yes_price=0.75,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
-        # Both levels eligible: 180 + 250 = 430
         assert result.total_filled == 430
         assert result.remaining_count == 70
 
@@ -149,11 +146,10 @@ class TestMakerFill:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=1000,
-            yes_price=65,
+            yes_price=0.65,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
-        # YES bids: 200 + 150 + 300 = 650
         assert result.total_filled == 650
         assert result.remaining_count == 350
 
@@ -164,14 +160,13 @@ class TestMakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=100,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
         assert result.total_filled == 100
         fill = result.fills[0]
         assert fill.is_taker is False
-        # maker fee for 100 contracts at $0.70: ceil(0.0175 * 100 * 0.70 * 0.30 * 100) / 100
         assert fill.fee > 0
 
 
@@ -183,20 +178,18 @@ class TestMakerFill:
 class TestTakerFill:
     def test_taker_buy_yes_full_fill(self, orderbook: Orderbook) -> None:
         """Taker buy YES walks NO bids (converted to YES asks)."""
-        # NO bids: 0.30 (qty=180, ask=0.70), 0.28 (qty=250, ask=0.72)
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=100,
-            yes_price=72,
+            yes_price=0.72,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
         assert result.total_filled == 100
         assert result.remaining_count == 0
-        # Should fill at 70c first (cheapest ask)
-        assert result.fills[0].price_cents == 70
+        assert result.fills[0].price == 0.70
 
     def test_taker_buy_yes_partial_fill(self, orderbook: Orderbook) -> None:
         """Taker buy YES 200 contracts but only 180 available at 70c."""
@@ -205,11 +198,10 @@ class TestTakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=200,
-            yes_price=70,  # Only willing to pay up to 70c
+            yes_price=0.70,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
-        # Only 180 available at 70c (NO bid at 0.30 → YES ask 0.70)
         assert result.total_filled == 180
         assert result.remaining_count == 20
 
@@ -220,17 +212,16 @@ class TestTakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=300,
-            yes_price=75,  # Willing to pay up to 75c
+            yes_price=0.75,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
-        # Level 1: 180 @ 70c, Level 2: 120 @ 72c
         assert result.total_filled == 300
         assert len(result.fills) == 2
         assert result.fills[0].count == 180
-        assert result.fills[0].price_cents == 70
+        assert result.fills[0].price == 0.70
         assert result.fills[1].count == 120
-        assert result.fills[1].price_cents == 72
+        assert result.fills[1].price == 0.72
 
     def test_taker_buy_yes_no_fill_price_too_low(self, orderbook: Orderbook) -> None:
         """Taker buy YES at 60c — no liquidity available below that."""
@@ -239,7 +230,7 @@ class TestTakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=60,
+            yes_price=0.60,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
@@ -253,15 +244,14 @@ class TestTakerFill:
             action=OrderAction.SELL,
             side=OrderSide.YES,
             count=250,
-            yes_price=65,  # Willing to sell down to 65c
+            yes_price=0.65,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
-        # Level 1: 200 @ 68c, Level 2: 50 @ 67c (of 150 available)
         assert result.total_filled == 250
         assert len(result.fills) == 2
-        assert result.fills[0].price_cents == 68
-        assert result.fills[1].price_cents == 67
+        assert result.fills[0].price == 0.68
+        assert result.fills[1].price == 0.67
 
     def test_taker_fills_have_taker_fees(self, orderbook: Orderbook) -> None:
         """Taker fills use the taker fee multiplier."""
@@ -270,7 +260,7 @@ class TestTakerFill:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=72,
+            yes_price=0.72,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
@@ -293,7 +283,7 @@ class TestEdgeCases:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=False,
         )
         result = simulate_fill(params, empty_ob)
@@ -307,7 +297,7 @@ class TestEdgeCases:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=70,
+            yes_price=0.70,
             post_only=True,
         )
         result = simulate_fill(params, empty_ob)
@@ -321,12 +311,12 @@ class TestEdgeCases:
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=72,
+            yes_price=0.72,
             post_only=False,
         )
         result = simulate_fill(params, orderbook)
         expected_notional = sum(
-            f.count * (f.price_cents / 100.0) for f in result.fills
+            f.count * f.price for f in result.fills
         )
         expected_fees = sum(f.fee for f in result.fills)
         assert abs(result.total_notional - expected_notional) < 0.001
