@@ -57,9 +57,9 @@ class TestOrder:
         params = CreateOrderParams(
             ticker="KXTEST",
             count=10,
-            yes_price=70,
+            yes_price=0.70,
         )
-        assert params.price_cents == 70
+        assert params.price == 0.70
 
     def test_order_is_open(self) -> None:
         o = Order(order_id="abc", ticker="X", action=OrderAction.BUY,

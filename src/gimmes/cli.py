@@ -366,8 +366,8 @@ def order(
                 console.print(f"[red]No contracts to order (count=0).{hint}[/red]")
                 return
 
-            final_price = price if price > 0 else int(mkt_price * 100)
-            trade_dollars = final_count * (final_price / 100.0)
+            final_price = price / 100.0 if price > 0 else mkt_price
+            trade_dollars = final_count * final_price
 
             # --- Pre-trade validation (buy orders only) ---
             if is_buy:
@@ -444,7 +444,7 @@ def order(
 
             msg = (
                 f"Placing order: {action.upper()} {final_count}x"
-                f" {ticker} {side.upper()} @ {final_price}¢"
+                f" {ticker} {side.upper()} @ {int(round(final_price * 100))}¢"
             )
             console.print(msg)
 
