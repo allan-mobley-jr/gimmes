@@ -151,7 +151,9 @@ def full_score(
         if days is None:
             days = days_until(market.expiration_time)
         if days is not None:
-            if 1 <= days <= 14:
+            if days < 1:
+                time_score = 20.0  # Too soon — limited time to enter/exit
+            elif days <= 14:
                 time_score = 100.0  # Sweet spot
             elif days <= 30:
                 time_score = 70.0
