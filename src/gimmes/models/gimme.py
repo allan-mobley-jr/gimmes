@@ -27,10 +27,9 @@ class GimmeScore(BaseModel):
     time_to_resolution_score: float = 0.0
     memo: str = ""
 
-    @property
-    def qualifies(self) -> bool:
-        """Check if this score meets the default threshold."""
-        return self.total >= 75
+    def qualifies(self, threshold: float = 75) -> bool:
+        """Check if this score meets the given threshold."""
+        return self.total >= threshold
 
 
 class GimmeCandidate(BaseModel):

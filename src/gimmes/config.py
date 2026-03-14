@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 GIMMES_HOME = Path(os.getenv("GIMMES_HOME", str(Path.home() / ".gimmes"))).expanduser()
 
@@ -70,6 +70,18 @@ class ScoringWeights(BaseModel):
     liquidity_depth: float = 0.15
     settlement_clarity: float = 0.15
     time_to_resolution: float = 0.15
+
+    @model_validator(mode="after")
+    def _check_weights_sum(self) -> ScoringWeights:
+        total = (
+            self.edge_size + self.signal_strength + self.liquidity_depth
+            + self.settlement_clarity + self.time_to_resolution
+        )
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(
+                f"Scoring weights must sum to 1.0 (got {total:.4f})"
+            )
+        return self
 
 
 class ScoringConfig(BaseModel):
