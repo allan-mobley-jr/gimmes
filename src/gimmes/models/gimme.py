@@ -37,8 +37,8 @@ class GimmeCandidate(BaseModel):
 
     ticker: str
     title: str = ""
-    market_price: float  # Current YES price
-    model_probability: float = 0.0  # Our estimated true probability
+    market_price: float = Field(ge=0.0, le=1.0)
+    model_probability: float = Field(default=0.0, ge=0.0, le=1.0)
     edge: float = 0.0  # model_probability - market_price
     signals: list[ConfidenceSignal] = Field(default_factory=list)
     score: GimmeScore | None = None

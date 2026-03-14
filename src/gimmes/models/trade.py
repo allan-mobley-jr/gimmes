@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,11 +20,11 @@ class TradeDecision(BaseModel):
 
     ticker: str
     action: Action
-    side: str = "yes"
-    count: int = 0
-    price: float = 0.0
-    model_probability: float = 0.0
-    gimme_score: float = 0.0
+    side: Literal["yes", "no"] = "yes"
+    count: int = Field(default=0, ge=0)
+    price: float = Field(default=0.0, ge=0.0, le=1.0)
+    model_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    gimme_score: float = Field(default=0.0, ge=0.0, le=100.0)
     edge: float = 0.0
     kelly_fraction: float = 0.0
     rationale: str = ""
