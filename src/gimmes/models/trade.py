@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
@@ -29,5 +29,7 @@ class TradeDecision(BaseModel):
     kelly_fraction: float = 0.0
     rationale: str = ""
     agent: str = ""  # Which agent made the decision
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     order_id: str = ""
