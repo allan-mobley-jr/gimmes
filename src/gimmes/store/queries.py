@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from gimmes.models.error import ErrorLogEntry
 from gimmes.models.portfolio import PortfolioSnapshot, Position
 from gimmes.models.recommendation import Recommendation
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
+
+
+class TradeRecord(TypedDict, total=False):
+    """Typed dict for trade records from the database."""
+
+    id: int
+    ticker: str
+    action: str
+    side: str
+    count: int
+    price: float
+    model_probability: float
+    gimme_score: float
+    edge: float
+    kelly_fraction: float
+    rationale: str
+    agent: str
+    order_id: str
+    timestamp: str
+    resolved_outcome: str | None
 
 # ---------------------------------------------------------------------------
 # Trade decisions
@@ -46,7 +68,7 @@ async def get_trades(
     ticker: str | None = None,
     action: str | None = None,
     limit: int = 50,
-) -> list[dict]:  # type: ignore[type-arg]
+) -> list[TradeRecord]:
     """Query trade decisions with optional filters."""
     query = "SELECT * FROM trades WHERE 1=1"
     params: list[object] = []

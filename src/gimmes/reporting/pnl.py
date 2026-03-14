@@ -29,7 +29,7 @@ class PnLSummary:
         return self.winning_trades / completed
 
 
-def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]
+def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  # accepts TradeRecord dicts
     """Calculate P&L from a list of trade records.
 
     Args:
