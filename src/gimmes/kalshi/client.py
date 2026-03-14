@@ -53,12 +53,28 @@ class KalshiClient:
     def __init__(self, config: GimmesConfig) -> None:
         self.config = config
         self._api_key = config.api_key
-        self._private_key = (
-            load_private_key(config.private_key_path)
-            if config.private_key_path.exists()
-            else None
-        )
-        self._base_path = urlparse(config.base_url).path  # e.g. /trade-api/v2
+
+        # Validate credentials early with clear errors
+        if not self._api_key:
+            raise ValueError(
+                "API key not set. Set KALSHI_PROD_API_KEY in .env "
+                "or run 'gimmes init'."
+            )
+        key_path = config.private_key_path
+        if not key_path.exists() or str(key_path) == ".":
+            raise ValueError(
+                "Private key not found. Set "
+                "KALSHI_PROD_PRIVATE_KEY_PATH in .env "
+                "or run 'gimmes init'."
+            )
+        try:
+            self._private_key = load_private_key(key_path)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to load private key from {key_path}: {e}"
+            ) from e
+
+        self._base_path = urlparse(config.base_url).path
         self._rate_limiter = RateLimiter()
         self._client = httpx.AsyncClient(
             base_url=config.base_url,
