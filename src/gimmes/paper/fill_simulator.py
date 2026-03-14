@@ -92,19 +92,46 @@ def _simulate_maker_fill(
             total_notional=0.0, total_fees=0.0,
         )
 
-    # Maker fill at limit price (not taker even though marketable — post_only guarantee)
-    fee = fee_for_order(params.count, price_dollars, is_taker=False)
+    # Determine available depth on the opposing side
+    available = _opposing_depth(params, orderbook)
+    fill_count = min(params.count, available) if available > 0 else 0
+
+    if fill_count == 0:
+        return FillResult(
+            fills=[], remaining_count=params.count, total_filled=0,
+            total_notional=0.0, total_fees=0.0,
+        )
+
+    # Maker fill at limit price (not taker even though marketable)
+    fee = fee_for_order(fill_count, price_dollars, is_taker=False)
     fill = SimulatedFill(
-        count=params.count,
+        count=fill_count,
         price_cents=price_cents,
         fee=fee,
         is_taker=False,
     )
-    notional = params.count * price_dollars
+    remaining = params.count - fill_count
+    notional = fill_count * price_dollars
     return FillResult(
-        fills=[fill], remaining_count=0, total_filled=params.count,
+        fills=[fill], remaining_count=remaining, total_filled=fill_count,
         total_notional=notional, total_fees=fee,
     )
+
+
+def _opposing_depth(
+    params: CreateOrderParams, orderbook: Orderbook
+) -> int:
+    """Total quantity available on the opposing side of the orderbook."""
+    if params.action == OrderAction.BUY:
+        if params.side == OrderSide.YES:
+            # Buying YES matches NO bids
+            return sum(lvl.quantity for lvl in orderbook.no_bids)
+        # Buying NO matches YES bids
+        return sum(lvl.quantity for lvl in orderbook.yes_bids)
+    # Selling matches bids on the same side
+    if params.side == OrderSide.YES:
+        return sum(lvl.quantity for lvl in orderbook.yes_bids)
+    return sum(lvl.quantity for lvl in orderbook.no_bids)
 
 
 def _simulate_taker_fill(

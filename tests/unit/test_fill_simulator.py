@@ -109,6 +109,36 @@ class TestMakerFill:
         assert result.total_filled == 0
         assert result.remaining_count == 10
 
+    def test_maker_buy_yes_capped_by_depth(self, orderbook: Orderbook) -> None:
+        """Maker buy 500 YES but only 180 available on opposing side."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=500,
+            yes_price=70,
+            post_only=True,
+        )
+        result = simulate_fill(params, orderbook)
+        # NO bids total depth = 180 + 250 = 430
+        assert result.total_filled == 430
+        assert result.remaining_count == 70
+
+    def test_maker_sell_yes_capped_by_depth(self, orderbook: Orderbook) -> None:
+        """Maker sell 1000 YES but only 650 available in YES bids."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=1000,
+            yes_price=65,
+            post_only=True,
+        )
+        result = simulate_fill(params, orderbook)
+        # YES bids: 200 + 150 + 300 = 650
+        assert result.total_filled == 650
+        assert result.remaining_count == 350
+
     def test_maker_fee_is_maker_rate(self, orderbook: Orderbook) -> None:
         """Maker fills use the maker fee multiplier (0.0175)."""
         params = CreateOrderParams(
