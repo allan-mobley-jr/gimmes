@@ -104,6 +104,7 @@ class GimmesConfig(BaseModel):
     # Kalshi credentials (prod — used for market data in both modes)
     api_key: str = ""
     private_key_path: Path = Path()
+    private_key_password: str | None = None
 
     # API URLs (always prod — paper trading simulates orders locally)
     base_url: str = PROD_BASE_URL
@@ -135,6 +136,7 @@ def load_config(config_path: Path | None = None) -> GimmesConfig:
     api_key = os.getenv("KALSHI_PROD_API_KEY", "")
     key_path_str = os.getenv("KALSHI_PROD_PRIVATE_KEY_PATH", "")
     private_key_path = Path(key_path_str).expanduser() if key_path_str else Path()
+    private_key_password = os.getenv("KALSHI_PRIVATE_KEY_PASSWORD") or None
 
     # Load TOML config
     toml_path = config_path or DEFAULT_CONFIG_PATH
@@ -153,6 +155,7 @@ def load_config(config_path: Path | None = None) -> GimmesConfig:
         mode=mode,
         api_key=api_key,
         private_key_path=private_key_path,
+        private_key_password=private_key_password,
         strategy=StrategyConfig(**toml_data.get("strategy", {})),
         sizing=SizingConfig(**toml_data.get("sizing", {})),
         risk=RiskConfig(**toml_data.get("risk", {})),

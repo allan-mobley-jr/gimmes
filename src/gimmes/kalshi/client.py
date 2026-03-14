@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from gimmes.config import GimmesConfig
-from gimmes.kalshi.auth import auth_headers, load_private_key
+from gimmes.kalshi.auth import auth_headers, load_private_key_for_config
 
 
 class RateLimiter:
@@ -67,12 +67,9 @@ class KalshiClient:
                 "KALSHI_PROD_PRIVATE_KEY_PATH in .env "
                 "or run 'gimmes init'."
             )
-        try:
-            self._private_key = load_private_key(key_path)
-        except Exception as e:
-            raise ValueError(
-                f"Failed to load private key from {key_path}: {e}"
-            ) from e
+        self._private_key = load_private_key_for_config(
+            key_path, config.private_key_password
+        )
 
         self._base_path = urlparse(config.base_url).path
         self._rate_limiter = RateLimiter()
@@ -97,10 +94,6 @@ class KalshiClient:
         await self._client.aclose()
 
     def _get_auth_headers(self, method: str, path: str) -> dict[str, str]:
-        if self._private_key is None:
-            raise RuntimeError(
-                "Private key not loaded. Check KALSHI_*_PRIVATE_KEY_PATH in .env"
-            )
         return auth_headers(self._api_key, self._private_key, method, path)
 
     _RETRYABLE_STATUS = {429, 500, 502, 503, 504}

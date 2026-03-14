@@ -118,32 +118,29 @@ async def update_trade_outcome(db: Database, ticker: str, outcome: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+_UPSERT_POSITION_SQL = """INSERT INTO positions
+    (ticker, title, side, count, avg_price, market_price,
+     cost_basis, market_value, unrealized_pnl, realized_pnl)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ticker) DO UPDATE SET
+     title=excluded.title, side=excluded.side, count=excluded.count,
+     avg_price=excluded.avg_price, market_price=excluded.market_price,
+     cost_basis=excluded.cost_basis, market_value=excluded.market_value,
+     unrealized_pnl=excluded.unrealized_pnl, realized_pnl=excluded.realized_pnl,
+     updated_at=datetime('now')"""
+
+
+def _position_params(pos: Position) -> tuple:
+    return (
+        pos.ticker, pos.title, pos.side, pos.count,
+        pos.avg_price, pos.market_price, pos.cost_basis,
+        pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
+    )
+
+
 async def upsert_position(db: Database, pos: Position) -> None:
     """Insert or update a position."""
-    await db.conn.execute(
-        """INSERT INTO positions
-           (ticker, title, side, count, avg_price, market_price,
-            cost_basis, market_value, unrealized_pnl, realized_pnl)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(ticker) DO UPDATE SET
-            title=excluded.title, side=excluded.side, count=excluded.count,
-            avg_price=excluded.avg_price, market_price=excluded.market_price,
-            cost_basis=excluded.cost_basis, market_value=excluded.market_value,
-            unrealized_pnl=excluded.unrealized_pnl, realized_pnl=excluded.realized_pnl,
-            updated_at=datetime('now')""",
-        (
-            pos.ticker,
-            pos.title,
-            pos.side,
-            pos.count,
-            pos.avg_price,
-            pos.market_price,
-            pos.cost_basis,
-            pos.market_value,
-            pos.unrealized_pnl,
-            pos.realized_pnl,
-        ),
-    )
+    await db.conn.execute(_UPSERT_POSITION_SQL, _position_params(pos))
     await db.conn.commit()
 
 
@@ -159,26 +156,7 @@ async def _sync_positions_rows(db: Database, positions: list[Position]) -> None:
             )
     # Upsert current positions
     for pos in positions:
-        await db.conn.execute(
-            """INSERT INTO positions
-               (ticker, title, side, count, avg_price, market_price,
-                cost_basis, market_value, unrealized_pnl, realized_pnl)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(ticker) DO UPDATE SET
-                title=excluded.title, side=excluded.side,
-                count=excluded.count, avg_price=excluded.avg_price,
-                market_price=excluded.market_price,
-                cost_basis=excluded.cost_basis,
-                market_value=excluded.market_value,
-                unrealized_pnl=excluded.unrealized_pnl,
-                realized_pnl=excluded.realized_pnl,
-                updated_at=datetime('now')""",
-            (
-                pos.ticker, pos.title, pos.side, pos.count,
-                pos.avg_price, pos.market_price, pos.cost_basis,
-                pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
-            ),
-        )
+        await db.conn.execute(_UPSERT_POSITION_SQL, _position_params(pos))
 
 
 async def sync_positions(db: Database, positions: list[Position]) -> None:

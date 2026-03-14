@@ -737,9 +737,9 @@ def reconcile() -> None:
 
             fresh_tickers = {p.ticker: p for p in fresh}
 
-            added = set(fresh_tickers) - set(old_tickers)
-            removed = set(old_tickers) - set(fresh_tickers)
-            common = set(old_tickers) & set(fresh_tickers)
+            added = fresh_tickers.keys() - old_tickers.keys()
+            removed = old_tickers.keys() - fresh_tickers.keys()
+            common = old_tickers.keys() & fresh_tickers.keys()
             changed = [
                 t for t in common
                 if (old_tickers[t].count != fresh_tickers[t].count

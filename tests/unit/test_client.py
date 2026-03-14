@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from copy import copy
+from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 import pytest
 
 from gimmes.kalshi.client import KalshiClient, RateLimiter
+
+_LOAD_KEY = "gimmes.kalshi.client.load_private_key_for_config"
 
 
 class FakeConfig:
@@ -19,11 +22,12 @@ class FakeConfig:
         "__str__": lambda self: "/fake/key.pem",
     })()
     base_url = "https://api.example.com/trade-api/v2"
+    private_key_password = None
 
 
 @pytest.fixture
 def client():
-    with patch("gimmes.kalshi.client.load_private_key", return_value="fake"):
+    with patch(_LOAD_KEY, return_value="fake"):
         c = KalshiClient(FakeConfig())  # type: ignore[arg-type]
     c._get_auth_headers = lambda *a, **kw: {"Authorization": "test"}  # type: ignore[method-assign]
     return c
@@ -180,6 +184,30 @@ class TestRetry:
             await client.get("/test")
             # Should have used fallback delay (1.0 * 2^0 = 1.0)
             mock_sleep.assert_called()
+
+
+class TestPrivateKeyPassword:
+    def test_passes_none_when_no_password(self) -> None:
+        with patch(_LOAD_KEY, return_value="fake") as mock_load:
+            KalshiClient(FakeConfig())  # type: ignore[arg-type]
+        mock_load.assert_called_once_with(ANY, None)
+
+    def test_passes_password_string(self) -> None:
+        config = copy(FakeConfig())
+        config.private_key_password = "my-secret"
+        with patch(_LOAD_KEY, return_value="fake") as mock_load:
+            KalshiClient(config)  # type: ignore[arg-type]
+        mock_load.assert_called_once_with(ANY, "my-secret")
+
+    def test_propagates_key_load_error(self) -> None:
+        config = copy(FakeConfig())
+        config.private_key_password = None
+        with patch(
+            _LOAD_KEY,
+            side_effect=ValueError("set KALSHI_PRIVATE_KEY_PASSWORD"),
+        ):
+            with pytest.raises(ValueError, match="set KALSHI_PRIVATE_KEY_PASSWORD"):
+                KalshiClient(config)  # type: ignore[arg-type]
 
 
 class TestRateLimiter:
