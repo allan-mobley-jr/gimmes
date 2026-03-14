@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import click
 import typer
 from rich.console import Console
 
@@ -313,14 +314,17 @@ def validate(
 @app.command()
 def order(
     ticker: str = typer.Argument(..., help="Market ticker"),
-    action: str = typer.Option("buy", "--action", "-a", help="Order action (buy/sell)"),
+    action: str = typer.Option(
+        "buy", "--action", "-a", help="Order action (buy/sell)",
+        click_type=click.Choice(["buy", "sell"], case_sensitive=False),
+    ),
     side: str = typer.Option("yes", "--side", "-s", help="Order side (yes/no)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(
         0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
     ),
     probability: float = typer.Option(
-        0, "--prob", "-p", help="True probability (for auto-sizing and edge check)",
+        0, "--prob", "-p", help="True probability (buy only: auto-sizing and edge check)",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
@@ -360,7 +364,8 @@ def order(
                 positions = await get_all_positions(client)
                 await sync_positions(db, positions)
 
-            is_buy = action == "buy"
+            order_action = OrderAction(action.lower())
+            is_buy = order_action == OrderAction.BUY
 
             if is_buy and count <= 0 and probability > 0:
                 final_count = position_size(
@@ -444,7 +449,6 @@ def order(
                         )
 
             # --- Place the order ---
-            order_action = OrderAction(action)
             params = CreateOrderParams(
                 ticker=ticker,
                 action=order_action,
