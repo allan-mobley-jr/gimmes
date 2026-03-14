@@ -1168,12 +1168,17 @@ def _autonomous_loop(
     max_cycles: int = 0,
     pause_seconds: int = 30,
     no_dashboard: bool = False,
+    max_consecutive_failures: int = 5,
 ) -> None:
     """Run the caddy-shack orchestrator skill via claude -p in a loop.
 
     Each cycle invokes one complete trading pipeline (Monitor → Scout →
     Caddie → Closer → Scorecard). On exit or crash, the loop re-invokes
     and the orchestrator picks up where it left off by reading SQLite state.
+
+    A circuit breaker halts the loop after ``max_consecutive_failures``
+    successive non-zero exits to prevent runaway retries when the system
+    is in a broken state (e.g., expired credentials, API outage).
     """
     import os
     import shutil
@@ -1218,6 +1223,7 @@ def _autonomous_loop(
     console.print("Press Ctrl+C to stop\n")
 
     cycle = 0
+    consecutive_failures = 0
     try:
         while max_cycles == 0 or cycle < max_cycles:
             cycle += 1
@@ -1235,10 +1241,22 @@ def _autonomous_loop(
                 check=False,
             )
             if result.returncode != 0:
+                consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} exited with code"
-                    f" {result.returncode}[/yellow]"
+                    f" {result.returncode}"
+                    f" (failure {consecutive_failures}"
+                    f"/{max_consecutive_failures})[/yellow]"
                 )
+                if consecutive_failures >= max_consecutive_failures:
+                    console.print(
+                        f"[red bold]Circuit breaker tripped:"
+                        f" {max_consecutive_failures} consecutive"
+                        f" failures. Halting autonomous loop.[/red bold]"
+                    )
+                    break
+            else:
+                consecutive_failures = 0
 
             if max_cycles > 0 and cycle >= max_cycles:
                 break
