@@ -87,6 +87,8 @@ class KalshiClient:
             )
         return auth_headers(self._api_key, self._private_key, method, path)
 
+    _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
     async def _request(
         self,
         method: str,
@@ -96,38 +98,62 @@ class KalshiClient:
         json: dict | None = None,  # type: ignore[type-arg]
         max_retries: int = 3,
     ) -> dict:  # type: ignore[type-arg]
-        """Make an authenticated request with rate limiting and retry on 429."""
+        """Make an authenticated request with retry on 429/5xx/network errors."""
         is_write = method.upper() in ("POST", "PUT", "DELETE", "PATCH")
         await self._rate_limiter.acquire(is_write=is_write)
 
-        # Sign with full URL path (e.g. /trade-api/v2/portfolio/balance)
         sign_path = self._base_path + path
-        headers = self._get_auth_headers(method.upper(), sign_path)
+        response: httpx.Response | None = None
 
         for attempt in range(max_retries):
-            response = await self._client.request(
-                method,
-                path,
-                params=params,
-                json=json,
-                headers=headers,
-            )
-
-            if response.status_code == 429:
-                retry_after = float(response.headers.get("Retry-After", "1"))
-                await asyncio.sleep(retry_after * (attempt + 1))
-                # Re-sign with fresh timestamp
-                headers = self._get_auth_headers(method.upper(), sign_path)
+            # Re-sign each attempt for fresh timestamp
+            headers = self._get_auth_headers(method.upper(), sign_path)
+            try:
+                response = await self._client.request(
+                    method,
+                    path,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                )
+            except (
+                httpx.ConnectError,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.ConnectTimeout,
+            ):
+                if is_write and attempt > 0:
+                    raise  # Don't retry non-idempotent writes after first attempt
+                delay = min(1.0 * (2**attempt), 30.0)
+                await asyncio.sleep(delay)
                 continue
 
-            response.raise_for_status()
-            return response.json()  # type: ignore[no-any-return]
+            if response.status_code not in self._RETRYABLE_STATUS:
+                break
 
-        raise httpx.HTTPStatusError(
-            "Rate limited after max retries",
-            request=response.request,  # type: ignore[possibly-undefined]
-            response=response,  # type: ignore[possibly-undefined]
-        )
+            # Retryable HTTP status
+            if is_write and response.status_code != 429:
+                break  # Don't retry 5xx on writes (not idempotent)
+
+            retry_after = float(
+                response.headers.get("Retry-After", "1")
+            )
+            delay = min(retry_after * (2**attempt), 30.0)
+            await asyncio.sleep(delay)
+            continue
+
+        if response is None:
+            raise httpx.ConnectError("Failed to connect after retries")
+
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type or not response.content:
+            raise ValueError(
+                f"Unexpected response: content-type={content_type!r}, "
+                f"status={response.status_code}"
+            )
+        return response.json()  # type: ignore[no-any-return]
 
     async def get(self, path: str, params: dict | None = None) -> dict:  # type: ignore[type-arg]
         return await self._request("GET", path, params=params)
