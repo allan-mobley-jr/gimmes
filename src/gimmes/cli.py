@@ -490,9 +490,19 @@ def order(
 @app.command()
 def cancel(
     order_id: str = typer.Argument(..., help="Order ID to cancel"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation",
+    ),
 ) -> None:
     """Cancel a resting order."""
     config = load_config()
+
+    if config.is_championship and not yes:
+        confirm = typer.confirm(
+            f"Cancel order {order_id} in CHAMPIONSHIP mode?"
+        )
+        if not confirm:
+            raise typer.Abort()
 
     async def _cancel() -> None:
         async with trading_context(config) as (client, broker, _db):
