@@ -63,6 +63,7 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_rec_parameter ON recommendations(parameter_path);
     """),
     # Version 5 uses _run_alter_columns below (ALTER TABLE is not idempotent).
+    # Versions > 5 must go after the v5 block in run_migrations().
 ]
 
 # ALTER TABLE ADD COLUMN statements for v5. Each is run individually so that
@@ -124,5 +125,20 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 5
+
+    # Version 6: indexes on high-query tables
+    if current < 6:
+        await db.conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
+            CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_trades_action ON trades(action);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_candidates_scanned ON candidates(scanned_at);
+        """)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (6,)
+        )
+        await db.conn.commit()
+        current = 6
 
     return current

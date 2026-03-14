@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +13,7 @@ class Position(BaseModel):
 
     ticker: str
     title: str = ""
-    side: str = "yes"  # yes or no
+    side: Literal["yes", "no"] = "yes"
     count: int = 0
     avg_price: float = 0.0  # Average entry price in dollars
     market_price: float = 0.0  # Current market price
