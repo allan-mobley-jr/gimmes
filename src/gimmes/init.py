@@ -29,6 +29,12 @@ KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
 
 
+def _secure_env_file() -> None:
+    """Set .env file permissions to 0600 (owner read/write only)."""
+    if ENV_FILE.exists():
+        ENV_FILE.chmod(0o600)
+
+
 def _copy_example_file(example: Path, target: Path, label: str) -> bool:
     """Copy an example file to its target. Returns True if copied."""
     if target.exists():
@@ -39,6 +45,8 @@ def _copy_example_file(example: Path, target: Path, label: str) -> bool:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(example, target)
+    if target == ENV_FILE:
+        _secure_env_file()
     console.print(f"[green]Created {label}:[/green] {target}")
     return True
 
@@ -136,6 +144,7 @@ def _update_env_key_path(pem_path: Path) -> None:
         lines.append(f"KALSHI_PROD_PRIVATE_KEY_PATH={pem_path}")
 
     ENV_FILE.write_text("\n".join(lines) + "\n")
+    _secure_env_file()
     console.print(f"[green]Updated .env:[/green] KALSHI_PROD_PRIVATE_KEY_PATH={pem_path}")
 
 
@@ -175,6 +184,7 @@ def _offer_api_key_paste() -> None:
             lines.append(f"KALSHI_PROD_API_KEY={api_key.strip()}")
 
         ENV_FILE.write_text("\n".join(lines) + "\n")
+        _secure_env_file()
         console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
 
 
