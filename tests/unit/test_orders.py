@@ -30,7 +30,7 @@ class TestParseOrder:
         assert order.remaining_count == 5
 
     def test_handles_float_precision(self) -> None:
-        """Dollar strings parse to exact float values."""
+        """Dollar strings parse to standard float representation."""
         data = {
             "order_id": "ord-456",
             "ticker": "TEST",
