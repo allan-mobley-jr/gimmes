@@ -26,7 +26,7 @@ def taker_fee(contracts: int, price: float, multiplier: float = TAKER_MULTIPLIER
     Args:
         contracts: Number of contracts.
         price: Contract price in dollars (0.01-0.99).
-        multiplier: Fee multiplier (default 0.07, use 0.035 for index markets).
+        multiplier: Fee multiplier (default 0.07).
 
     Returns:
         Fee in dollars, rounded up to nearest cent.
