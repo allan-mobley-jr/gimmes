@@ -41,6 +41,7 @@ def validate_trade(
     config: GimmesConfig,
     *,
     is_taker: bool = False,
+    session_spent: float = 0.0,
 ) -> ValidationResult:
     """Run all pre-trade validation checks.
 
@@ -49,6 +50,7 @@ def validate_trade(
     2. Position count limit
     3. Single position size limit
     4. Balance sufficient
+    4b. Session spending cap (callers must track and pass session_spent)
     5. Edge after fees meets minimum (skipped when true_probability is None)
     6. Duplicate position check
     7. Settlement risk
@@ -82,6 +84,17 @@ def validate_trade(
         checks.append(f"Balance sufficient (${bankroll:.2f})")
     else:
         failures.append(f"Insufficient balance: need ${trade_dollars:.2f}, have ${bankroll:.2f}")
+
+    # 4b. Session spending cap (championship mode guard)
+    cap = config.risk.session_spending_cap
+    if cap > 0 and session_spent + trade_dollars > cap:
+        failures.append(
+            f"Session spending cap exceeded: "
+            f"${session_spent:.2f} spent + ${trade_dollars:.2f} "
+            f"> ${cap:.2f} cap"
+        )
+    elif cap > 0:
+        checks.append(f"Session spending OK (${session_spent + trade_dollars:.2f}/${cap:.2f})")
 
     # 5. Edge after fees (skipped when probability is unknown)
     if true_probability is not None:

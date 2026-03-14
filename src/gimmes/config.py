@@ -50,6 +50,7 @@ class SizingConfig(BaseModel):
 class RiskConfig(BaseModel):
     max_open_positions: int = 15
     daily_loss_limit_pct: float = 0.15
+    session_spending_cap: float = 500.0  # Max dollars committed per autonomous session
 
 
 class OrdersConfig(BaseModel):
