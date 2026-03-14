@@ -55,8 +55,22 @@ async def _connect(db_path: Path) -> AsyncIterator[aiosqlite.Connection]:
         await conn.close()
 
 
-def _table_exists_sql(table: str) -> str:
-    return f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
+_ALLOWED_POSITION_TABLES = {"paper_positions", "positions"}
+
+
+def _position_table(config: GimmesConfig) -> str:
+    """Return the position table name for the current mode."""
+    table = "positions" if config.is_championship else "paper_positions"
+    assert table in _ALLOWED_POSITION_TABLES  # defense-in-depth
+    return table
+
+
+async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
@@ -70,8 +84,8 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
     try:
         async with _connect(db_path) as conn:
             # Check if activity_log table exists
-            cursor = await conn.execute(_table_exists_sql("activity_log"))
-            if not await cursor.fetchone():
+            exists = await _table_exists(conn, "activity_log")
+            if not exists:
                 return resp
 
             cursor = await conn.execute(
@@ -128,7 +142,7 @@ async def get_portfolio(db_path: Path) -> PortfolioResponse:
                     resp.balance = snap["balance"]
 
             # Calculate unrealized P&L from positions
-            table = "paper_positions" if not config.is_championship else "positions"
+            table = _position_table(config)
             cursor = await conn.execute(
                 f"SELECT COALESCE(SUM(unrealized_pnl), 0) as total FROM {table} WHERE count > 0"
             )
@@ -156,7 +170,7 @@ def _row_get(row: aiosqlite.Row, key: str, default: object = None) -> object:
 async def get_positions(db_path: Path) -> list[PositionItem]:
     """Get open positions."""
     config = _config()
-    table = "paper_positions" if not config.is_championship else "positions"
+    table = _position_table(config)
     items: list[PositionItem] = []
 
     try:
@@ -318,7 +332,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
                 resp.daily_loss_pct = abs(resp.daily_pnl) / balance
 
             # Position count + largest position
-            table = "paper_positions" if not config.is_championship else "positions"
+            table = _position_table(config)
             cursor = await conn.execute(
                 f"SELECT COUNT(*) as cnt FROM {table} WHERE count > 0"
             )
@@ -344,8 +358,8 @@ async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
 
     try:
         async with _connect(db_path) as conn:
-            cursor = await conn.execute(_table_exists_sql("activity_log"))
-            if not await cursor.fetchone():
+            exists = await _table_exists(conn, "activity_log")
+            if not exists:
                 return items
 
             cursor = await conn.execute(
@@ -374,8 +388,8 @@ async def get_errors_data(db_path: Path, limit: int = 20) -> list[ErrorItem]:
 
     try:
         async with _connect(db_path) as conn:
-            cursor = await conn.execute(_table_exists_sql("error_log"))
-            if not await cursor.fetchone():
+            exists = await _table_exists(conn, "error_log")
+            if not exists:
                 return items
 
             cursor = await conn.execute(
@@ -408,8 +422,8 @@ async def get_recommendations_data(db_path: Path, limit: int = 10) -> list[Recom
 
     try:
         async with _connect(db_path) as conn:
-            cursor = await conn.execute(_table_exists_sql("recommendations"))
-            if not await cursor.fetchone():
+            exists = await _table_exists(conn, "recommendations")
+            if not exists:
                 return items
 
             cursor = await conn.execute(
@@ -462,7 +476,7 @@ async def get_change_fingerprint(db_path: Path) -> str:
     try:
         async with _connect(db_path) as conn:
             # Use the correct positions table for the current mode
-            pos_table = "paper_positions" if not config.is_championship else "positions"
+            pos_table = _position_table(config)
             for table in ("trades", pos_table, "snapshots", "candidates"):
                 # paper_positions uses ticker as PK, not id
                 col = "MAX(rowid)" if table == "paper_positions" else "MAX(id)"
@@ -471,8 +485,8 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 parts.append(str(row["m"] if row and row["m"] else 0))
 
             # activity_log may not exist yet
-            cursor = await conn.execute(_table_exists_sql("activity_log"))
-            if await cursor.fetchone():
+            exists = await _table_exists(conn, "activity_log")
+            if exists:
                 cursor = await conn.execute("SELECT MAX(id) as m FROM activity_log")
                 row = await cursor.fetchone()
                 parts.append(str(row["m"] if row and row["m"] else 0))
@@ -490,8 +504,8 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 parts.append("0")
 
             # recommendations changes
-            cursor = await conn.execute(_table_exists_sql("recommendations"))
-            if await cursor.fetchone():
+            exists = await _table_exists(conn, "recommendations")
+            if exists:
                 cursor = await conn.execute("SELECT MAX(id) as m FROM recommendations")
                 row = await cursor.fetchone()
                 parts.append(str(row["m"] if row and row["m"] else 0))
@@ -499,8 +513,8 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 parts.append("0")
 
             # error_log changes
-            cursor = await conn.execute(_table_exists_sql("error_log"))
-            if await cursor.fetchone():
+            exists = await _table_exists(conn, "error_log")
+            if exists:
                 cursor = await conn.execute("SELECT MAX(id) as m FROM error_log")
                 row = await cursor.fetchone()
                 parts.append(str(row["m"] if row and row["m"] else 0))
