@@ -92,8 +92,8 @@ def _simulate_maker_fill(
             total_notional=0.0, total_fees=0.0,
         )
 
-    # Determine available depth on the opposing side
-    available = _opposing_depth(params, orderbook)
+    # Determine available depth on the opposing side at eligible prices
+    available = _opposing_depth(params, orderbook, price_dollars)
     fill_count = min(params.count, available) if available > 0 else 0
 
     if fill_count == 0:
@@ -119,19 +119,37 @@ def _simulate_maker_fill(
 
 
 def _opposing_depth(
-    params: CreateOrderParams, orderbook: Orderbook
+    params: CreateOrderParams,
+    orderbook: Orderbook,
+    limit_price: float,
 ) -> int:
-    """Total quantity available on the opposing side of the orderbook."""
+    """Quantity available on the opposing side at price-eligible levels."""
     if params.action == OrderAction.BUY:
         if params.side == OrderSide.YES:
-            # Buying YES matches NO bids
-            return sum(lvl.quantity for lvl in orderbook.no_bids)
-        # Buying NO matches YES bids
-        return sum(lvl.quantity for lvl in orderbook.yes_bids)
-    # Selling matches bids on the same side
+            # BUY YES: NO bids where implied ask (1 - bid) <= limit
+            return sum(
+                lvl.quantity
+                for lvl in orderbook.no_bids
+                if round(1.0 - lvl.price, 2) <= limit_price
+            )
+        # BUY NO: YES bids where implied ask (1 - bid) <= limit
+        return sum(
+            lvl.quantity
+            for lvl in orderbook.yes_bids
+            if round(1.0 - lvl.price, 2) <= limit_price
+        )
+    # SELL: bids on same side where bid >= limit
     if params.side == OrderSide.YES:
-        return sum(lvl.quantity for lvl in orderbook.yes_bids)
-    return sum(lvl.quantity for lvl in orderbook.no_bids)
+        return sum(
+            lvl.quantity
+            for lvl in orderbook.yes_bids
+            if lvl.price >= limit_price
+        )
+    return sum(
+        lvl.quantity
+        for lvl in orderbook.no_bids
+        if lvl.price >= limit_price
+    )
 
 
 def _simulate_taker_fill(

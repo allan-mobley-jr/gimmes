@@ -110,7 +110,7 @@ class TestMakerFill:
         assert result.remaining_count == 10
 
     def test_maker_buy_yes_capped_by_depth(self, orderbook: Orderbook) -> None:
-        """Maker buy 500 YES but only 180 available on opposing side."""
+        """Maker buy 500 YES at 70c — only 180 eligible at that price."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
@@ -120,7 +120,25 @@ class TestMakerFill:
             post_only=True,
         )
         result = simulate_fill(params, orderbook)
-        # NO bids total depth = 180 + 250 = 430
+        # Only NO bid at 0.30 (ask=0.70) is eligible, qty=180
+        # NO bid at 0.28 (ask=0.72) exceeds limit
+        assert result.total_filled == 180
+        assert result.remaining_count == 320
+
+    def test_maker_buy_yes_higher_limit_gets_more_depth(
+        self, orderbook: Orderbook
+    ) -> None:
+        """Maker buy at 75c sees both NO bid levels."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=500,
+            yes_price=75,
+            post_only=True,
+        )
+        result = simulate_fill(params, orderbook)
+        # Both levels eligible: 180 + 250 = 430
         assert result.total_filled == 430
         assert result.remaining_count == 70
 
