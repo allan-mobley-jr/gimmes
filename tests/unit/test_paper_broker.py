@@ -536,6 +536,36 @@ class TestSellOrder:
         balance_after = await broker.get_balance()
         assert balance_after == balance_after_buy
 
+    @pytest.mark.asyncio
+    async def test_sell_more_than_held_is_rejected(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """SELL more contracts than held position is rejected."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+        balance_after_buy = await broker.get_balance()
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=10,  # More than the 5 held
+            yes_price=68,
+            post_only=True,
+        )
+        order = await broker.create_order(sell_params, orderbook)
+        assert order.status == "canceled"
+
+        balance_after = await broker.get_balance()
+        assert balance_after == balance_after_buy
+
 
 # ---------------------------------------------------------------------------
 # Taker partial fills

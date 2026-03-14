@@ -39,6 +39,9 @@ class PaperBroker:
 
     async def initialize(self) -> None:
         """Create paper tables and seed starting balance if needed."""
+        # Migrate paper_positions from old single-column PK to (ticker, side)
+        await self._migrate_positions_pk()
+
         await self._conn.executescript(PAPER_SCHEMA_SQL)
         await self._conn.commit()
 
@@ -69,6 +72,43 @@ class PaperBroker:
             (delta,),
         )
 
+    async def _migrate_positions_pk(self) -> None:
+        """Migrate paper_positions from single-column PK to (ticker, side)."""
+        cursor = await self._conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='table' AND name='paper_positions'"
+        )
+        if await cursor.fetchone() is None:
+            return  # Table doesn't exist yet; schema will create it
+
+        # Check if PK already includes side
+        info = await self._conn.execute("PRAGMA table_info(paper_positions)")
+        columns = await info.fetchall()
+        pk_cols = [c for c in columns if int(c["pk"]) > 0]
+        if len(pk_cols) > 1:
+            return  # Already migrated
+
+        # Rebuild table with new composite PK
+        await self._conn.executescript("""
+            ALTER TABLE paper_positions RENAME TO _paper_positions_old;
+            CREATE TABLE paper_positions (
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL DEFAULT 'yes',
+                count INTEGER NOT NULL DEFAULT 0,
+                avg_price REAL NOT NULL DEFAULT 0,
+                cost_basis REAL NOT NULL DEFAULT 0,
+                market_price REAL NOT NULL DEFAULT 0,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (ticker, side)
+            );
+            INSERT INTO paper_positions
+                SELECT * FROM _paper_positions_old;
+            DROP TABLE _paper_positions_old;
+        """)
+        await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
@@ -78,14 +118,15 @@ class PaperBroker:
         order_id = f"paper-{uuid.uuid4().hex[:12]}"
         now = datetime.datetime.now(datetime.UTC)
 
-        # SELL orders require a backing position on the same side
+        # SELL orders require a backing position with enough contracts
         if params.action == OrderAction.SELL:
             cursor = await self._conn.execute(
                 "SELECT count FROM paper_positions"
                 " WHERE ticker = ? AND side = ? AND count > 0",
                 (params.ticker, params.side.value),
             )
-            if await cursor.fetchone() is None:
+            pos_row = await cursor.fetchone()
+            if pos_row is None or int(pos_row["count"]) < params.count:
                 return await self._reject_order(order_id, params, now)
 
         # Run fill simulation
