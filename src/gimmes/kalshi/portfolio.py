@@ -62,14 +62,21 @@ async def get_all_positions(
     """Fetch all positions, handling pagination."""
     all_positions: list[Position] = []
     cursor: str | None = None
+    max_pages = 50
 
-    while True:
+    for _ in range(max_pages):
         positions, cursor = await get_positions(
             client, settlement_status=settlement_status, cursor=cursor
         )
         all_positions.extend(positions)
         if not cursor or not positions:
             break
+    else:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Pagination limit reached (%d pages, %d positions)",
+            max_pages, len(all_positions),
+        )
 
     return all_positions
 
