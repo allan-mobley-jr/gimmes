@@ -300,6 +300,7 @@ def validate(
 @app.command()
 def order(
     ticker: str = typer.Argument(..., help="Market ticker"),
+    action: str = typer.Option("buy", "--action", "-a", help="Order action (buy/sell)"),
     side: str = typer.Option("yes", "--side", "-s", help="Order side (yes/no)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(0, "--price", help="Price in cents (0=use market price)"),
@@ -343,7 +344,9 @@ def order(
                 balance = await get_balance(client)
                 positions = await get_all_positions(client)
 
-            if count <= 0 and probability > 0:
+            is_buy = action == "buy"
+
+            if is_buy and count <= 0 and probability > 0:
                 final_count = position_size(
                     balance, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
@@ -353,64 +356,83 @@ def order(
                 final_count = count
 
             if final_count <= 0:
-                console.print("[red]No contracts to order (count=0)[/red]")
+                hint = (
+                    " Provide --count N or --prob P for auto-sizing."
+                    if is_buy else " Provide --count N."
+                )
+                console.print(f"[red]No contracts to order (count=0).{hint}[/red]")
                 return
 
             final_price = price if price > 0 else int(mkt_price * 100)
             trade_dollars = final_count * (final_price / 100.0)
 
-            # --- Pre-trade validation ---
-            try:
-                async with Database(config.db_path) as db:
-                    daily_pnl = await get_daily_pnl(db)
-            except Exception as exc:
-                if force:
-                    daily_pnl = 0.0
-                    console.print(
-                        f"[yellow]Warning: Could not query daily P&L"
-                        f" ({exc}) — using 0.0 (--force)[/yellow]"
-                    )
-                else:
-                    console.print(
-                        f"[red bold]Cannot query daily P&L: {exc}[/red bold]"
-                    )
-                    console.print(
-                        "[red]Refusing to order with unknown P&L "
-                        "(daily loss limit may be breached). "
-                        "Use --force to override.[/red]"
-                    )
-                    return
+            # --- Pre-trade validation (buy orders only) ---
+            if is_buy:
+                try:
+                    async with Database(config.db_path) as db:
+                        daily_pnl = await get_daily_pnl(db)
+                except Exception as exc:
+                    if force:
+                        daily_pnl = 0.0
+                        console.print(
+                            f"[yellow]Warning: Could not query daily"
+                            f" P&L ({exc}) — using 0.0 (--force)"
+                            f"[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            f"[red bold]Cannot query daily P&L:"
+                            f" {exc}[/red bold]"
+                        )
+                        console.print(
+                            "[red]Refusing to order with unknown"
+                            " P&L (daily loss limit may be"
+                            " breached). Use --force to"
+                            " override.[/red]"
+                        )
+                        return
 
-            true_prob = probability if probability > 0 else None
-            existing_tickers = [p.ticker for p in positions]
-            is_taker = config.orders.preferred_order_type != "maker"
-            validation = validate_trade(
-                market, trade_dollars, true_prob, balance,
-                daily_pnl, len(positions), existing_tickers, config,
-                is_taker=is_taker,
-            )
+                true_prob = probability if probability > 0 else None
+                existing_tickers = [p.ticker for p in positions]
+                is_taker = (
+                    config.orders.preferred_order_type != "maker"
+                )
+                validation = validate_trade(
+                    market, trade_dollars, true_prob, balance,
+                    daily_pnl, len(positions), existing_tickers,
+                    config, is_taker=is_taker,
+                )
 
-            if not validation.approved:
-                console.print(f"\n[red bold]{validation.summary}[/red bold]")
-                for fail in validation.failures:
-                    console.print(f"  [red]✗[/red] {fail}")
-                if force:
+                if not validation.approved:
                     console.print(
-                        "[yellow bold]--force: Overriding validation failures![/yellow bold]"
+                        f"\n[red bold]{validation.summary}"
+                        f"[/red bold]"
                     )
+                    for fail in validation.failures:
+                        console.print(f"  [red]✗[/red] {fail}")
+                    if force:
+                        console.print(
+                            "[yellow bold]--force: Overriding"
+                            " validation failures!"
+                            "[/yellow bold]"
+                        )
+                    else:
+                        console.print(
+                            "[dim]Use --force to override"
+                            " (not recommended)[/dim]"
+                        )
+                        return
                 else:
-                    console.print(
-                        "[dim]Use --force to override (not recommended)[/dim]"
-                    )
-                    return
-            else:
-                for check in validation.checks:
-                    console.print(f"  [green]✓[/green] {check}")
+                    for check in validation.checks:
+                        console.print(
+                            f"  [green]✓[/green] {check}"
+                        )
 
             # --- Place the order ---
+            order_action = OrderAction(action)
             params = CreateOrderParams(
                 ticker=ticker,
-                action=OrderAction.BUY,
+                action=order_action,
                 side=OrderSide(side),
                 count=final_count,
                 yes_price=final_price if side == "yes" else None,
@@ -418,7 +440,10 @@ def order(
                 post_only=(config.orders.preferred_order_type == "maker"),
             )
 
-            msg = f"Placing order: {final_count}x {ticker} {side.upper()} @ {final_price}¢"
+            msg = (
+                f"Placing order: {action.upper()} {final_count}x"
+                f" {ticker} {side.upper()} @ {final_price}¢"
+            )
             console.print(msg)
 
             if broker:
