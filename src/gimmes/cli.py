@@ -387,6 +387,26 @@ def order(
             final_price = price / 100.0 if price > 0 else mkt_price
             trade_dollars = final_count * final_price
 
+            # --- Sell validation: check position exists and count ---
+            if not is_buy:
+                matching = [
+                    p for p in positions
+                    if p.ticker == ticker and p.side == side
+                ]
+                if not matching:
+                    console.print(
+                        f"[red]No {side.upper()} position in"
+                        f" {ticker} to sell[/red]"
+                    )
+                    return
+                held = matching[0].count
+                if final_count > held:
+                    console.print(
+                        f"[red]Cannot sell {final_count} contracts"
+                        f" — only {held} held[/red]"
+                    )
+                    return
+
             # --- Pre-trade validation (buy orders only) ---
             if is_buy:
                 try:
