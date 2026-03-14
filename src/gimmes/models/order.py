@@ -32,7 +32,7 @@ class CreateOrderParams(BaseModel):
     yes_price: float | None = Field(default=None, ge=0.0, le=1.0)
     no_price: float | None = Field(default=None, ge=0.0, le=1.0)
     client_order_id: str = ""
-    time_in_force: str = "gtc"  # gtc, fok, ioc
+    time_in_force: str = "good_till_canceled"
     post_only: bool = True  # Maker guarantee
 
     @property
