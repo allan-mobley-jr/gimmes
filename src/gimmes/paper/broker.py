@@ -39,6 +39,9 @@ class PaperBroker:
 
     async def initialize(self) -> None:
         """Create paper tables and seed starting balance if needed."""
+        # Migrate paper_positions from old single-column PK to (ticker, side)
+        await self._migrate_positions_pk()
+
         await self._conn.executescript(PAPER_SCHEMA_SQL)
         await self._conn.commit()
 
@@ -69,6 +72,43 @@ class PaperBroker:
             (delta,),
         )
 
+    async def _migrate_positions_pk(self) -> None:
+        """Migrate paper_positions from single-column PK to (ticker, side)."""
+        cursor = await self._conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='table' AND name='paper_positions'"
+        )
+        if await cursor.fetchone() is None:
+            return  # Table doesn't exist yet; schema will create it
+
+        # Check if PK already includes side
+        info = await self._conn.execute("PRAGMA table_info(paper_positions)")
+        columns = await info.fetchall()
+        pk_cols = [c for c in columns if int(c["pk"]) > 0]
+        if len(pk_cols) > 1:
+            return  # Already migrated
+
+        # Rebuild table with new composite PK
+        await self._conn.executescript("""
+            ALTER TABLE paper_positions RENAME TO _paper_positions_old;
+            CREATE TABLE paper_positions (
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL DEFAULT 'yes',
+                count INTEGER NOT NULL DEFAULT 0,
+                avg_price REAL NOT NULL DEFAULT 0,
+                cost_basis REAL NOT NULL DEFAULT 0,
+                market_price REAL NOT NULL DEFAULT 0,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (ticker, side)
+            );
+            INSERT INTO paper_positions
+                SELECT * FROM _paper_positions_old;
+            DROP TABLE _paper_positions_old;
+        """)
+        await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
@@ -77,6 +117,17 @@ class PaperBroker:
         """Simulate placing an order. Fills immediately if marketable."""
         order_id = f"paper-{uuid.uuid4().hex[:12]}"
         now = datetime.datetime.now(datetime.UTC)
+
+        # SELL orders require a backing position with enough contracts
+        if params.action == OrderAction.SELL:
+            cursor = await self._conn.execute(
+                "SELECT count FROM paper_positions"
+                " WHERE ticker = ? AND side = ? AND count > 0",
+                (params.ticker, params.side.value),
+            )
+            pos_row = await cursor.fetchone()
+            if pos_row is None or int(pos_row["count"]) < params.count:
+                return await self._reject_order(order_id, params, now)
 
         # Run fill simulation
         result = simulate_fill(params, orderbook)
@@ -94,14 +145,43 @@ class PaperBroker:
         # Balance delta for filled portion
         if result.total_filled > 0:
             if params.action == OrderAction.BUY:
-                await self._update_balance(-(result.total_notional + result.total_fees))
+                cost = result.total_notional + result.total_fees
+                resting_cost = 0.0
+                if result.remaining_count > 0 and params.post_only:
+                    resting_cost = result.remaining_count * (
+                        params.price_cents / 100.0
+                    )
+                balance = await self.get_balance()
+                if balance < cost + resting_cost:
+                    return await self._reject_order(order_id, params, now)
+                await self._update_balance(-cost)
             else:  # SELL — credit proceeds minus fees
-                await self._update_balance(result.total_notional - result.total_fees)
+                await self._update_balance(
+                    result.total_notional - result.total_fees
+                )
+        elif (
+            params.action == OrderAction.BUY
+            and result.remaining_count > 0
+            and params.post_only
+        ):
+            # No fills but resting — check balance for reservation
+            resting_cost = result.remaining_count * (
+                params.price_cents / 100.0
+            )
+            balance = await self.get_balance()
+            if balance < resting_cost:
+                return await self._reject_order(order_id, params, now)
 
         # Reserve balance only for resting BUY maker orders
-        if result.remaining_count > 0 and params.post_only and params.action == OrderAction.BUY:
+        if (
+            result.remaining_count > 0
+            and params.post_only
+            and params.action == OrderAction.BUY
+        ):
             resting_price = params.price_cents / 100.0
-            await self._update_balance(-(result.remaining_count * resting_price))
+            await self._update_balance(
+                -(result.remaining_count * resting_price)
+            )
 
         # Insert order record
         await self._conn.execute(
@@ -278,25 +358,27 @@ class PaperBroker:
             "SELECT * FROM paper_positions WHERE ticker = ? AND count > 0",
             (ticker,),
         )
-        row = await cursor.fetchone()
-        if row is None:
+        rows = await cursor.fetchall()
+        if not rows:
             return
 
-        count = int(row["count"])
-        avg_price = float(row["avg_price"])
-        side = row["side"]
+        for row in rows:
+            count = int(row["count"])
+            avg_price = float(row["avg_price"])
+            side = row["side"]
 
-        if side == "yes":
-            unrealized = (current_price - avg_price) * count
-        else:
-            unrealized = (avg_price - current_price) * count
+            if side == "yes":
+                unrealized = (current_price - avg_price) * count
+            else:
+                unrealized = (avg_price - current_price) * count
 
-        await self._conn.execute(
-            """UPDATE paper_positions
-               SET market_price = ?, unrealized_pnl = ?, updated_at = datetime('now')
-               WHERE ticker = ?""",
-            (current_price, unrealized, ticker),
-        )
+            await self._conn.execute(
+                """UPDATE paper_positions
+                   SET market_price = ?, unrealized_pnl = ?,
+                       updated_at = datetime('now')
+                   WHERE ticker = ? AND side = ?""",
+                (current_price, unrealized, ticker, side),
+            )
         await self._conn.commit()
 
     async def settle(self, ticker: str, result: str) -> None:
@@ -311,35 +393,74 @@ class PaperBroker:
             "SELECT * FROM paper_positions WHERE ticker = ? AND count > 0",
             (ticker,),
         )
-        row = await cursor.fetchone()
-        if row is None:
+        rows = await cursor.fetchall()
+        if not rows:
             return
 
-        count = int(row["count"])
-        side = row["side"]
-        cost_basis = float(row["cost_basis"])
+        for row in rows:
+            count = int(row["count"])
+            side = row["side"]
+            cost_basis = float(row["cost_basis"])
 
-        # Determine payout
-        won = (side == result)
-        payout = count * 1.0 if won else 0.0
-        realized_pnl = payout - cost_basis + float(row["realized_pnl"])
+            won = (side == result)
+            payout = count * 1.0 if won else 0.0
+            realized_pnl = payout - cost_basis + float(row["realized_pnl"])
 
-        # Credit payout to balance
-        await self._update_balance(payout)
+            await self._update_balance(payout)
 
-        # Zero out the position
-        await self._conn.execute(
-            """UPDATE paper_positions
-               SET count = 0, market_price = ?, unrealized_pnl = 0,
-                   realized_pnl = ?, updated_at = datetime('now')
-               WHERE ticker = ?""",
-            (1.0 if won else 0.0, realized_pnl, ticker),
-        )
+            await self._conn.execute(
+                """UPDATE paper_positions
+                   SET count = 0, market_price = ?, unrealized_pnl = 0,
+                       realized_pnl = ?, updated_at = datetime('now')
+                   WHERE ticker = ? AND side = ?""",
+                (1.0 if won else 0.0, realized_pnl, ticker, side),
+            )
         await self._conn.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _reject_order(
+        self,
+        order_id: str,
+        params: CreateOrderParams,
+        now: datetime.datetime,
+    ) -> Order:
+        """Record a canceled order and return it."""
+        await self._conn.execute(
+            """INSERT INTO paper_orders
+               (order_id, ticker, action, side, count, remaining_count,
+                yes_price, no_price, status, post_only,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'canceled', ?, ?, ?)""",
+            (
+                order_id,
+                params.ticker,
+                params.action.value,
+                params.side.value,
+                params.count,
+                params.count,
+                params.yes_price or 0,
+                params.no_price or 0,
+                1 if params.post_only else 0,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        await self._conn.commit()
+        return Order(
+            order_id=order_id,
+            ticker=params.ticker,
+            action=params.action,
+            side=params.side,
+            status="canceled",
+            yes_price=params.yes_price or 0,
+            no_price=params.no_price or 0,
+            count=params.count,
+            remaining_count=params.count,
+            created_time=now,
+        )
 
     async def _update_position_from_fills(
         self, params: CreateOrderParams, fill_result: FillResult
@@ -350,7 +471,7 @@ class PaperBroker:
         side = params.side.value
 
         cursor = await self._conn.execute(
-            "SELECT * FROM paper_positions WHERE ticker = ?", (ticker,)
+            "SELECT * FROM paper_positions WHERE ticker = ? AND side = ?", (ticker, side)
         )
         existing = await cursor.fetchone()
 
@@ -363,7 +484,7 @@ class PaperBroker:
 
         if params.action == OrderAction.BUY:
             if existing and int(existing["count"]) > 0:
-                # Add to existing position
+                # Add to existing position (side already validated by query)
                 old_count = int(existing["count"])
                 old_cost = float(existing["cost_basis"])
                 new_count = old_count + filled
@@ -373,8 +494,8 @@ class PaperBroker:
                 await self._conn.execute(
                     """UPDATE paper_positions
                        SET count = ?, avg_price = ?, cost_basis = ?, updated_at = datetime('now')
-                       WHERE ticker = ?""",
-                    (new_count, new_avg, new_cost, ticker),
+                       WHERE ticker = ? AND side = ?""",
+                    (new_count, new_avg, new_cost, ticker, side),
                 )
             else:
                 # New position
@@ -386,8 +507,8 @@ class PaperBroker:
                     """INSERT INTO paper_positions
                        (ticker, side, count, avg_price, cost_basis, market_price)
                        VALUES (?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(ticker) DO UPDATE SET
-                        side=excluded.side, count=excluded.count,
+                       ON CONFLICT(ticker, side) DO UPDATE SET
+                        count=excluded.count,
                         avg_price=excluded.avg_price, cost_basis=excluded.cost_basis,
                         market_price=excluded.market_price, updated_at=datetime('now')""",
                     (ticker, side, filled, avg_price, cost_basis, fill_price),
@@ -412,6 +533,6 @@ class PaperBroker:
                     """UPDATE paper_positions
                        SET count = ?, avg_price = ?, cost_basis = ?, realized_pnl = ?,
                            updated_at = datetime('now')
-                       WHERE ticker = ?""",
-                    (new_count, new_avg, new_cost, old_realized + realized, ticker),
+                       WHERE ticker = ? AND side = ?""",
+                    (new_count, new_avg, new_cost, old_realized + realized, ticker, side),
                 )

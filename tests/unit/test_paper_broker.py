@@ -480,7 +480,9 @@ class TestSellOrder:
     async def test_sell_without_position_is_noop(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """SELL on a ticker with no position should not crash or create a ghost position."""
+        """SELL with no position: no crash, no ghost position, no balance change."""
+        balance_before = await broker.get_balance()
+
         sell_params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.SELL,
@@ -489,12 +491,80 @@ class TestSellOrder:
             yes_price=68,
             post_only=True,
         )
-        # Should not raise
-        await broker.create_order(sell_params, orderbook)
+        order = await broker.create_order(sell_params, orderbook)
+
+        # Order should be canceled
+        assert order.status == "canceled"
+        assert order.remaining_count == 5
 
         # No position should be created
         positions = await broker.get_positions()
         assert len(positions) == 0
+
+        # Balance must be unchanged (no free money)
+        balance_after = await broker.get_balance()
+        assert balance_after == balance_before
+
+    @pytest.mark.asyncio
+    async def test_sell_wrong_side_is_rejected(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """SELL NO on a ticker with only a YES position is rejected."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+        balance_after_buy = await broker.get_balance()
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.NO,
+            count=5,
+            no_price=30,
+            post_only=True,
+        )
+        order = await broker.create_order(sell_params, orderbook)
+        assert order.status == "canceled"
+
+        # Balance unchanged
+        balance_after = await broker.get_balance()
+        assert balance_after == balance_after_buy
+
+    @pytest.mark.asyncio
+    async def test_sell_more_than_held_is_rejected(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """SELL more contracts than held position is rejected."""
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+        balance_after_buy = await broker.get_balance()
+
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=10,  # More than the 5 held
+            yes_price=68,
+            post_only=True,
+        )
+        order = await broker.create_order(sell_params, orderbook)
+        assert order.status == "canceled"
+
+        balance_after = await broker.get_balance()
+        assert balance_after == balance_after_buy
 
 
 # ---------------------------------------------------------------------------
@@ -533,3 +603,58 @@ class TestTakerPartialFill:
         expected_balance = 10_000.00 - notional - fee
         balance = await broker.get_balance()
         assert balance == pytest.approx(expected_balance)
+
+
+# ---------------------------------------------------------------------------
+# Negative balance guard
+# ---------------------------------------------------------------------------
+
+
+class TestNegativeBalanceGuard:
+    @pytest.mark.asyncio
+    async def test_buy_exceeding_balance_is_canceled(self, broker: PaperBroker) -> None:
+        """BUY that would exceed available balance is rejected."""
+        # Starting balance is $10,000. Try to buy 20,000 contracts at $0.70 = $14,000
+        ob = Orderbook(
+            ticker="EXPENSIVE",
+            yes_bids=[],
+            no_bids=[OrderbookLevel(price=0.30, quantity=20_000)],
+        )
+        params = CreateOrderParams(
+            ticker="EXPENSIVE",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=20_000,
+            yes_price=70,
+            post_only=False,
+        )
+        order = await broker.create_order(params, ob)
+        assert order.status == "canceled"
+
+        # Balance unchanged
+        balance = await broker.get_balance()
+        assert balance == 10_000.00
+
+    @pytest.mark.asyncio
+    async def test_resting_order_exceeding_balance_is_canceled(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Resting BUY that would reserve more than available balance is rejected."""
+        ob = Orderbook(
+            ticker="EXPENSIVE",
+            yes_bids=[],
+            no_bids=[],  # Nothing to fill, will rest
+        )
+        params = CreateOrderParams(
+            ticker="EXPENSIVE",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=20_000,
+            yes_price=70,
+            post_only=True,
+        )
+        order = await broker.create_order(params, ob)
+        assert order.status == "canceled"
+
+        balance = await broker.get_balance()
+        assert balance == 10_000.00
