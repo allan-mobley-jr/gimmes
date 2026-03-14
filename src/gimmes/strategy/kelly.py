@@ -88,8 +88,10 @@ def position_size(
     if max_position_dollars is not None:
         max_dollars = min(max_dollars, max_position_dollars)
 
-    # Convert to contracts
-    if market_price <= 0:
+    # Convert to contracts using effective cost (price + fee)
+    fee_per = fee_for_order(1, market_price, is_taker=is_taker)
+    cost_per_contract = market_price + fee_per
+    if cost_per_contract <= 0:
         return 0
-    contracts = int(max_dollars / market_price)
+    contracts = int(max_dollars / cost_per_contract)
     return max(contracts, 0)
