@@ -504,6 +504,30 @@ def order(
                 f" (status: {result.status})"
             )
 
+            # Log trade decision atomically with the order
+            if result.status in ("executed", "resting"):
+                from gimmes.models.trade import TradeDecision
+                from gimmes.store.queries import insert_trade
+
+                trade_action = (
+                    TradeDecision.Action.OPEN
+                    if is_buy
+                    else TradeDecision.Action.CLOSE
+                )
+                trade = TradeDecision(
+                    ticker=ticker,
+                    action=trade_action,
+                    side=side,
+                    count=final_count,
+                    price=final_price,
+                    model_probability=probability,
+                    edge=probability - final_price if probability > 0 else 0.0,
+                    rationale="CLI order",
+                    agent="cli",
+                    order_id=result.order_id,
+                )
+                await insert_trade(db, trade)
+
     _run(_order())
 
 
