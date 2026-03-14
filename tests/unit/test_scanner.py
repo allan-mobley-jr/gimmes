@@ -1,5 +1,7 @@
 """Unit tests for market scanner."""
 
+from datetime import UTC, datetime, timedelta
+
 from gimmes.config import GimmesConfig
 from gimmes.models.market import Market, MarketStatus
 from gimmes.strategy.scanner import filter_markets
@@ -15,6 +17,7 @@ def _make_market(**kwargs) -> Market:  # type: ignore[no-untyped-def]
         "volume": 1000,
         "volume_24h": 500,
         "open_interest": 200,
+        "close_time": datetime.now(UTC) + timedelta(days=7),
     }
     defaults.update(kwargs)
     return Market(**defaults)

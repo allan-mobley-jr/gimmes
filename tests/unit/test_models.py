@@ -32,9 +32,14 @@ class TestOrderbook:
         assert sample_orderbook.best_yes_ask == 0.70
 
     def test_depth_at_price(self, sample_orderbook: Orderbook) -> None:
-        # All levels at or above 0.65
-        depth = sample_orderbook.depth_at_price(0.65, "yes")
-        assert depth == 650  # 200 + 150 + 300
+        # YES buyer at 0.72: opposing NO bids at 0.30 (ask=0.70) and 0.29 (ask=0.71)
+        depth = sample_orderbook.depth_at_price(0.72, "yes")
+        assert depth == 430  # 180 + 250
+
+    def test_depth_at_price_exact(self, sample_orderbook: Orderbook) -> None:
+        # YES buyer at 0.70: only NO bid at 0.30 (ask=0.70) eligible
+        depth = sample_orderbook.depth_at_price(0.70, "yes")
+        assert depth == 180
 
     def test_empty_orderbook(self) -> None:
         ob = Orderbook(ticker="X")

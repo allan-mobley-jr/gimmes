@@ -6,6 +6,7 @@ from gimmes.config import GimmesConfig
 from gimmes.models.gimme import GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, Orderbook
 from gimmes.strategy.fees import edge_after_fees
+from gimmes.strategy.scanner import days_until
 
 
 def quick_score(market: Market, config: GimmesConfig) -> float:
@@ -66,6 +67,8 @@ def full_score(
     candidate: GimmeCandidate,
     orderbook: Orderbook | None,
     config: GimmesConfig,
+    *,
+    market: Market | None = None,
 ) -> GimmeScore:
     """Full gimme scoring with research inputs (0-100).
 
@@ -142,7 +145,22 @@ def full_score(
         settlement_score = 50.0
 
     # Time to resolution score (0-100) — sweet spot is 1-14 days
-    time_score = 50.0  # Default neutral (no close time info)
+    time_score = 30.0  # Conservative default when no time info
+    if market:
+        days = days_until(market.close_time)
+        if days is None:
+            days = days_until(market.expiration_time)
+        if days is not None:
+            if days < 1:
+                time_score = 20.0  # Too soon — limited time to enter/exit
+            elif days <= 14:
+                time_score = 100.0  # Sweet spot
+            elif days <= 30:
+                time_score = 70.0
+            elif days <= 60:
+                time_score = 40.0
+            else:
+                time_score = 15.0  # Very long-dated
 
     # Calculate weighted total
     total = (

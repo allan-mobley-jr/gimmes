@@ -80,14 +80,22 @@ class Orderbook(BaseModel):
         return None
 
     def depth_at_price(self, price: float, side: str = "yes") -> int:
-        """Total contracts available at or better than the given price."""
+        """Contracts available on the opposing side at or better than price.
+
+        For a YES buyer at price P, counts NO bids where implied ask
+        (1 - bid) <= P (i.e., sellers willing to sell at P or cheaper).
+        """
         total = 0
         if side == "yes":
-            for level in self.yes_bids:
-                if level.price >= price:
+            # YES buyer matches against NO bids (implied YES asks)
+            for level in self.no_bids:
+                implied_ask = round(1.0 - level.price, 2)
+                if implied_ask <= price:
                     total += level.quantity
         else:
-            for level in self.no_bids:
-                if level.price >= price:
+            # NO buyer matches against YES bids (implied NO asks)
+            for level in self.yes_bids:
+                implied_ask = round(1.0 - level.price, 2)
+                if implied_ask <= price:
                     total += level.quantity
         return total
