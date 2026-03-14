@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -1074,44 +1075,77 @@ def tune() -> None:
     _run(_tune())
 
 
-def _apply_toml_change(toml_path: "Path", parameter_path: str, new_value: str) -> None:
-    """Update a single value in gimmes.toml by rewriting the file."""
-    import re
-    from pathlib import Path
+def _apply_toml_change(
+    toml_path: Path, parameter_path: str, new_value: str
+) -> None:
+    """Update a single value in gimmes.toml using tomlkit for safe editing.
+
+    Supports arbitrary nesting depth (e.g., "scoring.weights.edge_size").
+    Preserves comments, formatting, and creates missing sections as needed.
+    Writes to a temp file first, validates the result, then replaces the original.
+    """
+    import shutil
+    import tempfile
+    import tomllib
+
+    import tomlkit
 
     path = Path(toml_path)
-    if not path.exists():
-        return
+    if path.exists():
+        doc = tomlkit.parse(path.read_text())
+    else:
+        doc = tomlkit.document()
 
-    text = path.read_text()
-    parts = parameter_path.split(".")
-    if len(parts) != 2:
-        raise ValueError(f"Unsupported parameter path '{parameter_path}': expected 'section.key' format")
-
-    section, key = parts
-
-    # Try to convert to the right type
+    # Convert value to the appropriate type
     try:
         if "." in new_value:
-            typed_value = str(float(new_value))
+            typed_value: object = float(new_value)
         else:
-            typed_value = str(int(new_value))
+            typed_value = int(new_value)
     except ValueError:
-        typed_value = f'"{new_value}"'
+        if new_value.lower() in ("true", "false"):
+            typed_value = new_value.lower() == "true"
+        else:
+            typed_value = new_value
 
-    # Find the key in the right section and replace its value
-    in_section = False
-    lines = text.split("\n")
-    new_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_section = stripped == f"[{section}]"
-        if in_section and re.match(rf"^{re.escape(key)}\s*=", stripped):
-            line = f"{key} = {typed_value}"
-        new_lines.append(line)
+    # Set the value using dotted path, creating tables as needed
+    parts = parameter_path.split(".")
+    current: dict = doc  # type: ignore[assignment]
+    for part in parts[:-1]:
+        if part not in current:
+            current[part] = tomlkit.table()
+        elif not isinstance(current[part], dict):
+            raise ValueError(
+                f"Cannot set '{parameter_path}': "
+                f"'{part}' is a scalar, not a table"
+            )
+        current = current[part]
+    current[parts[-1]] = typed_value
 
-    path.write_text("\n".join(new_lines))
+    # Write to temp file, validate, then replace
+    new_text = tomlkit.dumps(doc)
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"Generated invalid TOML: {e}") from e
+
+    # Ensure parent directory exists
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Backup original if it exists
+    if path.exists():
+        backup = path.with_name(path.name + ".bak")
+        shutil.copy2(path, backup)
+
+    # Atomic write via temp file
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".toml")
+    try:
+        with open(fd, "w") as f:
+            f.write(new_text)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 @app.command()
