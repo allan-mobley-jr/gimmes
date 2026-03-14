@@ -317,10 +317,12 @@ class TestUpdateEnvVar:
         env_file.write_text("# KALSHI_PRIVATE_KEY_PASSWORD=\n")
 
         with patch("gimmes.init.ENV_FILE", env_file):
-            _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", "secret")
+            _update_env_var(
+                "KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True
+            )
 
         content = env_file.read_text()
-        assert "KALSHI_PRIVATE_KEY_PASSWORD=secret" in content
+        assert 'KALSHI_PRIVATE_KEY_PASSWORD="secret"' in content
         # Should not be commented out
         lines = [
             line for line in content.splitlines()
@@ -334,10 +336,12 @@ class TestUpdateEnvVar:
         env_file.write_text("#KALSHI_PRIVATE_KEY_PASSWORD=\n")
 
         with patch("gimmes.init.ENV_FILE", env_file):
-            _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", "secret")
+            _update_env_var(
+                "KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True
+            )
 
         content = env_file.read_text()
-        assert "KALSHI_PRIVATE_KEY_PASSWORD=secret" in content
+        assert 'KALSHI_PRIVATE_KEY_PASSWORD="secret"' in content
         assert not content.strip().startswith("#")
 
     def test_does_not_match_similar_prefix(self, tmp_path: Path) -> None:
@@ -372,7 +376,6 @@ class TestClearShellHistory:
         with (
             patch.dict(os.environ, {"SHELL": "/bin/zsh"}),
             patch("gimmes.init.Path.home", return_value=tmp_path),
-            patch("gimmes.init.platform.system", return_value="Darwin"),
             patch("gimmes.init.typer.confirm", return_value=True),
         ):
             _clear_shell_history()
@@ -386,7 +389,6 @@ class TestClearShellHistory:
         with (
             patch.dict(os.environ, {"SHELL": "/bin/bash"}),
             patch("gimmes.init.Path.home", return_value=tmp_path),
-            patch("gimmes.init.platform.system", return_value="Linux"),
             patch("gimmes.init.typer.confirm", return_value=True),
         ):
             _clear_shell_history()
@@ -400,7 +402,6 @@ class TestClearShellHistory:
         with (
             patch.dict(os.environ, {"SHELL": "/bin/zsh"}),
             patch("gimmes.init.Path.home", return_value=tmp_path),
-            patch("gimmes.init.platform.system", return_value="Darwin"),
             patch("gimmes.init.typer.confirm", return_value=False),
         ):
             _clear_shell_history()

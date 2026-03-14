@@ -36,9 +36,15 @@ def load_private_key_for_config(
     try:
         return load_private_key(key_path, password=password)
     except TypeError as e:
+        # Distinguish "encrypted but no password" from "wrong key type"
+        if "encrypt" in str(e).lower():
+            raise ValueError(
+                f"Failed to load private key from {key_path}: {e} "
+                "(key appears encrypted — set "
+                "KALSHI_PRIVATE_KEY_PASSWORD)"
+            ) from e
         raise ValueError(
-            f"Failed to load private key from {key_path}: {e} "
-            "(key appears encrypted — set KALSHI_PRIVATE_KEY_PASSWORD)"
+            f"Failed to load private key from {key_path}: {e}"
         ) from e
     except ValueError as e:
         msg = f"Failed to load private key from {key_path}: {e}"

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import glob
 import os
-import platform
 import stat
-import subprocess
 from pathlib import Path
 
 import typer
@@ -227,6 +225,8 @@ def _update_env_var(
     content = ENV_FILE.read_text()
     lines = content.splitlines()
     updated = False
+    # Quote value to handle special chars (#, spaces)
+    quoted = f'"{value}"' if sensitive else value
 
     for i, line in enumerate(lines):
         # Strip leading comment markers: "# ", "#", or just whitespace
@@ -236,12 +236,12 @@ def _update_env_var(
         if stripped.startswith(f"{var_name}=") or stripped.startswith(
             f"{var_name} ="
         ):
-            lines[i] = f"{var_name}={value}"
+            lines[i] = f"{var_name}={quoted}"
             updated = True
             break
 
     if not updated:
-        lines.append(f"{var_name}={value}")
+        lines.append(f"{var_name}={quoted}")
 
     ENV_FILE.write_text("\n".join(lines) + "\n")
     _secure_env_file()
@@ -285,8 +285,6 @@ def _clear_shell_history() -> None:
     recording the pasted values, but this provides defense in depth.
     """
     shell = os.environ.get("SHELL", "")
-    system = platform.system()
-
     home = Path.home()
     history_files: list[Path] = []
 
@@ -300,14 +298,6 @@ def _clear_shell_history() -> None:
     # Only target files that actually exist
     targets = [hf for hf in history_files if hf.exists()]
     if not targets:
-        return
-
-    if system not in ("Darwin", "Linux"):
-        console.print(
-            "\n[yellow]Could not clear shell history automatically.[/yellow]"
-            "\nClear your shell history manually to remove any "
-            "pasted credentials."
-        )
         return
 
     console.print(
@@ -325,13 +315,10 @@ def _clear_shell_history() -> None:
     failed: list[str] = []
     for hf in targets:
         try:
-            subprocess.run(
-                ["truncate", "-s", "0", str(hf)],
-                check=True,
-                capture_output=True,
-            )
+            with open(hf, "w") as f:
+                f.truncate(0)
             cleared.append(str(hf))
-        except (OSError, subprocess.CalledProcessError):
+        except OSError:
             failed.append(str(hf))
 
     if cleared:
