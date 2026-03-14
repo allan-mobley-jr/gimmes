@@ -122,20 +122,29 @@ class KalshiWebSocket:
         self._subscriptions.update(channels)
         for ch in channels:
             existing = self._subscription_tickers.get(ch)
-            if existing is not None and tickers is not None:
-                self._subscription_tickers[ch] = list(set(existing + tickers))
+            if existing is None and ch in self._subscription_tickers:
+                # Already subscribed to all tickers — don't narrow
+                pass
+            elif existing is not None and tickers is not None:
+                self._subscription_tickers[ch] = sorted(set(existing + tickers))
             else:
                 self._subscription_tickers[ch] = tickers
         logger.info("Subscribed to channels: %s (msg_id=%d)", channels, msg_id)
 
     async def unsubscribe(self, channels: list[str]) -> None:
         """Unsubscribe from channels using subscription IDs."""
-        if not self._connection:
-            return
-
         sids: list[int] = []
         for ch in channels:
             sids.extend(self._sid_map.pop(ch, []))
+
+        # Always update local tracking, even if disconnected
+        self._subscriptions -= set(channels)
+        for ch in channels:
+            self._subscription_tickers.pop(ch, None)
+
+        if not self._connection:
+            logger.info("Unsubscribed from channels (offline): %s", channels)
+            return
 
         if sids:
             msg_id = next(self._id_counter)
@@ -167,11 +176,7 @@ class KalshiWebSocket:
                 },
             }
             await self._connection.send(json.dumps(cmd))
-
-        self._subscriptions -= set(channels)
-        for ch in channels:
-            self._subscription_tickers.pop(ch, None)
-        logger.info("Unsubscribed from channels: %s", channels)
+            logger.info("Unsubscribed from channels: %s", channels)
 
     def _process_message(self, message: dict[str, Any]) -> None:
         """Process control messages (subscription confirmations, seq tracking)."""
@@ -202,14 +207,14 @@ class KalshiWebSocket:
         self._last_seq = None
 
         # Group by tickers to minimize subscribe calls
-        ticker_groups: dict[tuple[str, ...] | None, list[str]] = {}
+        ticker_groups: dict[frozenset[str] | None, list[str]] = {}
         for ch in channels_to_restore:
             tickers = self._subscription_tickers.get(ch)
-            key = tuple(tickers) if tickers else None
+            key = frozenset(tickers) if tickers else None
             ticker_groups.setdefault(key, []).append(ch)
 
         for ticker_key, channels in ticker_groups.items():
-            tickers = list(ticker_key) if ticker_key else None
+            tickers = sorted(ticker_key) if ticker_key else None
             await self.subscribe(channels, tickers)
             logger.info("Re-subscribed to channels: %s", channels)
 
@@ -237,6 +242,8 @@ class KalshiWebSocket:
                 # Connection closed gracefully (iterator exhausted)
                 if not self._running:
                     return
+            except asyncio.CancelledError:
+                raise
             except websockets.ConnectionClosed as e:
                 logger.info("WebSocket connection closed: %s", e)
             except Exception:
@@ -274,6 +281,8 @@ class KalshiWebSocket:
                 backoff = _INITIAL_BACKOFF
                 attempts = 0
                 logger.info("Reconnected and re-subscribed successfully")
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Reconnection failed")
 

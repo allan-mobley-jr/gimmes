@@ -170,3 +170,27 @@ class TestTickerAccumulation:
 
         await ws.subscribe(["ticker"])
         assert ws._subscription_tickers["ticker"] is None
+
+    async def test_none_tickers_not_narrowed_by_specific_subscribe(self, ws):
+        """Once subscribed with None (all tickers), don't narrow on later calls."""
+        ws._connection = AsyncMock()
+        ws._running = True
+
+        await ws.subscribe(["ticker"])  # None = all tickers
+        await ws.subscribe(["ticker"], ["AAPL"])  # Should not narrow
+
+        assert ws._subscription_tickers["ticker"] is None
+
+
+class TestUnsubscribeWhileDisconnected:
+    async def test_updates_tracking_when_disconnected(self, ws):
+        """Unsubscribe should update local state even if not connected."""
+        ws._connection = None
+        ws._subscriptions = {"ticker", "trade"}
+        ws._subscription_tickers = {"ticker": None, "trade": None}
+
+        await ws.unsubscribe(["ticker"])
+
+        assert "ticker" not in ws._subscriptions
+        assert "ticker" not in ws._subscription_tickers
+        assert "trade" in ws._subscriptions
