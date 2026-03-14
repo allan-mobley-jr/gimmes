@@ -1248,7 +1248,8 @@ def _autonomous_loop(
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
-                if consecutive_failures >= max_consecutive_failures:
+                if (max_consecutive_failures > 0
+                        and consecutive_failures >= max_consecutive_failures):
                     console.print(
                         f"[red bold]Circuit breaker tripped:"
                         f" {max_consecutive_failures} consecutive"
