@@ -43,13 +43,18 @@ class TestOrderbook:
 
 
 class TestGimmeScore:
-    def test_qualifies(self) -> None:
+    def test_qualifies_default_threshold(self) -> None:
         score = GimmeScore(total=80)
-        assert score.qualifies is True
+        assert score.qualifies() is True
 
-    def test_does_not_qualify(self) -> None:
+    def test_does_not_qualify_default_threshold(self) -> None:
         score = GimmeScore(total=50)
-        assert score.qualifies is False
+        assert score.qualifies() is False
+
+    def test_qualifies_custom_threshold(self) -> None:
+        score = GimmeScore(total=80)
+        assert score.qualifies(threshold=85) is False
+        assert score.qualifies(threshold=75) is True
 
 
 class TestOrder:
