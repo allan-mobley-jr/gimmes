@@ -22,7 +22,9 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE TABLE IF NOT EXISTS error_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            severity TEXT NOT NULL CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+            severity TEXT NOT NULL CHECK (
+                severity IN ('debug', 'info', 'warning', 'error', 'critical')
+            ),
             category TEXT NOT NULL CHECK (category IN (
                 'api_error', 'auth_failure', 'data_integrity', 'agent_failure',
                 'order_failure', 'risk_breach', 'config_error', 'network_error', 'paper_broker'

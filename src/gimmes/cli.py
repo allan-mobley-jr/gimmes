@@ -723,10 +723,14 @@ def log_outcome(
             updated = await update_trade_outcome(db, ticker, outcome)
             if updated:
                 console.print(
-                    f"[green]Recorded outcome '{outcome}' for {updated} trade(s) on {ticker}[/green]"
+                    f"[green]Recorded outcome '{outcome}' for"
+                    f" {updated} trade(s) on {ticker}[/green]"
                 )
             else:
-                console.print(f"[yellow]No trades found for {ticker} (or already recorded)[/yellow]")
+                console.print(
+                    f"[yellow]No trades found for {ticker}"
+                    " (or already recorded)[/yellow]"
+                )
 
     _run(_log())
 
@@ -758,7 +762,9 @@ def log_activity(
 
 @app.command(name="log-error")
 def log_error(
-    severity: str = typer.Option("error", "--severity", "-s", help="debug/info/warning/error/critical"),
+    severity: str = typer.Option(
+        "error", "--severity", "-s", help="Severity level"
+    ),
     category: str = typer.Option("api_error", "--category", help="Error category"),
     code: str = typer.Option("", "--code", help="Error code identifier"),
     component: str = typer.Option("", "--component", help="Component that raised the error"),
@@ -908,8 +914,12 @@ def resolve_error_cmd(
 
 @app.command()
 def lesson(
-    analysis: str | None = typer.Option(None, "--analysis", "-a", help="Run specific analysis (threshold/edge_decay/kelly/scanner/missed)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show recommendations without persisting"),
+    analysis: str | None = typer.Option(
+        None, "--analysis", "-a", help="Analysis type to run",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show without persisting",
+    ),
 ) -> None:
     """Run strategy analysis and show parameter recommendations."""
     config = load_config()
@@ -929,7 +939,10 @@ def lesson(
             recs = run_all_analyses(all_trades, candidates, config)
 
             if not recs:
-                console.print("[dim]No recommendations — insufficient data or current parameters are optimal[/dim]")
+                console.print(
+                    "[dim]No recommendations — insufficient data"
+                    " or current parameters are optimal[/dim]"
+                )
                 return
 
             # Filter to specific analysis type if requested
@@ -965,10 +978,16 @@ def lesson(
                 for rec in new_recs:
                     await insert_recommendation(db, rec)
                 if new_recs:
-                    console.print(f"[green]Saved {len(new_recs)} recommendation(s) to database[/green]")
+                    console.print(
+                        f"[green]Saved {len(new_recs)}"
+                        " recommendation(s) to database[/green]"
+                    )
                 skipped = len(recs) - len(new_recs)
                 if skipped:
-                    console.print(f"[dim]Skipped {skipped} duplicate(s) (pending recs already exist)[/dim]")
+                    console.print(
+                        f"[dim]Skipped {skipped} duplicate(s)"
+                        " (pending recs already exist)[/dim]"
+                    )
 
             # Show past recommendations
             past = await get_recommendations(db, status="pending", limit=10)
@@ -996,8 +1015,12 @@ def lesson(
 
 @app.command()
 def recommendations(
-    status: str | None = typer.Option(None, "--status", "-s", help="Filter by status (pending/implemented/rejected/superseded)"),
-    parameter: str | None = typer.Option(None, "--parameter", "-p", help="Filter by parameter path"),
+    status: str | None = typer.Option(
+        None, "--status", "-s", help="Filter by status",
+    ),
+    parameter: str | None = typer.Option(
+        None, "--parameter", "-p", help="Filter by parameter path",
+    ),
     limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
 ) -> None:
     """View past strategy recommendations."""
@@ -1085,16 +1108,19 @@ def tune() -> None:
                         row["recommended_value"],
                     )
                     await update_recommendation_status(db, row["id"], "implemented")
-                    console.print(f"  [green]Applied and marked as implemented[/green]")
+                    console.print("  [green]Applied and marked as implemented[/green]")
                     applied += 1
                 else:
                     reject = typer.confirm("  Mark as rejected?", default=False)
                     if reject:
                         await update_recommendation_status(db, row["id"], "rejected")
-                        console.print(f"  [dim]Marked as rejected[/dim]")
+                        console.print("  [dim]Marked as rejected[/dim]")
 
             if applied:
-                console.print(f"\n[green]Applied {applied} change(s) to {DEFAULT_CONFIG_PATH}[/green]")
+                console.print(
+                    f"\n[green]Applied {applied} change(s)"
+                    f" to {DEFAULT_CONFIG_PATH}[/green]"
+                )
                 console.print("[dim]Restart the trading loop for changes to take effect[/dim]")
 
     _run(_tune())
