@@ -75,7 +75,7 @@ def mode() -> None:
 
         if config.api_key and config.private_key_path.exists():
             try:
-                async with trading_context(config) as (client, broker, db):
+                async with trading_context(config) as (client, broker, _db):
                     if broker:
                         balance = await broker.get_balance()
                     else:
@@ -192,7 +192,7 @@ def size(
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
         from gimmes.strategy.kelly import kelly_fraction, position_size
 
-        async with trading_context(config) as (client, broker, db):
+        async with trading_context(config) as (client, broker, _db):
             market = await get_market(client, ticker)
 
             if broker:
@@ -342,8 +342,10 @@ def order(
                 positions = await broker.get_positions()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.store.queries import sync_positions
                 balance = await get_balance(client)
                 positions = await get_all_positions(client)
+                await sync_positions(db, positions)
 
             is_buy = action == "buy"
 
@@ -476,7 +478,7 @@ def cancel(
     config = load_config()
 
     async def _cancel() -> None:
-        async with trading_context(config) as (client, broker, db):
+        async with trading_context(config) as (client, broker, _db):
             if broker:
                 await broker.cancel_order(order_id)
             else:
