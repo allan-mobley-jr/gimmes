@@ -517,6 +517,62 @@ def cancel(
 
 
 @app.command()
+def trades(
+    ticker: str | None = typer.Option(
+        None, "--ticker", "-t", help="Filter by ticker",
+    ),
+    action: str | None = typer.Option(
+        None, "--action", "-a", help="Filter by action (open/close/skip)",
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-n", help="Number of records to show",
+    ),
+) -> None:
+    """List individual trade records from the database."""
+
+    async def _trades() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_trades
+
+        async with Database() as db:
+            records = await get_trades(
+                db, ticker=ticker, action=action, limit=limit,
+            )
+
+        if not records:
+            console.print("[dim]No trade records found[/dim]")
+            return
+
+        table = Table(title=f"Trade History (last {limit})")
+        table.add_column("Ticker")
+        table.add_column("Action")
+        table.add_column("Side")
+        table.add_column("Count", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Edge", justify="right")
+        table.add_column("Score", justify="right")
+        table.add_column("Timestamp")
+
+        for t in records:
+            table.add_row(
+                str(t.get("ticker", "")),
+                str(t.get("action", "")),
+                str(t.get("side", "")),
+                str(t.get("count", 0)),
+                f"${t.get('price', 0):.2f}",
+                f"{t.get('edge', 0):.1%}",
+                f"{t.get('gimme_score', 0):.0f}",
+                str(t.get("timestamp", ""))[:19],
+            )
+
+        console.print(table)
+
+    _run(_trades())
+
+
+@app.command()
 def positions() -> None:
     """List open positions."""
     config = load_config()
