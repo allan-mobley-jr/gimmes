@@ -20,11 +20,13 @@ Log the beginning of this cycle to the activity feed. The cycle number is passed
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase start --message "Cycle $GIMMES_CYCLE started"
 ```
 
-### Step 1: State Check
+### Step 1: Reconcile & State Check
 
-Before doing anything, assess the current state:
+Reconcile local position data with the authoritative source to recover from
+any prior crash, then assess the current state:
 
 ```bash
+python -m gimmes reconcile
 python -m gimmes risk-check
 python -m gimmes positions
 ```
@@ -93,7 +95,7 @@ Launch the Closer agent (`closer.md`) to:
 1. Run `python -m gimmes validate TICKER --prob P` for each candidate
 2. If validation passes, run `python -m gimmes size TICKER --prob P`
 3. Place the order: `python -m gimmes order TICKER --prob P --yes`
-4. Log the trade: `python -m gimmes log-trade TICKER --action open --prob P --score S --rationale "..."`
+   (The order command logs the trade and syncs positions atomically — no separate log-trade needed.)
 
 Log Closer completion:
 ```bash

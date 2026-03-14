@@ -489,25 +489,24 @@ def order(
                 orderbook = await get_orderbook(client, ticker)
                 result = await broker.create_order(params, orderbook)
                 label = "[yellow]PAPER[/yellow] "
+                positions_for_sync = await broker.get_positions()
             else:
                 from gimmes.kalshi.orders import create_order
                 from gimmes.kalshi.portfolio import get_all_positions as refresh_pos
-                from gimmes.store.queries import sync_positions
                 result = await create_order(client, params)
                 label = ""
-                # Sync positions to local DB after championship order
-                pos_list = await refresh_pos(client)
-                await sync_positions(db, pos_list)
+                positions_for_sync = await refresh_pos(client)
 
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
                 f" (status: {result.status})"
             )
 
-            # Log trade decision atomically with the order
+            # Sync positions + log trade atomically so a crash can't
+            # leave positions stale while a trade is recorded (or vice versa)
             if result.status in ("executed", "resting"):
                 from gimmes.models.trade import TradeDecision
-                from gimmes.store.queries import insert_trade
+                from gimmes.store.queries import sync_positions_with_trade
 
                 trade_action = (
                     TradeDecision.Action.OPEN
@@ -526,7 +525,10 @@ def order(
                     agent="cli",
                     order_id=result.order_id,
                 )
-                await insert_trade(db, trade)
+                await sync_positions_with_trade(db, positions_for_sync, trade)
+            else:
+                from gimmes.store.queries import sync_positions
+                await sync_positions(db, positions_for_sync)
 
     _run(_order())
 
@@ -704,6 +706,64 @@ def risk_check() -> None:
                     console.print(f"  [red]✗[/red] {label}: {check.reason}")
 
     _run(_check())
+
+
+@app.command()
+def reconcile() -> None:
+    """Sync local position data with the authoritative source.
+
+    In driving range mode, copies paper_positions to the main positions table.
+    In championship mode, fetches positions from the Kalshi API.
+    Reports any differences found.
+    """
+    config = load_config()
+
+    async def _reconcile() -> None:
+        from gimmes.store.queries import get_positions, sync_positions
+
+        async with trading_context(config) as (client, broker, db):
+            old_positions = await get_positions(db)
+            old_tickers = {p.ticker: p for p in old_positions}
+
+            if broker:
+                fresh = await broker.get_positions()
+                source = "paper broker"
+            else:
+                from gimmes.kalshi.portfolio import get_all_positions
+                fresh = await get_all_positions(client)
+                source = "Kalshi API"
+
+            await sync_positions(db, fresh)
+
+            fresh_tickers = {p.ticker: p for p in fresh}
+
+            added = set(fresh_tickers) - set(old_tickers)
+            removed = set(old_tickers) - set(fresh_tickers)
+            common = set(old_tickers) & set(fresh_tickers)
+            changed = [
+                t for t in common
+                if (old_tickers[t].count != fresh_tickers[t].count
+                    or old_tickers[t].side != fresh_tickers[t].side)
+            ]
+
+            if not added and not removed and not changed:
+                console.print(
+                    f"[green]Positions in sync with {source}"
+                    f" ({len(fresh)} positions)[/green]"
+                )
+            else:
+                console.print(f"[bold]Reconciled with {source}:[/bold]")
+                for t in added:
+                    console.print(f"  [green]+[/green] {t} ({fresh_tickers[t].count} contracts)")
+                for t in removed:
+                    console.print(f"  [red]-[/red] {t} (removed)")
+                for t in changed:
+                    console.print(
+                        f"  [yellow]~[/yellow] {t}: "
+                        f"{old_tickers[t].count} → {fresh_tickers[t].count} contracts"
+                    )
+
+    _run(_reconcile())
 
 
 @app.command()
