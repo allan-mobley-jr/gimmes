@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS paper_fills (
 );
 
 CREATE TABLE IF NOT EXISTS paper_positions (
-    ticker TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
     side TEXT NOT NULL DEFAULT 'yes',
     count INTEGER NOT NULL DEFAULT 0,
     avg_price REAL NOT NULL DEFAULT 0,
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     market_price REAL NOT NULL DEFAULT 0,
     unrealized_pnl REAL NOT NULL DEFAULT 0,
     realized_pnl REAL NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (ticker, side)
 );
 """
