@@ -87,7 +87,7 @@ class TestErrorQueries:
 
     async def test_filter_unresolved(self, db: Database) -> None:
         entry = ErrorLogEntry(message="unresolved")
-        row_id = await insert_error(db, entry)
+        await insert_error(db, entry)
 
         resolved_entry = ErrorLogEntry(message="resolved", resolved=True)
         await insert_error(db, resolved_entry)

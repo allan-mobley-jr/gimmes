@@ -22,7 +22,6 @@ from gimmes.clubhouse.data import (
 )
 from gimmes.clubhouse.models import (
     ConfigResponse,
-    ErrorItem,
     MetricsResponse,
     PortfolioResponse,
     RecommendationItem,
