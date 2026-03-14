@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -85,6 +87,7 @@ class Database:
         try:
             self._conn.row_factory = aiosqlite.Row
             await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.execute("PRAGMA busy_timeout=5000")
             await self._conn.executescript(SCHEMA_SQL)
             await self._conn.commit()
             # Run any pending migrations
@@ -105,6 +108,25 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database not connected. Call connect() first.")
         return self._conn
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Explicit transaction with automatic COMMIT/ROLLBACK.
+
+        Usage:
+            async with db.transaction():
+                await db.conn.execute("INSERT ...")
+                await db.conn.execute("UPDATE ...")
+            # COMMIT happens here on success, ROLLBACK on exception
+        """
+        conn = self.conn
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
 
     async def __aenter__(self) -> Database:
         await self.connect()
