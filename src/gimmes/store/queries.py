@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TypedDict
 
 from gimmes.models.error import ErrorLogEntry
@@ -35,8 +36,8 @@ class TradeRecord(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 
-async def insert_trade(db: Database, trade: TradeDecision) -> int:
-    """Insert a trade decision record. Returns the row ID."""
+async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
+    """Core trade insert SQL. Caller manages the transaction."""
     cursor = await db.conn.execute(
         """INSERT INTO trades
            (ticker, action, side, count, price, model_probability,
@@ -58,8 +59,14 @@ async def insert_trade(db: Database, trade: TradeDecision) -> int:
             trade.timestamp.isoformat(),
         ),
     )
-    await db.conn.commit()
     return cursor.lastrowid or 0
+
+
+async def insert_trade(db: Database, trade: TradeDecision) -> int:
+    """Insert a trade decision record. Returns the row ID."""
+    row_id = await _insert_trade_row(db, trade)
+    await db.conn.commit()
+    return row_id
 
 
 async def get_trades(
@@ -140,47 +147,91 @@ async def upsert_position(db: Database, pos: Position) -> None:
     await db.conn.commit()
 
 
+async def _sync_positions_rows(db: Database, positions: list[Position]) -> None:
+    """Core position sync SQL. Caller manages the transaction."""
+    current_tickers = {p.ticker for p in positions}
+    # Remove positions that no longer exist
+    cursor = await db.conn.execute("SELECT ticker FROM positions")
+    for row in await cursor.fetchall():
+        if row["ticker"] not in current_tickers:
+            await db.conn.execute(
+                "DELETE FROM positions WHERE ticker = ?", (row["ticker"],)
+            )
+    # Upsert current positions
+    for pos in positions:
+        await db.conn.execute(
+            """INSERT INTO positions
+               (ticker, title, side, count, avg_price, market_price,
+                cost_basis, market_value, unrealized_pnl, realized_pnl)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(ticker) DO UPDATE SET
+                title=excluded.title, side=excluded.side,
+                count=excluded.count, avg_price=excluded.avg_price,
+                market_price=excluded.market_price,
+                cost_basis=excluded.cost_basis,
+                market_value=excluded.market_value,
+                unrealized_pnl=excluded.unrealized_pnl,
+                realized_pnl=excluded.realized_pnl,
+                updated_at=datetime('now')""",
+            (
+                pos.ticker, pos.title, pos.side, pos.count,
+                pos.avg_price, pos.market_price, pos.cost_basis,
+                pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
+            ),
+        )
+
+
 async def sync_positions(db: Database, positions: list[Position]) -> None:
-    """Replace all positions with the given list (for championship API sync).
+    """Replace all positions with the given list.
 
     Runs as a single atomic transaction — clears stale positions and upserts
-    current ones so the local DB always reflects the API state.
+    current ones so the local DB always reflects the API/broker state.
     """
-    current_tickers = {p.ticker for p in positions}
     async with db.transaction():
-        # Remove positions that no longer exist
-        cursor = await db.conn.execute("SELECT ticker FROM positions")
-        for row in await cursor.fetchall():
-            if row["ticker"] not in current_tickers:
-                await db.conn.execute(
-                    "DELETE FROM positions WHERE ticker = ?", (row["ticker"],)
-                )
-        # Upsert current positions (inline SQL to avoid per-row commits)
-        for pos in positions:
-            await db.conn.execute(
-                """INSERT INTO positions
-                   (ticker, title, side, count, avg_price, market_price,
-                    cost_basis, market_value, unrealized_pnl, realized_pnl)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(ticker) DO UPDATE SET
-                    title=excluded.title, side=excluded.side,
-                    count=excluded.count, avg_price=excluded.avg_price,
-                    market_price=excluded.market_price,
-                    cost_basis=excluded.cost_basis,
-                    market_value=excluded.market_value,
-                    unrealized_pnl=excluded.unrealized_pnl,
-                    realized_pnl=excluded.realized_pnl,
-                    updated_at=datetime('now')""",
-                (
-                    pos.ticker, pos.title, pos.side, pos.count,
-                    pos.avg_price, pos.market_price, pos.cost_basis,
-                    pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
-                ),
-            )
+        await _sync_positions_rows(db, positions)
+
+
+async def sync_positions_with_trade(
+    db: Database, positions: list[Position], trade: TradeDecision
+) -> int:
+    """Atomically sync positions and log a trade decision.
+
+    Ensures position state and trade log are always consistent — if either
+    operation fails, both are rolled back.  Returns the trade row ID.
+    """
+    async with db.transaction():
+        await _sync_positions_rows(db, positions)
+        return await _insert_trade_row(db, trade)
 
 
 async def get_positions(db: Database) -> list[Position]:
-    """Get all stored positions."""
+    """Get all stored positions.
+
+    Logs a warning if positions are stale (updated_at older than the most
+    recent trade timestamp), which can happen after a crash between trade
+    insertion and position sync.
+    """
+    logger = logging.getLogger(__name__)
+
+    # Check for staleness: latest trade newer than latest position update.
+    # Normalize timestamps with datetime() since trades use ISO format (T separator)
+    # while positions use SQLite datetime() format (space separator).
+    stale_cursor = await db.conn.execute(
+        """SELECT
+            datetime((SELECT MAX(timestamp) FROM trades)) AS latest_trade,
+            datetime((SELECT MAX(updated_at) FROM positions WHERE count > 0)) AS latest_pos
+        """
+    )
+    stale_row = await stale_cursor.fetchone()
+    if stale_row and stale_row["latest_trade"] and stale_row["latest_pos"]:
+        if stale_row["latest_trade"] > stale_row["latest_pos"]:
+            logger.warning(
+                "Position data may be stale: latest trade at %s but latest "
+                "position update at %s — run 'reconcile' to sync",
+                stale_row["latest_trade"],
+                stale_row["latest_pos"],
+            )
+
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
     rows = await cursor.fetchall()
     return [

@@ -55,6 +55,7 @@ python -m gimmes order TICKER      # Place an order
 python -m gimmes cancel ORDER_ID   # Cancel an order
 python -m gimmes positions         # List open positions
 python -m gimmes risk-check        # Check risk limits
+python -m gimmes reconcile         # Sync local positions with broker/API
 python -m gimmes report            # Performance scorecard
 python -m gimmes market-info TICKER # Detailed market info
 python -m gimmes log-trade TICKER  # Log a trade decision
