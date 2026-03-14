@@ -14,14 +14,17 @@ class FakeConfig:
     """Minimal config for testing KalshiClient."""
 
     api_key = "test-key"
-    private_key_path = type("P", (), {"exists": lambda self: False})()
+    private_key_path = type("P", (), {
+        "exists": lambda self: True,
+        "__str__": lambda self: "/fake/key.pem",
+    })()
     base_url = "https://api.example.com/trade-api/v2"
 
 
 @pytest.fixture
 def client():
-    c = KalshiClient(FakeConfig())  # type: ignore[arg-type]
-    c._private_key = "fake"
+    with patch("gimmes.kalshi.client.load_private_key", return_value="fake"):
+        c = KalshiClient(FakeConfig())  # type: ignore[arg-type]
     c._get_auth_headers = lambda *a, **kw: {"Authorization": "test"}  # type: ignore[method-assign]
     return c
 
