@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import glob
 import os
-import shutil
 import stat
 from pathlib import Path
 
@@ -16,15 +15,58 @@ from gimmes.config import GIMMES_HOME
 
 console = Console()
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-# Example/template files live in the repo
-ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
-TOML_EXAMPLE = PROJECT_ROOT / "config" / "gimmes.example.toml"
-
 # User files live in GIMMES_HOME (~/.gimmes/ by default)
 ENV_FILE = GIMMES_HOME / ".env"
 TOML_FILE = GIMMES_HOME / "config" / "gimmes.toml"
+
+# Default content generated inline (no dependency on repo example files)
+_DEFAULT_ENV = """\
+# GIMMES Configuration
+
+# Mode: driving_range (paper trading) or championship (real money)
+GIMMES_MODE=driving_range
+
+# Kalshi Production API credentials (used in both modes)
+# Driving range reads real market data but simulates orders locally
+KALSHI_PROD_API_KEY=your-prod-api-key-uuid
+KALSHI_PROD_PRIVATE_KEY_PATH=~/.gimmes/keys/kalshi_private.pem
+"""
+
+_DEFAULT_TOML = """\
+[strategy]
+gimme_threshold = 75
+min_market_price = 0.55
+max_market_price = 0.85
+min_true_probability = 0.90
+min_edge_after_fees = 0.05
+
+[sizing]
+kelly_fraction = 0.25
+max_position_pct = 0.05
+
+[risk]
+max_open_positions = 15
+daily_loss_limit_pct = 0.15
+
+[orders]
+preferred_order_type = "maker"
+
+[scanner]
+min_volume = 100
+min_open_interest = 50
+max_days_to_resolution = 90
+min_days_to_resolution = 0.5
+
+[paper]
+starting_balance = 10000.00
+
+[scoring.weights]
+edge_size = 0.30
+signal_strength = 0.25
+liquidity_depth = 0.15
+settlement_clarity = 0.15
+time_to_resolution = 0.15
+"""
 KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
 
@@ -35,16 +77,21 @@ def _secure_env_file() -> None:
         ENV_FILE.chmod(0o600)
 
 
-def _copy_example_file(example: Path, target: Path, label: str) -> bool:
-    """Copy an example file to its target. Returns True if copied."""
+def _write_default_file(
+    target: Path, content: str, label: str
+) -> bool:
+    """Write default content to target file. Returns True if written."""
     if target.exists():
-        overwrite = typer.confirm(f"{label} already exists at {target}. Overwrite?", default=False)
+        overwrite = typer.confirm(
+            f"{label} already exists at {target}. Overwrite?",
+            default=False,
+        )
         if not overwrite:
             console.print(f"[dim]Skipping {label}[/dim]")
             return False
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(example, target)
+    target.write_text(content)
     if target == ENV_FILE:
         _secure_env_file()
     console.print(f"[green]Created {label}:[/green] {target}")
@@ -224,17 +271,11 @@ def run_init() -> None:
     """Run the full interactive init flow."""
     console.print("\n[bold cyan]GIMMES Setup[/bold cyan]\n")
 
-    # Step 1: Copy example files
+    # Step 1: Create default config files
     console.print("[bold]Step 1: Configuration files[/bold]\n")
 
-    required_examples = [(ENV_EXAMPLE, ".env.example"), (TOML_EXAMPLE, "gimmes.example.toml")]
-    for example, label in required_examples:
-        if not example.exists():
-            console.print(f"[red]Missing {example} — is this the gimmes project root?[/red]")
-            raise typer.Exit(1)
-
-    _copy_example_file(ENV_EXAMPLE, ENV_FILE, ".env")
-    _copy_example_file(TOML_EXAMPLE, TOML_FILE, "config/gimmes.toml")
+    _write_default_file(ENV_FILE, _DEFAULT_ENV, ".env")
+    _write_default_file(TOML_FILE, _DEFAULT_TOML, "config/gimmes.toml")
 
     # Step 2: Private key setup
     console.print("\n[bold]Step 2: Kalshi API credentials[/bold]\n")

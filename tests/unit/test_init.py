@@ -12,11 +12,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from gimmes.init import (
-    _copy_example_file,
     _find_downloaded_key,
     _install_private_key,
     _secure_env_file,
     _validate_pem_content,
+    _write_default_file,
 )
 
 
@@ -31,37 +31,31 @@ def sample_pem() -> bytes:
     )
 
 
-class TestCopyExampleFile:
-    def test_copies_when_target_missing(self, tmp_path: Path) -> None:
-        example = tmp_path / "example.txt"
-        example.write_text("content")
+class TestWriteDefaultFile:
+    def test_writes_when_target_missing(self, tmp_path: Path) -> None:
         target = tmp_path / "target.txt"
 
-        result = _copy_example_file(example, target, "test file")
+        result = _write_default_file(target, "content", "test file")
 
         assert result is True
         assert target.read_text() == "content"
 
     def test_skips_when_target_exists_and_user_declines(self, tmp_path: Path) -> None:
-        example = tmp_path / "example.txt"
-        example.write_text("new content")
         target = tmp_path / "target.txt"
         target.write_text("old content")
 
         with patch("gimmes.init.typer.confirm", return_value=False):
-            result = _copy_example_file(example, target, "test file")
+            result = _write_default_file(target, "new content", "test file")
 
         assert result is False
         assert target.read_text() == "old content"
 
     def test_overwrites_when_target_exists_and_user_confirms(self, tmp_path: Path) -> None:
-        example = tmp_path / "example.txt"
-        example.write_text("new content")
         target = tmp_path / "target.txt"
         target.write_text("old content")
 
         with patch("gimmes.init.typer.confirm", return_value=True):
-            result = _copy_example_file(example, target, "test file")
+            result = _write_default_file(target, "new content", "test file")
 
         assert result is True
         assert target.read_text() == "new content"
@@ -79,14 +73,11 @@ class TestSecureEnvFile:
         mode = env_file.stat().st_mode & 0o777
         assert mode == 0o600
 
-    def test_copy_example_secures_env_file(self, tmp_path: Path) -> None:
-        example = tmp_path / ".env.example"
-        example.write_text("KALSHI_PROD_API_KEY=placeholder")
-        example.chmod(0o644)
+    def test_write_default_secures_env_file(self, tmp_path: Path) -> None:
         target = tmp_path / ".env"
 
         with patch("gimmes.init.ENV_FILE", target):
-            _copy_example_file(example, target, ".env")
+            _write_default_file(target, "KALSHI_PROD_API_KEY=placeholder", ".env")
 
         mode = target.stat().st_mode & 0o777
         assert mode == 0o600
