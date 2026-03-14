@@ -104,8 +104,9 @@ async def list_all_markets(
     """Fetch all markets, handling pagination automatically."""
     all_markets: list[Market] = []
     cursor: str | None = None
+    max_pages = 50
 
-    while True:
+    for _ in range(max_pages):
         markets, cursor = await list_markets(
             client,
             status=status,
@@ -116,6 +117,12 @@ async def list_all_markets(
         all_markets.extend(markets)
         if not cursor or not markets:
             break
+    else:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Pagination limit reached (%d pages, %d markets)",
+            max_pages, len(all_markets),
+        )
 
     return all_markets
 
