@@ -65,7 +65,7 @@ async def create_order(client: KalshiClient, params: CreateOrderParams) -> Order
         body["client_order_id"] = params.client_order_id
     else:
         body["client_order_id"] = str(uuid.uuid4())
-    if params.time_in_force != "gtc":
+    if params.time_in_force != "good_till_canceled":
         body["time_in_force"] = params.time_in_force
     if params.post_only:
         body["post_only"] = True
