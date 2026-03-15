@@ -100,11 +100,16 @@ def _run_order_cli(
         return_value=1, side_effect=insert_error_side_effect,
     )
 
+    # Bypass mark-to-market — these tests focus on order error handling
+    async def _passthrough_mtm(b, c, **kw):
+        return await b.get_positions()
+
     patches = [
         patch("gimmes.cli.load_config", return_value=_stub_config()),
         patch("gimmes.cli.trading_context", _fake_trading_context(broker)),
         patch("gimmes.cli.console", mock_console),
         patch("gimmes.cli._championship_warning"),
+        patch("gimmes.cli._mark_positions_to_market", _passthrough_mtm),
         patch("gimmes.kalshi.markets.get_market", AsyncMock(return_value=_stub_market())),
         patch("gimmes.kalshi.markets.get_orderbook", AsyncMock(return_value=MagicMock())),
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
