@@ -190,8 +190,13 @@ def _encrypt_private_key(content: bytes, password: bytes) -> bytes:
     )
 
 
-def _install_private_key(source: Path, password: bytes, *, headless: bool = False) -> Path | None:
-    """Validate, encrypt, and install the private key. Returns the PEM path or None."""
+def _install_private_key(source: Path, password: bytes) -> Path | None:
+    """Validate, encrypt, and install the private key. Returns the PEM path or None.
+
+    The caller is responsible for checking whether an existing key should be
+    overwritten before calling this function. This function always overwrites
+    an existing key at the target path.
+    """
     content = source.read_bytes()
 
     if not _validate_pem_content(content):
@@ -221,11 +226,6 @@ def _install_private_key(source: Path, password: bytes, *, headless: bool = Fals
     pem_path = KEYS_DIR / PEM_FILENAME
 
     if pem_path.exists():
-        if not headless and not typer.confirm(
-            f"Private key already exists at {pem_path}. Overwrite?", default=False
-        ):
-            console.print("[dim]Keeping existing private key[/dim]")
-            return None
         # Ensure writable before overwriting (previous install leaves file at 0400)
         pem_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     pem_path.touch(mode=0o600, exist_ok=True)
@@ -287,6 +287,44 @@ def _prompt_password() -> str:
             console.print("[red]Passwords do not match. Try again.[/red]")
             continue
         return password
+
+
+def _offer_source_key_deletion(source: Path, installed: Path, password: str) -> None:
+    """After installing a key, offer to delete the unencrypted source file.
+
+    Verifies the installed key first. If verification fails, keeps the source
+    as a backup. If the user declines deletion, prints a security reminder.
+    """
+    if not _validate_pem_content(installed.read_bytes(), password=password.encode()):
+        console.print(
+            f"\n[yellow bold]Security reminder:[/yellow bold] "
+            f"Installed key failed verification. "
+            f"Keeping the original key file as a backup:\n"
+            f"  {source}\n"
+            f"Delete it manually once the issue is resolved."
+        )
+        return
+
+    if not typer.confirm(f"Delete the unencrypted key file at {source}?", default=True):
+        console.print(
+            f"\n[yellow bold]Security reminder:[/yellow bold] "
+            f"The original unencrypted key file is still at:\n"
+            f"  {source}\n"
+            f"Delete it now that the encrypted copy is installed."
+        )
+        return
+
+    try:
+        source.unlink()
+        console.print(f"[green]Deleted unencrypted key:[/green] {source}")
+    except OSError as e:
+        console.print(
+            f"\n[yellow bold]Security reminder:[/yellow bold] "
+            f"Could not delete the original unencrypted key file:\n"
+            f"  {source}\n"
+            f"  Error: {e}\n"
+            f"Delete it manually now that the encrypted copy is installed."
+        )
 
 
 def _prompt_api_key() -> str | None:
@@ -442,46 +480,29 @@ def run_init(*, headless: bool = False) -> None:
         console.print("[cyan]Searching for private key in ~/Downloads...[/cyan]")
         key_path = _find_downloaded_key()
 
+        declined_overwrite = False
         if key_path:
             console.print(f"[green]Found:[/green] {key_path}")
+
+            # Check for existing installed key before asking for a password
+            existing_pem = KEYS_DIR / PEM_FILENAME
+            if existing_pem.exists() and not typer.confirm(
+                f"Private key already exists at {existing_pem}. Overwrite?",
+                default=False,
+            ):
+                console.print("[dim]Keeping existing private key[/dim]")
+                key_path = None
+                declined_overwrite = True
+
+        if key_path:
             password = _prompt_password()
             pem_path = _install_private_key(key_path, password.encode())
             if pem_path:
                 _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
                 _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True)
                 console.print("[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set")
-                # Verify the installed key before deleting the source
-                if not _validate_pem_content(pem_path.read_bytes(), password=password.encode()):
-                    console.print(
-                        f"\n[yellow bold]Security reminder:[/yellow bold] "
-                        f"Installed key failed verification. "
-                        f"Keeping the original key file as a backup:\n"
-                        f"  {key_path}\n"
-                        f"Delete it manually once the issue is resolved."
-                    )
-                elif typer.confirm(
-                    f"Delete the unencrypted key file at {key_path}?",
-                    default=True,
-                ):
-                    try:
-                        key_path.unlink()
-                        console.print(f"[green]Deleted unencrypted key:[/green] {key_path}")
-                    except OSError as e:
-                        console.print(
-                            f"\n[yellow bold]Security reminder:[/yellow bold] "
-                            f"Could not delete the original unencrypted key file:\n"
-                            f"  {key_path}\n"
-                            f"  Error: {e}\n"
-                            f"Delete it manually now that the encrypted copy is installed."
-                        )
-                else:
-                    console.print(
-                        f"\n[yellow bold]Security reminder:[/yellow bold] "
-                        f"The original unencrypted key file is still at:\n"
-                        f"  {key_path}\n"
-                        f"Delete it now that the encrypted copy is installed."
-                    )
-        else:
+                _offer_source_key_deletion(key_path, pem_path, password)
+        elif not declined_overwrite:
             console.print(
                 "[yellow]Could not find a file matching gimmes*.txt in ~/Downloads.[/yellow]\n"
                 "\n"
@@ -512,7 +533,11 @@ def run_init(*, headless: bool = False) -> None:
             console.print(f"[red]Private key file not found: {source}[/red]")
             raise typer.Exit(1)
 
-        pem_path = _install_private_key(source, password.encode(), headless=True)
+        existing_pem = KEYS_DIR / PEM_FILENAME
+        if existing_pem.exists():
+            console.print(f"[yellow]Overwriting existing private key at {existing_pem}[/yellow]")
+
+        pem_path = _install_private_key(source, password.encode())
         if not pem_path:
             raise typer.Exit(1)
 

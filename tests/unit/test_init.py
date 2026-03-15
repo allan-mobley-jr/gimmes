@@ -227,7 +227,7 @@ class TestInstallPrivateKey:
         assert not (mode & stat.S_IRGRP)  # Group can't read
         assert not (mode & stat.S_IROTH)  # Others can't read
 
-    def test_overwrites_existing_key_when_confirmed(
+    def test_overwrites_existing_key(
         self, tmp_path: Path, sample_pem: bytes
     ) -> None:
         keys_dir = tmp_path / "keys"
@@ -239,10 +239,7 @@ class TestInstallPrivateKey:
         source = tmp_path / "gimmes.txt"
         source.write_bytes(sample_pem)
 
-        with (
-            patch("gimmes.init.KEYS_DIR", keys_dir),
-            patch("gimmes.init.typer.confirm", return_value=True),
-        ):
+        with patch("gimmes.init.KEYS_DIR", keys_dir):
             result = _install_private_key(source, b"overwrite-test")
 
         assert result is not None
@@ -251,27 +248,6 @@ class TestInstallPrivateKey:
         mode = result.stat().st_mode
         assert mode & stat.S_IRUSR
         assert not (mode & stat.S_IWUSR)
-
-    def test_keeps_existing_key_when_declined(self, tmp_path: Path, sample_pem: bytes) -> None:
-        keys_dir = tmp_path / "keys"
-        keys_dir.mkdir()
-        existing = keys_dir / "kalshi_private.pem"
-        existing.write_bytes(b"old key content")
-        existing.chmod(stat.S_IRUSR)
-
-        source = tmp_path / "gimmes.txt"
-        source.write_bytes(sample_pem)
-
-        with (
-            patch("gimmes.init.KEYS_DIR", keys_dir),
-            patch("gimmes.init.typer.confirm", return_value=False),
-        ):
-            result = _install_private_key(source, b"decline-test")
-
-        assert result is None
-        # Should still have old content
-        existing.chmod(stat.S_IRUSR | stat.S_IWUSR)  # make readable for assertion
-        assert existing.read_bytes() == b"old key content"
 
     def test_rejects_invalid_key(self, tmp_path: Path) -> None:
         source = tmp_path / "gimmes.txt"
@@ -440,22 +416,6 @@ class TestHeadless:
 
         assert result is True
         assert target.read_text() == "new content"
-
-    def test_install_private_key_headless_overwrites(
-        self, tmp_path: Path, sample_pem: bytes
-    ) -> None:
-        source = tmp_path / "key.pem"
-        source.write_bytes(sample_pem)
-        password = b"test-password"
-
-        with patch("gimmes.init.KEYS_DIR", tmp_path):
-            # First install
-            result1 = _install_private_key(source, password, headless=True)
-            assert result1 is not None
-
-            # Second install (overwrite without prompt)
-            result2 = _install_private_key(source, password, headless=True)
-            assert result2 is not None
 
     def test_clear_shell_history_headless_skips(self, tmp_path: Path) -> None:
         history = tmp_path / ".zsh_history"
