@@ -481,10 +481,8 @@ def order(
                 is_taker=is_taker, fees=fees,
             )
             if is_buy:
-                cost_label = "Total cost"
                 total = trade_dollars + est_fee
             else:
-                cost_label = "Proceeds"
                 total = trade_dollars - est_fee
             console.print(
                 f"\n  Action:     {action.upper()} {side.upper()}"
@@ -492,7 +490,7 @@ def order(
                 f"\n  Contracts:  {final_count}"
                 f"\n  Price:      {int(round(final_price * 100))}¢"
                 f"  (${final_price:.2f})"
-                f"\n  {cost_label + ':':14s}${trade_dollars:.2f}"
+                f"\n  Subtotal:   ${trade_dollars:.2f}"
                 f"\n  Est. fees:  ${est_fee:.2f}"
                 f"\n  Total:      ${total:.2f}"
             )
