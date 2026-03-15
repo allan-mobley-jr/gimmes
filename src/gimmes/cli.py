@@ -29,7 +29,7 @@ def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
         return fallback
     if not isinstance(body, dict):
         return fallback
-    return body.get("message") or body.get("error") or fallback
+    return str(body.get("message") or body.get("error") or fallback)
 
 
 def _run(coro):  # type: ignore[no-untyped-def]
@@ -51,6 +51,10 @@ def _run(coro):  # type: ignore[no-untyped-def]
     except httpx.TimeoutException as e:
         logger.debug("Timeout error", exc_info=True)
         console.print(f"[red]Request timed out: {e}[/red]")
+        raise typer.Exit(1)
+    except httpx.TransportError as e:
+        logger.debug("Transport error", exc_info=True)
+        console.print(f"[red]Connection error: {e}[/red]")
         raise typer.Exit(1)
     except (ConnectionError, ValueError, RuntimeError) as e:
         logger.debug("CLI error", exc_info=True)

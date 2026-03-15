@@ -74,6 +74,14 @@ class TestRunTimeoutError:
         assert "timed out" in output.lower()
 
 
+class TestRunTransportError:
+    def test_connect_error(self) -> None:
+        exc = httpx.ConnectError("Connection refused")
+        output = _run_expecting_exit(exc)
+        assert "Connection error" in output
+        assert "Connection refused" in output
+
+
 class TestRunExistingErrors:
     def test_connection_error_still_caught(self) -> None:
         exc = ConnectionError("Connection refused")
