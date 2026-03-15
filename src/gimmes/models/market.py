@@ -24,6 +24,7 @@ class Market(BaseModel):
 
     ticker: str
     event_ticker: str = ""
+    series_ticker: str = ""
     title: str = ""
     subtitle: str = ""
     status: MarketStatus = MarketStatus.ACTIVE

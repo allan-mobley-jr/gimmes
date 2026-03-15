@@ -3,8 +3,10 @@
 import pytest
 
 from gimmes.strategy.fees import (
+    FeeMultipliers,
     break_even_probability,
     edge_after_fees,
+    fee_for_order,
     maker_fee,
     taker_fee,
 )
@@ -58,9 +60,34 @@ class TestMakerFee:
 
     def test_rounding_trap(self) -> None:
         # Single contract at 0.02 (extreme): 0.0175 * 1 * 0.02 * 0.98 = 0.000343
-        # Rounds up to 0.01 — effectively a 50% fee!
+        # Rounds up to 0.01 -- effectively a 50% fee!
         fee = maker_fee(1, 0.02)
         assert fee == 0.01
+
+    def test_custom_multiplier(self) -> None:
+        # 0.05 * 1 * 0.50 * 0.50 = 0.0125 -> rounds up to 0.02
+        fee = maker_fee(1, 0.50, multiplier=0.05)
+        assert fee == 0.02
+        # Higher multiplier = higher fee
+        fee_high = maker_fee(1, 0.50, multiplier=0.10)
+        assert fee_high > fee
+
+
+class TestFeeForOrderMultipliers:
+    def test_custom_taker_multiplier(self) -> None:
+        default_fee = fee_for_order(1, 0.50, is_taker=True)
+        custom_fee = fee_for_order(1, 0.50, is_taker=True, fees=FeeMultipliers(taker=0.10))
+        assert custom_fee > default_fee
+
+    def test_custom_maker_multiplier(self) -> None:
+        default_fee = fee_for_order(1, 0.50, is_taker=False)
+        custom_fee = fee_for_order(1, 0.50, is_taker=False, fees=FeeMultipliers(maker=0.05))
+        assert custom_fee > default_fee
+
+    def test_taker_multiplier_ignored_for_maker(self) -> None:
+        fee1 = fee_for_order(1, 0.50, is_taker=False, fees=FeeMultipliers(taker=0.50))
+        fee2 = fee_for_order(1, 0.50, is_taker=False)
+        assert fee1 == fee2
 
 
 class TestEdgeAfterFees:
@@ -82,6 +109,11 @@ class TestEdgeAfterFees:
         taker_edge = edge_after_fees(0.70, 0.85, is_taker=True)
         assert maker_edge > taker_edge
 
+    def test_custom_multiplier_reduces_edge(self) -> None:
+        default_edge = edge_after_fees(0.70, 0.90)
+        high_fee_edge = edge_after_fees(0.70, 0.90, fees=FeeMultipliers(maker=0.10))
+        assert high_fee_edge < default_edge
+
 
 class TestBreakEven:
     def test_break_even_at_75c(self) -> None:
@@ -93,3 +125,8 @@ class TestBreakEven:
         be_maker = break_even_probability(0.60, is_taker=False)
         be_taker = break_even_probability(0.60, is_taker=True)
         assert be_taker > be_maker
+
+    def test_custom_multiplier_raises_break_even(self) -> None:
+        default_be = break_even_probability(0.60, is_taker=True)
+        high_fee_be = break_even_probability(0.60, is_taker=True, fees=FeeMultipliers(taker=0.15))
+        assert high_fee_be > default_be

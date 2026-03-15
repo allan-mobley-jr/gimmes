@@ -5,7 +5,7 @@ from __future__ import annotations
 from gimmes.config import GimmesConfig
 from gimmes.models.gimme import GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, Orderbook
-from gimmes.strategy.fees import edge_after_fees
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
 from gimmes.strategy.scanner import days_until
 
 
@@ -69,6 +69,7 @@ def full_score(
     config: GimmesConfig,
     *,
     market: Market | None = None,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> GimmeScore:
     """Full gimme scoring with research inputs (0-100).
 
@@ -85,7 +86,7 @@ def full_score(
     max_per = 100.0  # Each component scored 0-100, then weighted
 
     # Edge size score (0-100)
-    edge = edge_after_fees(candidate.market_price, candidate.model_probability)
+    edge = edge_after_fees(candidate.market_price, candidate.model_probability, fees=fees)
     if edge >= 0.25:
         edge_score = 100.0
     elif edge >= 0.15:

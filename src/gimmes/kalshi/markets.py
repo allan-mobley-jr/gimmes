@@ -29,6 +29,7 @@ def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
     return Market(
         ticker=data.get("ticker", ""),
         event_ticker=data.get("event_ticker", ""),
+        series_ticker=data.get("series_ticker", ""),
         title=data.get("title", ""),
         subtitle=data.get("subtitle", ""),
         status=MarketStatus(data.get("status", "active")),
@@ -153,6 +154,23 @@ async def list_series(
 async def get_event(client: KalshiClient, event_ticker: str) -> dict:  # type: ignore[type-arg]
     """Get event details."""
     return await client.get(f"/events/{event_ticker}")
+
+
+async def get_series_fee_changes(
+    client: KalshiClient,
+    *,
+    series_ticker: str | None = None,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Fetch fee change records from Kalshi.
+
+    Returns a list of fee change dicts with keys:
+    id, series_ticker, fee_type, fee_multiplier, scheduled_ts.
+    """
+    params: dict[str, str] = {}
+    if series_ticker:
+        params["series_ticker"] = series_ticker
+    data = await client.get("/series/fee_changes", params=params)
+    return data.get("series_fee_change_arr", [])
 
 
 async def get_orderbook(client: KalshiClient, ticker: str, depth: int = 10) -> Orderbook:
