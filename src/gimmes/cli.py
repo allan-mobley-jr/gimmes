@@ -385,14 +385,17 @@ def order(
     _championship_warning(config)
 
     async def _order() -> None:
+        import json
         import logging
+        import traceback
 
         import httpx
 
         from gimmes.kalshi.markets import get_market, get_orderbook
+        from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl
+        from gimmes.store.queries import get_daily_pnl, insert_error
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import position_size
@@ -570,13 +573,40 @@ def order(
             except httpx.HTTPStatusError as exc:
                 logger.debug("Order placement failed", exc_info=True)
                 detail = _api_error_detail(exc)
+                try:
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.ORDER_FAILURE,
+                        error_code="http_status_error",
+                        component="cli.order", agent="cli",
+                        message=f"Order placement failed ({exc.response.status_code}): {detail}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({"ticker": ticker, "side": side,
+                                            "count": final_count, "price": final_price,
+                                            "status_code": exc.response.status_code}),
+                    ))
+                except Exception:
+                    logger.warning("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Order FAILED"
                     f" ({exc.response.status_code}): {detail}[/red bold]"
                 )
                 raise typer.Exit(1)
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as exc:
                 logger.debug("Order placement timed out", exc_info=True)
+                try:
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.ORDER_FAILURE,
+                        error_code="timeout",
+                        component="cli.order", agent="cli",
+                        message=f"Order placement timed out: {exc}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({"ticker": ticker, "side": side,
+                                            "count": final_count, "price": final_price}),
+                    ))
+                except Exception:
+                    logger.warning("Failed to log error to DB", exc_info=True)
                 console.print(
                     "[red bold]Order FAILED: request timed out[/red bold]"
                 )
@@ -589,6 +619,19 @@ def order(
                 raise typer.Exit(1)
             except Exception as exc:
                 logger.debug("Order placement failed", exc_info=True)
+                try:
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.ORDER_FAILURE,
+                        error_code="unexpected",
+                        component="cli.order", agent="cli",
+                        message=f"Order placement failed: {exc}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({"ticker": ticker, "side": side,
+                                            "count": final_count, "price": final_price}),
+                    ))
+                except Exception:
+                    logger.warning("Failed to log error to DB", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
                 raise typer.Exit(1)
 
@@ -643,6 +686,20 @@ def order(
                     await sync_positions(db, positions_for_sync)
             except Exception as exc:
                 logger.debug("Position sync failed", exc_info=True)
+                try:
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.WARNING,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="position_sync_failed",
+                        component="cli.order", agent="cli",
+                        message=f"Position sync failed after order {result.order_id}: {exc}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({"ticker": ticker, "side": side,
+                                            "count": final_count, "price": final_price,
+                                            "order_id": result.order_id}),
+                    ))
+                except Exception:
+                    logger.warning("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Warning: Order was placed successfully"
                     f" ({result.order_id}) but position sync"

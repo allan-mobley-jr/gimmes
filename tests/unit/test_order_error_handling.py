@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
+from gimmes.models.error import ErrorCategory, ErrorSeverity
 from gimmes.models.order import Order, OrderAction, OrderSide
 
 _ORDER_CLI_ARGS = [
@@ -84,12 +86,18 @@ def _stub_config():
     return c
 
 
-def _run_order_cli(broker, *, sync_side_effect=None, championship_create_order=None):
+def _run_order_cli(
+    broker, *, sync_side_effect=None, championship_create_order=None,
+    insert_error_side_effect=None,
+):
     """Invoke the order CLI command with a mocked broker."""
     mock_console = MagicMock()
     mock_fees = MagicMock()
     mock_fees.taker_fee = 0.07
     mock_fees.maker_fee = 0.03
+    mock_insert_error = AsyncMock(
+        return_value=1, side_effect=insert_error_side_effect,
+    )
 
     patches = [
         patch("gimmes.cli.load_config", return_value=_stub_config()),
@@ -104,6 +112,7 @@ def _run_order_cli(broker, *, sync_side_effect=None, championship_create_order=N
             MagicMock(return_value=MagicMock(approved=True, failures=[])),
         ),
         patch("gimmes.store.queries.get_daily_pnl", AsyncMock(return_value=0.0)),
+        patch("gimmes.store.queries.insert_error", mock_insert_error),
         patch("gimmes.strategy.fees.fee_for_order", MagicMock(return_value=0.03)),
     ]
 
@@ -150,7 +159,7 @@ def _run_order_cli(broker, *, sync_side_effect=None, championship_create_order=N
         for p in patches:
             p.stop()
 
-    return result, mock_console
+    return result, mock_console, mock_insert_error
 
 
 def _printed(mock_console) -> str:
@@ -168,7 +177,7 @@ class TestOrderPlacementErrors:
         exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        result, mock_console = _run_order_cli(broker)
+        result, mock_console, _ = _run_order_cli(broker)
 
         assert result.exit_code == 1
         out = _printed(mock_console)
@@ -179,7 +188,7 @@ class TestOrderPlacementErrors:
         exc = httpx.ReadTimeout("Connection read timed out")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        result, mock_console = _run_order_cli(broker)
+        result, mock_console, _ = _run_order_cli(broker)
 
         assert result.exit_code == 1
         out = _printed(mock_console)
@@ -191,7 +200,7 @@ class TestOrderPlacementErrors:
         exc = httpx.ReadTimeout("Connection read timed out")
         mock_create = AsyncMock(side_effect=exc)
 
-        result, mock_console = _run_order_cli(
+        result, mock_console, _ = _run_order_cli(
             None, championship_create_order=mock_create
         )
 
@@ -206,7 +215,7 @@ class TestOrderPlacementErrors:
         exc = RuntimeError("Paper DB locked")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        result, mock_console = _run_order_cli(broker)
+        result, mock_console, _ = _run_order_cli(broker)
 
         assert result.exit_code == 1
         out = _printed(mock_console)
@@ -217,7 +226,7 @@ class TestOrderPlacementErrors:
         exc = RuntimeError("create failed")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        result, _ = _run_order_cli(broker)
+        result, _, _ = _run_order_cli(broker)
 
         assert result.exit_code == 1
         # get_positions is called once for pre-order validation (line 395),
@@ -243,7 +252,7 @@ class TestPositionSyncErrors:
             RuntimeError("DB connection lost")
         )
 
-        _, mock_console = _run_order_cli(broker)
+        _, mock_console, _ = _run_order_cli(broker)
 
         out = _printed(mock_console)
         assert "Order was placed successfully" in out
@@ -253,7 +262,7 @@ class TestPositionSyncErrors:
     def test_db_write_failure_warns_and_suggests_reconcile(self) -> None:
         broker = _make_mock_broker()
 
-        _, mock_console = _run_order_cli(
+        _, mock_console, _ = _run_order_cli(
             broker,
             sync_side_effect=RuntimeError("disk full"),
         )
@@ -268,7 +277,7 @@ class TestPositionSyncErrors:
             RuntimeError("fetch failed")
         )
 
-        _, mock_console = _run_order_cli(broker)
+        _, mock_console, _ = _run_order_cli(broker)
 
         out = _printed(mock_console)
         assert "order-123" in out
@@ -278,7 +287,119 @@ class TestPositionSyncErrors:
             RuntimeError("fetch failed")
         )
 
-        _, mock_console = _run_order_cli(broker)
+        _, mock_console, _ = _run_order_cli(broker)
 
         out = _printed(mock_console)
         assert "Order placed:" in out
+
+
+# ---------------------------------------------------------------------------
+# Structured error logging tests
+# ---------------------------------------------------------------------------
+
+
+def _error_entry(mock_insert_error):
+    """Extract the ErrorLogEntry from the first insert_error call."""
+    assert mock_insert_error.call_count >= 1
+    return mock_insert_error.call_args_list[0].args[1]
+
+
+class TestOrderErrorLogging:
+    def test_api_error_logs_order_failure(self) -> None:
+        resp = _make_response(400, json_data={"message": "Insufficient balance"})
+        exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        assert entry.severity == ErrorSeverity.ERROR
+        assert entry.category == ErrorCategory.ORDER_FAILURE
+        assert entry.error_code == "http_status_error"
+        assert entry.component == "cli.order"
+        ctx = json.loads(entry.context)
+        assert ctx["ticker"] == "TEST-TICKER"
+        assert ctx["status_code"] == 400
+
+    def test_timeout_logs_order_failure(self) -> None:
+        exc = httpx.ReadTimeout("Connection read timed out")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        assert entry.severity == ErrorSeverity.ERROR
+        assert entry.category == ErrorCategory.ORDER_FAILURE
+        assert entry.error_code == "timeout"
+        assert "timed out" in entry.message
+        assert "Connection read timed out" in entry.message
+
+    def test_generic_error_logs_order_failure(self) -> None:
+        exc = RuntimeError("Paper DB locked")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        assert entry.severity == ErrorSeverity.ERROR
+        assert entry.category == ErrorCategory.ORDER_FAILURE
+        assert entry.error_code == "unexpected"
+        assert "Paper DB locked" in entry.message
+
+    def test_position_sync_failure_logs_data_integrity(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            RuntimeError("DB connection lost")
+        )
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        assert entry.severity == ErrorSeverity.WARNING
+        assert entry.category == ErrorCategory.DATA_INTEGRITY
+        assert entry.error_code == "position_sync_failed"
+        ctx = json.loads(entry.context)
+        assert ctx["order_id"] == "order-123"
+
+    def test_error_context_includes_trade_details(self) -> None:
+        exc = httpx.ReadTimeout("timeout")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        ctx = json.loads(entry.context)
+        assert ctx["ticker"] == "TEST-TICKER"
+        assert ctx["side"] == "yes"
+        assert ctx["count"] == 10
+        assert ctx["price"] == 0.40
+
+
+class TestErrorLoggingResilience:
+    """Verify that insert_error failures never mask the original error."""
+
+    def test_db_failure_does_not_mask_placement_error(self) -> None:
+        resp = _make_response(400, json_data={"message": "Insufficient balance"})
+        exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        result, mock_console, _ = _run_order_cli(
+            broker, insert_error_side_effect=RuntimeError("DB broken"),
+        )
+
+        assert result.exit_code == 1
+        out = _printed(mock_console)
+        assert "Order FAILED" in out
+        assert "Insufficient balance" in out
+
+    def test_db_failure_does_not_mask_sync_error(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            RuntimeError("fetch failed")
+        )
+
+        _, mock_console, _ = _run_order_cli(
+            broker, insert_error_side_effect=RuntimeError("DB broken"),
+        )
+
+        out = _printed(mock_console)
+        assert "Order was placed successfully" in out
+        assert "position sync failed" in out
