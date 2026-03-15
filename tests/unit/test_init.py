@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import click.exceptions
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -16,6 +17,7 @@ from gimmes.init import (
     _encrypt_private_key,
     _find_downloaded_key,
     _install_private_key,
+    _is_headless,
     _secure_env_file,
     _update_env_var,
     _validate_pem_content,
@@ -416,3 +418,149 @@ class TestClearShellHistory:
             patch("gimmes.init.Path.home", return_value=tmp_path),
         ):
             _clear_shell_history()  # Should not raise
+
+
+class TestHeadless:
+    """Tests for headless (non-interactive) init mode."""
+
+    def test_is_headless_flag_true(self) -> None:
+        assert _is_headless(True) is True
+
+    def test_is_headless_flag_false_with_tty(self) -> None:
+        with patch("gimmes.init.sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            assert _is_headless(False) is False
+
+    def test_is_headless_flag_false_no_tty(self) -> None:
+        with patch("gimmes.init.sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            assert _is_headless(False) is True
+
+    def test_write_default_file_headless_overwrites(self, tmp_path: Path) -> None:
+        target = tmp_path / "test.txt"
+        target.write_text("old content")
+
+        result = _write_default_file(target, "new content", "test", headless=True)
+
+        assert result is True
+        assert target.read_text() == "new content"
+
+    def test_install_private_key_headless_overwrites(
+        self, tmp_path: Path, sample_pem: bytes
+    ) -> None:
+        source = tmp_path / "key.pem"
+        source.write_bytes(sample_pem)
+        password = b"test-password"
+
+        with patch("gimmes.init.KEYS_DIR", tmp_path):
+            # First install
+            result1 = _install_private_key(source, password, headless=True)
+            assert result1 is not None
+
+            # Second install (overwrite without prompt)
+            result2 = _install_private_key(source, password, headless=True)
+            assert result2 is not None
+
+    def test_clear_shell_history_headless_skips(self, tmp_path: Path) -> None:
+        history = tmp_path / ".zsh_history"
+        history.write_text("secret stuff\n")
+
+        with (
+            patch.dict(os.environ, {"SHELL": "/bin/zsh"}),
+            patch("gimmes.init.Path.home", return_value=tmp_path),
+        ):
+            _clear_shell_history(headless=True)
+
+        assert history.read_text() == "secret stuff\n"
+
+    def test_run_init_headless_missing_env_vars(self) -> None:
+        from gimmes.init import run_init
+
+        with (
+            patch("gimmes.init.sys.stdin") as mock_stdin,
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises((SystemExit, click.exceptions.Exit)),
+        ):
+            mock_stdin.isatty.return_value = False
+            run_init(headless=True)
+
+    def test_run_init_headless_partial_env_vars(self) -> None:
+        from gimmes.init import run_init
+
+        env = {"KALSHI_PROD_API_KEY": "test-key"}
+        with (
+            patch("gimmes.init.sys.stdin") as mock_stdin,
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises((SystemExit, click.exceptions.Exit)),
+        ):
+            mock_stdin.isatty.return_value = False
+            run_init(headless=True)
+
+    def test_run_init_headless_invalid_key_path(self, tmp_path: Path) -> None:
+        from gimmes.init import run_init
+
+        env = {
+            "KALSHI_PROD_API_KEY": "test-key",
+            "KALSHI_PROD_PRIVATE_KEY_PATH": str(tmp_path / "nonexistent.pem"),
+            "KALSHI_PRIVATE_KEY_PASSWORD": "test-pass",
+        }
+        with (
+            patch("gimmes.init.ENV_FILE", tmp_path / ".env"),
+            patch("gimmes.init.TOML_FILE", tmp_path / "config" / "gimmes.toml"),
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises((SystemExit, click.exceptions.Exit)),
+        ):
+            run_init(headless=True)
+
+    def test_run_init_headless_full_flow(
+        self, tmp_path: Path, sample_pem: bytes
+    ) -> None:
+        from gimmes.init import run_init
+
+        source = tmp_path / "gimmes.txt"
+        source.write_bytes(sample_pem)
+
+        env_file = tmp_path / ".env"
+        toml_file = tmp_path / "config" / "gimmes.toml"
+        keys_dir = tmp_path / "keys"
+
+        env = {
+            "KALSHI_PROD_API_KEY": "test-api-key-uuid",
+            "KALSHI_PROD_PRIVATE_KEY_PATH": str(source),
+            "KALSHI_PRIVATE_KEY_PASSWORD": "test-password",
+        }
+        with (
+            patch("gimmes.init.ENV_FILE", env_file),
+            patch("gimmes.init.TOML_FILE", toml_file),
+            patch("gimmes.init.KEYS_DIR", keys_dir),
+            patch("gimmes.init._verify_connection", new=AsyncMock(return_value=True)),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            run_init(headless=True)
+
+        assert env_file.exists()
+        env_content = env_file.read_text()
+        assert "test-api-key-uuid" in env_content
+        assert "test-password" in env_content
+        assert toml_file.exists()
+        assert (keys_dir / "kalshi_private.pem").exists()
+
+    def test_run_init_headless_invalid_key_content(self, tmp_path: Path) -> None:
+        from gimmes.init import run_init
+
+        source = tmp_path / "not_a_key.txt"
+        source.write_text("this is not a PEM file")
+
+        env = {
+            "KALSHI_PROD_API_KEY": "test-key",
+            "KALSHI_PROD_PRIVATE_KEY_PATH": str(source),
+            "KALSHI_PRIVATE_KEY_PASSWORD": "test-pass",
+        }
+        with (
+            patch("gimmes.init.ENV_FILE", tmp_path / ".env"),
+            patch("gimmes.init.TOML_FILE", tmp_path / "config" / "gimmes.toml"),
+            patch("gimmes.init.KEYS_DIR", tmp_path / "keys"),
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises((SystemExit, click.exceptions.Exit)),
+        ):
+            run_init(headless=True)

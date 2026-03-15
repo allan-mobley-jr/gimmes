@@ -1661,11 +1661,18 @@ def config(
 
 
 @app.command()
-def init() -> None:
+def init(
+    headless: bool = typer.Option(
+        False,
+        "--headless",
+        help="Non-interactive mode (requires env vars: KALSHI_PROD_API_KEY, "
+        "KALSHI_PROD_PRIVATE_KEY_PATH, KALSHI_PRIVATE_KEY_PASSWORD)",
+    ),
+) -> None:
     """Set up gimmes for first-time use (config files, API credentials)."""
     from gimmes.init import run_init
 
-    run_init()
+    run_init(headless=headless)
 
 
 # ---------------------------------------------------------------------------
