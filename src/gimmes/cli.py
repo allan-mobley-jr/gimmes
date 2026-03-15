@@ -20,15 +20,38 @@ app = typer.Typer(
 console = Console()
 
 
+def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
+    """Extract a human-readable message from an httpx.HTTPStatusError."""
+    fallback = e.response.text[:200] if e.response.text else str(e)
+    try:
+        body = e.response.json()
+    except (ValueError, UnicodeDecodeError):
+        return fallback
+    if not isinstance(body, dict):
+        return fallback
+    return body.get("message") or body.get("error") or fallback
+
+
 def _run(coro):  # type: ignore[no-untyped-def]
     """Run an async coroutine from sync CLI context with error handling."""
     import logging
+
+    import httpx
 
     logger = logging.getLogger("gimmes.cli")
     try:
         return asyncio.run(coro)
     except KeyboardInterrupt:
         raise typer.Exit(130)
+    except httpx.HTTPStatusError as e:
+        logger.debug("API error", exc_info=True)
+        detail = _api_error_detail(e)
+        console.print(f"[red]API error ({e.response.status_code}): {detail}[/red]")
+        raise typer.Exit(1)
+    except httpx.TimeoutException as e:
+        logger.debug("Timeout error", exc_info=True)
+        console.print(f"[red]Request timed out: {e}[/red]")
+        raise typer.Exit(1)
     except (ConnectionError, ValueError, RuntimeError) as e:
         logger.debug("CLI error", exc_info=True)
         console.print(f"[red]Error: {e}[/red]")
