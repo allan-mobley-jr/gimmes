@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -249,7 +250,7 @@ def _broker_with_post_order_fetch_failure(error: Exception):
 class TestPositionSyncErrors:
     def test_position_fetch_failure_warns_and_suggests_reconcile(self) -> None:
         broker = _broker_with_post_order_fetch_failure(
-            RuntimeError("DB connection lost")
+            sqlite3.OperationalError("DB connection lost")
         )
 
         _, mock_console, _ = _run_order_cli(broker)
@@ -264,7 +265,7 @@ class TestPositionSyncErrors:
 
         _, mock_console, _ = _run_order_cli(
             broker,
-            sync_side_effect=RuntimeError("disk full"),
+            sync_side_effect=sqlite3.OperationalError("disk full"),
         )
 
         out = _printed(mock_console)
@@ -274,7 +275,7 @@ class TestPositionSyncErrors:
 
     def test_sync_failure_shows_order_id(self) -> None:
         broker = _broker_with_post_order_fetch_failure(
-            RuntimeError("fetch failed")
+            sqlite3.OperationalError("fetch failed")
         )
 
         _, mock_console, _ = _run_order_cli(broker)
@@ -284,7 +285,7 @@ class TestPositionSyncErrors:
 
     def test_sync_failure_does_not_crash(self) -> None:
         broker = _broker_with_post_order_fetch_failure(
-            RuntimeError("fetch failed")
+            sqlite3.OperationalError("fetch failed")
         )
 
         _, mock_console, _ = _run_order_cli(broker)
@@ -343,12 +344,12 @@ class TestOrderErrorLogging:
         entry = _error_entry(mock_insert)
         assert entry.severity == ErrorSeverity.ERROR
         assert entry.category == ErrorCategory.ORDER_FAILURE
-        assert entry.error_code == "unexpected"
+        assert entry.error_code == "runtime_error"
         assert "Paper DB locked" in entry.message
 
     def test_position_sync_failure_logs_data_integrity(self) -> None:
         broker = _broker_with_post_order_fetch_failure(
-            RuntimeError("DB connection lost")
+            sqlite3.OperationalError("DB connection lost")
         )
 
         _, _, mock_insert = _run_order_cli(broker)
@@ -356,7 +357,7 @@ class TestOrderErrorLogging:
         entry = _error_entry(mock_insert)
         assert entry.severity == ErrorSeverity.WARNING
         assert entry.category == ErrorCategory.DATA_INTEGRITY
-        assert entry.error_code == "position_sync_failed"
+        assert entry.error_code == "position_sync_db_error"
         ctx = json.loads(entry.context)
         assert ctx["order_id"] == "order-123"
 
@@ -393,7 +394,7 @@ class TestErrorLoggingResilience:
 
     def test_db_failure_does_not_mask_sync_error(self) -> None:
         broker = _broker_with_post_order_fetch_failure(
-            RuntimeError("fetch failed")
+            sqlite3.OperationalError("fetch failed")
         )
 
         _, mock_console, _ = _run_order_cli(
@@ -403,3 +404,93 @@ class TestErrorLoggingResilience:
         out = _printed(mock_console)
         assert "Order was placed successfully" in out
         assert "position sync failed" in out
+
+
+# ---------------------------------------------------------------------------
+# Narrowed exception type tests
+# ---------------------------------------------------------------------------
+
+
+class TestNarrowedExceptionTypes:
+    def test_sqlite_error_caught_in_placement(self) -> None:
+        exc = sqlite3.OperationalError("database is locked")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        result, mock_console, mock_insert = _run_order_cli(broker)
+
+        assert result.exit_code == 1
+        out = _printed(mock_console)
+        assert "Order FAILED" in out
+        entry = _error_entry(mock_insert)
+        assert entry.error_code == "db_error"
+
+    def test_value_error_caught_in_placement(self) -> None:
+        exc = ValueError("invalid price format")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        result, mock_console, mock_insert = _run_order_cli(broker)
+
+        assert result.exit_code == 1
+        out = _printed(mock_console)
+        assert "Order FAILED" in out
+        entry = _error_entry(mock_insert)
+        assert entry.error_code == "value_error"
+
+    def test_programming_bug_propagates_from_placement(self) -> None:
+        """TypeError should NOT be caught — it propagates as an unhandled exception."""
+        exc = TypeError("unsupported operand")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        result, _, _ = _run_order_cli(broker)
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)
+
+    def test_sqlite_sync_failure_suggests_db_health(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            sqlite3.OperationalError("database is locked")
+        )
+
+        _, mock_console, _ = _run_order_cli(broker)
+
+        out = _printed(mock_console)
+        assert "Order was placed successfully" in out
+        assert "database" in out.lower()
+        assert "health" in out.lower()
+
+    def test_httpx_sync_failure_warns_reconcile(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            httpx.ConnectError("connection refused")
+        )
+
+        _, mock_console, mock_insert = _run_order_cli(broker)
+
+        out = _printed(mock_console)
+        assert "Order was placed successfully" in out
+        assert "reconcile" in out
+        entry = _error_entry(mock_insert)
+        assert entry.error_code == "position_sync_failed"
+
+    def test_value_error_sync_failure_warns_reconcile(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            ValueError("bad position data")
+        )
+
+        _, mock_console, mock_insert = _run_order_cli(broker)
+
+        out = _printed(mock_console)
+        assert "Order was placed successfully" in out
+        assert "reconcile" in out
+        entry = _error_entry(mock_insert)
+        assert entry.error_code == "position_sync_failed"
+
+    def test_programming_bug_propagates_from_sync(self) -> None:
+        """TypeError in sync should NOT be caught — it propagates."""
+        broker = _broker_with_post_order_fetch_failure(
+            TypeError("unexpected type")
+        )
+
+        result, _, _ = _run_order_cli(broker)
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)

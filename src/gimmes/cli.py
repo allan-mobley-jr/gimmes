@@ -387,6 +387,7 @@ def order(
     async def _order() -> None:
         import json
         import logging
+        import sqlite3
         import traceback
 
         import httpx
@@ -617,13 +618,19 @@ def order(
                     )
                 console.print(_RECONCILE_HINT)
                 raise typer.Exit(1)
-            except Exception as exc:
+            except (sqlite3.Error, ValueError, RuntimeError) as exc:
                 logger.debug("Order placement failed", exc_info=True)
+                if isinstance(exc, sqlite3.Error):
+                    error_code = "db_error"
+                elif isinstance(exc, ValueError):
+                    error_code = "value_error"
+                else:
+                    error_code = "runtime_error"
                 try:
                     await insert_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.ERROR,
                         category=ErrorCategory.ORDER_FAILURE,
-                        error_code="unexpected",
+                        error_code=error_code,
                         component="cli.order", agent="cli",
                         message=f"Order placement failed: {exc}",
                         stack_trace=traceback.format_exc(),
@@ -684,7 +691,33 @@ def order(
                     from gimmes.store.queries import sync_positions
 
                     await sync_positions(db, positions_for_sync)
-            except Exception as exc:
+            except sqlite3.Error as exc:
+                logger.debug("Position sync failed (database)", exc_info=True)
+                try:
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.WARNING,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="position_sync_db_error",
+                        component="cli.order", agent="cli",
+                        message=f"Position sync failed after order {result.order_id}: {exc}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({"ticker": ticker, "side": side,
+                                            "count": final_count, "price": final_price,
+                                            "order_id": result.order_id}),
+                    ))
+                except Exception:
+                    logger.warning("Failed to log error to DB", exc_info=True)
+                console.print(
+                    f"[red bold]Warning: Order was placed successfully"
+                    f" ({result.order_id}) but position sync"
+                    f" failed: {exc}[/red bold]"
+                )
+                console.print(
+                    "[yellow]Database error — check database health"
+                    " (disk space, permissions, corruption).[/yellow]"
+                )
+                console.print(_RECONCILE_HINT)
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
                 logger.debug("Position sync failed", exc_info=True)
                 try:
                     await insert_error(db, ErrorLogEntry(
