@@ -41,6 +41,7 @@ class TestTourGuideCommand:
         assert "starter" in cmd
         assert "--name" in cmd
         assert "GIMMES Tour" in cmd
+        assert mock_run.call_args.kwargs["cwd"] is not None
 
     def test_reports_nonzero_exit(self) -> None:
         with (
