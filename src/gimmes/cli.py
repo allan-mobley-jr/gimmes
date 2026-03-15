@@ -348,17 +348,13 @@ def order(
     config = load_config()
     _championship_warning(config)
 
-    if config.is_championship and not yes:
-        confirm = typer.confirm("You are in CHAMPIONSHIP mode. Place a REAL MONEY order?")
-        if not confirm:
-            raise typer.Abort()
-
     async def _order() -> None:
         from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
         from gimmes.store.queries import get_daily_pnl
         from gimmes.strategy.fee_cache import get_multipliers
+        from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import position_size
 
         async with trading_context(config) as (client, broker, db):
@@ -379,6 +375,7 @@ def order(
 
             order_action = OrderAction(action.lower())
             is_buy = order_action == OrderAction.BUY
+            is_taker = config.orders.preferred_order_type != "maker"
 
             if is_buy and count <= 0 and probability > 0:
                 final_count = position_size(
@@ -447,9 +444,6 @@ def order(
 
                 true_prob = probability if probability > 0 else None
                 existing_tickers = [p.ticker for p in positions]
-                is_taker = (
-                    config.orders.preferred_order_type != "maker"
-                )
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
                     daily_pnl, len(positions), existing_tickers,
@@ -481,6 +475,32 @@ def order(
                             f"  [green]✓[/green] {check}"
                         )
 
+            # --- Pre-order summary ---
+            est_fee = fee_for_order(
+                final_count, final_price,
+                is_taker=is_taker, fees=fees,
+            )
+            if is_buy:
+                total = trade_dollars + est_fee
+            else:
+                total = trade_dollars - est_fee
+            console.print(
+                f"\n  Action:     {action.upper()} {side.upper()}"
+                f"\n  Ticker:     {ticker}"
+                f"\n  Contracts:  {final_count}"
+                f"\n  Price:      {int(round(final_price * 100))}¢"
+                f"  (${final_price:.2f})"
+                f"\n  Subtotal:   ${trade_dollars:.2f}"
+                f"\n  Est. fees:  ${est_fee:.2f}"
+                f"\n  Total:      ${total:.2f}"
+            )
+
+            if config.is_championship and not yes:
+                if not typer.confirm(
+                    "\nCHAMPIONSHIP MODE — place this REAL MONEY order?"
+                ):
+                    raise typer.Abort()
+
             # --- Place the order ---
             params = CreateOrderParams(
                 ticker=ticker,
@@ -489,14 +509,8 @@ def order(
                 count=final_count,
                 yes_price=final_price if side == "yes" else None,
                 no_price=final_price if side == "no" else None,
-                post_only=(config.orders.preferred_order_type == "maker"),
+                post_only=not is_taker,
             )
-
-            msg = (
-                f"Placing order: {action.upper()} {final_count}x"
-                f" {ticker} {side.upper()} @ {int(round(final_price * 100))}¢"
-            )
-            console.print(msg)
 
             if broker:
                 orderbook = await get_orderbook(client, ticker)
@@ -1459,7 +1473,7 @@ def _autonomous_loop(
     mode: str,
     *,
     max_cycles: int = 0,
-    pause_seconds: int = 30,
+    pause_seconds: int = 60,
     no_dashboard: bool = False,
     max_consecutive_failures: int = 5,
 ) -> None:
@@ -1568,7 +1582,7 @@ def driving_range(
     cycles: int = typer.Option(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
-    pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
+    pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
@@ -1583,7 +1597,7 @@ def championship(
     cycles: int = typer.Option(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
-    pause: int = typer.Option(0, "--pause", min=0, help="Seconds between cycles"),
+    pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),

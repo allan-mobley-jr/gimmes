@@ -193,7 +193,7 @@ class TestDrivingRangeCommand:
             runner.invoke(app, ["driving_range", "--cycles", "1"])
 
         mock_loop.assert_called_once_with(
-            "driving_range", max_cycles=1, pause_seconds=0,
+            "driving_range", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
         )
 
@@ -220,7 +220,7 @@ class TestChampionshipCommand:
             runner.invoke(app, ["championship", "--cycles", "1"], input="y\n")
 
         mock_loop.assert_called_once_with(
-            "championship", max_cycles=1, pause_seconds=0,
+            "championship", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
         )
 
