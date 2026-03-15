@@ -1685,6 +1685,60 @@ def clubhouse(
 
 
 # ---------------------------------------------------------------------------
+# Product tour
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="tour_guide")
+def tour_guide() -> None:
+    """Launch The Starter — an interactive GIMMES product tour."""
+    import shutil
+    import subprocess
+
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        console.print(
+            "[red]Error: 'claude' CLI not found. Install Claude Code first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+
+    console.print(
+        "\n[bold green]Starting the GIMMES tour...[/bold green]\n"
+        "[dim]The Starter will guide you through the system.[/dim]\n"
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                claude_path,
+                "--agent", "starter",
+                "--name", "GIMMES Tour",
+            ],
+            cwd=project_root,
+            check=False,
+        )
+    except KeyboardInterrupt:
+        console.print("\n[dim]Tour interrupted.[/dim]")
+        raise typer.Exit(130)
+    except OSError as exc:
+        console.print(
+            f"[red]Failed to launch Claude Code: {exc}[/red]\n"
+            "[yellow]Ensure 'claude' is installed and executable.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    if result.returncode != 0:
+        console.print(
+            f"[red]Tour exited with an error (code {result.returncode}).[/red]"
+        )
+        raise typer.Exit(1)
+
+    console.print("\n[yellow]Tour ended. Happy trading![/yellow]")
+
+
+# ---------------------------------------------------------------------------
 # Autonomous loop commands
 # ---------------------------------------------------------------------------
 

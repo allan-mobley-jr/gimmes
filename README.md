@@ -52,6 +52,16 @@ gimmes mode
 
 You should see "DRIVING RANGE — PAPER TRADING" with your paper balance.
 
+### Take a tour
+
+New to GIMMES? The Starter will show you around:
+
+```bash
+gimmes tour_guide
+```
+
+The Starter is an interactive guide who walks you through what GIMMES does, how the agent team works, and how to get the most out of the system. Take the guided tour or just ask questions — your call.
+
 ### Start trading
 
 Launch the autonomous trading loop in paper mode:
@@ -122,6 +132,7 @@ The autonomous loop is orchestrated by the **caddy-shack** skill, which dispatch
 | **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
 | **The Groundskeeper** | Error escalation | Bash, Read, Glob, Grep | Reviews error logs, escalates critical/recurring errors to GitHub issues |
 | **The Pro** | Strategy tuning | + WebSearch, WebFetch | Analyzes performance data, recommends parameter changes with evidence |
+| **The Starter** | Product tour guide | + WebSearch, WebFetch | Welcomes new users, explains features, answers questions, files feature requests |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
@@ -219,6 +230,11 @@ gimmes cancel ORDER_ID   # Cancel a resting order
 ### Dashboard
 ```bash
 gimmes clubhouse         # Launch Clubhouse dashboard (see above)
+```
+
+### Tour
+```bash
+gimmes tour_guide        # Launch The Starter — interactive product tour
 ```
 
 ### Monitoring & reporting

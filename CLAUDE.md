@@ -45,6 +45,7 @@ python -m gimmes championship      # Autonomous loop — real money (requires co
 python -m gimmes init              # First-time setup wizard
 python -m gimmes config            # Interactive config wizard (--section to jump)
 python -m gimmes mode              # Show mode + connection status
+python -m gimmes tour_guide        # Interactive product tour (The Starter)
 
 # Manual trading
 python -m gimmes scan              # Scan markets (Scout pipeline)
