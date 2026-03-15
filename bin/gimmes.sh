@@ -31,7 +31,7 @@ case "${1:-}" in
         fi
         echo "Updated to $(git rev-parse --short HEAD)"
         ;;
-    help|--help|-h)
+    help)
         cat <<'HELP'
 gimmes -- We only play the gimmes.
 
