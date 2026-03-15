@@ -203,6 +203,10 @@ if [ -n "$RC_FILE" ]; then
 else
     echo "  1. Restart your terminal"
 fi
-echo "  2. Run: gimmes init"
+if [ -f "$GIMMES_HOME/.env" ] && [ -f "$GIMMES_HOME/config/gimmes.toml" ]; then
+    echo "  2. Run: gimmes mode   (verify your connection)"
+else
+    echo "  2. Run: gimmes init"
+fi
 echo "  3. Run: gimmes help"
 echo ""
