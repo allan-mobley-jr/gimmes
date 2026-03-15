@@ -592,7 +592,7 @@ def order(
                     f" ({exc.response.status_code}): {detail}[/red bold]"
                 )
                 raise typer.Exit(1)
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as exc:
                 logger.debug("Order placement timed out", exc_info=True)
                 try:
                     await insert_error(db, ErrorLogEntry(
@@ -600,7 +600,7 @@ def order(
                         category=ErrorCategory.ORDER_FAILURE,
                         error_code="timeout",
                         component="cli.order", agent="cli",
-                        message="Order placement timed out",
+                        message=f"Order placement timed out: {exc}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,
                                             "count": final_count, "price": final_price}),

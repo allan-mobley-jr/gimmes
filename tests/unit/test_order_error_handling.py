@@ -86,13 +86,18 @@ def _stub_config():
     return c
 
 
-def _run_order_cli(broker, *, sync_side_effect=None, championship_create_order=None):
+def _run_order_cli(
+    broker, *, sync_side_effect=None, championship_create_order=None,
+    insert_error_side_effect=None,
+):
     """Invoke the order CLI command with a mocked broker."""
     mock_console = MagicMock()
     mock_fees = MagicMock()
     mock_fees.taker_fee = 0.07
     mock_fees.maker_fee = 0.03
-    mock_insert_error = AsyncMock(return_value=1)
+    mock_insert_error = AsyncMock(
+        return_value=1, side_effect=insert_error_side_effect,
+    )
 
     patches = [
         patch("gimmes.cli.load_config", return_value=_stub_config()),
@@ -327,6 +332,7 @@ class TestOrderErrorLogging:
         assert entry.category == ErrorCategory.ORDER_FAILURE
         assert entry.error_code == "timeout"
         assert "timed out" in entry.message
+        assert "Connection read timed out" in entry.message
 
     def test_generic_error_logs_order_failure(self) -> None:
         exc = RuntimeError("Paper DB locked")
@@ -366,3 +372,34 @@ class TestOrderErrorLogging:
         assert ctx["side"] == "yes"
         assert ctx["count"] == 10
         assert ctx["price"] == 0.40
+
+
+class TestErrorLoggingResilience:
+    """Verify that insert_error failures never mask the original error."""
+
+    def test_db_failure_does_not_mask_placement_error(self) -> None:
+        resp = _make_response(400, json_data={"message": "Insufficient balance"})
+        exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        result, mock_console, _ = _run_order_cli(
+            broker, insert_error_side_effect=RuntimeError("DB broken"),
+        )
+
+        assert result.exit_code == 1
+        out = _printed(mock_console)
+        assert "Order FAILED" in out
+        assert "Insufficient balance" in out
+
+    def test_db_failure_does_not_mask_sync_error(self) -> None:
+        broker = _broker_with_post_order_fetch_failure(
+            RuntimeError("fetch failed")
+        )
+
+        _, mock_console, _ = _run_order_cli(
+            broker, insert_error_side_effect=RuntimeError("DB broken"),
+        )
+
+        out = _printed(mock_console)
+        assert "Order was placed successfully" in out
+        assert "position sync failed" in out
