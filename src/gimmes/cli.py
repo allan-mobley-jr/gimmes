@@ -77,6 +77,33 @@ def _championship_warning(config) -> None:  # type: ignore[no-untyped-def]
         )
 
 
+async def _mark_positions_to_market(
+    broker,   # PaperBroker
+    client,   # KalshiClient
+    *,
+    known_prices: dict[str, float] | None = None,
+) -> list:
+    """Mark all paper positions to market and return refreshed list."""
+    from gimmes.kalshi.markets import get_market
+
+    positions = await broker.get_positions()
+    prices = dict(known_prices or {})
+
+    for pos in positions:
+        try:
+            if pos.ticker not in prices:
+                market = await get_market(client, pos.ticker)
+                prices[pos.ticker] = market.midpoint or market.last_price
+            await broker.mark_to_market(pos.ticker, prices[pos.ticker])
+        except Exception as exc:
+            console.print(
+                f"[yellow]Warning: could not mark {pos.ticker}"
+                f" to market: {exc}[/yellow]"
+            )
+
+    return await broker.get_positions()
+
+
 @asynccontextmanager
 async def trading_context(config: GimmesConfig):
     """Yields (client, broker, db). broker is None in championship mode.
@@ -299,9 +326,13 @@ def validate(
         async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
 
+            price = market.midpoint or market.last_price
+
             if broker:
                 balance = await broker.get_balance()
-                positions = await broker.get_positions()
+                positions = await _mark_positions_to_market(
+                    broker, client, known_prices={ticker: price},
+                )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
                 from gimmes.store.queries import sync_positions
@@ -309,7 +340,6 @@ def validate(
                 positions = await get_all_positions(client)
                 await sync_positions(db, positions)
 
-            price = market.midpoint or market.last_price
             fees = get_multipliers(market.series_ticker)
             if dollars <= 0:
                 contracts = position_size(
@@ -411,7 +441,9 @@ def order(
             # Get balance and positions for both sizing and validation
             if broker:
                 balance = await broker.get_balance()
-                positions = await broker.get_positions()
+                positions = await _mark_positions_to_market(
+                    broker, client, known_prices={ticker: mkt_price},
+                )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
                 from gimmes.store.queries import sync_positions
@@ -882,7 +914,7 @@ def risk_check() -> None:
         async with trading_context(config) as (client, broker, db):
             if broker:
                 balance = await broker.get_balance()
-                pos = await broker.get_positions()
+                pos = await _mark_positions_to_market(broker, client)
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
                 from gimmes.store.queries import sync_positions
