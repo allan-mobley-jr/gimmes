@@ -39,25 +39,40 @@ Setup:
   gimmes init              First-time setup (API credentials, config)
   gimmes config            Interactive configuration wizard
   gimmes mode              Show current mode and connection status
+  gimmes tour_guide        Interactive product tour (The Starter)
   gimmes update            Pull latest code and reinstall
 
 Market Research:
   gimmes discover CAT      Explore series in a Kalshi category
   gimmes scan              Scan markets for gimme candidates
   gimmes score TICKER      Score a specific market
-  gimmes market-info TICK  Detailed market info + orderbook
+  gimmes market-info TICKER  Detailed market info + orderbook
 
 Trading:
   gimmes size TICKER -p P  Calculate position size
-  gimmes validate TICK -p P  Pre-trade validation
+  gimmes validate TICKER -p P  Pre-trade validation
   gimmes order TICKER      Place an order
   gimmes cancel ORDER_ID   Cancel a resting order
   gimmes log-trade TICKER  Log a trade decision
+  gimmes trades            List trade records (--ticker, --action)
+  gimmes log-outcome TICKER  Record a market resolution (--outcome yes/no)
 
 Portfolio:
   gimmes positions         List open positions
+  gimmes reconcile         Sync positions with broker/API
   gimmes risk-check        Check risk limits and daily P&L
   gimmes report            Performance scorecard
+
+Diagnostics:
+  gimmes log-activity      Log agent activity to the database
+  gimmes log-error         Log a structured error
+  gimmes errors            View error logs (--severity, --category, --unresolved)
+  gimmes resolve-error ID  Mark an error as resolved
+
+Strategy:
+  gimmes lesson            Run strategy analysis and recommendations
+  gimmes recommendations   View past strategy recommendations
+  gimmes tune              Apply pending recommendations to gimmes.toml
 
 Dashboard:
   gimmes clubhouse         Launch web dashboard (http://127.0.0.1:1919)
