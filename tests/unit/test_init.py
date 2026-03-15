@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -13,6 +14,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from gimmes.init import (
+    _DEFAULT_TOML,
     _clear_shell_history,
     _encrypt_private_key,
     _find_downloaded_key,
@@ -22,6 +24,7 @@ from gimmes.init import (
     _update_env_var,
     _validate_pem_content,
     _write_default_file,
+    run_init,
 )
 
 
@@ -236,8 +239,9 @@ class TestInstallPrivateKey:
         source = tmp_path / "gimmes.txt"
         source.write_bytes(sample_pem)
 
-        with patch("gimmes.init.KEYS_DIR", keys_dir), patch(
-            "gimmes.init.typer.confirm", return_value=True
+        with (
+            patch("gimmes.init.KEYS_DIR", keys_dir),
+            patch("gimmes.init.typer.confirm", return_value=True),
         ):
             result = _install_private_key(source, b"overwrite-test")
 
@@ -248,9 +252,7 @@ class TestInstallPrivateKey:
         assert mode & stat.S_IRUSR
         assert not (mode & stat.S_IWUSR)
 
-    def test_keeps_existing_key_when_declined(
-        self, tmp_path: Path, sample_pem: bytes
-    ) -> None:
+    def test_keeps_existing_key_when_declined(self, tmp_path: Path, sample_pem: bytes) -> None:
         keys_dir = tmp_path / "keys"
         keys_dir.mkdir()
         existing = keys_dir / "kalshi_private.pem"
@@ -260,12 +262,13 @@ class TestInstallPrivateKey:
         source = tmp_path / "gimmes.txt"
         source.write_bytes(sample_pem)
 
-        with patch("gimmes.init.KEYS_DIR", keys_dir), patch(
-            "gimmes.init.typer.confirm", return_value=False
+        with (
+            patch("gimmes.init.KEYS_DIR", keys_dir),
+            patch("gimmes.init.typer.confirm", return_value=False),
         ):
             result = _install_private_key(source, b"decline-test")
 
-        assert result is not None
+        assert result is None
         # Should still have old content
         existing.chmod(stat.S_IRUSR | stat.S_IWUSR)  # make readable for assertion
         assert existing.read_bytes() == b"old key content"
@@ -319,17 +322,12 @@ class TestUpdateEnvVar:
         env_file.write_text("# KALSHI_PRIVATE_KEY_PASSWORD=\n")
 
         with patch("gimmes.init.ENV_FILE", env_file):
-            _update_env_var(
-                "KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True
-            )
+            _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True)
 
         content = env_file.read_text()
         assert 'KALSHI_PRIVATE_KEY_PASSWORD="secret"' in content
         # Should not be commented out
-        lines = [
-            line for line in content.splitlines()
-            if "KALSHI_PRIVATE_KEY_PASSWORD" in line
-        ]
+        lines = [line for line in content.splitlines() if "KALSHI_PRIVATE_KEY_PASSWORD" in line]
         assert len(lines) == 1
         assert not lines[0].startswith("#")
 
@@ -338,9 +336,7 @@ class TestUpdateEnvVar:
         env_file.write_text("#KALSHI_PRIVATE_KEY_PASSWORD=\n")
 
         with patch("gimmes.init.ENV_FILE", env_file):
-            _update_env_var(
-                "KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True
-            )
+            _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", "secret", sensitive=True)
 
         content = env_file.read_text()
         assert 'KALSHI_PRIVATE_KEY_PASSWORD="secret"' in content
@@ -474,8 +470,6 @@ class TestHeadless:
         assert history.read_text() == "secret stuff\n"
 
     def test_run_init_headless_missing_env_vars(self) -> None:
-        from gimmes.init import run_init
-
         with (
             patch("gimmes.init.sys.stdin") as mock_stdin,
             patch.dict(os.environ, {}, clear=True),
@@ -485,8 +479,6 @@ class TestHeadless:
             run_init(headless=True)
 
     def test_run_init_headless_partial_env_vars(self) -> None:
-        from gimmes.init import run_init
-
         env = {"KALSHI_PROD_API_KEY": "test-key"}
         with (
             patch("gimmes.init.sys.stdin") as mock_stdin,
@@ -497,8 +489,6 @@ class TestHeadless:
             run_init(headless=True)
 
     def test_run_init_headless_invalid_key_path(self, tmp_path: Path) -> None:
-        from gimmes.init import run_init
-
         env = {
             "KALSHI_PROD_API_KEY": "test-key",
             "KALSHI_PROD_PRIVATE_KEY_PATH": str(tmp_path / "nonexistent.pem"),
@@ -512,11 +502,7 @@ class TestHeadless:
         ):
             run_init(headless=True)
 
-    def test_run_init_headless_full_flow(
-        self, tmp_path: Path, sample_pem: bytes
-    ) -> None:
-        from gimmes.init import run_init
-
+    def test_run_init_headless_full_flow(self, tmp_path: Path, sample_pem: bytes) -> None:
         source = tmp_path / "gimmes.txt"
         source.write_bytes(sample_pem)
 
@@ -546,8 +532,6 @@ class TestHeadless:
         assert (keys_dir / "kalshi_private.pem").exists()
 
     def test_run_init_headless_invalid_key_content(self, tmp_path: Path) -> None:
-        from gimmes.init import run_init
-
         source = tmp_path / "not_a_key.txt"
         source.write_text("this is not a PEM file")
 
@@ -571,10 +555,6 @@ class TestDefaultToml:
 
     @pytest.fixture()
     def toml_data(self) -> dict:
-        import tomllib
-
-        from gimmes.init import _DEFAULT_TOML
-
         return tomllib.loads(_DEFAULT_TOML)
 
     _EXPECTED_SECTIONS = {"strategy", "sizing", "risk", "orders", "scanner", "paper", "scoring"}
