@@ -21,7 +21,7 @@ console = Console()
 
 
 _RECONCILE_HINT = (
-    "[yellow]Run 'python -m gimmes reconcile'"
+    "[yellow]Run 'gimmes reconcile'"
     " to sync positions with the broker.[/yellow]"
 )
 
