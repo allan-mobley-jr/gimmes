@@ -249,6 +249,32 @@ class TestRefreshEdgeCases:
         assert "KXCPI" in _cache
         assert "KXFUT" not in _cache
 
+    @pytest.mark.asyncio
+    async def test_most_recent_record_wins_per_series(self) -> None:
+        """Records arrive in reverse order; sort ensures newest wins."""
+        client = AsyncMock()
+        with patch("gimmes.kalshi.markets.get_series_fee_changes") as mock:
+            mock.return_value = [
+                {
+                    "id": "2",
+                    "series_ticker": "KXCPI",
+                    "fee_type": "quadratic_with_maker_fees",
+                    "fee_multiplier": 0.10,
+                    "scheduled_ts": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "id": "1",
+                    "series_ticker": "KXCPI",
+                    "fee_type": "quadratic_with_maker_fees",
+                    "fee_multiplier": 0.07,
+                    "scheduled_ts": "2025-01-01T00:00:00Z",
+                },
+            ]
+            await refresh_fee_cache(client)
+
+        result = get_multipliers("KXCPI")
+        assert result.taker == 0.10  # Most recent record wins
+
 
 class TestClearCache:
     def test_clears_all_entries(self) -> None:

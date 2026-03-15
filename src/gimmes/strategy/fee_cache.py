@@ -6,8 +6,12 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers
+
+if TYPE_CHECKING:
+    from gimmes.kalshi.client import KalshiClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,14 @@ class _CacheEntry:
 _cache: dict[str, _CacheEntry] = {}
 
 
+def _parse_scheduled_ts(value: str) -> datetime | None:
+    """Parse an ISO 8601 timestamp, handling trailing 'Z' for Python 3.11."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def get_multipliers(series_ticker: str) -> FeeMultipliers:
     """Return fee multipliers from cache, or defaults if missing/expired."""
     entry = _cache.get(series_ticker)
@@ -32,7 +44,7 @@ def get_multipliers(series_ticker: str) -> FeeMultipliers:
     return DEFAULT_FEE_MULTIPLIERS
 
 
-async def refresh_fee_cache(client: object) -> None:
+async def refresh_fee_cache(client: KalshiClient) -> None:
     """Fetch fee changes from Kalshi and populate cache.
 
     Args:
@@ -41,10 +53,19 @@ async def refresh_fee_cache(client: object) -> None:
     from gimmes.kalshi.markets import get_series_fee_changes
 
     try:
-        records = await get_series_fee_changes(client)  # type: ignore[arg-type]
+        records = await get_series_fee_changes(client)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("Failed to fetch fee multipliers: %s; using defaults", exc)
         return
+
+    # Sort by scheduled_ts so the most recent effective record per series wins
+    _epoch = datetime.min.replace(tzinfo=UTC)
+
+    def _sort_key(item: dict) -> datetime:  # type: ignore[type-arg]
+        ts = _parse_scheduled_ts(item.get("scheduled_ts", ""))
+        return ts if ts is not None else _epoch
+
+    records.sort(key=_sort_key)
 
     now_utc = datetime.now(UTC)
     now = time.monotonic()
@@ -56,12 +77,9 @@ async def refresh_fee_cache(client: object) -> None:
         # Skip future-scheduled changes that haven't taken effect yet
         scheduled = item.get("scheduled_ts")
         if scheduled:
-            try:
-                ts = datetime.fromisoformat(scheduled)
-                if ts > now_utc:
-                    continue
-            except (ValueError, TypeError):
-                pass  # If we can't parse the timestamp, use the record
+            ts = _parse_scheduled_ts(scheduled)
+            if ts is not None and ts > now_utc:
+                continue
 
         fee_type = item.get("fee_type", "")
         try:
