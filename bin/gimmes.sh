@@ -5,6 +5,48 @@ GIMMES_HOME="${GIMMES_HOME:-$HOME/.gimmes}"
 REPO="$GIMMES_HOME/repo"
 PYTHON="$REPO/.venv/bin/python"
 
+gimmes_version() {
+    git -C "$REPO" describe --tags 2>/dev/null || git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "dev"
+}
+
+show_banner() {
+    local variant="${1:-main}"
+    local version
+    version=$(gimmes_version)
+
+    local green='\033[0;32m'
+    local cyan='\033[0;36m'
+    local yellow='\033[0;33m'
+    local reset='\033[0m'
+
+    printf "${green}"
+    cat <<'BANNER'
+
+  ██████╗ ██╗███╗   ███╗███╗   ███╗███████╗███████╗
+ ██╔════╝ ██║████╗ ████║████╗ ████║██╔════╝██╔════╝
+ ██║  ███╗██║██╔████╔██║██╔████╔██║█████╗  ███████╗
+ ██║   ██║██║██║╚██╔╝██║██║╚██╔╝██║██╔══╝  ╚════██║
+ ╚██████╔╝██║██║ ╚═╝ ██║██║ ╚═╝ ██║███████╗███████║
+  ╚═════╝ ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝
+BANNER
+    printf "${reset}"
+
+    case "$variant" in
+        driving_range)
+            printf "\n  ${cyan}DRIVING RANGE${reset}  Paper trading — real data, simulated orders\n"
+            ;;
+        championship)
+            printf "\n  ${yellow}CHAMPIONSHIP${reset}  Real money. Real markets. No mulligans.\n"
+            ;;
+        *)
+            printf "\n  We only play the gimmes.\n"
+            ;;
+    esac
+
+    printf "  %-47s %s\n" "MIT License" "$version"
+    echo ""
+}
+
 # Verify installation
 if [ ! -d "$REPO" ]; then
     echo "Error: gimmes is not installed. Run the install script first:"
@@ -28,12 +70,12 @@ case "${1:-}" in
         else
             "$PYTHON" -m pip install -e . --quiet
         fi
+        show_banner
         echo "Updated to $(git rev-parse --short HEAD)"
         ;;
     help)
+        show_banner
         cat <<'HELP'
-gimmes -- We only play the gimmes.
-
 Setup:
   gimmes init              First-time setup (API credentials, config)
   gimmes config            Interactive configuration wizard
@@ -82,6 +124,21 @@ Autonomous:
 
 https://github.com/allan-mobley-jr/gimmes
 HELP
+        ;;
+    init)
+        show_banner
+        shift
+        exec "$PYTHON" -m gimmes init "$@"
+        ;;
+    driving_range)
+        show_banner driving_range
+        shift
+        exec "$PYTHON" -m gimmes driving_range "$@"
+        ;;
+    championship)
+        show_banner championship
+        shift
+        exec "$PYTHON" -m gimmes championship "$@"
         ;;
     "")
         exec "$PYTHON" -m gimmes --help

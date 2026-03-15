@@ -111,9 +111,7 @@ _HEADLESS_REQUIRED_VARS = (
 
 def _is_headless(flag: bool) -> bool:
     """Return True when init should run non-interactively."""
-    if flag:
-        return True
-    return not sys.stdin.isatty()
+    return flag or not sys.stdin.isatty()
 
 
 def _secure_env_file() -> None:
@@ -129,13 +127,10 @@ def _write_default_file(
     if target.exists():
         if headless:
             console.print(f"[yellow]Overwriting existing {label} at {target}[/yellow]")
-            overwrite = True
-        else:
-            overwrite = typer.confirm(
-                f"{label} already exists at {target}. Overwrite?",
-                default=False,
-            )
-        if not overwrite:
+        elif not typer.confirm(
+            f"{label} already exists at {target}. Overwrite?",
+            default=False,
+        ):
             console.print(f"[dim]Skipping {label}[/dim]")
             return False
 
@@ -235,13 +230,9 @@ def _install_private_key(
     pem_path = KEYS_DIR / PEM_FILENAME
 
     if pem_path.exists():
-        if headless:
-            overwrite = True
-        else:
-            overwrite = typer.confirm(
-                f"Private key already exists at {pem_path}. Overwrite?", default=False
-            )
-        if not overwrite:
+        if not headless and not typer.confirm(
+            f"Private key already exists at {pem_path}. Overwrite?", default=False
+        ):
             console.print("[dim]Keeping existing private key[/dim]")
             return pem_path
 
@@ -431,14 +422,11 @@ def run_init(*, headless: bool = False) -> None:
 
     if headless:
         # Validate all required env vars are present
-        env_vals: dict[str, str] = {}
-        missing: list[str] = []
-        for var in _HEADLESS_REQUIRED_VARS:
-            val = os.environ.get(var, "").strip()
-            if not val:
-                missing.append(var)
-            else:
-                env_vals[var] = val
+        env_vals = {
+            var: os.environ.get(var, "").strip()
+            for var in _HEADLESS_REQUIRED_VARS
+        }
+        missing = [var for var, val in env_vals.items() if not val]
         if missing:
             console.print(
                 f"[red]Headless init requires these env vars: "
@@ -446,7 +434,7 @@ def run_init(*, headless: bool = False) -> None:
             )
             raise typer.Exit(1)
 
-    console.print("\n[bold cyan]GIMMES Setup[/bold cyan]")
+    console.print("[bold]Gimmes Setup[/bold]")
     if headless:
         console.print("[dim](headless mode)[/dim]")
     console.print()
@@ -549,8 +537,8 @@ def run_init(*, headless: bool = False) -> None:
         console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
 
     # Verify connection (same in both modes)
-    step_num = 5 if not headless else 4
-    console.print(f"\n[bold]Step {step_num}: Verify connection[/bold]\n")
+    verify_step = 4 if headless else 5
+    console.print(f"\n[bold]Step {verify_step}: Verify connection[/bold]\n")
     connected = asyncio.run(_verify_connection())
     if headless and not connected:
         console.print(
