@@ -334,10 +334,13 @@ def validate(
                 )
                 raise typer.Exit(1)
 
+            unrealized_pnl = sum(p.unrealized_pnl for p in positions)
+            total_daily_pnl = daily_pnl + unrealized_pnl
+
             existing_tickers = [p.ticker for p in positions]
             result = validate_trade(
                 market, trade_dollars, probability, balance,
-                daily_pnl, len(positions), existing_tickers, config,
+                total_daily_pnl, len(positions), existing_tickers, config,
                 fees=fees,
             )
 
@@ -481,11 +484,14 @@ def order(
                         )
                         return
 
+                unrealized_pnl = sum(p.unrealized_pnl for p in positions)
+                total_daily_pnl = daily_pnl + unrealized_pnl
+
                 true_prob = probability if probability > 0 else None
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
-                    daily_pnl, len(positions), existing_tickers,
+                    total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
                 )
 
@@ -805,12 +811,17 @@ def risk_check() -> None:
                 )
                 raise typer.Exit(1)
 
+            unrealized_pnl = sum(p.unrealized_pnl for p in pos)
+            total_daily_pnl = daily_pnl + unrealized_pnl
+
             console.print("\n[bold]Risk Check[/bold]")
             console.print(f"Balance: ${balance:,.2f}")
             console.print(f"Open Positions: {len(pos)}/{config.risk.max_open_positions}")
-            console.print(f"Daily P&L: ${daily_pnl:,.2f}")
+            console.print(f"Daily Realized P&L: ${daily_pnl:,.2f}")
+            console.print(f"Unrealized P&L:     ${unrealized_pnl:,.2f}")
+            console.print(f"Total Daily P&L:    ${total_daily_pnl:,.2f}")
 
-            loss = check_daily_loss(daily_pnl, balance, config)
+            loss = check_daily_loss(total_daily_pnl, balance, config)
             count = check_position_count(len(pos), config)
 
             for check, label in [(loss, "Daily Loss"), (count, "Position Count")]:
