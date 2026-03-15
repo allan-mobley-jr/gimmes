@@ -564,3 +564,30 @@ class TestHeadless:
             pytest.raises((SystemExit, click.exceptions.Exit)),
         ):
             run_init(headless=True)
+
+
+class TestDefaultToml:
+    """Regression tests for the _DEFAULT_TOML template."""
+
+    @pytest.fixture()
+    def toml_data(self) -> dict:
+        import tomllib
+
+        from gimmes.init import _DEFAULT_TOML
+
+        return tomllib.loads(_DEFAULT_TOML)
+
+    _EXPECTED_SECTIONS = {"strategy", "sizing", "risk", "orders", "scanner", "paper", "scoring"}
+
+    def test_default_toml_is_valid(self, toml_data: dict) -> None:
+        assert toml_data.keys() >= self._EXPECTED_SECTIONS
+
+    def test_default_toml_has_series_list(self, toml_data: dict) -> None:
+        series = toml_data["scanner"]["series"]
+        assert isinstance(series, list)
+        assert series
+        assert all(isinstance(s, str) for s in series)
+
+    def test_default_toml_no_duplicate_series(self, toml_data: dict) -> None:
+        series = toml_data["scanner"]["series"]
+        assert len(series) == len(set(series))
