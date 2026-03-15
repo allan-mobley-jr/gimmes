@@ -9,6 +9,37 @@ gimmes_version() {
     git -C "$REPO" describe --tags 2>/dev/null || git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "dev"
 }
 
+show_version() {
+    local tag sha behind
+    local green='\033[0;32m' yellow='\033[0;33m' dim='\033[0;90m' reset='\033[0m'
+
+    sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+    # Try git tag first, fall back to pyproject.toml version
+    tag=$(git -C "$REPO" describe --tags --abbrev=0 2>/dev/null)
+    if [ -z "$tag" ]; then
+        tag=$(sed -n 's/^version = "\(.*\)"/v\1/p' "$REPO/pyproject.toml" 2>/dev/null)
+    fi
+    tag="${tag:-dev}"
+
+    echo "gimmes $tag ($sha)"
+
+    # Update check: fetch quietly, count commits behind
+    if git -C "$REPO" fetch origin main --quiet 2>/dev/null; then
+        behind=$(git -C "$REPO" rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+        if [ "$behind" -eq 0 ]; then
+            printf "${green}✓ Up to date${reset}\n"
+        else
+            local label="commit"
+            [ "$behind" -gt 1 ] && label="commits"
+            printf "${yellow}⚠ Update available — remote is %s %s ahead${reset}\n" "$behind" "$label"
+            echo "  Run: gimmes update"
+        fi
+    else
+        printf "${dim}(update check skipped — could not reach remote)${reset}\n"
+    fi
+}
+
 show_banner() {
     local variant="${1:-main}"
     local version
@@ -61,6 +92,9 @@ if [ ! -f "$PYTHON" ]; then
 fi
 
 case "${1:-}" in
+    version|--version)
+        show_version
+        ;;
     update)
         echo "Updating gimmes..."
         cd "$REPO"
@@ -82,6 +116,7 @@ Setup:
   gimmes mode              Show current mode and connection status
   gimmes tour_guide        Interactive product tour (The Starter)
   gimmes update            Pull latest code and reinstall
+  gimmes version           Show version and check for updates
 
 Market Research:
   gimmes discover CAT      Explore series in a Kalshi category
