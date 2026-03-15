@@ -17,12 +17,24 @@ def _parse_position(data: dict) -> Position:  # type: ignore[type-arg]
 
     market_value = float(data.get("market_exposure_dollars", "0"))
     realized_pnl = float(data.get("realized_pnl_dollars", "0"))
+    total_traded = float(data.get("total_traded_dollars", "0"))
+    fees_paid = float(data.get("fees_paid_dollars", "0"))
+
+    # total_traded is the raw fill cost; fees are separate
+    cost_basis = total_traded + fees_paid
+    unrealized_pnl = (market_value - cost_basis) if abs_count > 0 else 0.0
+    avg_price = cost_basis / abs_count if abs_count > 0 else 0.0
+    market_price = market_value / abs_count if abs_count > 0 else 0.0
 
     return Position(
         ticker=ticker,
         side=side,
         count=abs_count,
+        avg_price=avg_price,
+        market_price=market_price,
+        cost_basis=cost_basis,
         market_value=market_value,
+        unrealized_pnl=unrealized_pnl,
         realized_pnl=realized_pnl,
     )
 
