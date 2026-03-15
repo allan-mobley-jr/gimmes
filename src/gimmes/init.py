@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import stat
+import sys
 from pathlib import Path
 
 import typer
@@ -75,6 +76,19 @@ time_to_resolution = 0.15
 KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
 
+_HEADLESS_REQUIRED_VARS = (
+    "KALSHI_PROD_API_KEY",
+    "KALSHI_PROD_PRIVATE_KEY_PATH",
+    "KALSHI_PRIVATE_KEY_PASSWORD",
+)
+
+
+def _is_headless(flag: bool) -> bool:
+    """Return True when init should run non-interactively."""
+    if flag:
+        return True
+    return not sys.stdin.isatty()
+
 
 def _secure_env_file() -> None:
     """Set .env file permissions to 0600 (owner read/write only)."""
@@ -83,14 +97,18 @@ def _secure_env_file() -> None:
 
 
 def _write_default_file(
-    target: Path, content: str, label: str
+    target: Path, content: str, label: str, *, headless: bool = False
 ) -> bool:
     """Write default content to target file. Returns True if written."""
     if target.exists():
-        overwrite = typer.confirm(
-            f"{label} already exists at {target}. Overwrite?",
-            default=False,
-        )
+        if headless:
+            console.print(f"[yellow]Overwriting existing {label} at {target}[/yellow]")
+            overwrite = True
+        else:
+            overwrite = typer.confirm(
+                f"{label} already exists at {target}. Overwrite?",
+                default=False,
+            )
         if not overwrite:
             console.print(f"[dim]Skipping {label}[/dim]")
             return False
@@ -155,7 +173,7 @@ def _encrypt_private_key(content: bytes, password: bytes) -> bytes:
 
 
 def _install_private_key(
-    source: Path, password: bytes
+    source: Path, password: bytes, *, headless: bool = False
 ) -> Path | None:
     """Validate, encrypt, and install the private key. Returns the PEM path or None."""
     content = source.read_bytes()
@@ -191,9 +209,12 @@ def _install_private_key(
     pem_path = KEYS_DIR / PEM_FILENAME
 
     if pem_path.exists():
-        overwrite = typer.confirm(
-            f"Private key already exists at {pem_path}. Overwrite?", default=False
-        )
+        if headless:
+            overwrite = True
+        else:
+            overwrite = typer.confirm(
+                f"Private key already exists at {pem_path}. Overwrite?", default=False
+            )
         if not overwrite:
             console.print("[dim]Keeping existing private key[/dim]")
             return pem_path
@@ -277,13 +298,17 @@ def _prompt_api_key() -> str | None:
     return api_key.strip()
 
 
-def _clear_shell_history() -> None:
+def _clear_shell_history(*, headless: bool = False) -> None:
     """Clear shell history to remove any pasted secrets.
 
     Prompts the user before truncating history files on disk.
     Note: typer.prompt(hide_input=True) prevents most shells from
     recording the pasted values, but this provides defense in depth.
+    In headless mode, no secrets are pasted so history clearing is skipped.
     """
+    if headless:
+        return
+
     shell = os.environ.get("SHELL", "")
     home = Path.home()
     history_files: list[Path] = []
@@ -372,95 +397,144 @@ async def _verify_connection() -> bool:
         return False
 
 
-def run_init() -> None:
-    """Run the full interactive init flow."""
-    console.print("\n[bold cyan]GIMMES Setup[/bold cyan]\n")
+def run_init(*, headless: bool = False) -> None:
+    """Run the init flow. Interactive by default; headless when flag or no TTY."""
+    import asyncio
+
+    headless = _is_headless(headless)
+
+    if headless:
+        # Validate all required env vars are present
+        env_vals: dict[str, str] = {}
+        missing: list[str] = []
+        for var in _HEADLESS_REQUIRED_VARS:
+            val = os.environ.get(var, "").strip()
+            if not val:
+                missing.append(var)
+            else:
+                env_vals[var] = val
+        if missing:
+            console.print(
+                f"[red]Headless init requires these env vars: "
+                f"{', '.join(missing)}[/red]"
+            )
+            raise typer.Exit(1)
+
+    console.print("\n[bold cyan]GIMMES Setup[/bold cyan]")
+    if headless:
+        console.print("[dim](headless mode)[/dim]")
+    console.print()
 
     # Step 1: Create default config files
     console.print("[bold]Step 1: Configuration files[/bold]\n")
+    _write_default_file(ENV_FILE, _DEFAULT_ENV, ".env", headless=headless)
+    _write_default_file(TOML_FILE, _DEFAULT_TOML, "config/gimmes.toml", headless=headless)
 
-    _write_default_file(ENV_FILE, _DEFAULT_ENV, ".env")
-    _write_default_file(TOML_FILE, _DEFAULT_TOML, "config/gimmes.toml")
+    if not headless:
+        # --- Interactive path ---
 
-    # Step 2: Private key setup
-    console.print("\n[bold]Step 2: Kalshi API credentials[/bold]\n")
-    console.print(
-        "To trade on Kalshi, you need an API key and a private key.\n"
-        "\n"
-        "[bold]Here's how to get them:[/bold]\n"
-        "  1. Log in to your Kalshi account at [cyan]https://kalshi.com[/cyan]\n"
-        "  2. Go to [bold]Account Settings → API Keys[/bold]\n"
-        "  3. Click [bold]Create API Key[/bold] (select read/write access)\n"
-        "  4. Kalshi will generate two things:\n"
-        "     • An [bold]API key[/bold] (a UUID displayed on screen)\n"
-        "     • A [bold]private key[/bold] (a .txt file that downloads automatically)\n"
-        "  5. [bold yellow]Important:[/bold yellow] Name the downloaded file"
-        " [bold]Gimmes[/bold] or [bold]gimmes[/bold]\n"
-        "     so this tool can find it in your Downloads folder.\n"
-    )
-
-    ready = typer.confirm("Have you created the API key and downloaded the private key?")
-    if not ready:
+        # Step 2: Credential readiness gate
+        console.print("\n[bold]Step 2: Kalshi API credentials[/bold]\n")
         console.print(
-            "\n[dim]No problem. Run [bold]gimmes init[/bold] again when you're ready.[/dim]"
+            "To trade on Kalshi, you need an API key and a private key.\n"
+            "\n"
+            "[bold]Here's how to get them:[/bold]\n"
+            "  1. Log in to your Kalshi account at [cyan]https://kalshi.com[/cyan]\n"
+            "  2. Go to [bold]Account Settings → API Keys[/bold]\n"
+            "  3. Click [bold]Create API Key[/bold] (select read/write access)\n"
+            "  4. Kalshi will generate two things:\n"
+            "     • An [bold]API key[/bold] (a UUID displayed on screen)\n"
+            "     • A [bold]private key[/bold] (a .txt file that downloads automatically)\n"
+            "  5. [bold yellow]Important:[/bold yellow] Name the downloaded file"
+            " [bold]Gimmes[/bold] or [bold]gimmes[/bold]\n"
+            "     so this tool can find it in your Downloads folder.\n"
         )
-        raise typer.Exit(0)
 
-    # Step 3: Locate and install the private key
-    console.print("\n[bold]Step 3: Private key[/bold]\n")
-    console.print("[cyan]Searching for private key in ~/Downloads...[/cyan]")
-    key_path = _find_downloaded_key()
-
-    pem_path: Path | None = None
-
-    if key_path:
-        console.print(f"[green]Found:[/green] {key_path}")
-
-        # Prompt for password before installing (key will be encrypted)
-        password = _prompt_password()
-
-        pem_path = _install_private_key(key_path, password.encode())
-        if pem_path:
-            _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
-            _update_env_var(
-                "KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True
-            )
+        ready = typer.confirm("Have you created the API key and downloaded the private key?")
+        if not ready:
             console.print(
-                "[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set"
+                "\n[dim]No problem. Run [bold]gimmes init[/bold] again when you're ready.[/dim]"
             )
-            # Warn about the unencrypted source file
+            raise typer.Exit(0)
+
+        # Step 3: Locate and install the private key
+        console.print("\n[bold]Step 3: Private key[/bold]\n")
+        console.print("[cyan]Searching for private key in ~/Downloads...[/cyan]")
+        key_path = _find_downloaded_key()
+
+        if key_path:
+            console.print(f"[green]Found:[/green] {key_path}")
+            password = _prompt_password()
+            pem_path = _install_private_key(key_path, password.encode())
+            if pem_path:
+                _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
+                _update_env_var(
+                    "KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True
+                )
+                console.print(
+                    "[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set"
+                )
+                console.print(
+                    f"\n[yellow bold]Security reminder:[/yellow bold] "
+                    f"The original unencrypted key file is still at:\n"
+                    f"  {key_path}\n"
+                    f"Delete it now that the encrypted copy is installed."
+                )
+        else:
             console.print(
-                f"\n[yellow bold]Security reminder:[/yellow bold] "
-                f"The original unencrypted key file is still at:\n"
-                f"  {key_path}\n"
-                f"Delete it now that the encrypted copy is installed."
+                "[yellow]Could not find a file matching gimmes*.txt in ~/Downloads.[/yellow]\n"
+                "You can:\n"
+                "  • Rename your downloaded key file to [bold]gimmes.txt[/bold] and run"
+                " [bold]gimmes init[/bold] again\n"
+                "  • Or manually copy the key file and set"
+                " KALSHI_PROD_PRIVATE_KEY_PATH in .env\n"
             )
+
+        # Step 4: API key
+        console.print("\n[bold]Step 4: API key[/bold]")
+        api_key = _prompt_api_key()
+        if api_key:
+            _update_env_var("KALSHI_PROD_API_KEY", api_key, sensitive=True)
+            console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
     else:
-        console.print(
-            "[yellow]Could not find a file matching gimmes*.txt in ~/Downloads.[/yellow]\n"
-            "You can:\n"
-            "  • Rename your downloaded key file to [bold]gimmes.txt[/bold] and run"
-            " [bold]gimmes init[/bold] again\n"
-            "  • Or manually copy the key file and set"
-            " KALSHI_PROD_PRIVATE_KEY_PATH in .env\n"
-        )
+        # --- Headless path ---
+        api_key = env_vals["KALSHI_PROD_API_KEY"]
+        key_path_str = env_vals["KALSHI_PROD_PRIVATE_KEY_PATH"]
+        password = env_vals["KALSHI_PRIVATE_KEY_PASSWORD"]
 
-    # Step 4: API key
-    console.print("\n[bold]Step 4: API key[/bold]")
-    api_key = _prompt_api_key()
-    if api_key:
+        # Step 2: Install private key from env var path
+        console.print("\n[bold]Step 2: Private key (from env)[/bold]\n")
+        source = Path(key_path_str).expanduser()
+        if not source.is_file():
+            console.print(f"[red]Private key file not found: {source}[/red]")
+            raise typer.Exit(1)
+
+        pem_path = _install_private_key(source, password.encode(), headless=True)
+        if not pem_path:
+            raise typer.Exit(1)
+
+        _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
+        _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True)
+        console.print("[green]Updated .env:[/green] private key configured")
+
+        # Step 3: API key from env var
+        console.print("\n[bold]Step 3: API key (from env)[/bold]")
         _update_env_var("KALSHI_PROD_API_KEY", api_key, sensitive=True)
         console.print("[green]Updated .env:[/green] KALSHI_PROD_API_KEY set")
 
-    # Step 5: Verify connection
-    console.print("\n[bold]Step 5: Verify connection[/bold]\n")
+    # Verify connection (same in both modes)
+    step_num = 5 if not headless else 4
+    console.print(f"\n[bold]Step {step_num}: Verify connection[/bold]\n")
+    connected = asyncio.run(_verify_connection())
+    if headless and not connected:
+        console.print(
+            "[red]Connection verification failed. "
+            "Check your credentials and retry.[/red]"
+        )
+        raise typer.Exit(1)
 
-    import asyncio
-
-    asyncio.run(_verify_connection())
-
-    # Step 6: Clear shell history (secrets may have been pasted)
-    _clear_shell_history()
+    # Clear shell history (skipped in headless — no secrets pasted)
+    _clear_shell_history(headless=headless)
 
     # Done
     console.print(
