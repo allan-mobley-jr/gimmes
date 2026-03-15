@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import glob
 import os
 import stat
@@ -120,9 +121,7 @@ def _secure_env_file() -> None:
         ENV_FILE.chmod(0o600)
 
 
-def _write_default_file(
-    target: Path, content: str, label: str, *, headless: bool = False
-) -> bool:
+def _write_default_file(target: Path, content: str, label: str, *, headless: bool = False) -> bool:
     """Write default content to target file. Returns True if written."""
     if target.exists():
         if headless:
@@ -167,9 +166,7 @@ def _find_downloaded_key() -> Path | None:
     return Path(unique[0])
 
 
-def _validate_pem_content(
-    content: bytes, password: bytes | None = None
-) -> bool:
+def _validate_pem_content(content: bytes, password: bytes | None = None) -> bool:
     """Validate that the content is a valid RSA private key in PEM format."""
     try:
         key = serialization.load_pem_private_key(content, password=password)
@@ -193,21 +190,15 @@ def _encrypt_private_key(content: bytes, password: bytes) -> bytes:
     )
 
 
-def _install_private_key(
-    source: Path, password: bytes, *, headless: bool = False
-) -> Path | None:
+def _install_private_key(source: Path, password: bytes, *, headless: bool = False) -> Path | None:
     """Validate, encrypt, and install the private key. Returns the PEM path or None."""
     content = source.read_bytes()
 
     if not _validate_pem_content(content):
         console.print(
-            f"[red]The file {source.name} does not contain "
-            "a valid RSA private key.[/red]"
+            f"[red]The file {source.name} does not contain a valid RSA private key.[/red]"
         )
-        console.print(
-            "Make sure you downloaded the private key file "
-            "from Kalshi, not the API key."
-        )
+        console.print("Make sure you downloaded the private key file from Kalshi, not the API key.")
         return None
 
     # Detect already-encrypted keys (e.g., user re-running init)
@@ -234,10 +225,8 @@ def _install_private_key(
             f"Private key already exists at {pem_path}. Overwrite?", default=False
         ):
             console.print("[dim]Keeping existing private key[/dim]")
-            return pem_path
-
-    # Ensure writable before writing (previous install leaves file at 0400)
-    if pem_path.exists():
+            return None
+        # Ensure writable before overwriting (previous install leaves file at 0400)
         pem_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     pem_path.touch(mode=0o600, exist_ok=True)
     pem_path.write_bytes(encrypted)
@@ -248,15 +237,12 @@ def _install_private_key(
     return pem_path
 
 
-def _update_env_var(
-    var_name: str, value: str, *, sensitive: bool = False
-) -> None:
+def _update_env_var(var_name: str, value: str, *, sensitive: bool = False) -> None:
     """Update or append a variable in the .env file."""
     if not ENV_FILE.exists():
         display = "****" if sensitive else value
         console.print(
-            f"[yellow]Warning: .env not found — set {var_name}"
-            f"={display} manually.[/yellow]"
+            f"[yellow]Warning: .env not found — set {var_name}={display} manually.[/yellow]"
         )
         return
 
@@ -271,9 +257,7 @@ def _update_env_var(
         stripped = line.lstrip()
         if stripped.startswith("#"):
             stripped = stripped[1:].lstrip()
-        if stripped.startswith(f"{var_name}=") or stripped.startswith(
-            f"{var_name} ="
-        ):
+        if stripped.startswith(f"{var_name}=") or stripped.startswith(f"{var_name} ="):
             lines[i] = f"{var_name}={quoted}"
             updated = True
             break
@@ -348,9 +332,7 @@ def _clear_shell_history(*, headless: bool = False) -> None:
         "to ensure no credentials remain on disk."
     )
     if not typer.confirm("Clear shell history?", default=True):
-        console.print(
-            "[dim]Skipped. You can clear history manually later.[/dim]"
-        )
+        console.print("[dim]Skipped. You can clear history manually later.[/dim]")
         return
 
     cleared: list[str] = []
@@ -364,22 +346,13 @@ def _clear_shell_history(*, headless: bool = False) -> None:
             failed.append(str(hf))
 
     if cleared:
+        console.print("\n[yellow]Shell history cleared:[/yellow] " + ", ".join(cleared))
         console.print(
-            "\n[yellow]Shell history cleared:[/yellow] "
-            + ", ".join(cleared)
-        )
-        console.print(
-            "[dim]Start a new shell session to ensure in-memory "
-            "history is also cleared.[/dim]"
+            "[dim]Start a new shell session to ensure in-memory history is also cleared.[/dim]"
         )
     if failed:
-        console.print(
-            "\n[red]Failed to clear:[/red] " + ", ".join(failed)
-        )
-        console.print(
-            "Clear these files manually to remove "
-            "pasted credentials."
-        )
+        console.print("\n[red]Failed to clear:[/red] " + ", ".join(failed))
+        console.print("Clear these files manually to remove pasted credentials.")
 
 
 async def _verify_connection() -> bool:
@@ -416,22 +389,14 @@ async def _verify_connection() -> bool:
 
 def run_init(*, headless: bool = False) -> None:
     """Run the init flow. Interactive by default; headless when flag or no TTY."""
-    import asyncio
-
     headless = _is_headless(headless)
 
     if headless:
         # Validate all required env vars are present
-        env_vals = {
-            var: os.environ.get(var, "").strip()
-            for var in _HEADLESS_REQUIRED_VARS
-        }
+        env_vals = {var: os.environ.get(var, "").strip() for var in _HEADLESS_REQUIRED_VARS}
         missing = [var for var, val in env_vals.items() if not val]
         if missing:
-            console.print(
-                f"[red]Headless init requires these env vars: "
-                f"{', '.join(missing)}[/red]"
-            )
+            console.print(f"[red]Headless init requires these env vars: {', '.join(missing)}[/red]")
             raise typer.Exit(1)
 
     console.print("[bold]Gimmes Setup[/bold]")
@@ -456,12 +421,13 @@ def run_init(*, headless: bool = False) -> None:
             "  1. Log in to your Kalshi account at [cyan]https://kalshi.com[/cyan]\n"
             "  2. Go to [bold]Account Settings → API Keys[/bold]\n"
             "  3. Click [bold]Create API Key[/bold] (select read/write access)\n"
-            "  4. Kalshi will generate two things:\n"
-            "     • An [bold]API key[/bold] (a UUID displayed on screen)\n"
-            "     • A [bold]private key[/bold] (a .txt file that downloads automatically)\n"
-            "  5. [bold yellow]Important:[/bold yellow] Name the downloaded file"
-            " [bold]Gimmes[/bold] or [bold]gimmes[/bold]\n"
-            "     so this tool can find it in your Downloads folder.\n"
+            "  4. When Kalshi asks for a nickname, enter [bold]Gimmes[/bold]\n"
+            "     (Kalshi names the downloaded key file after the nickname,\n"
+            "     so [bold]Gimmes[/bold] → [bold]Gimmes.txt[/bold]"
+            " — which this tool auto-detects)\n"
+            "  5. Kalshi will show both the [bold]API key[/bold] (a UUID) and the\n"
+            "     [bold]private key[/bold] on screen — you can copy either one\n"
+            "  6. Click [bold]Download[/bold] to save the private key as a .txt file\n"
         )
 
         ready = typer.confirm("Have you created the API key and downloaded the private key?")
@@ -482,22 +448,45 @@ def run_init(*, headless: bool = False) -> None:
             pem_path = _install_private_key(key_path, password.encode())
             if pem_path:
                 _update_env_var("KALSHI_PROD_PRIVATE_KEY_PATH", str(pem_path))
-                _update_env_var(
-                    "KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True
-                )
-                console.print(
-                    "[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set"
-                )
-                console.print(
-                    f"\n[yellow bold]Security reminder:[/yellow bold] "
-                    f"The original unencrypted key file is still at:\n"
-                    f"  {key_path}\n"
-                    f"Delete it now that the encrypted copy is installed."
-                )
+                _update_env_var("KALSHI_PRIVATE_KEY_PASSWORD", password, sensitive=True)
+                console.print("[green]Updated .env:[/green] KALSHI_PRIVATE_KEY_PASSWORD set")
+                # Verify the installed key before deleting the source
+                if not _validate_pem_content(pem_path.read_bytes(), password=password.encode()):
+                    console.print(
+                        f"\n[yellow bold]Security reminder:[/yellow bold] "
+                        f"Installed key failed verification. "
+                        f"Keeping the original key file as a backup:\n"
+                        f"  {key_path}\n"
+                        f"Delete it manually once the issue is resolved."
+                    )
+                elif typer.confirm(
+                    f"Delete the unencrypted key file at {key_path}?",
+                    default=True,
+                ):
+                    try:
+                        key_path.unlink()
+                        console.print(f"[green]Deleted unencrypted key:[/green] {key_path}")
+                    except OSError as e:
+                        console.print(
+                            f"\n[yellow bold]Security reminder:[/yellow bold] "
+                            f"Could not delete the original unencrypted key file:\n"
+                            f"  {key_path}\n"
+                            f"  Error: {e}\n"
+                            f"Delete it manually now that the encrypted copy is installed."
+                        )
+                else:
+                    console.print(
+                        f"\n[yellow bold]Security reminder:[/yellow bold] "
+                        f"The original unencrypted key file is still at:\n"
+                        f"  {key_path}\n"
+                        f"Delete it now that the encrypted copy is installed."
+                    )
         else:
             console.print(
                 "[yellow]Could not find a file matching gimmes*.txt in ~/Downloads.[/yellow]\n"
-                "You can:\n"
+                "\n"
+                "If you used a different nickname when creating the key, the\n"
+                "downloaded file won't match. You can:\n"
                 "  • Rename your downloaded key file to [bold]gimmes.txt[/bold] and run"
                 " [bold]gimmes init[/bold] again\n"
                 "  • Or manually copy the key file and set"
@@ -542,8 +531,7 @@ def run_init(*, headless: bool = False) -> None:
     connected = asyncio.run(_verify_connection())
     if headless and not connected:
         console.print(
-            "[red]Connection verification failed. "
-            "Check your credentials and retry.[/red]"
+            "[red]Connection verification failed. Check your credentials and retry.[/red]"
         )
         raise typer.Exit(1)
 
