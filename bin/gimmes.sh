@@ -22,8 +22,7 @@ case "${1:-}" in
     update)
         echo "Updating gimmes..."
         cd "$REPO"
-        git fetch origin main
-        git reset --hard origin/main
+        git pull --ff-only origin main
         if command -v uv &>/dev/null; then
             uv sync --quiet
         else

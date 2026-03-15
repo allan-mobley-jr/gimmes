@@ -94,8 +94,7 @@ mkdir -p "$GIMMES_HOME"
 if [ -d "$REPO_DIR/.git" ]; then
     info "Updating existing installation..."
     cd "$REPO_DIR"
-    git fetch origin main
-    git reset --hard origin/main
+    git pull --ff-only origin main
     ok "Updated to $(git rev-parse --short HEAD)"
 else
     info "Cloning gimmes..."
