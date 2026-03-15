@@ -20,6 +20,12 @@ app = typer.Typer(
 console = Console()
 
 
+_RECONCILE_HINT = (
+    "[yellow]Run 'python -m gimmes reconcile'"
+    " to sync positions with the broker.[/yellow]"
+)
+
+
 def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
     """Extract a human-readable message from an httpx.HTTPStatusError."""
     fallback = e.response.text[:200] if e.response.text else str(e)
@@ -376,6 +382,10 @@ def order(
     _championship_warning(config)
 
     async def _order() -> None:
+        import logging
+
+        import httpx
+
         from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
@@ -383,6 +393,8 @@ def order(
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import position_size
+
+        logger = logging.getLogger("gimmes.cli")
 
         async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
@@ -539,17 +551,40 @@ def order(
                 post_only=not is_taker,
             )
 
-            if broker:
-                orderbook = await get_orderbook(client, ticker)
-                result = await broker.create_order(params, orderbook, fees=fees)
-                label = "[yellow]PAPER[/yellow] "
-                positions_for_sync = await broker.get_positions()
-            else:
-                from gimmes.kalshi.orders import create_order
-                from gimmes.kalshi.portfolio import get_all_positions as refresh_pos
-                result = await create_order(client, params)
-                label = ""
-                positions_for_sync = await refresh_pos(client)
+            try:
+                if broker:
+                    orderbook = await get_orderbook(client, ticker)
+                    result = await broker.create_order(params, orderbook, fees=fees)
+                    label = "[yellow]PAPER[/yellow] "
+                else:
+                    from gimmes.kalshi.orders import create_order
+
+                    result = await create_order(client, params)
+                    label = ""
+            except httpx.HTTPStatusError as exc:
+                logger.debug("Order placement failed", exc_info=True)
+                detail = _api_error_detail(exc)
+                console.print(
+                    f"[red bold]Order FAILED"
+                    f" ({exc.response.status_code}): {detail}[/red bold]"
+                )
+                raise typer.Exit(1)
+            except httpx.TimeoutException:
+                logger.debug("Order placement timed out", exc_info=True)
+                console.print(
+                    "[red bold]Order FAILED: request timed out[/red bold]"
+                )
+                if not broker:
+                    console.print(
+                        "[red]WARNING: The order may have been accepted"
+                        " by Kalshi before the timeout.[/red]"
+                    )
+                console.print(_RECONCILE_HINT)
+                raise typer.Exit(1)
+            except Exception as exc:
+                logger.debug("Order placement failed", exc_info=True)
+                console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
+                raise typer.Exit(1)
 
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
@@ -558,31 +593,56 @@ def order(
 
             # Sync positions + log trade atomically so a crash can't
             # leave positions stale while a trade is recorded (or vice versa)
-            if result.status in ("executed", "resting"):
-                from gimmes.models.trade import TradeDecision
-                from gimmes.store.queries import sync_positions_with_trade
+            try:
+                if broker:
+                    positions_for_sync = await broker.get_positions()
+                else:
+                    from gimmes.kalshi.portfolio import (
+                        get_all_positions as refresh_pos,
+                    )
 
-                trade_action = (
-                    TradeDecision.Action.OPEN
-                    if is_buy
-                    else TradeDecision.Action.CLOSE
+                    positions_for_sync = await refresh_pos(client)
+
+                if result.status in ("executed", "resting"):
+                    from gimmes.models.trade import TradeDecision
+                    from gimmes.store.queries import sync_positions_with_trade
+
+                    trade_action = (
+                        TradeDecision.Action.OPEN
+                        if is_buy
+                        else TradeDecision.Action.CLOSE
+                    )
+                    trade = TradeDecision(
+                        ticker=ticker,
+                        action=trade_action,
+                        side=side,
+                        count=final_count,
+                        price=final_price,
+                        model_probability=probability,
+                        edge=(
+                            probability - final_price
+                            if probability > 0
+                            else 0.0
+                        ),
+                        rationale="CLI order",
+                        agent="cli",
+                        order_id=result.order_id,
+                    )
+                    await sync_positions_with_trade(
+                        db, positions_for_sync, trade
+                    )
+                else:
+                    from gimmes.store.queries import sync_positions
+
+                    await sync_positions(db, positions_for_sync)
+            except Exception as exc:
+                logger.debug("Position sync failed", exc_info=True)
+                console.print(
+                    f"[red bold]Warning: Order was placed successfully"
+                    f" ({result.order_id}) but position sync"
+                    f" failed: {exc}[/red bold]"
                 )
-                trade = TradeDecision(
-                    ticker=ticker,
-                    action=trade_action,
-                    side=side,
-                    count=final_count,
-                    price=final_price,
-                    model_probability=probability,
-                    edge=probability - final_price if probability > 0 else 0.0,
-                    rationale="CLI order",
-                    agent="cli",
-                    order_id=result.order_id,
-                )
-                await sync_positions_with_trade(db, positions_for_sync, trade)
-            else:
-                from gimmes.store.queries import sync_positions
-                await sync_positions(db, positions_for_sync)
+                console.print(_RECONCILE_HINT)
 
     _run(_order())
 
