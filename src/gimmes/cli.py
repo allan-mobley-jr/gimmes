@@ -568,7 +568,7 @@ def order(
                     f"[red bold]Order FAILED"
                     f" ({exc.response.status_code}): {detail}[/red bold]"
                 )
-                return
+                raise typer.Exit(1)
             except httpx.TimeoutException:
                 logger.debug("Order placement timed out", exc_info=True)
                 console.print(
@@ -580,11 +580,11 @@ def order(
                         " by Kalshi before the timeout.[/red]"
                     )
                 console.print(_RECONCILE_HINT)
-                return
+                raise typer.Exit(1)
             except Exception as exc:
                 logger.debug("Order placement failed", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
-                return
+                raise typer.Exit(1)
 
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"

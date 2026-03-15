@@ -170,6 +170,7 @@ class TestOrderPlacementErrors:
 
         result, mock_console = _run_order_cli(broker)
 
+        assert result.exit_code == 1
         out = _printed(mock_console)
         assert "Order FAILED" in out
         assert "Insufficient balance" in out
@@ -178,8 +179,9 @@ class TestOrderPlacementErrors:
         exc = httpx.ReadTimeout("Connection read timed out")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        _, mock_console = _run_order_cli(broker)
+        result, mock_console = _run_order_cli(broker)
 
+        assert result.exit_code == 1
         out = _printed(mock_console)
         assert "Order FAILED" in out
         assert "timed out" in out
@@ -189,10 +191,11 @@ class TestOrderPlacementErrors:
         exc = httpx.ReadTimeout("Connection read timed out")
         mock_create = AsyncMock(side_effect=exc)
 
-        _, mock_console = _run_order_cli(
+        result, mock_console = _run_order_cli(
             None, championship_create_order=mock_create
         )
 
+        assert result.exit_code == 1
         out = _printed(mock_console)
         assert "Order FAILED" in out
         assert "timed out" in out
@@ -203,8 +206,9 @@ class TestOrderPlacementErrors:
         exc = RuntimeError("Paper DB locked")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        _, mock_console = _run_order_cli(broker)
+        result, mock_console = _run_order_cli(broker)
 
+        assert result.exit_code == 1
         out = _printed(mock_console)
         assert "Order FAILED" in out
         assert "Paper DB locked" in out
@@ -213,8 +217,9 @@ class TestOrderPlacementErrors:
         exc = RuntimeError("create failed")
         broker = _make_mock_broker(create_order_side_effect=exc)
 
-        _run_order_cli(broker)
+        result, _ = _run_order_cli(broker)
 
+        assert result.exit_code == 1
         # get_positions is called once for pre-order validation (line 395),
         # but should NOT be called a second time for post-order sync
         assert broker.get_positions.call_count == 1
