@@ -28,10 +28,10 @@ class _CacheEntry:
 _cache: dict[str, _CacheEntry] = {}
 
 
-def _parse_scheduled_ts(value: str) -> datetime | None:
+def _parse_scheduled_ts(value: object) -> datetime | None:
     """Parse an ISO 8601 timestamp, handling trailing 'Z' for Python 3.11."""
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
 
