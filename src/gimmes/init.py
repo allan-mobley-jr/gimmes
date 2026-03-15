@@ -63,7 +63,7 @@ min_volume = 100              # Minimum 24h volume to consider
 min_open_interest = 50        # Minimum open interest
 max_days_to_resolution = 90   # Skip markets resolving too far out
 min_days_to_resolution = 0.5  # Skip markets resolving too soon (12h)
-# Curated series with informational edge — use `gimmes discover` to find more
+# Curated series with informational edge — use `gimmes discover CAT` to find more
 series = [
     # Inflation & CPI
     "KXCPI", "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
