@@ -51,11 +51,14 @@ async def trading_context(config: GimmesConfig):
     Both modes use the prod API client for real market data.
     In driving range, a PaperBroker handles portfolio operations locally.
     Both modes open a Database for position syncing and snapshots.
+    Refreshes the fee multiplier cache on entry.
     """
     from gimmes.kalshi.client import KalshiClient
     from gimmes.store.database import Database
+    from gimmes.strategy.fee_cache import refresh_fee_cache
 
     async with KalshiClient(config) as client:
+        await refresh_fee_cache(client)
         async with Database(config.db_path) as db:
             if config.is_championship:
                 yield client, None, db
@@ -201,6 +204,7 @@ def size(
 
     async def _size() -> None:
         from gimmes.kalshi.markets import get_market
+        from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
         from gimmes.strategy.kelly import kelly_fraction, position_size
 
@@ -214,15 +218,19 @@ def size(
                 balance = await get_balance(client)
 
             price = market.midpoint or market.last_price
+            fees = get_multipliers(market.series_ticker)
 
-            kf = kelly_fraction(price, probability, fraction=config.sizing.kelly_fraction)
+            kf = kelly_fraction(
+                price, probability,
+                fraction=config.sizing.kelly_fraction, fees=fees,
+            )
             contracts = position_size(
                 balance, price, probability,
                 fraction=config.sizing.kelly_fraction,
-                max_position_pct=config.sizing.max_position_pct,
+                max_position_pct=config.sizing.max_position_pct, fees=fees,
             )
-            fee = fee_for_order(contracts, price, is_taker=False)
-            edge = edge_after_fees(price, probability)
+            fee = fee_for_order(contracts, price, is_taker=False, fees=fees)
+            edge = edge_after_fees(price, probability, fees=fees)
             cost = contracts * price + fee
 
             console.print(f"\n[bold]Position Sizing: {ticker}[/bold]")
@@ -252,6 +260,7 @@ def validate(
         from gimmes.kalshi.markets import get_market
         from gimmes.risk.validator import validate_trade
         from gimmes.store.queries import get_daily_pnl
+        from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.kelly import position_size
 
         async with trading_context(config) as (client, broker, db):
@@ -268,11 +277,12 @@ def validate(
                 await sync_positions(db, positions)
 
             price = market.midpoint or market.last_price
+            fees = get_multipliers(market.series_ticker)
             if dollars <= 0:
                 contracts = position_size(
                     balance, price, probability,
                     fraction=config.sizing.kelly_fraction,
-                    max_position_pct=config.sizing.max_position_pct,
+                    max_position_pct=config.sizing.max_position_pct, fees=fees,
                 )
                 trade_dollars = contracts * price
             else:
@@ -295,6 +305,7 @@ def validate(
             result = validate_trade(
                 market, trade_dollars, probability, balance,
                 daily_pnl, len(positions), existing_tickers, config,
+                fees=fees,
             )
 
             console.print(f"\n[bold]Validation: {ticker}[/bold]")
@@ -347,11 +358,13 @@ def order(
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
         from gimmes.store.queries import get_daily_pnl
+        from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.kelly import position_size
 
         async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
             mkt_price = market.midpoint or market.last_price
+            fees = get_multipliers(market.series_ticker)
 
             # Get balance and positions for both sizing and validation
             if broker:
@@ -371,7 +384,7 @@ def order(
                 final_count = position_size(
                     balance, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
-                    max_position_pct=config.sizing.max_position_pct,
+                    max_position_pct=config.sizing.max_position_pct, fees=fees,
                 )
             else:
                 final_count = count
@@ -440,7 +453,7 @@ def order(
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
                     daily_pnl, len(positions), existing_tickers,
-                    config, is_taker=is_taker,
+                    config, is_taker=is_taker, fees=fees,
                 )
 
                 if not validation.approved:
@@ -487,7 +500,7 @@ def order(
 
             if broker:
                 orderbook = await get_orderbook(client, ticker)
-                result = await broker.create_order(params, orderbook)
+                result = await broker.create_order(params, orderbook, fees=fees)
                 label = "[yellow]PAPER[/yellow] "
                 positions_for_sync = await broker.get_positions()
             else:

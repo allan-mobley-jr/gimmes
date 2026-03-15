@@ -7,6 +7,7 @@ import pytest
 from gimmes.models.market import Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
 from gimmes.paper.fill_simulator import simulate_fill
+from gimmes.strategy.fees import FeeMultipliers
 
 
 @pytest.fixture
@@ -303,6 +304,34 @@ class TestEdgeCases:
         result = simulate_fill(params, empty_ob)
         assert result.total_filled == 0
         assert result.remaining_count == 10
+
+    def test_custom_maker_multiplier_changes_fee(self, orderbook: Orderbook) -> None:
+        """Custom maker multiplier flows through to fill fees."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.70,
+            post_only=True,
+        )
+        default_result = simulate_fill(params, orderbook)
+        high_fee_result = simulate_fill(params, orderbook, fees=FeeMultipliers(maker=0.10))
+        assert high_fee_result.total_fees > default_result.total_fees
+
+    def test_custom_taker_multiplier_changes_fee(self, orderbook: Orderbook) -> None:
+        """Custom taker multiplier flows through to taker fill fees."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.72,
+            post_only=False,
+        )
+        default_result = simulate_fill(params, orderbook)
+        high_fee_result = simulate_fill(params, orderbook, fees=FeeMultipliers(taker=0.15))
+        assert high_fee_result.total_fees > default_result.total_fees
 
     def test_notional_and_fees_are_separated(self, orderbook: Orderbook) -> None:
         """total_notional and total_fees match individual fill sums."""

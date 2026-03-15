@@ -24,6 +24,7 @@ from gimmes.models.portfolio import Position
 from gimmes.paper.fill_simulator import FillResult, simulate_fill
 from gimmes.paper.schema import PAPER_SCHEMA_SQL
 from gimmes.store.database import Database
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers
 
 
 class PaperBroker:
@@ -113,7 +114,13 @@ class PaperBroker:
     # Orders
     # ------------------------------------------------------------------
 
-    async def create_order(self, params: CreateOrderParams, orderbook: Orderbook) -> Order:
+    async def create_order(
+        self,
+        params: CreateOrderParams,
+        orderbook: Orderbook,
+        *,
+        fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+    ) -> Order:
         """Simulate placing an order. Fills immediately if marketable.
 
         All balance, order, fill, and position writes are wrapped in a single
@@ -134,7 +141,7 @@ class PaperBroker:
                 return await self._reject_order(order_id, params, now)
 
         # Run fill simulation
-        result = simulate_fill(params, orderbook)
+        result = simulate_fill(params, orderbook, fees=fees)
 
         # Determine status
         if result.total_filled == params.count:

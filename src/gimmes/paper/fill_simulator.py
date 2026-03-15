@@ -1,7 +1,7 @@
-"""Pure fill simulation logic — no DB, no side effects.
+"""Pure fill simulation logic -- no DB, no side effects.
 
 Simulates how Kalshi would fill an order given the current orderbook.
-All prices are in dollars (0.00–1.00).
+All prices are in dollars (0.00-1.00).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from gimmes.models.market import Orderbook
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
-from gimmes.strategy.fees import fee_for_order
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 
 
 @dataclass
@@ -34,7 +34,12 @@ class FillResult:
     total_fees: float  # Sum of fees across fills (always positive)
 
 
-def simulate_fill(params: CreateOrderParams, orderbook: Orderbook) -> FillResult:
+def simulate_fill(
+    params: CreateOrderParams,
+    orderbook: Orderbook,
+    *,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+) -> FillResult:
     """Simulate filling an order against the current orderbook.
 
     For maker orders (post_only=True):
@@ -49,14 +54,16 @@ def simulate_fill(params: CreateOrderParams, orderbook: Orderbook) -> FillResult
     price = params.price
 
     if params.post_only:
-        return _simulate_maker_fill(params, orderbook, price)
-    return _simulate_taker_fill(params, orderbook, price)
+        return _simulate_maker_fill(params, orderbook, price, fees=fees)
+    return _simulate_taker_fill(params, orderbook, price, fees=fees)
 
 
 def _simulate_maker_fill(
     params: CreateOrderParams,
     orderbook: Orderbook,
     price: float,
+    *,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> FillResult:
     """Maker order: fills at limit price if marketable, otherwise rests."""
     # Determine which side of the book we'd match against
@@ -102,7 +109,7 @@ def _simulate_maker_fill(
         )
 
     # Maker fill at limit price (not taker even though marketable)
-    fee = fee_for_order(fill_count, price, is_taker=False)
+    fee = fee_for_order(fill_count, price, is_taker=False, fees=fees)
     fill = SimulatedFill(
         count=fill_count,
         price=price,
@@ -155,6 +162,8 @@ def _simulate_taker_fill(
     params: CreateOrderParams,
     orderbook: Orderbook,
     price: float,
+    *,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> FillResult:
     """Taker order: walks the book until filled or limit price exceeded."""
     fills: list[SimulatedFill] = []
@@ -170,7 +179,7 @@ def _simulate_taker_fill(
                 (round(1.0 - lvl.price, 2), lvl.quantity)
                 for lvl in orderbook.no_bids
             ]
-            # Sort ascending — cheapest ask first
+            # Sort ascending -- cheapest ask first
             levels.sort(key=lambda x: x[0])
         else:
             # Buying NO: walk YES bids (converted to NO ask prices)
@@ -183,7 +192,7 @@ def _simulate_taker_fill(
         # Selling: walk bids on the same side
         if params.side == OrderSide.YES:
             levels = [(lvl.price, lvl.quantity) for lvl in orderbook.yes_bids]
-            # Sort descending — best bid first
+            # Sort descending -- best bid first
             levels.sort(key=lambda x: x[0], reverse=True)
         else:
             levels = [(lvl.price, lvl.quantity) for lvl in orderbook.no_bids]
@@ -200,7 +209,7 @@ def _simulate_taker_fill(
             break
 
         fill_count = min(remaining, level_qty)
-        fee = fee_for_order(fill_count, level_price, is_taker=True)
+        fee = fee_for_order(fill_count, level_price, is_taker=True, fees=fees)
 
         fills.append(
             SimulatedFill(

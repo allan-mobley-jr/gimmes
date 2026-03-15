@@ -12,7 +12,7 @@ from gimmes.risk.limits import (
     check_position_size,
 )
 from gimmes.risk.settlement import scan_settlement_rules
-from gimmes.strategy.fees import edge_after_fees
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
 
 
 @dataclass
@@ -42,6 +42,7 @@ def validate_trade(
     *,
     is_taker: bool = False,
     session_spent: float = 0.0,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> ValidationResult:
     """Run all pre-trade validation checks.
 
@@ -99,7 +100,7 @@ def validate_trade(
     # 5. Edge after fees (skipped when probability is unknown)
     if true_probability is not None:
         price = market.midpoint if market.midpoint > 0 else market.last_price
-        edge = edge_after_fees(price, true_probability, is_taker=is_taker)
+        edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
         min_edge = config.strategy.min_edge_after_fees
         if edge >= min_edge:
             checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")

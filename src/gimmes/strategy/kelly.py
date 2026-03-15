@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gimmes.strategy.fees import fee_for_order
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 
 
 def kelly_fraction(
@@ -11,6 +11,7 @@ def kelly_fraction(
     *,
     is_taker: bool = False,
     fraction: float = 0.25,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> float:
     """Calculate fractional Kelly bet size as fraction of bankroll.
 
@@ -25,6 +26,7 @@ def kelly_fraction(
         true_probability: Our estimated true probability (0-1).
         is_taker: Whether this is a taker order.
         fraction: Kelly fraction (default 0.25 = quarter Kelly).
+        fees: Fee multipliers for this series.
 
     Returns:
         Fraction of bankroll to bet (0 to ~1). Negative means no bet.
@@ -32,7 +34,7 @@ def kelly_fraction(
     if not (0 < market_price < 1) or not (0 < true_probability <= 1):
         return 0.0
 
-    fee = fee_for_order(1, market_price, is_taker=is_taker)
+    fee = fee_for_order(1, market_price, is_taker=is_taker, fees=fees)
     effective_cost = market_price + fee
 
     if effective_cost >= 1.0:
@@ -62,6 +64,7 @@ def position_size(
     fraction: float = 0.25,
     max_position_pct: float = 0.05,
     max_position_dollars: float | None = None,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
 ) -> int:
     """Calculate number of contracts to buy.
 
@@ -73,7 +76,10 @@ def position_size(
     if bankroll <= 0:
         return 0
 
-    kelly = kelly_fraction(market_price, true_probability, is_taker=is_taker, fraction=fraction)
+    kelly = kelly_fraction(
+        market_price, true_probability,
+        is_taker=is_taker, fraction=fraction, fees=fees,
+    )
     if kelly <= 0:
         return 0
 
@@ -89,7 +95,7 @@ def position_size(
         max_dollars = min(max_dollars, max_position_dollars)
 
     # Convert to contracts using effective cost (price + fee)
-    fee_per = fee_for_order(1, market_price, is_taker=is_taker)
+    fee_per = fee_for_order(1, market_price, is_taker=is_taker, fees=fees)
     cost_per_contract = market_price + fee_per
     if cost_per_contract <= 0:
         return 0

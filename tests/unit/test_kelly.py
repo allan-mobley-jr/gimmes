@@ -1,6 +1,6 @@
 """Unit tests for Kelly criterion sizing."""
 
-from gimmes.strategy.fees import fee_for_order
+from gimmes.strategy.fees import FeeMultipliers, fee_for_order
 from gimmes.strategy.kelly import kelly_fraction, position_size
 
 
@@ -12,12 +12,12 @@ class TestKellyFraction:
         assert kf < 0.5  # Should be reasonable
 
     def test_no_edge(self) -> None:
-        # Market at 0.70, true prob 0.70 — no edge
+        # Market at 0.70, true prob 0.70 -- no edge
         kf = kelly_fraction(0.70, 0.70)
         assert kf == 0.0
 
     def test_negative_edge(self) -> None:
-        # Market at 0.80, true prob 0.70 — negative edge
+        # Market at 0.80, true prob 0.70 -- negative edge
         kf = kelly_fraction(0.80, 0.70)
         assert kf == 0.0
 
@@ -41,6 +41,11 @@ class TestKellyFraction:
         maker = kelly_fraction(0.65, 0.85, is_taker=False)
         taker = kelly_fraction(0.65, 0.85, is_taker=True)
         assert maker > taker  # Higher fees reduce bet size
+
+    def test_custom_multiplier_reduces_bet(self) -> None:
+        default_kf = kelly_fraction(0.65, 0.85)
+        high_fee_kf = kelly_fraction(0.65, 0.85, fees=FeeMultipliers(maker=0.10))
+        assert high_fee_kf < default_kf
 
 
 class TestPositionSize:
@@ -68,3 +73,10 @@ class TestPositionSize:
         )
         fee = fee_for_order(1, 0.65)
         assert contracts * (0.65 + fee) <= 500
+
+    def test_custom_multiplier_reduces_contracts(self) -> None:
+        default_contracts = position_size(10000, 0.65, 0.90)
+        high_fee_contracts = position_size(
+            10000, 0.65, 0.90, fees=FeeMultipliers(maker=0.10),
+        )
+        assert high_fee_contracts <= default_contracts
