@@ -114,6 +114,7 @@ Setup:
   gimmes init              First-time setup (API credentials, config)
   gimmes config            Interactive configuration wizard
   gimmes mode              Show current mode and connection status
+  gimmes switch [MODE]     Switch trading mode (omit MODE to toggle)
   gimmes tour_guide        Interactive product tour (The Starter)
   gimmes update            Pull latest code and reinstall
   gimmes version           Show version and check for updates
@@ -154,6 +155,7 @@ Dashboard:
   gimmes clubhouse         Launch web dashboard (http://127.0.0.1:1919)
 
 Autonomous:
+  gimmes start             Autonomous loop using current mode from .env
   gimmes driving_range     Autonomous loop -- paper trading (auto-starts dashboard)
   gimmes championship      Autonomous loop -- real money (auto-starts dashboard)
 
