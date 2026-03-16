@@ -244,7 +244,12 @@ def run_standalone(
 
     signal.signal(signal.SIGINT, _handle_sigint)
 
-    uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=actual_port, log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    server.run()
 
 
 def start_background(

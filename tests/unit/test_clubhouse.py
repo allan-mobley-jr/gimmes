@@ -309,8 +309,23 @@ class TestRunStandalone:
             def start(self):
                 pass
 
+        class FakeServer:
+            def __init__(self, config):
+                self.config = config
+
+            def install_signal_handlers(self):
+                raise AssertionError(
+                    "uvicorn signal handlers should have been disabled"
+                )
+
+            def run(self):
+                # Verify run_standalone overrode install_signal_handlers
+                self.install_signal_handlers()
+                parent.fake_server = self
+
         monkeypatch.setattr("gimmes.clubhouse.server.threading.Timer", FakeTimer)
-        monkeypatch.setattr("uvicorn.run", lambda *a, **kw: None)
+        monkeypatch.setattr("uvicorn.Config", lambda *a, **kw: None)
+        monkeypatch.setattr("uvicorn.Server", FakeServer)
         monkeypatch.setattr(
             "signal.signal",
             lambda sig, handler: self.signal_handlers.update({sig: handler}),
