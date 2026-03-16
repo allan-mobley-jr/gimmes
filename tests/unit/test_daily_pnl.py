@@ -129,7 +129,8 @@ class TestGetDailyPnl:
 
     async def test_multi_cycle_same_ticker(self, db: Database) -> None:
         """Two open/close cycles on the same ticker use correct entries."""
-        now = datetime.now(UTC)
+        # Fixed reference point far from midnight to avoid cross-day issues
+        now = datetime(2026, 3, 15, 12, 0, 0, tzinfo=UTC)
         # Cycle 1: open at 0.50, close at 0.70
         await insert_trade(db, _trade(
             action="open", price=0.50, count=5,
@@ -148,7 +149,7 @@ class TestGetDailyPnl:
             action="close", price=0.65, count=5,
             timestamp=now,
         ))
-        pnl = await get_daily_pnl(db)
+        pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
         # Cycle 1: (0.70 - 0.50) * 5 = 1.0
         # Cycle 2: (0.65 - 0.60) * 5 = 0.25
         # Total: 1.25
