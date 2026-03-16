@@ -27,7 +27,7 @@ from gimmes.clubhouse.models import (
     RecommendationItem,
     StatusResponse,
 )
-from gimmes.clubhouse.server import _find_port, app
+from gimmes.clubhouse.server import _find_port, app, run_standalone
 from gimmes.paper.schema import PAPER_SCHEMA_SQL
 from gimmes.store.database import Database
 from gimmes.store.migrations import run_migrations
@@ -287,6 +287,79 @@ class TestRecommendationModel:
         )
         assert r.parameter_path == "strategy.gimme_threshold"
         assert r.confidence == "high"
+
+
+class TestRunStandalone:
+    @pytest.fixture()
+    def _stub_server(self, monkeypatch):
+        """Stub uvicorn and signal so run_standalone returns immediately."""
+        self.timers: list = []
+        self.signal_handlers: dict = {}
+
+        parent = self
+
+        class FakeTimer:
+            def __init__(self, delay, fn, args=None, kwargs=None):
+                self.delay = delay
+                self.fn = fn
+                self.args = args or []
+                self.daemon = False
+                parent.timers.append(self)
+
+            def start(self):
+                pass
+
+        class FakeServer:
+            def __init__(self, config):
+                self.config = config
+
+            def install_signal_handlers(self):
+                raise AssertionError(
+                    "uvicorn signal handlers should have been disabled"
+                )
+
+            def run(self):
+                # Verify run_standalone overrode install_signal_handlers
+                self.install_signal_handlers()
+                parent.fake_server = self
+
+        monkeypatch.setattr("gimmes.clubhouse.server.threading.Timer", FakeTimer)
+        monkeypatch.setattr("uvicorn.Config", lambda *a, **kw: None)
+        monkeypatch.setattr("uvicorn.Server", FakeServer)
+        monkeypatch.setattr(
+            "signal.signal",
+            lambda sig, handler: self.signal_handlers.update({sig: handler}),
+        )
+
+    def test_opens_browser_by_default(self, _stub_server) -> None:
+        run_standalone(port=19391, open_browser=True)
+
+        assert len(self.timers) == 1
+        assert self.timers[0].delay == 1.0
+        assert self.timers[0].daemon is True
+
+    def test_no_browser_flag(self, _stub_server) -> None:
+        run_standalone(port=19392, open_browser=False)
+
+        assert self.timers == []
+
+    def test_sigint_handler_installed(self, _stub_server) -> None:
+        import signal
+
+        run_standalone(port=19393, open_browser=False)
+
+        assert signal.SIGINT in self.signal_handlers
+
+    def test_sigint_handler_calls_exit(self, monkeypatch, _stub_server) -> None:
+        import signal
+
+        run_standalone(port=19394, open_browser=False)
+
+        handler = self.signal_handlers[signal.SIGINT]
+        exit_codes: list[int] = []
+        monkeypatch.setattr("os._exit", lambda code: exit_codes.append(code))
+        handler(signal.SIGINT, None)
+        assert exit_codes == [0]
 
 
 class TestFastAPIApp:
