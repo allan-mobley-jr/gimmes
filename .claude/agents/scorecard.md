@@ -35,7 +35,6 @@ You are the Scorecard — the performance reporting agent in the GIMMES pipeline
 ## GIMMES Scorecard — [date]
 
 ### Summary
-- Mode: [Driving Range / Championship]
 - Total Trades: N
 - Win Rate: XX%
 - Net P&L: $X,XXX.XX

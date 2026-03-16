@@ -33,14 +33,6 @@ Before every trade, verify:
 - [ ] Daily loss limit not breached
 - [ ] Position count under limit
 
-## Championship Mode
-
-If in Championship mode (real money):
-- Double-check everything
-- Confirm with the user before placing any order
-- Start with minimum position sizes
-- Never override risk limits
-
 ## Output Format
 
 ```
