@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from gimmes.models.market import strip_markdown_bold
 
 
 class Position(BaseModel):
@@ -14,6 +16,11 @@ class Position(BaseModel):
     ticker: str
     title: str = ""
     side: Literal["yes", "no"] = "yes"
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_markdown(cls, v: str) -> str:
+        return strip_markdown_bold(v) if isinstance(v, str) else v
     count: int = 0
     avg_price: float = 0.0  # Average entry price in dollars
     market_price: float = 0.0  # Current market price

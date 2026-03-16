@@ -1,6 +1,6 @@
 """Unit tests for Pydantic models."""
 
-from gimmes.models.gimme import GimmeScore
+from gimmes.models.gimme import GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, MarketStatus, Orderbook
 from gimmes.models.order import CreateOrderParams, Order, OrderAction, OrderSide
 from gimmes.models.portfolio import Position
@@ -21,6 +21,26 @@ class TestMarket:
     def test_market_status_enum(self) -> None:
         m = Market(ticker="X", status=MarketStatus.FINALIZED)
         assert m.status == MarketStatus.FINALIZED
+
+    def test_title_strips_bold_markdown(self) -> None:
+        m = Market(ticker="X", title="Will **real GDP** exceed **3%**?")
+        assert m.title == "Will real GDP exceed 3%?"
+
+    def test_title_strips_italic_markdown(self) -> None:
+        m = Market(ticker="X", title="Will *GDP* exceed 3%?")
+        assert m.title == "Will GDP exceed 3%?"
+
+    def test_title_no_markdown_unchanged(self) -> None:
+        m = Market(ticker="X", title="CPI YoY > 3.2%")
+        assert m.title == "CPI YoY > 3.2%"
+
+    def test_title_strips_bold_italic(self) -> None:
+        m = Market(ticker="X", title="***bold-italic***")
+        assert m.title == "bold-italic"
+
+    def test_subtitle_strips_markdown(self) -> None:
+        m = Market(ticker="X", subtitle="**March 2026**")
+        assert m.subtitle == "March 2026"
 
 
 class TestOrderbook:
@@ -82,10 +102,20 @@ class TestOrder:
         assert o.is_open is False
 
 
+class TestGimmeCandidate:
+    def test_title_strips_markdown(self) -> None:
+        gc = GimmeCandidate(ticker="X", market_price=0.5, title="**Bold title**")
+        assert gc.title == "Bold title"
+
+
 class TestPosition:
     def test_total_pnl(self) -> None:
         pos = Position(ticker="X", unrealized_pnl=10.0, realized_pnl=5.0)
         assert pos.total_pnl == 15.0
+
+    def test_title_strips_markdown(self) -> None:
+        pos = Position(ticker="X", title="**Bold position**")
+        assert pos.title == "Bold position"
 
 
 class TestTradeDecision:
