@@ -310,10 +310,10 @@ async def insert_candidate(
 
 
 async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
-    """Calculate today's realized P&L from close trades.
+    """Calculate realized P&L from close trades for a given date (defaults to today).
 
-    For each close trade today, finds the most recent open trade on the
-    same ticker that occurred before the close, then computes:
+    For each close trade on the target date, finds the most recent open trade
+    on the same ticker that occurred before the close, then computes:
     (close_price - open_price) * count.
 
     Args:
