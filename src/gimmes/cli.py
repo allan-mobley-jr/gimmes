@@ -1734,7 +1734,7 @@ def tour_guide() -> None:
         result = subprocess.run(
             [
                 claude_path,
-                "--agent", "starter",
+                "--agent", "Starter",
                 "--name", "GIMMES Tour",
             ],
             cwd=project_root,
@@ -1984,7 +1984,7 @@ def _autonomous_loop(
             result = subprocess.run(
                 [
                     claude_path,
-                    "--agent", "caddie-master",
+                    "--agent", "Caddie Master",
                     "-p", "Run one trading cycle.",
                     "--allowedTools",
                     "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",

@@ -38,7 +38,7 @@ class TestTourGuideCommand:
         cmd = mock_run.call_args.args[0]
         assert cmd[0] == "/usr/bin/claude"
         assert "--agent" in cmd
-        assert "starter" in cmd
+        assert "Starter" in cmd
         assert "--name" in cmd
         assert "GIMMES Tour" in cmd
         assert mock_run.call_args.kwargs["cwd"] is not None
