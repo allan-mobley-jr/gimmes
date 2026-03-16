@@ -130,7 +130,7 @@ class TestAutonomousLoop:
         cmd = mock_run.call_args.args[0]
         assert cmd[0] == "/opt/bin/claude"
         agent_idx = cmd.index("--agent")
-        assert cmd[agent_idx + 1] == "caddie-master"
+        assert cmd[agent_idx + 1] == "Caddie Master"
         idx = cmd.index("--allowedTools")
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
