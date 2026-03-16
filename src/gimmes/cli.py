@@ -1984,6 +1984,7 @@ def _autonomous_loop(
             result = subprocess.run(
                 [
                     claude_path, "-p", "/caddy-shack",
+                    "--agent", "caddie-master",
                     "--allowedTools",
                     "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
                 ],
