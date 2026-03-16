@@ -9,9 +9,58 @@ import pytest
 from click.exceptions import Exit as ClickExit
 from typer.testing import CliRunner
 
-from gimmes.cli import _autonomous_loop, app
+from gimmes.cli import _autonomous_loop, _set_mode, app
 
 runner = CliRunner()
+
+# ---------------------------------------------------------------------------
+# _set_mode
+# ---------------------------------------------------------------------------
+
+
+class TestSetMode:
+    def test_raises_when_env_missing(self, tmp_path, monkeypatch) -> None:
+        """_set_mode raises typer.Exit when .env doesn't exist."""
+        monkeypatch.setattr("gimmes.init.ENV_FILE", tmp_path / "nonexistent" / ".env")
+        with pytest.raises(ClickExit):
+            _set_mode("driving_range")
+
+    def test_writes_mode_and_reloads(self, tmp_path, monkeypatch) -> None:
+        """_set_mode writes to .env and reloads so os.environ reflects the change."""
+        import os
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("GIMMES_MODE=driving_range\n")
+        monkeypatch.setattr("gimmes.init.ENV_FILE", env_file)
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+
+        _set_mode("championship")
+
+        assert os.environ["GIMMES_MODE"] == "championship"
+        assert "championship" in env_file.read_text()
+
+    def test_raises_on_write_error(self, tmp_path, monkeypatch) -> None:
+        """_set_mode raises typer.Exit when _update_env_var fails with OSError."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GIMMES_MODE=driving_range\n")
+        monkeypatch.setattr("gimmes.init.ENV_FILE", env_file)
+
+        with patch("gimmes.init._update_env_var", side_effect=OSError("disk full")):
+            with pytest.raises(ClickExit):
+                _set_mode("championship")
+
+    def test_raises_on_verification_failure(self, tmp_path, monkeypatch) -> None:
+        """_set_mode raises typer.Exit when post-write verification fails."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GIMMES_MODE=driving_range\n")
+        monkeypatch.setattr("gimmes.init.ENV_FILE", env_file)
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+
+        # Patch load_dotenv to be a no-op so env var stays stale
+        with patch("dotenv.load_dotenv"):
+            with pytest.raises(ClickExit):
+                _set_mode("championship")
+
 
 # ---------------------------------------------------------------------------
 # _autonomous_loop
@@ -253,9 +302,10 @@ class TestSwitchCommand:
         assert "switch" in commands
 
     def test_switch_to_championship_requires_confirmation(self) -> None:
-        with patch("gimmes.cli._set_mode"):
+        with patch("gimmes.cli._set_mode") as mock_set:
             result = runner.invoke(app, ["switch", "championship"], input="n\n")
             assert result.exit_code != 0
+            mock_set.assert_not_called()
 
     def test_switch_to_championship_with_confirmation(self) -> None:
         with patch("gimmes.cli._set_mode") as mock_set:

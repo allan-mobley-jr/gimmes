@@ -977,6 +977,7 @@ def reconcile() -> None:
     Reports any differences found.
     """
     config = load_config()
+
     async def _reconcile() -> None:
         from gimmes.store.queries import get_positions, sync_positions
 
