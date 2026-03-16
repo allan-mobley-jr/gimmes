@@ -9,7 +9,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, field_validator
 
 
-def strip_markdown_bold(text: str) -> str:
+def strip_markdown_emphasis(text: str) -> str:
     """Remove markdown bold/italic markers from text."""
     text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
     return re.sub(r"\*([^*]+)\*", r"\1", text)
@@ -39,7 +39,8 @@ class Market(BaseModel):
     @field_validator("title", "subtitle", mode="before")
     @classmethod
     def _strip_markdown(cls, v: str) -> str:
-        return strip_markdown_bold(v) if isinstance(v, str) else v
+        return strip_markdown_emphasis(v) if isinstance(v, str) else v
+
     yes_bid: float = 0.0
     yes_ask: float = 0.0
     no_bid: float = 0.0

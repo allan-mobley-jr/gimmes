@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from gimmes.models.market import strip_markdown_bold
+from gimmes.models.market import strip_markdown_emphasis
 
 
 class ConfidenceSignal(BaseModel):
@@ -44,7 +44,8 @@ class GimmeCandidate(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def _strip_markdown(cls, v: str) -> str:
-        return strip_markdown_bold(v) if isinstance(v, str) else v
+        return strip_markdown_emphasis(v) if isinstance(v, str) else v
+
     model_probability: float = Field(default=0.0, ge=0.0, le=1.0)
     edge: float = 0.0  # model_probability - market_price
     signals: list[ConfidenceSignal] = Field(default_factory=list)
