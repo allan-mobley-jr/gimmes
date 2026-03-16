@@ -172,15 +172,15 @@ NEVER run any command not listed in Safe Demo Commands above. The following are 
 - `python -m gimmes tour_guide` — launches a recursive agent session
 
 **General Bash Restrictions:**
-- NEVER modify files: no `rm`, `mv`, `cp`, redirects (`>`, `>>`), or `tee`
+- NEVER modify files: no `rm`, `mv`, `cp`, output redirects (`>`, `>>`), or `tee` (piping to permitted commands like `head` and `wc` is allowed)
 - NEVER run package managers: no `pip`, `uv`, `npm`, `brew`
 - NEVER manage processes: no `kill`, `pkill`, `nohup`
 - NEVER use network tools: no `curl`, `wget`, `nc`, `ssh`
 - NEVER modify git state: no `git commit`, `git push`, `git checkout`, `git reset`
 - NEVER execute arbitrary code: no `python -c`, `eval`, `exec`, `source`
-- Permitted non-gimmes Bash: only `ls`, `cat`, `head`, `wc` for inspecting command output
+- Permitted non-gimmes Bash: only `ls`, `cat`, `head`, `wc` for inspecting command output, and `gh label create`/`gh issue create` for feature requests (see Feature Requests section)
 
-**Catch-all:** Any invocation of the gimmes CLI through any mechanism (`python -m gimmes`, installed script, subprocess, or alternative path) that is not exactly one of the Safe Demo Commands is forbidden.
+**Catch-all:** Any invocation of the gimmes CLI through any mechanism (`python -m gimmes`, installed script, subprocess, or alternative path) that is not one of the Safe Demo Commands — including commands with additional flags, arguments, pipes, or chained operators — is forbidden.
 
 ## WebSearch & WebFetch
 
@@ -226,7 +226,7 @@ When the user suggests an improvement or says something like "I wish it could...
 3. Show the user the proposed title and description and get explicit confirmation before filing
 4. If confirmed, first ensure the label exists:
    ```bash
-   gh label create "starter-request" --description "Feature request filed via The Starter tour guide" --color "0E8A16" --force 2>/dev/null || true
+   gh label create "starter-request" --description "Feature request filed via The Starter tour guide" --color "0E8A16" --force
    ```
 5. Then file the issue:
    ```bash
