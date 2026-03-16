@@ -202,8 +202,16 @@ def _find_port(start: int = DEFAULT_PORT, max_tries: int = 11) -> int | None:
     return None
 
 
-def run_standalone(port: int = DEFAULT_PORT, db_path: Path | None = None) -> None:
+def run_standalone(
+    port: int = DEFAULT_PORT,
+    db_path: Path | None = None,
+    open_browser: bool = True,
+) -> None:
     """Run the dashboard server in the foreground (blocking)."""
+    import os
+    import signal
+    import webbrowser
+
     import uvicorn
 
     if db_path:
@@ -216,7 +224,25 @@ def run_standalone(port: int = DEFAULT_PORT, db_path: Path | None = None) -> Non
     if actual_port != port:
         print(f"Port {port} in use, using {actual_port}")
 
-    print(f"\n  GIMMES Clubhouse: http://127.0.0.1:{actual_port}\n")
+    url = f"http://127.0.0.1:{actual_port}"
+    print(f"\n  GIMMES Clubhouse: {url}\n")
+
+    if open_browser:
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                print("  (Could not auto-open browser. Open the URL above manually.)")
+
+        timer = threading.Timer(1.0, _open_browser)
+        timer.daemon = True
+        timer.start()
+
+    def _handle_sigint(*_: object) -> None:
+        print("\n  Clubhouse stopped.")
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
 
     uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
 

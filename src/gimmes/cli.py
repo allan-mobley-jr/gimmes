@@ -1696,12 +1696,13 @@ def init(
 @app.command()
 def clubhouse(
     port: int = typer.Option(1919, "--port", "-p", help="Port number"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't auto-open browser"),
 ) -> None:
     """Launch the Clubhouse web dashboard (standalone)."""
     from gimmes.clubhouse.server import run_standalone
 
     config = load_config()
-    run_standalone(port=port, db_path=config.db_path)
+    run_standalone(port=port, db_path=config.db_path, open_browser=not no_browser)
 
 
 # ---------------------------------------------------------------------------
