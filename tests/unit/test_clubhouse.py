@@ -33,6 +33,16 @@ from gimmes.store.database import Database
 from gimmes.store.migrations import run_migrations
 
 
+@pytest.fixture(autouse=True)
+def _reset_config_cache(monkeypatch):
+    """Reset the clubhouse data module's config cache and ensure driving_range mode."""
+    import gimmes.clubhouse.data as data_mod
+    monkeypatch.setenv("GIMMES_MODE", "driving_range")
+    data_mod._cached_config = None
+    yield
+    data_mod._cached_config = None
+
+
 @pytest.fixture
 async def db_path(tmp_path: Path) -> Path:
     """Create a temporary database with schema + migrations applied."""

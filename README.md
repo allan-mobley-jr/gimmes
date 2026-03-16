@@ -113,9 +113,9 @@ gimmes help
 | **Driving Range** (default) | `gimmes driving_range` | Real (prod API) | Simulated locally | Virtual $10,000 |
 | **Championship** | `gimmes championship` | Real (prod API) | Real (prod API) | Real money |
 
-Both modes use the same prod API credentials for market data. The only difference is where portfolio operations are routed — the `PaperBroker` in driving range vs. Kalshi's API in championship. CLI commands and agents work identically in both modes.
+`GIMMES_MODE` in `.env` is the single source of truth. Use `gimmes switch` to toggle, or `gimmes driving_range`/`gimmes championship` to switch and start in one step. Both modes use the same prod API credentials for market data. The only difference is where portfolio operations are routed — the `PaperBroker` in driving range vs. Kalshi's API in championship. CLI commands and agents work identically in both modes.
 
-**Always start in Driving Range.** Championship mode requires explicit confirmation at startup.
+**Always start in Driving Range.** Championship mode requires explicit confirmation.
 
 ---
 
@@ -140,7 +140,7 @@ Agents communicate through the orchestrator's context — Scout's shortlist flow
 
 ## How it works
 
-Each `driving_range` or `championship` invocation runs a continuous loop of trading cycles. Each cycle:
+Each `start`, `driving_range`, or `championship` invocation runs a continuous loop of trading cycles. Each cycle:
 
 1. **State check** — reads positions, daily P&L, and risk limits from SQLite
 2. **Monitor** — reviews existing positions, recommends hold/close/size-up
@@ -154,7 +154,8 @@ Each `driving_range` or `championship` invocation runs a continuous loop of trad
 The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
 
 ```bash
-gimmes driving_range                # Unlimited cycles, 30s pause
+gimmes start                        # Use current mode from .env
+gimmes driving_range                # Switch to driving_range + start
 gimmes driving_range --cycles 5     # Run exactly 5 cycles
 gimmes driving_range --pause 60     # 60s between cycles
 ```
@@ -169,7 +170,7 @@ In golf, the clubhouse is where players check the leaderboard, review scores, an
 gimmes clubhouse    # Launch standalone at http://127.0.0.1:1919
 ```
 
-The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `gimmes championship` — just open your browser to the printed URL. Disable with `--no-dashboard` if you prefer headless operation.
+The dashboard also **auto-starts** whenever you run `gimmes start`, `gimmes driving_range`, or `gimmes championship` — just open your browser to the printed URL. Disable with `--no-dashboard` if you prefer headless operation.
 
 ### What you see
 
@@ -198,7 +199,7 @@ The dashboard also **auto-starts** whenever you run `gimmes driving_range` or `g
 
 ### Loop activity detection
 
-The dashboard determines if an autonomous loop is active by checking the `activity_log` table. If the latest entry is recent (within `pause_seconds + 60s`), the loop is considered active and the header shows a green connection indicator. When idle, it shows historical data with a "No active loop" message in the activity feed.
+The dashboard determines if an autonomous loop is active by checking the `sessions` table for a live session (PID liveness check). When active, the header shows a green connection indicator with cycle count. Mode always comes from `.env` via `load_config()`. When idle, it shows historical data with a "No active loop" message in the activity feed.
 
 ---
 
@@ -206,15 +207,22 @@ The dashboard determines if an autonomous loop is active by checking the `activi
 
 ### Autonomous trading
 ```bash
-gimmes driving_range     # Start autonomous loop (paper trading)
-gimmes championship      # Start autonomous loop (real money)
+gimmes start             # Start loop using current mode from .env
+gimmes driving_range     # Switch to driving_range + start loop
+gimmes championship      # Switch to championship + start loop (real money)
+```
+
+### Mode management
+```bash
+gimmes switch            # Toggle mode (driving_range ↔ championship)
+gimmes switch driving_range  # Switch to specific mode
+gimmes mode              # Show mode + connection status
 ```
 
 ### Setup & configuration
 ```bash
 gimmes init              # First-time setup wizard
 gimmes config            # Interactive config wizard
-gimmes mode              # Show mode + connection status
 ```
 
 ### Manual trading

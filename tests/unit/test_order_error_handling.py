@@ -108,7 +108,7 @@ def _run_order_cli(
         patch("gimmes.cli.load_config", return_value=_stub_config()),
         patch("gimmes.cli.trading_context", _fake_trading_context(broker)),
         patch("gimmes.cli.console", mock_console),
-        patch("gimmes.cli._championship_warning"),
+        patch("gimmes.cli._mode_banner"),
         patch("gimmes.cli._mark_positions_to_market", _passthrough_mtm),
         patch("gimmes.kalshi.markets.get_market", AsyncMock(return_value=_stub_market())),
         patch("gimmes.kalshi.markets.get_orderbook", AsyncMock(return_value=MagicMock())),
