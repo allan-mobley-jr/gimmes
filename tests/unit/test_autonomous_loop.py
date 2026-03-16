@@ -129,8 +129,6 @@ class TestAutonomousLoop:
 
         cmd = mock_run.call_args.args[0]
         assert cmd[0] == "/opt/bin/claude"
-        assert "-p" in cmd
-        assert "/caddy-shack" in cmd
         agent_idx = cmd.index("--agent")
         assert cmd[agent_idx + 1] == "caddie-master"
         idx = cmd.index("--allowedTools")
@@ -423,26 +421,3 @@ class TestCaddieMasterAgent:
         assert "Agent" in content
 
 
-# ---------------------------------------------------------------------------
-# Caddy-shack skill
-# ---------------------------------------------------------------------------
-
-_SKILL_PATH = (
-    Path(__file__).resolve().parent.parent.parent
-    / ".claude" / "skills" / "caddy-shack" / "SKILL.md"
-)
-
-
-class TestCaddyShackSkill:
-    def test_skill_file_exists(self) -> None:
-        assert _SKILL_PATH.exists()
-
-    def test_skill_has_frontmatter(self) -> None:
-        content = _SKILL_PATH.read_text()
-        assert "name: caddy-shack" in content
-        assert "user_invocable: true" in content
-
-    def test_skill_references_all_agents(self) -> None:
-        content = _SKILL_PATH.read_text()
-        for agent in ["Scout", "Caddie", "Closer", "Monitor", "Scorecard"]:
-            assert agent in content, f"Skill should reference {agent} agent"

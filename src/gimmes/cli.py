@@ -1893,7 +1893,7 @@ def _autonomous_loop(
     no_dashboard: bool = False,
     max_consecutive_failures: int = 5,
 ) -> None:
-    """Run the caddy-shack orchestrator skill via claude -p in a loop.
+    """Run the Caddie Master orchestrator agent via claude --agent in a loop.
 
     Each cycle invokes one complete trading pipeline (Monitor → Scout →
     Caddie → Closer → Scorecard). On exit or crash, the loop re-invokes
@@ -1983,8 +1983,9 @@ def _autonomous_loop(
             env["GIMMES_CYCLE"] = str(cycle)
             result = subprocess.run(
                 [
-                    claude_path, "-p", "/caddy-shack",
+                    claude_path,
                     "--agent", "caddie-master",
+                    "-p", "Run one trading cycle.",
                     "--allowedTools",
                     "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
                 ],
