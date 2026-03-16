@@ -16,7 +16,7 @@ show_version() {
     sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
     # Try git tag first, fall back to pyproject.toml version
-    tag=$(git -C "$REPO" describe --tags --abbrev=0 2>/dev/null)
+    tag=$(git -C "$REPO" describe --tags --abbrev=0 2>/dev/null || true)
     if [ -z "$tag" ]; then
         tag=$(sed -n 's/^version = "\(.*\)"/v\1/p' "$REPO/pyproject.toml" 2>/dev/null)
     fi
