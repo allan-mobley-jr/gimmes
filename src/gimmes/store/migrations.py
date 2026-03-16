@@ -143,4 +143,29 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 6
 
+    # Version 7: sessions table for mode tracking
+    if current < 7:
+        await db.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode TEXT NOT NULL
+                    CHECK (mode IN ('driving_range', 'championship')),
+                pid INTEGER NOT NULL,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                ended_at TEXT DEFAULT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'stopped', 'crashed')),
+                cycle_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_status
+                ON sessions(status);
+            CREATE INDEX IF NOT EXISTS idx_sessions_started
+                ON sessions(started_at);
+        """)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (7,)
+        )
+        await db.conn.commit()
+        current = 7
+
     return current

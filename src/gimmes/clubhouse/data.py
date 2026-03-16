@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC
 from pathlib import Path
 
 import aiosqlite
@@ -83,28 +82,42 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
 
     try:
         async with _connect(db_path) as conn:
-            # Check if activity_log table exists
+            # Check sessions table for authoritative mode + loop status
+            sessions_exist = await _table_exists(conn, "sessions")
+            if sessions_exist:
+                cursor = await conn.execute(
+                    "SELECT * FROM sessions WHERE status = 'active' "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                row = await cursor.fetchone()
+                if row:
+                    from gimmes.store.session import pid_alive
+
+                    if pid_alive(row["pid"]):
+                        resp.mode = row["mode"]
+                        resp.loop_active = True
+                        resp.current_cycle = row["cycle_count"]
+                        resp.session_pid = row["pid"]
+                        resp.session_started_at = row["started_at"]
+                        return resp
+
+                # No active session — check most recent for mode
+                cursor = await conn.execute(
+                    "SELECT mode FROM sessions ORDER BY id DESC LIMIT 1"
+                )
+                last = await cursor.fetchone()
+                if last:
+                    resp.mode = last["mode"]
+
+            # Fallback: current_cycle from activity_log
             exists = await _table_exists(conn, "activity_log")
-            if not exists:
-                return resp
-
-            cursor = await conn.execute(
-                "SELECT cycle, timestamp FROM activity_log ORDER BY id DESC LIMIT 1"
-            )
-            row = await cursor.fetchone()
-            if row:
-                resp.current_cycle = row["cycle"]
-                # Consider loop active if last activity was within pause_seconds + 60
-                from datetime import datetime
-
-                try:
-                    ts = datetime.fromisoformat(row["timestamp"]).replace(tzinfo=UTC)
-                    now = datetime.now(UTC)
-                    elapsed = (now - ts).total_seconds()
-                    threshold = max(pause_seconds, 30) + 60
-                    resp.loop_active = elapsed < threshold
-                except (ValueError, TypeError):
-                    pass
+            if exists:
+                cursor = await conn.execute(
+                    "SELECT cycle FROM activity_log ORDER BY id DESC LIMIT 1"
+                )
+                row = await cursor.fetchone()
+                if row:
+                    resp.current_cycle = row["cycle"]
     except Exception:
         logger.warning("get_status failed", exc_info=True)
 
@@ -518,6 +531,20 @@ async def get_change_fingerprint(db_path: Path) -> str:
                 cursor = await conn.execute("SELECT MAX(id) as m FROM error_log")
                 row = await cursor.fetchone()
                 parts.append(str(row["m"] if row and row["m"] else 0))
+            else:
+                parts.append("0")
+
+            # sessions changes (mode/loop status updates)
+            exists = await _table_exists(conn, "sessions")
+            if exists:
+                cursor = await conn.execute(
+                    "SELECT MAX(id) as m, "
+                    "MAX(cycle_count) as c FROM sessions"
+                )
+                row = await cursor.fetchone()
+                sid = row["m"] if row and row["m"] else 0
+                cyc = row["c"] if row and row["c"] else 0
+                parts.append(f"{sid}:{cyc}")
             else:
                 parts.append("0")
     except Exception:
