@@ -68,11 +68,16 @@ def _run(coro):  # type: ignore[no-untyped-def]
         raise typer.Exit(1)
 
 
-def _championship_warning(config) -> None:  # type: ignore[no-untyped-def]
-    """Show warning when in Championship mode."""
+def _mode_banner(config: GimmesConfig) -> None:
+    """Show a compact mode indicator so the user always knows which mode is active."""
     if config.is_championship:
         console.print(
-            "\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]\n",
+            "[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]",
+            highlight=False,
+        )
+    else:
+        console.print(
+            "[green]● Driving Range[/green] [dim](paper trading)[/dim]",
             highlight=False,
         )
 
@@ -135,14 +140,14 @@ async def trading_context(config: GimmesConfig):
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel="Mode & Status")
 def mode() -> None:
     """Show current mode and connection status."""
     from gimmes.store.session import get_active_session
 
     config = load_config()
     active = get_active_session(config.db_path)
-    _championship_warning(config)
+    _mode_banner(config)
 
     async def _check() -> None:
         from gimmes.reporting.formatter import format_mode_status
@@ -189,7 +194,6 @@ def scan(
 ) -> None:
     """Scan markets for gimme candidates (Scout pipeline)."""
     config = load_config()
-    _championship_warning(config)
 
     async def _scan() -> None:
         from gimmes.kalshi.client import KalshiClient
@@ -325,7 +329,6 @@ def validate(
 ) -> None:
     """Pre-trade validation for a market."""
     config = load_config()
-    _championship_warning(config)
 
     async def _validate() -> None:
         from gimmes.kalshi.markets import get_market
@@ -423,7 +426,6 @@ def order(
 ) -> None:
     """Place an order on Kalshi (runs pre-trade validation first)."""
     config = load_config()
-    _championship_warning(config)
 
     async def _order() -> None:
         import json
@@ -1757,8 +1759,129 @@ def tour_guide() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mode switching
+# ---------------------------------------------------------------------------
+
+
+def _set_mode(target: str) -> None:
+    """Write GIMMES_MODE to .env and reload dotenv so the process picks it up."""
+    import os
+
+    from gimmes.init import ENV_FILE, _update_env_var
+
+    if not ENV_FILE.exists():
+        console.print(
+            f"[red]Error: .env not found at {ENV_FILE}. "
+            "Run 'gimmes init' first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        _update_env_var("GIMMES_MODE", target)
+    except OSError as e:
+        console.print(f"[red]Error: Could not write to {ENV_FILE}: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Reload .env so load_config() in this process sees the change
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+
+    # Verify the write took effect
+    actual = os.environ.get("GIMMES_MODE", "")
+    if actual != target:
+        console.print(
+            f"[red]Error: Mode switch did not take effect. "
+            f"Expected '{target}' but got '{actual}'.[/red]"
+        )
+        raise typer.Exit(1)
+
+
+@app.command(name="switch", rich_help_panel="Mode & Status")
+def switch(
+    target: str | None = typer.Argument(
+        None,
+        help="Target mode: driving_range or championship (omit to toggle)",
+    ),
+) -> None:
+    """Switch trading mode (persisted in .env)."""
+    from gimmes.config import Mode
+
+    config = load_config()
+    current = config.mode.value
+
+    if target is None:
+        # Toggle
+        target = (
+            Mode.CHAMPIONSHIP.value
+            if current == Mode.DRIVING_RANGE.value
+            else Mode.DRIVING_RANGE.value
+        )
+    else:
+        target = target.lower()
+        if target not in (Mode.DRIVING_RANGE.value, Mode.CHAMPIONSHIP.value):
+            console.print(
+                f"[red]Invalid mode '{target}'. "
+                f"Use 'driving_range' or 'championship'.[/red]"
+            )
+            raise typer.Exit(1)
+
+    if target == current:
+        console.print(f"Already in [bold]{current}[/bold] mode.")
+        return
+
+    if target == Mode.CHAMPIONSHIP.value:
+        console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
+        console.print(
+            "Switching to championship mode means all trades use real money.\n"
+        )
+        if not typer.confirm("Switch to championship mode?"):
+            raise typer.Abort()
+
+    _set_mode(target)
+
+    # Show updated banner
+    new_config = load_config()
+    _mode_banner(new_config)
+    console.print(f"\nSwitched from [bold]{current}[/bold] → [bold]{target}[/bold]")
+
+
+# ---------------------------------------------------------------------------
 # Autonomous loop commands
 # ---------------------------------------------------------------------------
+
+
+def _confirm_championship() -> None:
+    """Show championship warning and prompt for confirmation. Aborts on decline."""
+    console.print(
+        "This will trade with real money on Kalshi autonomously.\n"
+        "The system will scan markets, research candidates, and execute trades\n"
+        "without asking for confirmation on each order.\n"
+    )
+    if not typer.confirm("Are you sure you want to start autonomous trading with real money?"):
+        raise typer.Abort()
+
+
+@app.command(name="start", rich_help_panel="Autonomous Trading")
+def start(
+    cycles: int = typer.Option(
+        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+    ),
+    pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
+    no_dashboard: bool = typer.Option(
+        False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
+    ),
+) -> None:
+    """Start autonomous trading loop using the current mode from .env."""
+    config = load_config()
+    mode_val = config.mode.value
+    _mode_banner(config)
+
+    if config.is_championship:
+        _confirm_championship()
+
+    _autonomous_loop(mode_val, max_cycles=cycles, pause_seconds=pause,
+                     no_dashboard=no_dashboard)
 
 
 def _autonomous_loop(
@@ -1783,7 +1906,6 @@ def _autonomous_loop(
     import shutil
     import subprocess
     import time
-    from pathlib import Path
 
     claude_path = shutil.which("claude")
     if not claude_path:
@@ -1904,7 +2026,7 @@ def _autonomous_loop(
     console.print("\n[yellow]Autonomous loop stopped.[/yellow]")
 
 
-@app.command(name="driving_range")
+@app.command(name="driving_range", rich_help_panel="Autonomous Trading")
 def driving_range(
     cycles: int = typer.Option(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
@@ -1914,12 +2036,13 @@ def driving_range(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
 ) -> None:
-    """Start autonomous trading loop in Driving Range mode (paper trading)."""
+    """Switch to Driving Range mode and start autonomous trading loop (paper trading)."""
+    _set_mode("driving_range")
     _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause,
                      no_dashboard=no_dashboard)
 
 
-@app.command(name="championship")
+@app.command(name="championship", rich_help_panel="Autonomous Trading")
 def championship(
     cycles: int = typer.Option(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
@@ -1929,15 +2052,10 @@ def championship(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
 ) -> None:
-    """Start autonomous trading loop in Championship mode (REAL MONEY)."""
+    """Switch to Championship mode and start autonomous trading loop (REAL MONEY)."""
     console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
-    console.print(
-        "This will trade with real money on Kalshi autonomously.\n"
-        "The system will scan markets, research candidates, and execute trades\n"
-        "without asking for confirmation on each order.\n"
-    )
-    if not typer.confirm("Are you sure you want to start autonomous trading with real money?"):
-        raise typer.Abort()
+    _confirm_championship()
+    _set_mode("championship")
     _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause,
                      no_dashboard=no_dashboard)
 

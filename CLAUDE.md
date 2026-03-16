@@ -30,7 +30,7 @@ CLI (python -m gimmes)  ←→  Kalshi REST API
 - **Driving Range** (`GIMMES_MODE=driving_range`): Paper trading. Reads **real prod market data** but simulates order execution locally via `PaperBroker`. Virtual bankroll (default $10,000). Default.
 - **Championship** (`GIMMES_MODE=championship`): Production API at `api.elections.kalshi.com`. Real money. Requires explicit confirmation.
 
-Both modes use the same prod API credentials for market data. The only difference is where portfolio operations (orders, balance, positions) are routed — `PaperBroker` in driving range vs. Kalshi API in championship. The `trading_context()` helper in `cli.py` handles this routing transparently.
+`GIMMES_MODE` in `.env` is the single source of truth for mode. All commands read mode from `.env` via `load_config()`. Use `gimmes switch` to toggle mode, or `gimmes driving_range` / `gimmes championship` to switch and start the loop in one step. The `trading_context()` helper in `cli.py` handles broker routing transparently — `PaperBroker` in driving range, Kalshi API in championship.
 
 **Always default to Driving Range. Never switch to Championship without explicit user approval.**
 
@@ -38,13 +38,18 @@ Both modes use the same prod API credentials for market data. The only differenc
 
 ```bash
 # Autonomous trading loop
-python -m gimmes driving_range     # Autonomous loop — paper trading (default)
-python -m gimmes championship      # Autonomous loop — real money (requires confirmation)
+python -m gimmes start             # Start loop using current mode from .env
+python -m gimmes driving_range     # Switch to driving_range + start loop (paper trading)
+python -m gimmes championship      # Switch to championship + start loop (real money, requires confirmation)
+
+# Mode management
+python -m gimmes switch            # Toggle mode (driving_range ↔ championship)
+python -m gimmes switch driving_range  # Switch to specific mode
+python -m gimmes mode              # Show mode + connection status
 
 # Setup & config
 python -m gimmes init              # First-time setup wizard
 python -m gimmes config            # Interactive config wizard (--section to jump)
-python -m gimmes mode              # Show mode + connection status
 python -m gimmes tour_guide        # Interactive product tour (The Starter)
 
 # Manual trading
@@ -71,7 +76,7 @@ python -m gimmes tune              # Interactively apply pending recommendations
 
 ## Autonomous Loop
 
-`driving_range` and `championship` run the full trading pipeline in a loop via `claude -p "/caddy-shack"`. Each cycle: State Check → Monitor → Scout → Caddie → Closer → Scorecard → Groundskeeper → The Pro (every 10th cycle). The orchestrator reads SQLite state at the start of each cycle for crash recovery. Options: `--cycles N` (bounded runs), `--pause S` (seconds between cycles).
+`start`, `driving_range`, and `championship` run the full trading pipeline in a loop via `claude -p "/caddy-shack"`. `start` uses the current mode from `.env`; `driving_range`/`championship` switch mode first, then start. Each cycle: State Check → Monitor → Scout → Caddie → Closer → Scorecard → Groundskeeper → The Pro (every 10th cycle). The orchestrator reads SQLite state at the start of each cycle for crash recovery. Options: `--cycles N` (bounded runs), `--pause S` (seconds between cycles).
 
 ## Running Tests
 

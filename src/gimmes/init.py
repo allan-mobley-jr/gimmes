@@ -27,6 +27,9 @@ TOML_FILE = GIMMES_HOME / "config" / "gimmes.toml"
 _DEFAULT_ENV = """\
 # GIMMES Configuration
 
+# Mode: driving_range (paper trading) or championship (real money)
+GIMMES_MODE=driving_range
+
 # Kalshi Production API credentials (used in both modes)
 # Driving range reads real market data but simulates orders locally
 KALSHI_PROD_API_KEY=your-prod-api-key-uuid

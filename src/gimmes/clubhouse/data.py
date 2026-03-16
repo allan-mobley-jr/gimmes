@@ -82,7 +82,7 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
 
     try:
         async with _connect(db_path) as conn:
-            # Check sessions table for authoritative mode + loop status
+            # Check sessions table for loop status (mode comes from config/.env)
             sessions_exist = await _table_exists(conn, "sessions")
             if sessions_exist:
                 cursor = await conn.execute(
@@ -94,20 +94,11 @@ async def get_status(db_path: Path, pause_seconds: int = 0) -> StatusResponse:
                     from gimmes.store.session import pid_alive
 
                     if pid_alive(row["pid"]):
-                        resp.mode = row["mode"]
                         resp.loop_active = True
                         resp.current_cycle = row["cycle_count"]
                         resp.session_pid = row["pid"]
                         resp.session_started_at = row["started_at"]
                         return resp
-
-                # No active session — check most recent for mode
-                cursor = await conn.execute(
-                    "SELECT mode FROM sessions ORDER BY id DESC LIMIT 1"
-                )
-                last = await cursor.fetchone()
-                if last:
-                    resp.mode = last["mode"]
 
             # Fallback: current_cycle from activity_log
             exists = await _table_exists(conn, "activity_log")
