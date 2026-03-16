@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger("gimmes.store.session")
 
@@ -140,7 +141,9 @@ def update_session_cycle(
         )
 
 
-def end_session(db_path: Path, session_id: int, status: str) -> None:
+def end_session(
+    db_path: Path, session_id: int, status: Literal["stopped", "crashed"]
+) -> None:
     """Mark a session as stopped or crashed.
 
     This function is safe to call from exception handlers — it catches
