@@ -10,6 +10,8 @@ class StatusResponse(BaseModel):
     loop_active: bool = False
     current_cycle: int = 0
     pause_seconds: int = 0
+    session_pid: int | None = None
+    session_started_at: str | None = None
 
 
 class PortfolioResponse(BaseModel):

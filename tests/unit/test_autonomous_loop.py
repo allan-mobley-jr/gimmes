@@ -15,6 +15,18 @@ from gimmes.cli import _autonomous_loop, app
 
 
 class TestAutonomousLoop:
+    @pytest.fixture(autouse=True)
+    def _patch_session_funcs(self):
+        """Patch session DB functions so tests don't touch the real database."""
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch("asyncio.run"),
+        ):
+            yield
+
     def test_exits_when_claude_not_found(self) -> None:
         with patch("shutil.which", return_value=None):
             with pytest.raises(ClickExit):

@@ -138,7 +138,10 @@ async def trading_context(config: GimmesConfig):
 @app.command()
 def mode() -> None:
     """Show current mode and connection status."""
+    from gimmes.store.session import get_active_session
+
     config = load_config()
+    active = get_active_session(config.db_path)
     _championship_warning(config)
 
     async def _check() -> None:
@@ -161,6 +164,14 @@ def mode() -> None:
                 logging.getLogger("gimmes").debug("mode: connection check failed: %s", exc)
 
         format_mode_status(config.mode.value, connected, balance)
+
+        if active:
+            console.print(
+                f"\n[green]Active session:[/green] "
+                f"PID {active['pid']}, "
+                f"cycle {active['cycle_count']}, "
+                f"started {active['started_at']}"
+            )
 
     _run(_check())
 
@@ -1782,7 +1793,33 @@ def _autonomous_loop(
     project_root = Path(__file__).resolve().parent.parent.parent
     config = load_config()
 
-    # Set mode in process env so the in-process dashboard reads the correct mode
+    # --- Session management ---
+    from gimmes.store.session import (
+        create_session,
+        end_session,
+        mark_stale_sessions,
+        update_session_cycle,
+    )
+
+    # Ensure DB + migrations are up to date
+    async def _ensure_db() -> None:
+        from gimmes.store.database import Database
+
+        async with Database(config.db_path):
+            pass  # connect() runs migrations automatically
+
+    asyncio.run(_ensure_db())
+
+    # Clean up any stale sessions from prior crashes
+    stale = mark_stale_sessions(config.db_path)
+    if stale:
+        console.print(
+            f"[dim]Cleaned up {stale} stale session(s) from prior crash[/dim]"
+        )
+
+    session_id = create_session(config.db_path, mode, os.getpid())
+
+    # Set mode in process env for backward compat with subprocesses
     os.environ["GIMMES_MODE"] = mode
 
     env = os.environ.copy()
@@ -1812,10 +1849,13 @@ def _autonomous_loop(
 
     cycle = 0
     consecutive_failures = 0
+    session_status = "stopped"
     try:
         while max_cycles == 0 or cycle < max_cycles:
             cycle += 1
             console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
+
+            update_session_cycle(config.db_path, session_id, cycle)
 
             env["GIMMES_CYCLE"] = str(cycle)
             result = subprocess.run(
@@ -1843,6 +1883,7 @@ def _autonomous_loop(
                         f" {max_consecutive_failures} consecutive"
                         f" failures. Halting autonomous loop.[/red bold]"
                     )
+                    session_status = "crashed"
                     break
             else:
                 consecutive_failures = 0
@@ -1854,6 +1895,11 @@ def _autonomous_loop(
             time.sleep(pause_seconds)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        session_status = "crashed"
+        raise
+    finally:
+        end_session(config.db_path, session_id, session_status)
 
     console.print("\n[yellow]Autonomous loop stopped.[/yellow]")
 
