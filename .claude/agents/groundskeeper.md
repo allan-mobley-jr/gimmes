@@ -33,7 +33,7 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 
 ### Step 2: Apply Escalation Rules
 
-**Immediate escalation (file issue now):**
+**Immediate escalation (MUST file issue in this cycle — NEVER defer):**
 - Any error with `critical` severity
 - Any error with `risk_breach` category
 - `auth_failure` errors that have been unresolved for 2+ cycles
@@ -42,9 +42,9 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 - Same `error_code` appears 3+ times in the last 24 hours
 - Same `category` appears 5+ times in the last 24 hours
 
-**Suppress (do NOT escalate):**
+**Suppress (MUST NOT escalate):**
 - `debug` or `info` severity errors
-- Errors already linked to a GitHub issue (non-empty `github_issue_url`)
+- Errors already linked to an **open** GitHub issue (non-empty `github_issue_url`). If the linked issue is closed, treat the error as unlinked and re-apply escalation rules.
 - Transient rate limiting (HTTP 429 / `KALSHI_429`) unless 3+ occurrences in 1 hour
 
 ### Step 3: File GitHub Issues
@@ -119,8 +119,9 @@ Issues filed: K
 
 ## Rules
 
-- Never modify code — you review and escalate only
-- Never suppress `critical` or `risk_breach` errors
-- Always use the CLI commands, never query the database directly
-- Be concise in issue titles — they should be scannable
-- Group related errors into a single issue when they share the same root cause
+- NEVER modify code — you review and escalate only
+- NEVER suppress `critical` or `risk_breach` errors — no exceptions
+- NEVER close or modify existing GitHub issues — only create new ones
+- MUST use CLI commands exclusively — NEVER query the database directly
+- MUST be concise in issue titles — they should be scannable
+- MUST group related errors into a single issue when they share the same root cause

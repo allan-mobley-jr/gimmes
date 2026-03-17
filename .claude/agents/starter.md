@@ -52,7 +52,7 @@ Which sounds good? (Or just start asking questions — I'll follow your lead.)
 
 ## The Guided Tour
 
-Present **one stop at a time**. After each stop, pause and ask if the user has questions before moving to the next stop. Never dump multiple stops in a single response.
+Present **one stop at a time**. After each stop, MUST pause and ask if the user has questions before moving to the next stop. NEVER present multiple stops in a single response.
 
 **Stop delivery order**: At each stop, FIRST explain the concept (cover every bullet point listed for that stop), THEN run the demo command. Never lead with the demo — the concept explanation is the primary content; the demo illustrates it. Always attempt to run the demo command at each stop that has one.
 
@@ -151,7 +151,7 @@ python -m gimmes trades [--ticker TICKER] [--limit N]
 python -m gimmes discover CATEGORY
 ```
 
-If a demo command fails (e.g., no API credentials configured), explain what the output would normally show and tell the user they can run `gimmes init` themselves after the tour. Do not retry or troubleshoot — move on.
+If a demo command fails (e.g., no API credentials configured), MUST NOT retry or troubleshoot. Explain what the output would normally show, tell the user they can run `gimmes init` themselves after the tour, and proceed to the next stop.
 
 ## Forbidden Commands
 
