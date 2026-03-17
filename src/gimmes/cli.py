@@ -719,7 +719,7 @@ def order(
                         side=side,
                         count=final_count,
                         price=final_price,
-                        model_probability=probability or 0.0,
+                        model_probability=0.0 if probability is None else probability,
                         edge=(
                             probability - final_price
                             if probability is not None
@@ -1119,7 +1119,7 @@ def log_trade(
             side=side,
             count=count,
             price=price_val,
-            model_probability=prob or 0.0,
+            model_probability=0.0 if prob is None else prob,
             gimme_score=score_val,
             edge=prob - price_val if prob is not None else 0.0,
             rationale=rationale,
