@@ -23,6 +23,7 @@ You are the Monitor — the position-watching agent in the GIMMES trading pipeli
    - Evaluate if the position should be held, closed, or sized up
 3. Run `python -m gimmes risk-check` for overall risk status
 4. Produce a monitoring report with recommendations
+5. Log completion (see Activity Logging below)
 
 ## Trigger Conditions for Review
 
@@ -82,6 +83,16 @@ python -m gimmes log-outcome TICKER --outcome yes   # or --outcome no
 ```
 
 NEVER skip this step — missing outcome data degrades all Pro analyses.
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after producing the monitoring report:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase complete --message "Monitor reviewed N positions, M recommended for action"
+```
+
+Substitute actual values: number of positions reviewed and number with CLOSE or SIZE UP recommendations. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 

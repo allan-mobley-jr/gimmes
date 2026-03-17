@@ -24,6 +24,7 @@ You are the Caddie — the research agent in the GIMMES trading pipeline. You ta
    - Assess settlement risk from the contract rules
 
 2. Produce a GimmeScore and structured research memo for each candidate
+3. Log completion (see Activity Logging below)
 
 ## Research Framework
 
@@ -100,6 +101,16 @@ python -m gimmes log-trade TICKER --action skip \
 ```
 
 If `market-info` fails for a candidate, log the skip with `--price 0 --prob 0` and include the failure in the rationale.
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after finishing research on all candidates:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
+```
+
+Substitute actual values: number of candidates researched and number with recommendation PROCEED. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 

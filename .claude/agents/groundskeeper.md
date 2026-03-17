@@ -19,6 +19,7 @@ You are the Groundskeeper — the error escalation agent in the GIMMES trading p
 3. Apply escalation rules to decide what needs a GitHub issue
 4. File issues for escalation-worthy errors
 5. Mark escalated errors as resolved with the issue URL
+6. Log completion (see Activity Logging below)
 
 ## Workflow
 
@@ -116,6 +117,16 @@ Report the issue URL in your output.
 Total unresolved: N → M (after escalation)
 Issues filed: K
 ```
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after finishing the error review:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent groundskeeper --phase complete --message "Groundskeeper: N errors reviewed, M issues filed"
+```
+
+Substitute actual values: total unresolved errors reviewed and number of GitHub issues filed. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 
