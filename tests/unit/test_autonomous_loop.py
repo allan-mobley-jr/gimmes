@@ -18,8 +18,8 @@ runner = CliRunner()
 def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
     """Return a mock Popen instance with the given returncode and stdout output."""
     mock_proc = MagicMock()
-    mock_proc.stdout.read = MagicMock(side_effect=[output, b""])
-    mock_proc.wait.return_value = returncode
+    mock_proc.communicate.return_value = (output, b"")
+    mock_proc.returncode = returncode
     return mock_proc
 
 
@@ -149,7 +149,7 @@ class TestAutonomousLoop:
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
         assert "WebFetch" in allowed
-        assert mock_proc.wait.call_args.kwargs["timeout"] == 2700
+        assert mock_proc.communicate.call_args.kwargs["timeout"] == 2700
 
     def test_warns_on_nonzero_exit(self, capsys) -> None:  # type: ignore[no-untyped-def]
         mock_proc = _mock_popen(returncode=2)
@@ -260,11 +260,9 @@ class TestAutonomousLoop:
             call_count += 1
             mock_proc = _mock_popen()
             if call_count == 1:
-                # First wait() raises TimeoutExpired; second wait() (cleanup) returns 0
-                mock_proc.wait.side_effect = [
-                    _subprocess.TimeoutExpired(cmd=args[0], timeout=2700),
-                    0,
-                ]
+                mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
+                    cmd=args[0], timeout=2700,
+                )
             return mock_proc
 
         with (
@@ -282,11 +280,9 @@ class TestAutonomousLoop:
         """Consecutive timeouts trip the circuit breaker."""
         def side_effect(*args, **kwargs):
             mock_proc = _mock_popen()
-            # First wait() raises TimeoutExpired; second wait() (cleanup) returns 0
-            mock_proc.wait.side_effect = [
-                _subprocess.TimeoutExpired(cmd=args[0], timeout=2700),
-                0,
-            ]
+            mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
+                cmd=args[0], timeout=2700,
+            )
             return mock_proc
 
         with (

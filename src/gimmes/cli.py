@@ -2003,15 +2003,14 @@ def _autonomous_loop(
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
+                stdout_bytes, _ = proc.communicate(
+                    timeout=config.strategy.cycle_timeout,
+                )
+                sys.stdout.buffer.write(stdout_bytes)
+                sys.stdout.buffer.flush()
                 with open(log_path, "wb") as log_file:
-                    while True:
-                        chunk = proc.stdout.read(4096)
-                        if not chunk:
-                            break
-                        sys.stdout.buffer.write(chunk)
-                        sys.stdout.buffer.flush()
-                        log_file.write(chunk)
-                returncode = proc.wait(timeout=config.strategy.cycle_timeout)
+                    log_file.write(stdout_bytes)
+                returncode = proc.returncode
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
