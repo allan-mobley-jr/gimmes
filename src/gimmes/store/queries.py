@@ -289,9 +289,9 @@ async def insert_candidate(
     liquidity_depth_score: float = 0,
     settlement_clarity_score: float = 0,
     time_to_resolution_score: float = 0,
-) -> None:
+) -> int:
     """Insert a scanned gimme candidate with optional component scores."""
-    await db.conn.execute(
+    cursor = await db.conn.execute(
         """INSERT INTO candidates
            (ticker, title, market_price, model_probability, edge, gimme_score,
             research_memo, edge_size_score, signal_strength_score,
@@ -302,6 +302,7 @@ async def insert_candidate(
          settlement_clarity_score, time_to_resolution_score),
     )
     await db.conn.commit()
+    return cursor.lastrowid or 0
 
 
 # ---------------------------------------------------------------------------

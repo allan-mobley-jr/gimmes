@@ -92,7 +92,17 @@ MUST produce this exact format for each candidate:
 
 ## Logging
 
-For each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip:
+For EVERY candidate researched (PROCEED, PASS, and NEEDS MORE RESEARCH), MUST log to the candidates table:
+
+```bash
+python -m gimmes log-candidate TICKER \
+  --title "Event title" --price 0.XX --prob 0.XX --score NN \
+  --memo "Brief research summary" \
+  --edge-size NN --signal-strength NN --liquidity-depth NN \
+  --settlement-clarity NN --time-to-resolution NN
+```
+
+Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip:
 
 ```bash
 python -m gimmes log-trade TICKER --action skip \
@@ -100,7 +110,7 @@ python -m gimmes log-trade TICKER --action skip \
   --rationale "Caddie: [reason]" --agent caddie
 ```
 
-If `market-info` fails for a candidate, log the skip with `--price 0 --prob 0` and include the failure in the rationale.
+If `market-info` fails for a candidate, log the candidate with `--price 0 --prob 0` and log the skip with the failure in the rationale.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 
