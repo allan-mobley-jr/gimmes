@@ -102,6 +102,8 @@ python -m gimmes log-candidate TICKER \
   --settlement-clarity NN --time-to-resolution NN
 ```
 
+If a `log-candidate` command fails, note the failure in your output and continue. Do not retry.
+
 Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip:
 
 ```bash
@@ -109,6 +111,8 @@ python -m gimmes log-trade TICKER --action skip \
   --price 0.XX --prob 0.XX --score NN \
   --rationale "Caddie: [reason]" --agent caddie
 ```
+
+If a `log-trade` skip command fails, note the failure in your output and continue. Do not retry failed log commands.
 
 If `market-info` fails for a candidate, log the candidate with `--price 0 --prob 0` and log the skip with the failure in the rationale.
 

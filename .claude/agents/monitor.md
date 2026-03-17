@@ -82,7 +82,7 @@ MUST check every open position's market for settlement status. For each resolved
 python -m gimmes log-outcome TICKER --outcome yes   # or --outcome no
 ```
 
-NEVER skip this step — missing outcome data degrades all Pro analyses.
+NEVER skip this step — missing outcome data degrades all Pro analyses. If the log-outcome command fails, note the failure prominently in your output so the outcome can be recorded on the next cycle. Do not retry.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 

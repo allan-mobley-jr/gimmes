@@ -66,7 +66,7 @@ Full SIZE UP execution is not yet supported (the duplicate position check blocks
 ```bash
 python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 0 --score 0 --rationale "Monitor: [reason from Monitor report]" --agent monitor
 ```
-Use the position's current market price from the Monitor report as `CURRENT_PRICE`. This creates an audit trail for Pro analysis — do NOT attempt to place additional orders.
+Use the position's current market price from the Monitor report as `CURRENT_PRICE`. This creates an audit trail for Pro analysis — do NOT attempt to place additional orders. If the log-trade command fails, note the failure in your output and continue. Do not retry.
 
 ### Step 3: Scout
 
