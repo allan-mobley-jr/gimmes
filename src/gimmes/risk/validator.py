@@ -52,9 +52,10 @@ def validate_trade(
     3. Single position size limit
     4. Balance sufficient
     4b. Session spending cap (callers must track and pass session_spent)
-    5. Edge after fees meets minimum (skipped when true_probability is None)
-    6. Duplicate position check
-    7. Settlement risk
+    5. Minimum true probability gate (skipped when true_probability is None)
+    6. Edge after fees meets minimum (skipped when true_probability is None)
+    7. Duplicate position check
+    8. Settlement risk
     """
     checks: list[str] = []
     failures: list[str] = []
@@ -97,7 +98,19 @@ def validate_trade(
     elif cap > 0:
         checks.append(f"Session spending OK (${session_spent + trade_dollars:.2f}/${cap:.2f})")
 
-    # 5. Edge after fees (skipped when probability is unknown)
+    # 5. Minimum true probability gate (skipped when probability is unknown)
+    if true_probability is not None:
+        min_prob = config.strategy.min_true_probability
+        if true_probability >= min_prob:
+            checks.append(f"True probability OK ({true_probability:.0%} >= {min_prob:.0%})")
+        else:
+            failures.append(
+                f"True probability too low: {true_probability:.0%} < {min_prob:.0%} minimum"
+            )
+    else:
+        checks.append("True probability check skipped (no probability provided)")
+
+    # 6. Edge after fees (skipped when probability is unknown)
     if true_probability is not None:
         price = market.midpoint if market.midpoint > 0 else market.last_price
         edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
@@ -109,13 +122,13 @@ def validate_trade(
     else:
         checks.append("Edge check skipped (no probability provided)")
 
-    # 6. Duplicate check
+    # 7. Duplicate check
     if market.ticker in existing_tickers:
         failures.append(f"Already have position in {market.ticker}")
     else:
         checks.append("No duplicate position")
 
-    # 7. Settlement risk
+    # 8. Settlement risk
     settlement = scan_settlement_rules(market.rules_primary)
     if settlement.is_clear:
         checks.append("Settlement rules clear")
