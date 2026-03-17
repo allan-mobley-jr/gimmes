@@ -414,8 +414,8 @@ def order(
     price: int = typer.Option(
         0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
     ),
-    probability: float = typer.Option(
-        0, "--prob", "-p", help="True probability (buy only: auto-sizing and edge check)",
+    probability: float | None = typer.Option(
+        None, "--prob", "-p", help="True probability (buy only: auto-sizing and edge check)",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
@@ -468,7 +468,7 @@ def order(
             is_buy = order_action == OrderAction.BUY
             is_taker = config.orders.preferred_order_type != "maker"
 
-            if is_buy and count <= 0 and probability > 0:
+            if is_buy and count <= 0 and probability is not None:
                 final_count = position_size(
                     balance, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
@@ -536,7 +536,7 @@ def order(
                 unrealized_pnl = sum(p.unrealized_pnl for p in positions)
                 total_daily_pnl = daily_pnl + unrealized_pnl
 
-                true_prob = probability if probability > 0 else None
+                true_prob = probability
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
@@ -719,10 +719,10 @@ def order(
                         side=side,
                         count=final_count,
                         price=final_price,
-                        model_probability=probability,
+                        model_probability=probability or 0.0,
                         edge=(
                             probability - final_price
-                            if probability > 0
+                            if probability is not None
                             else 0.0
                         ),
                         rationale="CLI order",
@@ -1100,7 +1100,7 @@ def log_trade(
     side: str = typer.Option("yes", "--side", "-s"),
     count: int = typer.Option(0, "--count", "-c"),
     price_val: float = typer.Option(0, "--price"),
-    prob: float = typer.Option(0, "--prob", "-p"),
+    prob: float | None = typer.Option(None, "--prob", "-p"),
     score_val: float = typer.Option(0, "--score"),
     rationale: str = typer.Option("", "--rationale", "-r"),
     agent: str = typer.Option("manual", "--agent"),
@@ -1119,9 +1119,9 @@ def log_trade(
             side=side,
             count=count,
             price=price_val,
-            model_probability=prob,
+            model_probability=prob or 0.0,
             gimme_score=score_val,
-            edge=prob - price_val if prob > 0 else 0,
+            edge=prob - price_val if prob is not None else 0.0,
             rationale=rationale,
             agent=agent,
         )
