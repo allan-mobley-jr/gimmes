@@ -9,9 +9,79 @@ gimmes_version() {
     git -C "$REPO" describe --tags 2>/dev/null || git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "dev"
 }
 
+# Get the latest semver tag from the remote (after fetch).
+# Returns empty string if no tags exist.
+latest_remote_tag() {
+    git -C "$REPO" tag -l 'v[0-9]*' --sort=-v:refname 2>/dev/null | head -1
+}
+
+# Compare two semver strings (vMAJOR.MINOR.PATCH format).
+# Exit code: 0 = equal, 1 = first > second, 2 = first < second
+semver_compare() {
+    local a="${1#v}" b="${2#v}"
+    local a_major a_minor a_patch b_major b_minor b_patch
+
+    IFS='.' read -r a_major a_minor a_patch <<< "$a"
+    IFS='.' read -r b_major b_minor b_patch <<< "$b"
+
+    # Strip pre-release suffixes (e.g. 1.2.3-rc1 -> 1.2.3), default missing parts to 0
+    a_major="${a_major:-0}"; a_minor="${a_minor:-0}"; a_patch="${a_patch%%-*}"; a_patch="${a_patch:-0}"
+    b_major="${b_major:-0}"; b_minor="${b_minor:-0}"; b_patch="${b_patch%%-*}"; b_patch="${b_patch:-0}"
+
+    if [ "$a_major" -lt "$b_major" ]; then return 2; fi
+    if [ "$a_major" -gt "$b_major" ]; then return 1; fi
+    if [ "$a_minor" -lt "$b_minor" ]; then return 2; fi
+    if [ "$a_minor" -gt "$b_minor" ]; then return 1; fi
+    if [ "$a_patch" -lt "$b_patch" ]; then return 2; fi
+    if [ "$a_patch" -gt "$b_patch" ]; then return 1; fi
+    return 0
+}
+
+suggest_update() {
+    local yellow='\033[0;33m' reset='\033[0m'
+    printf "${yellow}⚠ Update available — %s${reset}\n" "$1"
+    echo "  Run: gimmes update"
+}
+
+# Release mode: compare local tag against latest remote tag
+check_update_release() {
+    local tag="$1" latest_tag="$2"
+    local green='\033[0;32m' reset='\033[0m'
+
+    # Local version is not semver (e.g. "dev") — always suggest update
+    if [[ ! "$tag" =~ ^v?[0-9]+\.[0-9]+ ]]; then
+        suggest_update "$latest_tag"
+        return
+    fi
+
+    local rc
+    semver_compare "$tag" "$latest_tag" && rc=0 || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        suggest_update "$tag → $latest_tag"
+    else
+        printf "${green}✓ Up to date${reset}\n"
+    fi
+}
+
+# Dev mode: compare commit counts when no remote tags exist
+check_update_dev() {
+    local green='\033[0;32m' reset='\033[0m'
+    local behind
+    behind=$(git -C "$REPO" rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+
+    if [ "$behind" -eq 0 ]; then
+        printf "${green}✓ Up to date${reset}\n"
+        return
+    fi
+
+    local label="commit"
+    [ "$behind" -gt 1 ] && label="commits"
+    suggest_update "remote is $behind $label ahead"
+}
+
 show_version() {
-    local tag sha behind
-    local green='\033[0;32m' yellow='\033[0;33m' dim='\033[0;90m' reset='\033[0m'
+    local tag sha
+    local dim='\033[0;90m' reset='\033[0m'
 
     sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -24,19 +94,19 @@ show_version() {
 
     echo "gimmes $tag ($sha)"
 
-    # Update check: fetch quietly, count commits behind
-    if git -C "$REPO" fetch origin main --quiet 2>/dev/null; then
-        behind=$(git -C "$REPO" rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
-        if [ "$behind" -eq 0 ]; then
-            printf "${green}✓ Up to date${reset}\n"
-        else
-            local label="commit"
-            [ "$behind" -gt 1 ] && label="commits"
-            printf "${yellow}⚠ Update available — remote is %s %s ahead${reset}\n" "$behind" "$label"
-            echo "  Run: gimmes update"
-        fi
-    else
+    # Update check: fetch quietly, then compare tags or commits
+    if ! git -C "$REPO" fetch origin main --tags --quiet 2>/dev/null; then
         printf "${dim}(update check skipped — could not reach remote)${reset}\n"
+        return
+    fi
+
+    local latest_tag
+    latest_tag=$(latest_remote_tag)
+
+    if [ -n "$latest_tag" ]; then
+        check_update_release "$tag" "$latest_tag"
+    else
+        check_update_dev
     fi
 }
 
@@ -98,14 +168,40 @@ case "${1:-}" in
     update)
         echo "Updating gimmes..."
         cd "$REPO"
-        git pull --ff-only origin main
+        if ! git fetch origin main --tags --quiet 2>/dev/null; then
+            echo "Error: could not reach the remote repository."
+            echo "Check your network connection and try again."
+            exit 1
+        fi
+
+        latest_tag=$(latest_remote_tag)
+        update_label=""
+
+        if [ -n "$latest_tag" ]; then
+            # Release mode: checkout the latest tag
+            if ! git checkout "$latest_tag" --quiet 2>/dev/null; then
+                echo "Error: could not checkout $latest_tag."
+                echo "Try: cd $REPO && git status"
+                exit 1
+            fi
+            update_label="$latest_tag"
+        else
+            # Dev mode: fast-forward to latest main
+            if ! git pull --ff-only origin main; then
+                echo "Error: could not fast-forward to latest main."
+                echo "Try: cd $REPO && git status"
+                exit 1
+            fi
+            update_label=$(git rev-parse --short HEAD)
+        fi
+
         if command -v uv &>/dev/null; then
             uv sync --quiet
         else
             "$PYTHON" -m pip install -e . --quiet
         fi
         show_banner
-        echo "Updated to $(git rev-parse --short HEAD)"
+        echo "Updated to $update_label"
         ;;
     help)
         show_banner
