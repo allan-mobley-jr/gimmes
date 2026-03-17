@@ -229,6 +229,19 @@ class TestComponentScores:
         assert rows[0]["edge_size_score"] == 0
         assert rows[0]["signal_strength_score"] == 0
 
+    async def test_insert_candidate_returns_row_id(self, db: Database) -> None:
+        row_id = await insert_candidate(
+            db, "ID-TEST", "Row ID Test", 0.60, 0.80, 0.20, 72, "memo",
+        )
+        assert isinstance(row_id, int)
+        assert row_id > 0
+        cursor = await db.conn.execute(
+            "SELECT ticker FROM candidates WHERE id = ?", (row_id,)
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == "ID-TEST"
+
     async def test_backward_compatible_insert(self, db: Database) -> None:
         """Old-style inserts without component scores still work."""
         await insert_candidate(db, "OLD-TEST", "Old Style", 0.60, 0.80, 0.20, 72, "memo")
@@ -236,3 +249,43 @@ class TestComponentScores:
         assert len(rows) == 1
         assert rows[0]["ticker"] == "OLD-TEST"
         assert rows[0]["gimme_score"] == 72
+
+
+# ---------------------------------------------------------------------------
+# log-candidate CLI command
+# ---------------------------------------------------------------------------
+
+
+class TestLogCandidateCommand:
+    def test_command_exists(self) -> None:
+        from gimmes.cli import app
+
+        commands = {cmd.name for cmd in app.registered_commands}
+        assert "log-candidate" in commands
+
+    def test_edge_calculation(self, tmp_path: Path) -> None:
+        """Edge is computed as prob - price."""
+        from unittest.mock import AsyncMock, patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        mock_insert = AsyncMock(return_value=1)
+        runner = CliRunner()
+
+        with (
+            patch("gimmes.cli.load_config") as mock_cfg,
+            patch("gimmes.store.queries.insert_candidate", mock_insert),
+        ):
+            mock_cfg.return_value.db_path = tmp_path / "test.db"
+            result = runner.invoke(app, [
+                "log-candidate", "EDGE-TEST",
+                "--price", "0.70", "--prob", "0.90", "--score", "85",
+                "--memo", "test memo",
+            ])
+
+        assert result.exit_code == 0
+        _, ticker, title, price, prob, edge, score, memo = mock_insert.call_args[0]
+        assert ticker == "EDGE-TEST"
+        assert abs(edge - 0.20) < 1e-9

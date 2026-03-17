@@ -1137,6 +1137,47 @@ def log_trade(
     _run(_log())
 
 
+@app.command(name="log-candidate")
+def log_candidate(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+    title: str = typer.Option("", "--title", "-t", help="Event title"),
+    price_val: float = typer.Option(0, "--price", help="Market price"),
+    prob: float = typer.Option(0, "--prob", "-p", help="Model probability estimate"),
+    score_val: float = typer.Option(0, "--score", help="GimmeScore (0-100)"),
+    memo: str = typer.Option("", "--memo", "-m", help="Research memo summary"),
+    edge_size: float = typer.Option(0, "--edge-size", help="Edge size score"),
+    signal_strength: float = typer.Option(0, "--signal-strength", help="Signal strength score"),
+    liquidity_depth: float = typer.Option(0, "--liquidity-depth", help="Liquidity depth score"),
+    settlement_clarity: float = typer.Option(
+        0, "--settlement-clarity", help="Settlement clarity score",
+    ),
+    time_to_resolution: float = typer.Option(
+        0, "--time-to-resolution", help="Time to resolution score",
+    ),
+) -> None:
+    """Log a scanned candidate to the candidates table."""
+    config = load_config()
+
+    async def _log() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import insert_candidate as _insert
+
+        edge = prob - price_val
+
+        async with Database(config.db_path) as db:
+            row_id = await _insert(
+                db, ticker, title, price_val, prob, edge, score_val, memo,
+                edge_size_score=edge_size,
+                signal_strength_score=signal_strength,
+                liquidity_depth_score=liquidity_depth,
+                settlement_clarity_score=settlement_clarity,
+                time_to_resolution_score=time_to_resolution,
+            )
+            console.print(f"[green]Logged candidate #{row_id}: {ticker}[/green]")
+
+    _run(_log())
+
+
 @app.command(name="log-outcome")
 def log_outcome(
     ticker: str = typer.Argument(..., help="Market ticker"),
