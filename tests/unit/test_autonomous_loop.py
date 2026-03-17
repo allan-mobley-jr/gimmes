@@ -388,6 +388,90 @@ class TestAutonomousLoop:
         assert mock_killpg.call_count == 1
         mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
+    def test_keyboard_interrupt_kills_subprocess_group(self) -> None:
+        """Ctrl+C during communicate() kills the subprocess process group."""
+        import signal
+
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = KeyboardInterrupt
+        mock_proc.poll.return_value = None  # subprocess still running
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+
+    def test_keyboard_interrupt_escalates_to_sigkill(self) -> None:
+        """Ctrl+C escalates to SIGKILL if subprocess doesn't exit after SIGTERM."""
+        import signal
+
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = KeyboardInterrupt
+        mock_proc.poll.return_value = None
+        mock_proc.wait.side_effect = [
+            _subprocess.TimeoutExpired(cmd="claude", timeout=5),
+            None,
+        ]
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        calls = mock_killpg.call_args_list
+        assert calls[0] == ((12345, signal.SIGTERM),)
+        assert calls[1] == ((12345, signal.SIGKILL),)
+
+    def test_keyboard_interrupt_during_sleep_no_kill(self) -> None:
+        """Ctrl+C during sleep between cycles doesn't try to kill exited process."""
+        mock_proc = _mock_popen()
+        mock_proc.poll.return_value = 0  # subprocess already exited
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("time.sleep", side_effect=KeyboardInterrupt),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", pause_seconds=60)
+
+        mock_killpg.assert_not_called()
+
+    def test_keyboard_interrupt_before_first_popen_no_kill(self) -> None:
+        """Ctrl+C before first Popen call doesn't crash (proc is None)."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=KeyboardInterrupt),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range")
+
+        mock_killpg.assert_not_called()
+
+    def test_keyboard_interrupt_handles_process_lookup_error(self) -> None:
+        """Ctrl+C doesn't crash if process exits between poll() and killpg()."""
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = KeyboardInterrupt
+        mock_proc.poll.return_value = None  # subprocess appears running
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg", side_effect=ProcessLookupError),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
     def test_creates_cycle_log_file(self, tmp_path) -> None:
         """Each cycle writes a log file under GIMMES_HOME/logs/."""
         mock_proc = _mock_popen(output=b"hello from claude\n")
