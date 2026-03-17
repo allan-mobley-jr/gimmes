@@ -130,7 +130,7 @@ gimmes championship     # Real money (requires confirmation)
 
 The **Caddie Master** dispatches agents each cycle: Monitor reviews positions, Scout scans, Caddie researches, Closer executes, Scorecard reports. See [How it works](#how-it-works) for the full cycle breakdown.
 
-The [Clubhouse](#the-clubhouse) dashboard auto-launches at `http://127.0.0.1:1919` — open your browser to watch live.
+The [Clubhouse](#the-clubhouse) dashboard auto-launches at `http://127.0.0.1:1919` (or the next available port) — check the printed URL and open your browser to watch live.
 
 Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` to run a fixed number of cycles, `--pause N` to adjust seconds between cycles.
 
