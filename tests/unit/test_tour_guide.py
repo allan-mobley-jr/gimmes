@@ -75,7 +75,7 @@ class TestTourGuideCommand:
 
 
 # ---------------------------------------------------------------------------
-# Agent & skill files
+# Agent files
 # ---------------------------------------------------------------------------
 
 
@@ -91,13 +91,3 @@ class TestStarterAgent:
         assert "tools:" in content
 
 
-class TestTourSkill:
-    _skill_path = _PROJECT_ROOT / ".claude" / "skills" / "tour" / "SKILL.md"
-
-    def test_skill_file_exists(self) -> None:
-        assert self._skill_path.exists()
-
-    def test_skill_has_frontmatter(self) -> None:
-        content = self._skill_path.read_text()
-        assert "name: tour" in content
-        assert "user_invocable: true" in content
