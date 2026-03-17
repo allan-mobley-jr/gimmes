@@ -399,6 +399,9 @@ def validate(
             for fail in result.failures:
                 console.print(f"  [red]✗[/red] {fail}")
 
+            if not result.approved:
+                raise typer.Exit(1)
+
     _run(_validate())
 
 
