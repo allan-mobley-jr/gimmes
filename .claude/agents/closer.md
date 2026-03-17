@@ -20,7 +20,7 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED), execu
 2. **Size**: `python -m gimmes size TICKER --prob P` — MUST run only after validate passes.
 3. **Order**: `python -m gimmes order TICKER --prob P --yes` — MUST run only after steps 1-2 pass.
 4. **Log success**: The order command logs the trade and syncs positions atomically — no separate log-trade needed.
-5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`
+5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
 6. **Log completion** (see Activity Logging below)
 
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
@@ -38,15 +38,17 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED), execu
 
 If the order command fails (non-zero exit code or error output), MUST:
 1. Log the failure: `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "Order failed: [error from CLI output]" --agent closer`
-2. Report the failure in the Execution Report
-3. NEVER retry in this cycle
+2. If the log-trade command itself fails, note the failure in your output and continue. Do not retry failed log commands.
+3. Report the failure in the Execution Report
+4. NEVER retry in this cycle
 
 ## Reject Protocol
 
 When ANY safety check fails, MUST:
 1. Log the skip with the specific failure reason
-2. Report the rejection in the Execution Report with the specific failed check(s)
-3. NEVER override or retry — a failed check is final for this cycle
+2. If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
+3. Report the rejection in the Execution Report with the specific failed check(s)
+4. NEVER override or retry — a failed check is final for this cycle
 
 ## Output Format
 
