@@ -79,6 +79,38 @@ class TestValidateTrade:
         assert result.approved is False
         assert any("edge" in f.lower() for f in result.failures)
 
+    def test_true_probability_at_boundary_passes(self, config: GimmesConfig) -> None:
+        """Trade approved when true probability equals min_true_probability (>= not >)."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,  # Exactly at 0.90 default threshold
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is True
+        assert any("true probability ok" in c.lower() for c in result.checks)
+
+    def test_true_probability_too_low(self, config: GimmesConfig) -> None:
+        """Trade rejected when true probability is below min_true_probability."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.85,  # Below 0.90 default min
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is False
+        assert any("true probability" in f.lower() for f in result.failures)
+
     def test_duplicate_position(self, config: GimmesConfig) -> None:
         market = _make_market()
         result = validate_trade(
@@ -111,6 +143,22 @@ class TestValidateTrade:
         )
         assert result.approved is False
         assert any("settlement" in f.lower() for f in result.failures)
+
+    def test_none_probability_skips_true_prob_check(self, config: GimmesConfig) -> None:
+        """When true_probability is None, the min probability check is skipped."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=None,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is True
+        assert any("true probability check skipped" in c.lower() for c in result.checks)
 
     def test_none_probability_skips_edge_check(self, config: GimmesConfig) -> None:
         """When true_probability is None, edge check is skipped."""
