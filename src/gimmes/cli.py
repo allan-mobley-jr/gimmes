@@ -1906,7 +1906,10 @@ def _autonomous_loop(
     import os
     import shutil
     import subprocess
+    import sys
     import time
+
+    from gimmes.config import GIMMES_HOME
 
     claude_path = shutil.which("claude")
     if not claude_path:
@@ -1947,6 +1950,10 @@ def _autonomous_loop(
 
     env = os.environ.copy()
 
+    # Cycle log directory
+    logs_dir = GIMMES_HOME / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
     # Auto-start Clubhouse dashboard
     if not no_dashboard:
         from gimmes.clubhouse.server import start_background
@@ -1981,8 +1988,9 @@ def _autonomous_loop(
             update_session_cycle(config.db_path, session_id, cycle)
 
             env["GIMMES_CYCLE"] = str(cycle)
+            log_path = logs_dir / f"cycle-{cycle:03d}.log"
             try:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     [
                         claude_path,
                         "--agent", "Caddie Master",
@@ -1992,10 +2000,21 @@ def _autonomous_loop(
                     ],
                     env=env,
                     cwd=project_root,
-                    check=False,
-                    timeout=config.strategy.cycle_timeout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                 )
+                with open(log_path, "wb") as log_file:
+                    while True:
+                        chunk = proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+                        log_file.write(chunk)
+                returncode = proc.wait(timeout=config.strategy.cycle_timeout)
             except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
@@ -2014,11 +2033,11 @@ def _autonomous_loop(
                     break
                 continue
 
-            if result.returncode != 0:
+            if returncode != 0:
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} exited with code"
-                    f" {result.returncode}"
+                    f" {returncode}"
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )

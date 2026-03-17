@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess as _subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,15 @@ from typer.testing import CliRunner
 from gimmes.cli import _autonomous_loop, _set_mode, app
 
 runner = CliRunner()
+
+
+def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
+    """Return a mock Popen instance with the given returncode and stdout output."""
+    mock_proc = MagicMock()
+    mock_proc.stdout.read = MagicMock(side_effect=[output, b""])
+    mock_proc.wait.return_value = returncode
+    return mock_proc
+
 
 # ---------------------------------------------------------------------------
 # _set_mode
@@ -69,10 +79,11 @@ class TestSetMode:
 
 class TestAutonomousLoop:
     @pytest.fixture(autouse=True)
-    def _patch_session_funcs(self, monkeypatch):
+    def _patch_session_funcs(self, tmp_path, monkeypatch):
         """Patch session DB functions so tests don't touch the real database."""
         # Preserve GIMMES_MODE so _autonomous_loop's os.environ write doesn't leak
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.end_session"),
@@ -88,46 +99,49 @@ class TestAutonomousLoop:
                 _autonomous_loop("driving_range")
 
     def test_sets_gimmes_mode_env(self) -> None:
+        mock_proc = _mock_popen()
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
-        env = mock_run.call_args.kwargs["env"]
+        env = mock_popen.call_args.kwargs["env"]
         assert env["GIMMES_MODE"] == "driving_range"
 
     def test_sets_championship_mode_env(self) -> None:
+        mock_proc = _mock_popen()
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("championship", max_cycles=1)
 
-        env = mock_run.call_args.kwargs["env"]
+        env = mock_popen.call_args.kwargs["env"]
         assert env["GIMMES_MODE"] == "championship"
 
     def test_respects_max_cycles(self) -> None:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
 
-        assert mock_run.call_count == 3
+        assert mock_popen.call_count == 3
 
     def test_passes_correct_claude_args(self) -> None:
+        mock_proc = _mock_popen()
         with (
             patch("shutil.which", return_value="/opt/bin/claude"),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
-        cmd = mock_run.call_args.args[0]
+        cmd = mock_popen.call_args.args[0]
         assert cmd[0] == "/opt/bin/claude"
         agent_idx = cmd.index("--agent")
         assert cmd[agent_idx + 1] == "Caddie Master"
@@ -135,15 +149,13 @@ class TestAutonomousLoop:
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
         assert "WebFetch" in allowed
-        assert mock_run.call_args.kwargs["timeout"] == 2700
+        assert mock_proc.wait.call_args.kwargs["timeout"] == 2700
 
     def test_warns_on_nonzero_exit(self, capsys) -> None:  # type: ignore[no-untyped-def]
-        mock_result = MagicMock()
-        mock_result.returncode = 2
-
+        mock_proc = _mock_popen(returncode=2)
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", return_value=mock_result),
+            patch("subprocess.Popen", return_value=mock_proc),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
@@ -153,18 +165,17 @@ class TestAutonomousLoop:
 
     def test_keyboard_interrupt_stops_loop(self) -> None:
         call_count = 0
-        ok = MagicMock(returncode=0)
 
         def side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
                 raise KeyboardInterrupt
-            return ok
+            return _mock_popen()
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", side_effect=side_effect),
+            patch("subprocess.Popen", side_effect=side_effect),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", pause_seconds=0)
@@ -172,27 +183,27 @@ class TestAutonomousLoop:
         assert call_count == 2
 
     def test_subprocess_failure_does_not_stop_loop(self) -> None:
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", return_value=mock_result) as mock_run,
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(returncode=1),
+            ) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
 
-        assert mock_run.call_count == 2
+        assert mock_popen.call_count == 2
 
     def test_circuit_breaker_halts_after_consecutive_failures(
         self, capsys,
     ) -> None:  # type: ignore[no-untyped-def]
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", return_value=mock_result) as mock_run,
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(returncode=1),
+            ) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop(
@@ -200,24 +211,22 @@ class TestAutonomousLoop:
                 max_consecutive_failures=3,
             )
 
-        assert mock_run.call_count == 3
+        assert mock_popen.call_count == 3
         output = capsys.readouterr().out
         assert "Circuit breaker tripped" in output
 
     def test_circuit_breaker_resets_on_success(self) -> None:
         call_count = 0
-        fail = MagicMock(returncode=1)
-        ok = MagicMock(returncode=0)
 
         def alternate(*args, **kwargs):  # type: ignore[no-untyped-def]
             nonlocal call_count
             call_count += 1
             # Fail twice, succeed once, fail twice, succeed once
-            return fail if call_count % 3 != 0 else ok
+            return _mock_popen(returncode=1 if call_count % 3 != 0 else 0)
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", side_effect=alternate) as mock_run,
+            patch("subprocess.Popen", side_effect=alternate) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop(
@@ -226,39 +235,41 @@ class TestAutonomousLoop:
             )
 
         # Should complete all 6 cycles (never hits 3 consecutive)
-        assert mock_run.call_count == 6
+        assert mock_popen.call_count == 6
 
     def test_circuit_breaker_default_is_five(self) -> None:
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", return_value=mock_result) as mock_run,
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(returncode=1),
+            ) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", pause_seconds=0)
 
         # Default max_consecutive_failures=5
-        assert mock_run.call_count == 5
+        assert mock_popen.call_count == 5
 
     def test_timeout_increments_failures_and_continues(self, capsys) -> None:
         """A TimeoutExpired cycle counts as a failure but the loop continues."""
-        import subprocess as _subprocess
-
         call_count = 0
-        ok = MagicMock(returncode=0)
 
         def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
+            mock_proc = _mock_popen()
             if call_count == 1:
-                raise _subprocess.TimeoutExpired(cmd=args[0], timeout=2700)
-            return ok
+                # First wait() raises TimeoutExpired; second wait() (cleanup) returns 0
+                mock_proc.wait.side_effect = [
+                    _subprocess.TimeoutExpired(cmd=args[0], timeout=2700),
+                    0,
+                ]
+            return mock_proc
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", side_effect=side_effect),
+            patch("subprocess.Popen", side_effect=side_effect),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
@@ -269,14 +280,18 @@ class TestAutonomousLoop:
 
     def test_timeout_feeds_circuit_breaker(self, capsys) -> None:
         """Consecutive timeouts trip the circuit breaker."""
-        import subprocess as _subprocess
-
         def side_effect(*args, **kwargs):
-            raise _subprocess.TimeoutExpired(cmd=args[0], timeout=2700)
+            mock_proc = _mock_popen()
+            # First wait() raises TimeoutExpired; second wait() (cleanup) returns 0
+            mock_proc.wait.side_effect = [
+                _subprocess.TimeoutExpired(cmd=args[0], timeout=2700),
+                0,
+            ]
+            return mock_proc
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", side_effect=side_effect) as mock_run,
+            patch("subprocess.Popen", side_effect=side_effect) as mock_popen,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop(
@@ -284,9 +299,35 @@ class TestAutonomousLoop:
                 max_consecutive_failures=3,
             )
 
-        assert mock_run.call_count == 3
+        assert mock_popen.call_count == 3
         output = capsys.readouterr().out
         assert "Circuit breaker tripped" in output
+
+    def test_creates_cycle_log_file(self, tmp_path) -> None:
+        """Each cycle writes a log file under GIMMES_HOME/logs/."""
+        mock_proc = _mock_popen(output=b"hello from claude\n")
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        log_file = tmp_path / "logs" / "cycle-001.log"
+        assert log_file.exists()
+        assert log_file.read_bytes() == b"hello from claude\n"
+
+    def test_creates_sequential_log_files(self, tmp_path) -> None:
+        """Multiple cycles produce cycle-001.log, cycle-002.log, etc."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen(output=b"output\n")),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
+
+        for i in range(1, 4):
+            assert (tmp_path / "logs" / f"cycle-{i:03d}.log").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -466,5 +507,3 @@ class TestCaddieMasterAgent:
         assert "name: Caddie Master" in content
         assert "tools:" in content
         assert "Agent" in content
-
-
