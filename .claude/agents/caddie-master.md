@@ -37,10 +37,10 @@ python -m gimmes risk-check
 python -m gimmes positions
 ```
 
-**Decision gates:**
-- If daily loss limit is breached → skip to Step 6 (Scorecard only)
-- If position count is at maximum → run Step 2 (Monitor) then skip to Step 6 (Scorecard) — no new trades
-- Otherwise → proceed with full cycle
+**Decision gates (MUST follow — no exceptions):**
+- If `risk-check` reports daily loss limit breached → MUST skip directly to Step 6 (Scorecard only). NEVER run Steps 2-5.
+- If `positions` shows position count >= `max_open_positions` (default 15) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
+- Otherwise → proceed with full cycle.
 
 ### Step 2: Monitor (if positions exist)
 
@@ -59,6 +59,11 @@ python -m gimmes cancel ORDER_ID  # For resting orders to close
 
 Log all close decisions to the database.
 
+Log Monitor completion:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase complete --message "Monitor reviewed N positions, M recommended for action"
+```
+
 ### Step 3: Scout
 
 Dispatch the **Scout** agent to scan for new gimme candidates.
@@ -73,7 +78,7 @@ Log Scout completion:
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase complete --message "Scout found N candidates"
 ```
 
-**If Scout finds no candidates**, skip to Step 6.
+**If Scout returns zero candidates in its shortlist**, MUST skip directly to Step 6. NEVER run Steps 4-5.
 
 ### Step 4: Caddie
 
@@ -91,7 +96,7 @@ Log Caddie completion:
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
 ```
 
-**If no candidates receive PROCEED**, skip to Step 6.
+**If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Step 5.
 
 ### Step 5: Closer
 
@@ -108,7 +113,7 @@ Log Closer completion:
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase complete --message "Closer executed N trades"
 ```
 
-**Safety**: The Closer must pass all 7 validation checks before any trade. Never override risk limits.
+**Safety**: The Closer MUST pass all validation checks before any trade. NEVER override risk limits.
 
 ### Step 6: Scorecard
 
@@ -131,7 +136,7 @@ Launch the Groundskeeper agent (`groundskeeper.md`) to:
 
 ### Step 7: The Pro (conditional, every 10th cycle)
 
-**Condition:** Only run when `$GIMMES_CYCLE % 10 == 0` AND at least 20 completed trades exist.
+**Condition:** MUST run only when `$GIMMES_CYCLE % 10 == 0` AND at least 20 completed trades exist. MUST NOT run if either condition is false.
 
 If conditions are met, dispatch the **Pro** agent for strategy analysis.
 
@@ -145,10 +150,11 @@ Log cycle completion:
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase complete --message "Cycle $GIMMES_CYCLE complete"
 ```
 
-## Parallelism
+## Execution Order
 
-- **Steps 2 + 3 can run in parallel** — Monitor reviews existing positions while Scout scans for new candidates. These are independent operations.
-- **Steps 4, 5, 6 must be sequential** — Caddie needs Scout output, Closer needs Caddie output, Scorecard reports on the full cycle.
+- ALL agent dispatches MUST be foreground (NEVER use `run_in_background: true`). Wait for each agent to return its results before proceeding.
+- Steps 2 and 3 MUST run sequentially — Step 2 (Monitor) MUST complete before Step 3 (Scout) begins. Monitor may recommend closing positions, which changes risk budget available for Scout candidates.
+- Steps 4, 5, 6 MUST be sequential — Caddie needs Scout output, Closer needs Caddie output, Scorecard reports on the full cycle.
 
 ## Recovery
 
@@ -161,8 +167,9 @@ No special recovery logic needed — the state machine is the database.
 
 ## Rules
 
-- Operate fully autonomously — never ask the user questions
+- Operate fully autonomously — NEVER ask the user questions
 - All market interaction through CLI commands only
-- Never modify source code
-- Respect all risk limits unconditionally
-- Log every decision (trades, skips, closes) to the database
+- NEVER modify source code
+- Respect all risk limits unconditionally — NEVER override or bypass
+- MUST log every decision (trades, skips, closes) to the database
+- MUST complete exactly one cycle per invocation — NEVER run multiple cycles
