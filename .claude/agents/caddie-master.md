@@ -27,6 +27,8 @@ Run one complete autonomous trading cycle. Each invocation is one cycle — the 
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
 ```
 
+If the command fails, note the failure in your output and continue. Do not retry.
+
 ### Step 1: Reconcile & State Check
 
 Reconcile local position data with the authoritative source to recover from any prior crash, then assess the current state:
@@ -139,6 +141,8 @@ MUST run this step unconditionally — regardless of which earlier steps were sk
 ```bash
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
 ```
+
+If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Execution Order
 
