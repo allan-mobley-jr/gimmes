@@ -290,7 +290,10 @@ async def insert_candidate(
     settlement_clarity_score: float = 0,
     time_to_resolution_score: float = 0,
 ) -> int:
-    """Insert a scanned gimme candidate with optional component scores."""
+    """Insert a scanned gimme candidate with optional component scores.
+
+    Returns the row ID of the inserted candidate.
+    """
     cursor = await db.conn.execute(
         """INSERT INTO candidates
            (ticker, title, market_price, model_probability, edge, gimme_score,

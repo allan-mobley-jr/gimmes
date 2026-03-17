@@ -236,7 +236,7 @@ class TestComponentScores:
         assert isinstance(row_id, int)
         assert row_id > 0
         cursor = await db.conn.execute(
-            "SELECT ticker FROM candidates WHERE rowid = ?", (row_id,)
+            "SELECT ticker FROM candidates WHERE id = ?", (row_id,)
         )
         row = await cursor.fetchone()
         assert row is not None
@@ -286,7 +286,6 @@ class TestLogCandidateCommand:
             ])
 
         assert result.exit_code == 0
-        call_args = mock_insert.call_args
-        # edge argument is positional arg index 5 (db, ticker, title, price, prob, edge, ...)
-        edge = call_args[0][5]
+        _, ticker, title, price, prob, edge, score, memo = mock_insert.call_args[0]
+        assert ticker == "EDGE-TEST"
         assert abs(edge - 0.20) < 1e-9
