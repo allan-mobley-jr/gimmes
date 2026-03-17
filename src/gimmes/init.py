@@ -46,6 +46,7 @@ min_market_price = 0.55       # Only scan markets above this price
 max_market_price = 0.85       # Only scan markets below this price
 min_true_probability = 0.90   # Model must see >=90% to qualify
 min_edge_after_fees = 0.05    # 5pp minimum edge after fee math
+cycle_timeout = 2700              # Max seconds per autonomous cycle (45 min)
 
 [sizing]
 kelly_fraction = 0.25         # Conservative quarter-Kelly

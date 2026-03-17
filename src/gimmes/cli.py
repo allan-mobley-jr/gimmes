@@ -1981,18 +1981,39 @@ def _autonomous_loop(
             update_session_cycle(config.db_path, session_id, cycle)
 
             env["GIMMES_CYCLE"] = str(cycle)
-            result = subprocess.run(
-                [
-                    claude_path,
-                    "--agent", "Caddie Master",
-                    "-p", "Run one trading cycle.",
-                    "--allowedTools",
-                    "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
-                ],
-                env=env,
-                cwd=project_root,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        claude_path,
+                        "--agent", "Caddie Master",
+                        "-p", "Run one trading cycle.",
+                        "--allowedTools",
+                        "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
+                    ],
+                    env=env,
+                    cwd=project_root,
+                    check=False,
+                    timeout=config.strategy.cycle_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                consecutive_failures += 1
+                console.print(
+                    f"[yellow]Cycle {cycle} timed out after"
+                    f" {config.strategy.cycle_timeout}s"
+                    f" (failure {consecutive_failures}"
+                    f"/{max_consecutive_failures})[/yellow]"
+                )
+                if (max_consecutive_failures > 0
+                        and consecutive_failures >= max_consecutive_failures):
+                    console.print(
+                        f"[red bold]Circuit breaker tripped:"
+                        f" {max_consecutive_failures} consecutive"
+                        f" failures. Halting autonomous loop.[/red bold]"
+                    )
+                    session_status = "crashed"
+                    break
+                continue
+
             if result.returncode != 0:
                 consecutive_failures += 1
                 console.print(
