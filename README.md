@@ -119,9 +119,64 @@ gimmes help
 
 ---
 
+## Playing with a Caddie
+
+Hand the bag to the agent team and let them play the round.
+
+```bash
+gimmes driving_range    # Paper money
+gimmes championship     # Real money (requires confirmation)
+```
+
+The **Caddie Master** dispatches agents each cycle: Monitor reviews positions, Scout scans, Caddie researches, Closer executes, Scorecard reports. See [How it works](#how-it-works) for the full cycle breakdown.
+
+The [Clubhouse](#the-clubhouse) dashboard auto-launches at `http://127.0.0.1:1919` — open your browser to watch live.
+
+Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` to run a fixed number of cycles, `--pause N` to adjust seconds between cycles.
+
+---
+
+## Walking the Course Solo
+
+Skip the agents and play each shot yourself. Every CLI command respects your `gimmes.toml` strategy parameters.
+
+```bash
+# 1. Spot candidates on the course
+gimmes scan
+
+# 2. Quick-read on a specific market
+gimmes score TICKER
+
+# 3. Do your own research
+#    This is the one shot the CLI can't take for you. In autonomous mode,
+#    the Caddie handles deep research — news, sentiment, cross-platform
+#    pricing, base rates. Walking solo, that research is yours.
+
+# 4. Pre-shot checklist
+gimmes validate TICKER --prob 0.92
+
+# 5. Calculate your wager
+gimmes size TICKER --prob 0.92
+
+# 6. Take the shot
+gimmes order TICKER --prob 0.92
+
+# 7. Check the leaderboard
+gimmes positions
+
+# 8. Review your scorecard
+gimmes report
+```
+
+Both modes share the same SQLite database. Trades you place manually appear in the [Clubhouse](#the-clubhouse) and in `gimmes report`. If you later start the autonomous loop, the Monitor will pick up your manually-placed positions and manage them alongside its own.
+
+See [CLI commands](#cli-commands) for the full command reference including options and flags.
+
+---
+
 ## Agent team
 
-The autonomous loop is orchestrated by the **Caddie Master** agent, which dispatches specialized Claude Code agents each cycle:
+The autonomous loop is orchestrated by the **Caddie Master** agent, which dispatches these agents each cycle:
 
 | Agent | Role | Tools | Responsibilities |
 |---|---|---|---|
@@ -132,7 +187,12 @@ The autonomous loop is orchestrated by the **Caddie Master** agent, which dispat
 | **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
 | **The Groundskeeper** | Error escalation | Bash, Read, Glob, Grep | Reviews error logs, escalates critical/recurring errors to GitHub issues |
 | **The Pro** | Strategy tuning | + WebSearch, WebFetch | Analyzes performance data, recommends parameter changes with evidence |
-| **The Starter** | Product tour guide | + WebSearch, WebFetch | Welcomes new users, explains features, answers questions, files feature requests |
+
+**On-demand (not part of the autonomous cycle):**
+
+| Agent | Role | Tools | Responsibilities |
+|---|---|---|---|
+| **The Starter** | Product tour guide | + WebSearch, WebFetch | Welcomes new users, explains features, answers questions — invoke with `gimmes tour_guide` |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
@@ -151,7 +211,7 @@ Each `start`, `driving_range`, or `championship` invocation runs a continuous lo
 7. **Groundskeeper** — reviews error logs, escalates critical or recurring errors to GitHub issues
 8. **The Pro** (every 10th cycle) — analyzes performance, recommends parameter changes with data
 
-The loop pauses between cycles (default 30s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
+The loop pauses between cycles (default 60s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
 
 ```bash
 gimmes start                        # Use current mode from .env
