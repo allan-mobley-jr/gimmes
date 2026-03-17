@@ -73,8 +73,11 @@ def add_tags(repo: Path, *tags: str) -> None:
 def run_semver_compare(a: str, b: str) -> int:
     """Run semver_compare and return its exit code (0=equal, 1=gt, 2=lt)."""
     result = run_bash(
-        f'{_LOAD_FUNCTIONS} && '
+        f'{_LOAD_FUNCTIONS} || exit 99; '
         f'semver_compare "{a}" "{b}" && rc=0 || rc=$?; echo $rc'
+    )
+    assert result.returncode == 0, (
+        f"function loading failed (rc={result.returncode}): {result.stderr}"
     )
     return int(result.stdout.strip())
 
