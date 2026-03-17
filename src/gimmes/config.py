@@ -35,23 +35,23 @@ class Mode(StrEnum):
 
 
 class StrategyConfig(BaseModel):
-    gimme_threshold: int = 75
-    min_market_price: float = 0.55
-    max_market_price: float = 0.85
-    min_true_probability: float = 0.90
-    min_edge_after_fees: float = 0.05
-    cycle_timeout: int = 2700
+    gimme_threshold: int = Field(default=75, ge=0, le=100)
+    min_market_price: float = Field(default=0.55, gt=0.0, lt=1.0)
+    max_market_price: float = Field(default=0.85, gt=0.0, lt=1.0)
+    min_true_probability: float = Field(default=0.90, gt=0.0, le=1.0)
+    min_edge_after_fees: float = Field(default=0.05, gt=0.0, le=1.0)
+    cycle_timeout: int = Field(default=2700, gt=0)
 
 
 class SizingConfig(BaseModel):
-    kelly_fraction: float = 0.25
-    max_position_pct: float = 0.05
+    kelly_fraction: float = Field(default=0.25, gt=0.0, le=1.0)
+    max_position_pct: float = Field(default=0.05, gt=0.0, le=1.0)
 
 
 class RiskConfig(BaseModel):
-    max_open_positions: int = 15
-    daily_loss_limit_pct: float = 0.15
-    session_spending_cap: float = 500.0  # Max dollars committed per autonomous session
+    max_open_positions: int = Field(default=15, gt=0)
+    daily_loss_limit_pct: float = Field(default=0.15, gt=0.0, le=1.0)
+    session_spending_cap: float = Field(default=500.0, ge=0.0)
 
 
 class OrdersConfig(BaseModel):
