@@ -90,6 +90,8 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 - `network_error` → Check network connectivity and API endpoint reachability
 - `paper_broker` → Inspect paper trading state for inconsistencies
 
+If `gh issue create` fails, note the failure in your output and continue to the next error. Do not retry. Do NOT run `resolve-error` for that error — it must remain unresolved for re-escalation next cycle.
+
 ### Step 4: Mark Resolved
 
 After filing an issue, mark the escalated errors as resolved using the CLI:
@@ -98,7 +100,7 @@ After filing an issue, mark the escalated errors as resolved using the CLI:
 python -m gimmes resolve-error ERROR_ID --issue-url "https://github.com/..."
 ```
 
-Report the issue URL in your output.
+Report the issue URL in your output. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Output Format
 
