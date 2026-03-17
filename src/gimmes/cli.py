@@ -1962,6 +1962,12 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
     import json as _json
     import logging
 
+    if not json_bytes or not json_bytes.strip():
+        logging.getLogger("gimmes").warning(
+            "Claude subprocess produced no output for this cycle",
+        )
+        return b""
+
     try:
         data = _json.loads(json_bytes)
     except (_json.JSONDecodeError, UnicodeDecodeError):
@@ -1971,11 +1977,12 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
         return json_bytes
 
     if isinstance(data, dict):
+        if data.get("is_error"):
+            detail = data.get("result") or data.get("subtype", "unknown")
+            return f"[Claude error: {detail}]\n".encode()
         result = data.get("result")
         if result:
             return (result + "\n").encode("utf-8")
-        if data.get("is_error"):
-            return f"[Claude error: {data.get('subtype', 'unknown')}]\n".encode()
         return b""
 
     return json_bytes

@@ -538,6 +538,21 @@ class TestExtractTerminalText:
         data = json.dumps({"result": ""}).encode()
         assert _extract_terminal_text(data) == b""
 
+    def test_returns_empty_on_empty_bytes(self) -> None:
+        assert _extract_terminal_text(b"") == b""
+
+    def test_returns_empty_on_whitespace_bytes(self) -> None:
+        assert _extract_terminal_text(b"   \n  ") == b""
+
+    def test_error_with_nonempty_result(self) -> None:
+        import json
+
+        data = json.dumps({
+            "is_error": True, "result": "Rate limit exceeded",
+            "subtype": "rate_limit",
+        }).encode()
+        assert _extract_terminal_text(data) == b"[Claude error: Rate limit exceeded]\n"
+
 
 # ---------------------------------------------------------------------------
 # CLI commands
