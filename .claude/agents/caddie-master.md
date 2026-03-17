@@ -83,7 +83,7 @@ Launch the Scout agent (`scout.md`) to:
 
 Dispatch the **Caddie** agent to research ALL candidates from the Scout's shortlist.
 
-**Completeness rule (MUST follow — no exceptions):** MUST research every candidate the Scout shortlisted. NEVER skip, drop, or deprioritize candidates to save time or cost. The Caddie Master does not filter — that is the Caddie's job via GimmeScore.
+**Completeness rule (MUST follow — no exceptions):** MUST dispatch the Caddie for every candidate the Scout shortlisted. NEVER drop or deprioritize candidates to save time or cost. The Caddie Master does not filter — that is the Caddie's job via GimmeScore.
 
 Launch the Caddie agent (`caddie.md`) to:
 1. Research each candidate's underlying event
@@ -92,7 +92,12 @@ Launch the Caddie agent (`caddie.md`) to:
 4. Produce a GimmeScore and research memo
 5. Recommend PROCEED, PASS, or NEEDS MORE RESEARCH
 
-**Verification:** After the Caddie returns, verify completeness by checking that every ticker from the Scout's shortlist has a corresponding `log-candidate` entry (look for the "Logged candidate" confirmation in the Caddie's output). If any tickers are missing, re-dispatch the Caddie for the missing tickers only (maximum 1 re-dispatch). If still missing after the retry, log skips for the remaining tickers and proceed.
+**Verification:** After the Caddie returns (or fails entirely — treat a crash/timeout as zero candidates completed), verify completeness by checking that every ticker from the Scout's shortlist has a "Logged candidate" confirmation in the Caddie's output. If any tickers are missing, re-dispatch the Caddie for the missing tickers only (maximum 1 re-dispatch). If still missing after the retry, log a skip for each remaining ticker so the decision is auditable:
+```bash
+python -m gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+  --rationale "Caddie failed to research after retry" --agent caddie-master
+```
+If a fallback `log-trade` command fails, note the failure in your output and continue. Do not retry failed log commands.
 
 **If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Step 5.
 
