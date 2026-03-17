@@ -121,7 +121,7 @@ gimmes help
 
 ## Agent team
 
-The autonomous loop is orchestrated by the **caddy-shack** skill, which dispatches five specialized Claude Code agents each cycle:
+The autonomous loop is orchestrated by the **Caddie Master** agent, which dispatches specialized Claude Code agents each cycle:
 
 | Agent | Role | Tools | Responsibilities |
 |---|---|---|---|
