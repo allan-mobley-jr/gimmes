@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -1888,6 +1889,30 @@ def start(
                      no_dashboard=no_dashboard)
 
 
+def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
+    """Send SIGTERM to the process group, escalating to SIGKILL if needed.
+
+    Handles ProcessLookupError at each step in case the process exits
+    between our check and the signal delivery.
+    """
+    import os
+    import signal
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return  # Already exited
+
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # Exited between SIGTERM and SIGKILL
+        proc.wait()
+
+
 def _autonomous_loop(
     mode: str,
     *,
@@ -1908,7 +1933,6 @@ def _autonomous_loop(
     """
     import os
     import shutil
-    import signal
     import subprocess
     import sys
     import time
@@ -1984,6 +2008,7 @@ def _autonomous_loop(
     cycle = 0
     consecutive_failures = 0
     session_status = "stopped"
+    proc = None
     try:
         while max_cycles == 0 or cycle < max_cycles:
             cycle += 1
@@ -2017,12 +2042,7 @@ def _autonomous_loop(
                     log_file.write(stdout_bytes)
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait()
+                _kill_process_group(proc)
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
@@ -2067,7 +2087,8 @@ def _autonomous_loop(
             console.print(f"[dim]Next cycle in {pause_seconds}s...[/dim]")
             time.sleep(pause_seconds)
     except KeyboardInterrupt:
-        pass
+        if proc is not None and proc.poll() is None:
+            _kill_process_group(proc)
     except Exception:
         session_status = "crashed"
         raise
