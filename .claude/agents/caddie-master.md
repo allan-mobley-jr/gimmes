@@ -59,6 +59,13 @@ python -m gimmes cancel ORDER_ID  # For resting orders to close
 
 Log all close decisions to the database.
 
+**If Monitor recommends SIZE UP on any position:**
+Full SIZE UP execution is not yet supported (the duplicate position check blocks adding to existing positions). Instead, MUST log the recommendation for audit:
+```bash
+python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 0 --score 0 --rationale "Monitor: [reason from Monitor report]" --agent monitor
+```
+Use the position's current market price from the Monitor report as `CURRENT_PRICE`. This creates an audit trail for Pro analysis — do NOT attempt to place additional orders.
+
 Log Monitor completion:
 ```bash
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase complete --message "Monitor reviewed N positions, M recommended for action"
