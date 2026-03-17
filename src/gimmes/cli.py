@@ -1954,6 +1954,33 @@ def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
         proc.wait()
 
 
+def _extract_terminal_text(json_bytes: bytes) -> bytes:
+    """Extract human-readable assistant text from Claude JSON output.
+
+    Falls back to raw bytes if JSON parsing fails.
+    """
+    import json as _json
+    import logging
+
+    try:
+        data = _json.loads(json_bytes)
+    except (_json.JSONDecodeError, UnicodeDecodeError):
+        logging.getLogger("gimmes").warning(
+            "Failed to parse Claude JSON output; displaying raw output",
+        )
+        return json_bytes
+
+    if isinstance(data, dict):
+        result = data.get("result")
+        if result:
+            return (result + "\n").encode("utf-8")
+        if data.get("is_error"):
+            return f"[Claude error: {data.get('subtype', 'unknown')}]\n".encode()
+        return b""
+
+    return json_bytes
+
+
 def _autonomous_loop(
     mode: str,
     *,
@@ -2058,13 +2085,14 @@ def _autonomous_loop(
             update_session_cycle(config.db_path, session_id, cycle)
 
             env["GIMMES_CYCLE"] = str(cycle)
-            log_path = logs_dir / f"cycle-{cycle:03d}.log"
+            log_path = logs_dir / f"cycle-{cycle:03d}.json"
             try:
                 proc = subprocess.Popen(
                     [
                         claude_path,
                         "--agent", "Caddie Master",
                         "-p", "Run one trading cycle.",
+                        "--output-format", "json",
                         "--allowedTools",
                         "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
                     ],
@@ -2077,10 +2105,22 @@ def _autonomous_loop(
                 stdout_bytes, _ = proc.communicate(
                     timeout=config.strategy.cycle_timeout,
                 )
-                sys.stdout.buffer.write(stdout_bytes)
+                try:
+                    with open(log_path, "wb") as log_file:
+                        log_file.write(stdout_bytes)
+                except OSError:
+                    import logging
+                    logging.getLogger("gimmes").warning(
+                        "Failed to write cycle log to %s", log_path,
+                        exc_info=True,
+                    )
+                    console.print(
+                        f"[yellow]Warning: could not write log"
+                        f" {log_path}[/yellow]"
+                    )
+                terminal_text = _extract_terminal_text(stdout_bytes)
+                sys.stdout.buffer.write(terminal_text)
                 sys.stdout.buffer.flush()
-                with open(log_path, "wb") as log_file:
-                    log_file.write(stdout_bytes)
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
