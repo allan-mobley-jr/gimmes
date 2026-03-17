@@ -114,6 +114,8 @@ Issue body format:
 Review and update `gimmes.toml` if you agree with this recommendation.
 ~~~
 
+If `gh issue create` fails, note the failure in your output and continue. Do not retry.
+
 ### Step 5: Log Completion (REQUIRED — you are not done until this runs)
 
 ```bash
