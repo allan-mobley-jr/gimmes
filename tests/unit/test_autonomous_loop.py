@@ -10,7 +10,7 @@ import pytest
 from click.exceptions import Exit as ClickExit
 from typer.testing import CliRunner
 
-from gimmes.cli import _autonomous_loop, _set_mode, app
+from gimmes.cli import _autonomous_loop, _extract_terminal_text, _set_mode, app
 
 runner = CliRunner()
 
@@ -146,6 +146,8 @@ class TestAutonomousLoop:
         assert cmd[0] == "/opt/bin/claude"
         agent_idx = cmd.index("--agent")
         assert cmd[agent_idx + 1] == "Caddie Master"
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "json"
         idx = cmd.index("--allowedTools")
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
@@ -473,8 +475,11 @@ class TestAutonomousLoop:
             _autonomous_loop("driving_range", max_cycles=1)
 
     def test_creates_cycle_log_file(self, tmp_path) -> None:
-        """Each cycle writes a log file under GIMMES_HOME/logs/."""
-        mock_proc = _mock_popen(output=b"hello from claude\n")
+        """Each cycle writes a JSON log file under GIMMES_HOME/logs/."""
+        import json
+
+        json_output = json.dumps({"result": "hello from claude"}).encode()
+        mock_proc = _mock_popen(output=json_output)
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
@@ -482,21 +487,71 @@ class TestAutonomousLoop:
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
-        log_file = tmp_path / "logs" / "cycle-001.log"
+        log_file = tmp_path / "logs" / "cycle-001.json"
         assert log_file.exists()
-        assert log_file.read_bytes() == b"hello from claude\n"
+        assert log_file.read_bytes() == json_output
 
     def test_creates_sequential_log_files(self, tmp_path) -> None:
-        """Multiple cycles produce cycle-001.log, cycle-002.log, etc."""
+        """Multiple cycles produce cycle-001.json, cycle-002.json, etc."""
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen(output=b"output\n")),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen(output=b"{}\n")),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
 
         for i in range(1, 4):
-            assert (tmp_path / "logs" / f"cycle-{i:03d}.log").exists()
+            assert (tmp_path / "logs" / f"cycle-{i:03d}.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# _extract_terminal_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTerminalText:
+    def test_extracts_result_from_json(self) -> None:
+        import json
+
+        data = json.dumps({"result": "cycle summary"}).encode()
+        assert _extract_terminal_text(data) == b"cycle summary\n"
+
+    def test_falls_back_on_invalid_json(self) -> None:
+        raw = b"not json at all"
+        assert _extract_terminal_text(raw) == raw
+
+    def test_returns_empty_on_missing_result(self) -> None:
+        import json
+
+        data = json.dumps({"messages": []}).encode()
+        assert _extract_terminal_text(data) == b""
+
+    def test_returns_error_message_on_claude_error(self) -> None:
+        import json
+
+        data = json.dumps({"is_error": True, "result": "", "subtype": "rate_limit"}).encode()
+        assert _extract_terminal_text(data) == b"[Claude error: rate_limit]\n"
+
+    def test_returns_empty_on_empty_result(self) -> None:
+        import json
+
+        data = json.dumps({"result": ""}).encode()
+        assert _extract_terminal_text(data) == b""
+
+    def test_returns_empty_on_empty_bytes(self) -> None:
+        assert _extract_terminal_text(b"") == b""
+
+    def test_returns_empty_on_whitespace_bytes(self) -> None:
+        assert _extract_terminal_text(b"   \n  ") == b""
+
+    def test_error_with_nonempty_result(self) -> None:
+        import json
+
+        data = json.dumps({
+            "is_error": True, "result": "Rate limit exceeded",
+            "subtype": "rate_limit",
+        }).encode()
+        assert _extract_terminal_text(data) == b"[Claude error: Rate limit exceeded]\n"
 
 
 # ---------------------------------------------------------------------------
