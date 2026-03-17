@@ -135,6 +135,7 @@ class TestAutonomousLoop:
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
         assert "WebFetch" in allowed
+        assert mock_run.call_args.kwargs["timeout"] == 2700
 
     def test_warns_on_nonzero_exit(self, capsys) -> None:  # type: ignore[no-untyped-def]
         mock_result = MagicMock()
@@ -240,6 +241,52 @@ class TestAutonomousLoop:
 
         # Default max_consecutive_failures=5
         assert mock_run.call_count == 5
+
+    def test_timeout_increments_failures_and_continues(self, capsys) -> None:
+        """A TimeoutExpired cycle counts as a failure but the loop continues."""
+        import subprocess as _subprocess
+
+        call_count = 0
+        ok = MagicMock(returncode=0)
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _subprocess.TimeoutExpired(cmd=args[0], timeout=2700)
+            return ok
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run", side_effect=side_effect),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
+
+        assert call_count == 2
+        output = capsys.readouterr().out
+        assert "timed out" in output
+
+    def test_timeout_feeds_circuit_breaker(self, capsys) -> None:
+        """Consecutive timeouts trip the circuit breaker."""
+        import subprocess as _subprocess
+
+        def side_effect(*args, **kwargs):
+            raise _subprocess.TimeoutExpired(cmd=args[0], timeout=2700)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run", side_effect=side_effect) as mock_run,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", pause_seconds=0,
+                max_consecutive_failures=3,
+            )
+
+        assert mock_run.call_count == 3
+        output = capsys.readouterr().out
+        assert "Circuit breaker tripped" in output
 
 
 # ---------------------------------------------------------------------------

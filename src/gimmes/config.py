@@ -40,6 +40,7 @@ class StrategyConfig(BaseModel):
     max_market_price: float = 0.85
     min_true_probability: float = 0.90
     min_edge_after_fees: float = 0.05
+    cycle_timeout: int = 2700
 
 
 class SizingConfig(BaseModel):
