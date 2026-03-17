@@ -20,6 +20,7 @@ def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
     mock_proc = MagicMock()
     mock_proc.communicate.return_value = (output, b"")
     mock_proc.returncode = returncode
+    mock_proc.pid = 12345
     return mock_proc
 
 
@@ -268,6 +269,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", side_effect=side_effect),
+            patch("os.killpg"),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
@@ -288,6 +290,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", side_effect=side_effect) as mock_popen,
+            patch("os.killpg"),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop(
@@ -298,6 +301,92 @@ class TestAutonomousLoop:
         assert mock_popen.call_count == 3
         output = capsys.readouterr().out
         assert "Circuit breaker tripped" in output
+
+    def test_popen_starts_new_session(self) -> None:
+        """Popen is called with start_new_session=True for process group cleanup."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
+
+    def test_timeout_sends_sigterm_to_process_group(self) -> None:
+        """On timeout, SIGTERM is sent to the entire process group."""
+        import signal
+
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
+            cmd="claude", timeout=2700,
+        )
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1,
+                max_consecutive_failures=1,
+            )
+
+        mock_killpg.assert_any_call(12345, signal.SIGTERM)
+
+    def test_timeout_escalates_to_sigkill_on_stuck_process(self) -> None:
+        """If process doesn't exit after SIGTERM within 5s, SIGKILL is sent."""
+        import signal
+
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
+            cmd="claude", timeout=2700,
+        )
+        mock_proc.wait.side_effect = [
+            _subprocess.TimeoutExpired(cmd="claude", timeout=5),
+            None,
+        ]
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1,
+                max_consecutive_failures=1,
+            )
+
+        calls = mock_killpg.call_args_list
+        assert calls[0] == ((12345, signal.SIGTERM),)
+        assert calls[1] == ((12345, signal.SIGKILL),)
+
+    def test_timeout_no_sigkill_when_sigterm_sufficient(self) -> None:
+        """If process exits after SIGTERM, SIGKILL is never sent."""
+        import signal
+
+        mock_proc = _mock_popen()
+        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
+            cmd="claude", timeout=2700,
+        )
+        mock_proc.wait.return_value = None
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1,
+                max_consecutive_failures=1,
+            )
+
+        assert mock_killpg.call_count == 1
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
     def test_creates_cycle_log_file(self, tmp_path) -> None:
         """Each cycle writes a log file under GIMMES_HOME/logs/."""

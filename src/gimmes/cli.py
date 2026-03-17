@@ -1908,6 +1908,7 @@ def _autonomous_loop(
     """
     import os
     import shutil
+    import signal
     import subprocess
     import sys
     import time
@@ -2005,6 +2006,7 @@ def _autonomous_loop(
                     cwd=project_root,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    start_new_session=True,
                 )
                 stdout_bytes, _ = proc.communicate(
                     timeout=config.strategy.cycle_timeout,
@@ -2015,8 +2017,12 @@ def _autonomous_loop(
                     log_file.write(stdout_bytes)
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
