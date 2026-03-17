@@ -21,6 +21,7 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED), execu
 3. **Order**: `python -m gimmes order TICKER --prob P --yes` — MUST run only after steps 1-2 pass.
 4. **Log success**: The order command logs the trade and syncs positions atomically — no separate log-trade needed.
 5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`
+6. **Log completion** (see Activity Logging below)
 
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
 
@@ -71,6 +72,16 @@ For rejected candidates:
 - Reason: [specific check that failed]
 - Logged as skip
 ```
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after processing all candidates:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase complete --message "Closer executed N trades"
+```
+
+Substitute the actual number of trades successfully placed. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 

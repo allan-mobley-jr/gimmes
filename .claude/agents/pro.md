@@ -45,6 +45,7 @@ MUST use these definitions. NEVER upgrade confidence based on subjective judgmen
 
 If total closed trades < 20, MUST:
 1. Log: `python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase complete --message "Pro: insufficient data (N closed trades < 20 minimum)"`
+   If the command fails, note the failure in your output and continue. Do not retry.
 2. Report "Insufficient data for analysis"
 3. Exit — NEVER speculate with small samples.
 
@@ -113,11 +114,13 @@ Issue body format:
 Review and update `gimmes.toml` if you agree with this recommendation.
 ~~~
 
-### Step 5: Log Completion
+### Step 5: Log Completion (REQUIRED — you are not done until this runs)
 
 ```bash
 python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase complete --message "Pro: N analyses run, M recommendations filed, K issues created"
 ```
+
+If the command fails, note the failure in your output and continue. Do not retry.
 
 ### Step 6: Produce Report
 

@@ -24,7 +24,7 @@ Run one complete autonomous trading cycle. Each invocation is one cycle — the 
 ### Step 0: Log Cycle Start
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase start --message "Cycle $GIMMES_CYCLE started"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
 ```
 
 ### Step 1: Reconcile & State Check
@@ -66,11 +66,6 @@ python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 
 ```
 Use the position's current market price from the Monitor report as `CURRENT_PRICE`. This creates an audit trail for Pro analysis — do NOT attempt to place additional orders.
 
-Log Monitor completion:
-```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase complete --message "Monitor reviewed N positions, M recommended for action"
-```
-
 ### Step 3: Scout
 
 Dispatch the **Scout** agent to scan for new gimme candidates.
@@ -79,11 +74,6 @@ Launch the Scout agent (`scout.md`) to:
 1. Run `python -m gimmes scan` to fetch and filter markets
 2. Score the top candidates
 3. Return a ranked shortlist
-
-Log Scout completion:
-```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase complete --message "Scout found N candidates"
-```
 
 **If Scout returns zero candidates in its shortlist**, MUST skip directly to Step 6. NEVER run Steps 4-5.
 
@@ -98,11 +88,6 @@ Launch the Caddie agent (`caddie.md`) to:
 4. Produce a GimmeScore and research memo
 5. Recommend PROCEED, PASS, or NEEDS MORE RESEARCH
 
-Log Caddie completion:
-```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
-```
-
 **If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Step 5.
 
 ### Step 5: Closer
@@ -114,11 +99,6 @@ Launch the Closer agent (`closer.md`) to:
 2. If validation passes, run `python -m gimmes size TICKER --prob P`
 3. Place the order: `python -m gimmes order TICKER --prob P --yes`
    (The order command logs the trade and syncs positions atomically — no separate log-trade needed.)
-
-Log Closer completion:
-```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase complete --message "Closer executed N trades"
-```
 
 **Safety**: The Closer MUST pass all validation checks before any trade. NEVER override risk limits.
 
@@ -152,9 +132,12 @@ Launch the Pro agent (`pro.md`) to:
 2. File GitHub issues for high-confidence recommendations
 3. Track past recommendation outcomes
 
-Log cycle completion:
+### Step 8: Log Cycle Complete
+
+MUST run this step unconditionally — regardless of which earlier steps were skipped or whether Step 7 ran.
+
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent orchestrator --phase complete --message "Cycle $GIMMES_CYCLE complete"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
 ```
 
 ## Execution Order

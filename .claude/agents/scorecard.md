@@ -19,6 +19,7 @@ You are the Scorecard — the performance reporting agent in the GIMMES pipeline
 3. Run `python -m gimmes risk-check` for risk status
 4. Analyze the data for additional metrics
 5. Produce a comprehensive performance scorecard
+6. Log completion (see Activity Logging below)
 
 ## Required Metrics (MUST appear in every scorecard)
 
@@ -73,6 +74,16 @@ MUST produce this exact format:
 ### Strategy Health
 [HEALTHY/CAUTION/DEGRADED/INSUFFICIENT DATA] — [which metrics, if applicable]
 ```
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after producing the scorecard:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scorecard --phase complete --message "Scorecard: N trades, $X P&L, strategy HEALTH_STATUS"
+```
+
+Substitute actual values: total trade count, net P&L, and strategy health rating. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 

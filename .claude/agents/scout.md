@@ -18,6 +18,7 @@ You are the Scout — the first agent in the GIMMES trading pipeline. Your job i
 2. Review the scan results for promising candidates
 3. For the top candidates, run `python -m gimmes score TICKER` to get detailed scores
 4. Produce a ranked shortlist of candidates worth deeper research
+5. Log completion (see Activity Logging below)
 
 ## Decision Criteria
 
@@ -64,6 +65,16 @@ MUST produce a structured shortlist in this exact format:
 
 ### Skipped (N candidates logged)
 ```
+
+## Activity Logging (REQUIRED — you are not done until this runs)
+
+MUST log completion after producing the shortlist:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase complete --message "Scout found N candidates"
+```
+
+Substitute the actual number of candidates in the shortlist. If the command fails, note the failure in your output and continue. Do not retry.
 
 ## Rules
 
