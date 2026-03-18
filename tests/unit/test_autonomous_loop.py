@@ -519,8 +519,10 @@ class TestAutonomousLoop:
             _autonomous_loop("driving_range", max_cycles=1)
 
         assert len(captured) == 1
-        # The handler should NOT be Python's default handler
-        assert captured[0] is not signal.default_int_handler
+        original = signal.getsignal(signal.SIGINT)
+        # Handler during loop should differ from the current (restored) one
+        assert captured[0] is not original
+        assert callable(captured[0])
 
     def test_sigint_handler_restored_after_loop(self) -> None:
         """Original SIGINT handler is restored when the loop exits."""
