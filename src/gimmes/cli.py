@@ -1976,12 +1976,19 @@ def _communicate_interruptible(
     """
     import threading
 
+    if proc.stdout is None:
+        raise ValueError(
+            "_communicate_interruptible requires stdout=PIPE"
+        )
+
+    stdout = proc.stdout  # narrowed to IO[bytes] for the closure
+
     output: list[bytes] = []
     error: list[BaseException] = []
 
     def _reader() -> None:
         try:
-            data = proc.stdout.read()
+            data = stdout.read()
             if data:
                 output.append(data)
         except BaseException as exc:
@@ -2001,7 +2008,16 @@ def _communicate_interruptible(
 
     # Bounded wait to reap the child — stdout is already at EOF so the
     # process should have exited (or be exiting imminently).
-    proc.wait(timeout=5)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "Subprocess did not exit within 5s after stdout EOF; "
+            "killing process group",
+        )
+        _kill_process_group(proc)
     return b"".join(output)
 
 

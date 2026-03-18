@@ -563,6 +563,28 @@ class TestCommunicateInterruptible:
         with pytest.raises(OSError, match="Broken pipe"):
             _communicate_interruptible(mock_proc, timeout=10)
 
+    def test_raises_value_error_when_stdout_is_none(self) -> None:
+        """Calling with proc.stdout=None raises ValueError immediately."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = None
+        mock_proc.args = ["claude"]
+
+        with pytest.raises(ValueError, match="requires stdout=PIPE"):
+            _communicate_interruptible(mock_proc, timeout=10)
+
+    def test_returns_output_when_proc_wait_hangs(self) -> None:
+        """If proc.wait() times out after stdout EOF, output is still returned."""
+        mock_proc = _mock_popen(output=b"cycle output")
+        mock_proc.wait.side_effect = [
+            _subprocess.TimeoutExpired(cmd=mock_proc.args, timeout=5),
+            None,  # _kill_process_group's proc.wait(timeout=5) succeeds
+        ]
+
+        with patch("os.killpg"):
+            result = _communicate_interruptible(mock_proc, timeout=2700)
+
+        assert result == b"cycle output"
+
 
 # ---------------------------------------------------------------------------
 # _extract_terminal_text
