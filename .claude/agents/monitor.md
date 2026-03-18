@@ -86,6 +86,14 @@ NEVER skip this step — missing outcome data degrades all Pro analyses. If the 
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 
+MUST log start at the beginning of execution, before any other work:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase start --message "Monitor checking open positions"
+```
+
+If the command fails, note the failure in your output and continue. Do not retry.
+
 MUST log completion after producing the monitoring report:
 
 ```bash

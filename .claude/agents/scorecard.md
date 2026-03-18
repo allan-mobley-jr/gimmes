@@ -77,6 +77,14 @@ MUST produce this exact format:
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 
+MUST log start at the beginning of execution, before any other work:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scorecard --phase start --message "Scorecard generating performance report"
+```
+
+If the command fails, note the failure in your output and continue. Do not retry.
+
 MUST log completion after producing the scorecard:
 
 ```bash
