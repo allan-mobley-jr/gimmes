@@ -51,6 +51,14 @@ If total closed trades < 20, MUST:
 
 ## Workflow
 
+### Step 0: Log Start
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase start --message "Pro starting strategy analysis"
+```
+
+If the command fails, note the failure in your output and continue. Do not retry.
+
 ### Step 1: Assess Data Availability
 
 ```bash

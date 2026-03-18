@@ -122,6 +122,14 @@ Issues filed: K
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 
+MUST log start at the beginning of execution, before any other work:
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent groundskeeper --phase start --message "Groundskeeper reviewing error log"
+```
+
+If the command fails, note the failure in your output and continue. Do not retry.
+
 MUST log completion after finishing the error review:
 
 ```bash
