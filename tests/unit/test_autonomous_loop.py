@@ -15,6 +15,7 @@ from gimmes.cli import (
     _communicate_interruptible,
     _extract_terminal_text,
     _set_mode,
+    _wrap_stream_json,
     app,
 )
 
@@ -158,7 +159,8 @@ class TestAutonomousLoop:
         agent_idx = cmd.index("--agent")
         assert cmd[agent_idx + 1] == "Caddie Master"
         fmt_idx = cmd.index("--output-format")
-        assert cmd[fmt_idx + 1] == "json"
+        assert cmd[fmt_idx + 1] == "stream-json"
+        assert "--verbose" in cmd
         idx = cmd.index("--allowedTools")
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
@@ -634,6 +636,61 @@ class TestExtractTerminalText:
             "subtype": "rate_limit",
         }).encode()
         assert _extract_terminal_text(data) == b"[Claude error: Rate limit exceeded]\n"
+
+    def test_extracts_result_from_stream_json(self) -> None:
+        import json
+
+        lines = [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"text": "working..."}}),
+            json.dumps({"type": "result", "result": "cycle done"}),
+        ]
+        data = "\n".join(lines).encode()
+        assert _extract_terminal_text(data) == b"cycle done\n"
+
+    def test_stream_json_error_event(self) -> None:
+        import json
+
+        lines = [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "result", "is_error": True, "subtype": "rate_limit"}),
+        ]
+        data = "\n".join(lines).encode()
+        assert _extract_terminal_text(data) == b"[Claude error: rate_limit]\n"
+
+
+# ---------------------------------------------------------------------------
+# _wrap_stream_json
+# ---------------------------------------------------------------------------
+
+
+class TestWrapStreamJson:
+    def test_single_object_unchanged(self) -> None:
+        import json
+
+        raw = json.dumps({"result": "hello"}).encode()
+        assert _wrap_stream_json(raw) == raw
+
+    def test_ndjson_produces_array(self) -> None:
+        import json
+
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps({"type": "result", "result": "done"}),
+        ]
+        raw = "\n".join(lines).encode()
+        result = json.loads(_wrap_stream_json(raw))
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["type"] == "system"
+        assert result[1]["type"] == "result"
+
+    def test_skips_empty_lines(self) -> None:
+        import json
+
+        raw = b'{"type":"a"}\n\n{"type":"b"}\n'
+        result = json.loads(_wrap_stream_json(raw))
+        assert len(result) == 2
 
 
 # ---------------------------------------------------------------------------

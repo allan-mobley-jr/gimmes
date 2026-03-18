@@ -2065,9 +2065,22 @@ def _communicate_interruptible(
     return b"".join(output)
 
 
+def _result_dict_to_text(data: dict) -> bytes:
+    """Extract terminal text from a Claude result dict."""
+    if data.get("is_error"):
+        detail = data.get("result") or data.get("subtype", "unknown")
+        return f"[Claude error: {detail}]\n".encode()
+    result = data.get("result")
+    if result:
+        return (result + "\n").encode("utf-8")
+    return b""
+
+
 def _extract_terminal_text(json_bytes: bytes) -> bytes:
     """Extract human-readable assistant text from Claude JSON output.
 
+    Handles both single-object JSON (``--output-format json``) and
+    newline-delimited stream-json (``--output-format stream-json``).
     Falls back to raw bytes if JSON parsing fails.
     """
     import json as _json
@@ -2079,6 +2092,26 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
         )
         return b""
 
+    # Stream-json: multiple newline-delimited JSON objects
+    lines = json_bytes.strip().split(b"\n")
+    if len(lines) > 1:
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = _json.loads(line)
+            except (_json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                return _result_dict_to_text(event)
+        # Stream-json with no result event (e.g. killed mid-session)
+        logging.getLogger("gimmes").warning(
+            "Stream-json output contained no result event",
+        )
+        return b""
+
+    # Single JSON object (--output-format json)
     try:
         data = _json.loads(json_bytes)
     except (_json.JSONDecodeError, UnicodeDecodeError):
@@ -2088,15 +2121,32 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
         return json_bytes
 
     if isinstance(data, dict):
-        if data.get("is_error"):
-            detail = data.get("result") or data.get("subtype", "unknown")
-            return f"[Claude error: {detail}]\n".encode()
-        result = data.get("result")
-        if result:
-            return (result + "\n").encode("utf-8")
-        return b""
+        return _result_dict_to_text(data)
 
     return json_bytes
+
+
+def _wrap_stream_json(raw: bytes) -> bytes:
+    """Wrap newline-delimited JSON events into a JSON array.
+
+    If the input is a single JSON object, returns it unchanged.
+    """
+    import json as _json
+
+    lines = raw.strip().split(b"\n")
+    if len(lines) <= 1:
+        return raw
+
+    events = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(_json.loads(line))
+        except (_json.JSONDecodeError, UnicodeDecodeError):
+            events.append(line.decode("utf-8", errors="replace"))
+    return _json.dumps(events, indent=2).encode("utf-8")
 
 
 def _autonomous_loop(
@@ -2210,7 +2260,8 @@ def _autonomous_loop(
                         claude_path,
                         "--agent", "Caddie Master",
                         "-p", "Run one trading cycle.",
-                        "--output-format", "json",
+                        "--verbose",
+                        "--output-format", "stream-json",
                         "--allowedTools",
                         "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
                     ],
@@ -2225,7 +2276,7 @@ def _autonomous_loop(
                 )
                 try:
                     with open(log_path, "wb") as log_file:
-                        log_file.write(stdout_bytes)
+                        log_file.write(_wrap_stream_json(stdout_bytes))
                 except OSError:
                     import logging
                     logging.getLogger("gimmes").warning(
