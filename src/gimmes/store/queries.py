@@ -344,6 +344,34 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
     return float(row["daily_pnl"]) if row else 0.0
 
 
+async def get_session_spending(
+    db: Database,
+    *,
+    since: str | None = None,
+) -> float:
+    """Total dollars committed to new positions since a point in time.
+
+    Sums ``price * count`` for all 'open' trades.  When *since* is given
+    (ISO timestamp from a session's ``started_at``), only trades on or
+    after that moment are counted.  Otherwise counts today's trades,
+    matching :func:`get_daily_pnl` behaviour.
+    """
+    if since is not None:
+        time_filter = "timestamp >= ?"
+        params = (since,)
+    else:
+        time_filter = "date(timestamp) = date('now')"
+        params = ()
+    cursor = await db.conn.execute(
+        f"""SELECT COALESCE(SUM(price * count), 0) AS spent
+            FROM trades
+            WHERE action = 'open' AND {time_filter}""",
+        params,
+    )
+    row = await cursor.fetchone()
+    return float(row["spent"]) if row else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Activity log
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from gimmes.risk.limits import (
     check_daily_loss,
     check_position_count,
     check_position_size,
+    check_session_spending,
 )
 from gimmes.risk.settlement import scan_settlement_rules
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
@@ -88,15 +89,13 @@ def validate_trade(
         failures.append(f"Insufficient balance: need ${trade_dollars:.2f}, have ${bankroll:.2f}")
 
     # 4b. Session spending cap (championship mode guard)
-    cap = config.risk.session_spending_cap
-    if cap > 0 and session_spent + trade_dollars > cap:
-        failures.append(
-            f"Session spending cap exceeded: "
-            f"${session_spent:.2f} spent + ${trade_dollars:.2f} "
-            f"> ${cap:.2f} cap"
-        )
-    elif cap > 0:
-        checks.append(f"Session spending OK (${session_spent + trade_dollars:.2f}/${cap:.2f})")
+    spending_check = check_session_spending(session_spent, trade_dollars, config)
+    if spending_check.passed:
+        cap = config.risk.session_spending_cap
+        if cap > 0:
+            checks.append(f"Session spending OK (${session_spent + trade_dollars:.2f}/${cap:.2f})")
+    else:
+        failures.append(spending_check.reason)
 
     # 5. Minimum true probability gate (skipped when probability is unknown)
     if true_probability is not None:

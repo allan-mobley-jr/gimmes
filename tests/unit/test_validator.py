@@ -194,3 +194,56 @@ class TestValidateTrade:
         )
         assert result.approved is False
         assert any("daily loss" in f.lower() for f in result.failures)
+
+    def test_session_spending_disabled_when_cap_zero(self, config: GimmesConfig) -> None:
+        """When cap is 0, spending check is skipped entirely."""
+        config.risk.session_spending_cap = 0.0
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+            session_spent=9999,
+        )
+        assert result.approved is True
+        assert not any("spending" in c.lower() for c in result.checks)
+        assert not any("spending" in f.lower() for f in result.failures)
+
+    def test_session_spending_cap_exceeded(self, config: GimmesConfig) -> None:
+        """Trade rejected when session_spent + trade_dollars > cap."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+            session_spent=400,  # 400 + 200 = 600 > 500 cap
+        )
+        assert result.approved is False
+        assert any("spending cap" in f.lower() for f in result.failures)
+
+    def test_session_spending_within_limit(self, config: GimmesConfig) -> None:
+        """Trade approved when session_spent + trade_dollars <= cap."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+            session_spent=100,  # 100 + 200 = 300 < 500 cap
+        )
+        assert result.approved is True
+        assert any("spending ok" in c.lower() for c in result.checks)
