@@ -10,7 +10,13 @@ import pytest
 from click.exceptions import Exit as ClickExit
 from typer.testing import CliRunner
 
-from gimmes.cli import _autonomous_loop, _extract_terminal_text, _set_mode, app
+from gimmes.cli import (
+    _autonomous_loop,
+    _communicate_interruptible,
+    _extract_terminal_text,
+    _set_mode,
+    app,
+)
 
 runner = CliRunner()
 
@@ -18,9 +24,11 @@ runner = CliRunner()
 def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
     """Return a mock Popen instance with the given returncode and stdout output."""
     mock_proc = MagicMock()
-    mock_proc.communicate.return_value = (output, b"")
+    mock_proc.stdout.read.return_value = output
     mock_proc.returncode = returncode
     mock_proc.pid = 12345
+    mock_proc.args = ["claude"]
+    mock_proc.wait.return_value = returncode
     return mock_proc
 
 
@@ -138,6 +146,9 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/opt/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=1)
@@ -152,7 +163,7 @@ class TestAutonomousLoop:
         allowed = cmd[idx + 1]
         assert "WebSearch" in allowed
         assert "WebFetch" in allowed
-        assert mock_proc.communicate.call_args.kwargs["timeout"] == 2700
+        assert mock_comm.call_args.kwargs["timeout"] == 2700
 
     def test_warns_on_nonzero_exit(self, capsys) -> None:  # type: ignore[no-untyped-def]
         mock_proc = _mock_popen(returncode=2)
@@ -256,42 +267,43 @@ class TestAutonomousLoop:
 
     def test_timeout_increments_failures_and_continues(self, capsys) -> None:
         """A TimeoutExpired cycle counts as a failure but the loop continues."""
-        call_count = 0
+        comm_count = 0
 
-        def side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            mock_proc = _mock_popen()
-            if call_count == 1:
-                mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
-                    cmd=args[0], timeout=2700,
-                )
-            return mock_proc
+        def comm_side_effect(proc, timeout):
+            nonlocal comm_count
+            comm_count += 1
+            if comm_count == 1:
+                raise _subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
+            return b""
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.Popen", side_effect=side_effect),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", side_effect=comm_side_effect),
             patch("os.killpg"),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
 
-        assert call_count == 2
+        assert mock_popen.call_count == 2
         output = capsys.readouterr().out
         assert "timed out" in output
 
     def test_timeout_feeds_circuit_breaker(self, capsys) -> None:
         """Consecutive timeouts trip the circuit breaker."""
-        def side_effect(*args, **kwargs):
-            mock_proc = _mock_popen()
-            mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
-                cmd=args[0], timeout=2700,
-            )
-            return mock_proc
-
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.Popen", side_effect=side_effect) as mock_popen,
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(cmd="claude", timeout=2700),
+            ),
             patch("os.killpg"),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -321,13 +333,14 @@ class TestAutonomousLoop:
         import signal
 
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
-            cmd="claude", timeout=2700,
-        )
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(cmd="claude", timeout=2700),
+            ),
             patch("os.killpg") as mock_killpg,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -343,9 +356,6 @@ class TestAutonomousLoop:
         import signal
 
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
-            cmd="claude", timeout=2700,
-        )
         mock_proc.wait.side_effect = [
             _subprocess.TimeoutExpired(cmd="claude", timeout=5),
             None,
@@ -354,6 +364,10 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(cmd="claude", timeout=2700),
+            ),
             patch("os.killpg") as mock_killpg,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -371,14 +385,15 @@ class TestAutonomousLoop:
         import signal
 
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = _subprocess.TimeoutExpired(
-            cmd="claude", timeout=2700,
-        )
         mock_proc.wait.return_value = None
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(cmd="claude", timeout=2700),
+            ),
             patch("os.killpg") as mock_killpg,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -391,16 +406,16 @@ class TestAutonomousLoop:
         mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
     def test_keyboard_interrupt_kills_subprocess_group(self) -> None:
-        """Ctrl+C during communicate() kills the subprocess process group."""
+        """Ctrl+C during subprocess I/O kills the subprocess process group."""
         import signal
 
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = KeyboardInterrupt
         mock_proc.poll.return_value = None  # subprocess still running
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("gimmes.cli._communicate_interruptible", side_effect=KeyboardInterrupt),
             patch("os.killpg") as mock_killpg,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -413,7 +428,6 @@ class TestAutonomousLoop:
         import signal
 
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = KeyboardInterrupt
         mock_proc.poll.return_value = None
         mock_proc.wait.side_effect = [
             _subprocess.TimeoutExpired(cmd="claude", timeout=5),
@@ -423,6 +437,7 @@ class TestAutonomousLoop:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("gimmes.cli._communicate_interruptible", side_effect=KeyboardInterrupt),
             patch("os.killpg") as mock_killpg,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -463,12 +478,12 @@ class TestAutonomousLoop:
     def test_keyboard_interrupt_handles_process_lookup_error(self) -> None:
         """Ctrl+C doesn't crash if process exits between poll() and killpg()."""
         mock_proc = _mock_popen()
-        mock_proc.communicate.side_effect = KeyboardInterrupt
         mock_proc.poll.return_value = None  # subprocess appears running
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
+            patch("gimmes.cli._communicate_interruptible", side_effect=KeyboardInterrupt),
             patch("os.killpg", side_effect=ProcessLookupError),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
@@ -502,6 +517,73 @@ class TestAutonomousLoop:
 
         for i in range(1, 4):
             assert (tmp_path / "logs" / f"cycle-{i:03d}.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# _communicate_interruptible
+# ---------------------------------------------------------------------------
+
+
+class TestCommunicateInterruptible:
+    def test_returns_stdout_on_success(self) -> None:
+        mock_proc = _mock_popen(output=b"hello world")
+
+        result = _communicate_interruptible(mock_proc, timeout=10)
+
+        assert result == b"hello world"
+        mock_proc.wait.assert_called_once()
+
+    def test_returns_empty_bytes_on_no_output(self) -> None:
+        mock_proc = _mock_popen()
+
+        result = _communicate_interruptible(mock_proc, timeout=10)
+
+        assert result == b""
+        mock_proc.wait.assert_called_once()
+
+    def test_raises_timeout_expired_when_reader_hangs(self) -> None:
+        import threading
+
+        block = threading.Event()
+        mock_proc = MagicMock()
+        mock_proc.args = ["claude"]
+        mock_proc.stdout.read = lambda: (block.wait(), b"")[-1]
+
+        with pytest.raises(_subprocess.TimeoutExpired):
+            _communicate_interruptible(mock_proc, timeout=0.1)
+
+        block.set()  # Let daemon thread exit cleanly
+
+    def test_raises_when_reader_hits_os_error(self) -> None:
+        """Exceptions from proc.stdout.read() propagate to the caller."""
+        mock_proc = MagicMock()
+        mock_proc.args = ["claude"]
+        mock_proc.stdout.read.side_effect = OSError("Broken pipe")
+
+        with pytest.raises(OSError, match="Broken pipe"):
+            _communicate_interruptible(mock_proc, timeout=10)
+
+    def test_raises_value_error_when_stdout_is_none(self) -> None:
+        """Calling with proc.stdout=None raises ValueError immediately."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = None
+        mock_proc.args = ["claude"]
+
+        with pytest.raises(ValueError, match="requires stdout=PIPE"):
+            _communicate_interruptible(mock_proc, timeout=10)
+
+    def test_returns_output_when_proc_wait_hangs(self) -> None:
+        """If proc.wait() times out after stdout EOF, output is still returned."""
+        mock_proc = _mock_popen(output=b"cycle output")
+        mock_proc.wait.side_effect = [
+            _subprocess.TimeoutExpired(cmd=mock_proc.args, timeout=5),
+            None,  # _kill_process_group's proc.wait(timeout=5) succeeds
+        ]
+
+        with patch("os.killpg"):
+            result = _communicate_interruptible(mock_proc, timeout=2700)
+
+        assert result == b"cycle output"
 
 
 # ---------------------------------------------------------------------------

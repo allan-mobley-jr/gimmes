@@ -1954,6 +1954,73 @@ def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
         proc.wait()
 
 
+def _communicate_interruptible(
+    proc: subprocess.Popen[bytes],
+    timeout: float,
+) -> bytes:
+    """Read subprocess stdout in a background thread so the main thread
+    remains interruptible by KeyboardInterrupt.
+
+    ``proc.communicate()`` blocks the main thread in a C-level read that
+    cannot be interrupted by SIGINT on macOS (SA_RESTART restarts the
+    underlying ``kevent``/``read`` syscall).  This function moves the
+    blocking read to a daemon thread and waits via ``Thread.join()``,
+    which is pure-Python and interruptible.
+
+    The caller is responsible for killing the subprocess on
+    ``TimeoutExpired`` or ``KeyboardInterrupt``; killing the process
+    closes the pipe and unblocks the daemon reader thread.
+
+    Returns the captured stdout bytes.  Raises ``subprocess.TimeoutExpired``
+    if the subprocess has not finished within *timeout* seconds.
+    """
+    import threading
+
+    if proc.stdout is None:
+        raise ValueError(
+            "_communicate_interruptible requires stdout=PIPE"
+        )
+
+    stdout = proc.stdout  # narrowed to IO[bytes] for the closure
+
+    output: list[bytes] = []
+    error: list[BaseException] = []
+
+    def _reader() -> None:
+        try:
+            data = stdout.read()
+            if data:
+                output.append(data)
+        except BaseException as exc:
+            error.append(exc)
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+
+    # join() is pure-Python and interruptible by KeyboardInterrupt
+    reader.join(timeout=timeout)
+
+    if reader.is_alive():
+        raise subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
+
+    if error:
+        raise error[0]
+
+    # Bounded wait to reap the child — stdout is already at EOF so the
+    # process should have exited (or be exiting imminently).
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "Subprocess did not exit within 5s after stdout EOF; "
+            "killing process group",
+        )
+        _kill_process_group(proc)
+    return b"".join(output)
+
+
 def _extract_terminal_text(json_bytes: bytes) -> bytes:
     """Extract human-readable assistant text from Claude JSON output.
 
@@ -2109,8 +2176,8 @@ def _autonomous_loop(
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
-                stdout_bytes, _ = proc.communicate(
-                    timeout=config.strategy.cycle_timeout,
+                stdout_bytes = _communicate_interruptible(
+                    proc, timeout=config.strategy.cycle_timeout,
                 )
                 try:
                     with open(log_path, "wb") as log_file:
