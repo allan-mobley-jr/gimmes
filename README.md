@@ -18,6 +18,15 @@ GIMMES hunts for mispriced certainty. When a contract is trading at 70¢ but res
 
 ---
 
+## Requirements
+
+- **Python 3.11+**
+- **Git**
+- **Claude Code** — required for autonomous trading mode (Claude Max recommended, Claude Pro also works)
+- **Kalshi account** with API access
+
+---
+
 ## Quick start
 
 ### Install
@@ -176,23 +185,19 @@ See [CLI commands](#cli-commands) for the full command reference including optio
 
 ## Agent team
 
-The autonomous loop is orchestrated by the **Caddie Master** agent, which dispatches these agents each cycle:
+The autonomous loop is orchestrated by the **Caddie Master**, which dispatches this agent team each cycle:
 
-| Agent | Role | Tools | Responsibilities |
-|---|---|---|---|
-| **The Scout** | Opportunity discovery | Bash, Read, Glob, Grep | Scans Kalshi for markets above 55¢, scores each for gimme potential |
-| **The Caddie** | Research & analysis | + WebSearch, WebFetch | Deep-dives shortlisted markets — news, social signals, historical patterns |
-| **The Closer** | Trade execution | Bash, Read, Glob, Grep | Sizes positions using fractional Kelly, places maker limit orders |
-| **The Monitor** | Position watching | + WebSearch, WebFetch | Monitors open contracts, flags early-close opportunities |
-| **The Scorecard** | Reporting | Bash, Read, Glob, Grep | Tracks P&L, win rate, edge accuracy, and strategy performance |
-| **The Groundskeeper** | Error escalation | Bash, Read, Glob, Grep | Reviews error logs, escalates critical/recurring errors to GitHub issues |
-| **The Pro** | Strategy tuning | + WebSearch, WebFetch | Analyzes performance data, recommends parameter changes with evidence |
-
-**On-demand (not part of the autonomous cycle):**
-
-| Agent | Role | Tools | Responsibilities |
-|---|---|---|---|
-| **The Starter** | Product tour guide | + WebSearch, WebFetch | Welcomes new users, explains features, answers questions — invoke with `gimmes tour_guide` |
+| Agent | Role | Responsibilities |
+|---|---|---|
+| **The Caddie Master** | Orchestration | Dispatches agents, manages cycle flow, handles errors |
+| **The Scout** | Opportunity discovery | Scans Kalshi for markets above 55¢, scores each for gimme potential |
+| **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns |
+| **The Closer** | Trade execution | Sizes positions using fractional Kelly, places maker limit orders |
+| **The Monitor** | Position watching | Monitors open contracts, flags early-close opportunities |
+| **The Scorecard** | Reporting | Tracks P&L, win rate, edge accuracy, and strategy performance |
+| **The Groundskeeper** | Error escalation | Reviews error logs, escalates critical/recurring errors to GitHub issues |
+| **The Pro** | Strategy tuning | Analyzes performance data, recommends parameter changes with evidence |
+| **The Starter** | Product tour guide | Welcomes new users, explains features, answers questions — on-demand via `gimmes tour_guide` |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
