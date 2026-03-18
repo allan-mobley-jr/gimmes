@@ -1023,9 +1023,10 @@ def reconcile() -> None:
                         )
                         filled = []
                     for o in filled:
+                        n = o.count - o.remaining_count
                         console.print(
                             f"  [green]Filled resting order {o.order_id}:"
-                            f" {o.action.value.upper()} {o.count}"
+                            f" {o.action.value.upper()} {n}"
                             f" {o.side.value.upper()} {o.ticker}[/green]"
                         )
 

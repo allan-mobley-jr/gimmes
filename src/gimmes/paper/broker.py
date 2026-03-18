@@ -321,11 +321,32 @@ class PaperBroker:
                 price_cents = max(int(row["yes_price"]), int(row["no_price"]))
                 price = price_cents / 100.0
 
+                # SELL orders require a backing position
+                fillable = remaining
+                if action == OrderAction.SELL:
+                    pos = await self._conn.execute(
+                        "SELECT count FROM paper_positions"
+                        " WHERE ticker = ? AND side = ? AND count > 0",
+                        (ticker, side.value),
+                    )
+                    pos_row = await pos.fetchone()
+                    held = int(pos_row["count"]) if pos_row else 0
+                    fillable = min(remaining, held)
+                    if fillable <= 0:
+                        import logging
+
+                        logging.getLogger("gimmes").warning(
+                            "Resting SELL order %s for %s %s has no backing"
+                            " position (held=%d); skipping",
+                            row["order_id"], ticker, side.value, held,
+                        )
+                        continue
+
                 params = CreateOrderParams(
                     ticker=ticker,
                     action=action,
                     side=side,
-                    count=remaining,
+                    count=fillable,
                     yes_price=price if side == OrderSide.YES else None,
                     no_price=price if side == OrderSide.NO else None,
                     post_only=True,

@@ -860,6 +860,127 @@ class TestFillRestingOrders:
         assert balance_after_fill == pytest.approx(balance_after_rest + proceeds - fees)
 
 
+    @pytest.mark.asyncio
+    async def test_fill_resting_sell_no_position_skipped(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Resting SELL with no backing position is skipped (no free money)."""
+        # Buy 10 — creates position
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+
+        # Place resting SELL for 5 (above bid, rests while position exists)
+        sell_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
+        )
+        rest_sell = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=5,
+            yes_price=0.72,
+            post_only=True,
+        )
+        order = await broker.create_order(rest_sell, sell_ob)
+        assert order.status == "resting"
+
+        # Now sell ALL 10 contracts, zeroing the position
+        sell_all = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.68,
+            post_only=True,
+        )
+        await broker.create_order(sell_all, orderbook)
+        positions = await broker.get_positions()
+        assert len(positions) == 0  # Position fully liquidated
+
+        balance_before = await broker.get_balance()
+
+        # Market moves — bid rises above sell price
+        new_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.73, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.27, quantity=500)],
+        )
+        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
+
+        assert len(filled) == 0  # Skipped — no backing position
+        assert await broker.get_balance() == balance_before
+
+    @pytest.mark.asyncio
+    async def test_fill_resting_sell_capped_to_held(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Resting SELL capped to actually held contracts."""
+        # Buy 10
+        buy_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(buy_params, orderbook)
+
+        # Place resting SELL for 10 (above bid, rests)
+        sell_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
+        )
+        sell_params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.72,
+            post_only=True,
+        )
+        await broker.create_order(sell_params, sell_ob)
+
+        # Sell 7 through another order, leaving only 3 held
+        sell_some = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.SELL,
+            side=OrderSide.YES,
+            count=7,
+            yes_price=0.68,
+            post_only=True,
+        )
+        await broker.create_order(sell_some, orderbook)
+
+        positions = await broker.get_positions()
+        assert positions[0].count == 3
+
+        # Now fill the resting SELL — should cap at 3
+        new_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.73, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.27, quantity=500)],
+        )
+        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
+
+        assert len(filled) == 1
+        # Only 3 filled (capped), 7 still resting
+        assert filled[0].remaining_count == 7
+
+        positions = await broker.get_positions()
+        assert len(positions) == 0  # All 3 remaining sold
+
+
 # ---------------------------------------------------------------------------
 # Taker partial fills
 # ---------------------------------------------------------------------------
