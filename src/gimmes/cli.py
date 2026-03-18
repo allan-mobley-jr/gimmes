@@ -334,7 +334,8 @@ def validate(
     async def _validate() -> None:
         from gimmes.kalshi.markets import get_market
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl
+        from gimmes.store.queries import get_daily_pnl, get_session_spending
+        from gimmes.store.session import get_active_session
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.kelly import position_size
 
@@ -379,6 +380,22 @@ def validate(
                 )
                 raise typer.Exit(1)
 
+            # Session spending: use active session boundary or fall back to today
+            active = get_active_session(config.db_path)
+            since = active["started_at"] if active else None
+            try:
+                session_spent = await get_session_spending(db, since=since)
+            except Exception as exc:
+                console.print(
+                    f"[red bold]VALIDATION FAILED: Could not query"
+                    f" session spending — {exc}[/red bold]"
+                )
+                console.print(
+                    "[red]Refusing to validate with unknown spending "
+                    "(session spending cap may be breached)[/red]"
+                )
+                raise typer.Exit(1)
+
             unrealized_pnl = sum(p.unrealized_pnl for p in positions)
             total_daily_pnl = daily_pnl + unrealized_pnl
 
@@ -386,7 +403,7 @@ def validate(
             result = validate_trade(
                 market, trade_dollars, probability, balance,
                 total_daily_pnl, len(positions), existing_tickers, config,
-                fees=fees,
+                fees=fees, session_spent=session_spent,
             )
 
             console.print(f"\n[bold]Validation: {ticker}[/bold]")
@@ -443,7 +460,8 @@ def order(
         from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl, insert_error
+        from gimmes.store.queries import get_daily_pnl, get_session_spending, insert_error
+        from gimmes.store.session import get_active_session
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import position_size
@@ -540,12 +558,39 @@ def order(
                 unrealized_pnl = sum(p.unrealized_pnl for p in positions)
                 total_daily_pnl = daily_pnl + unrealized_pnl
 
+                # Session spending: use active session boundary or today
+                active = get_active_session(config.db_path)
+                since = active["started_at"] if active else None
+                try:
+                    session_spent = await get_session_spending(db, since=since)
+                except Exception as exc:
+                    if force:
+                        session_spent = 0.0
+                        console.print(
+                            f"[yellow]Warning: Could not query session"
+                            f" spending ({exc}) — using 0.0 (--force)"
+                            f"[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            f"[red bold]Cannot query session spending:"
+                            f" {exc}[/red bold]"
+                        )
+                        console.print(
+                            "[red]Refusing to order with unknown"
+                            " spending (session cap may be"
+                            " breached). Use --force to"
+                            " override.[/red]"
+                        )
+                        return
+
                 true_prob = probability
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
                     total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
+                    session_spent=session_spent,
                 )
 
                 if not validation.approved:
@@ -925,8 +970,13 @@ def risk_check() -> None:
     config = load_config()
 
     async def _check() -> None:
-        from gimmes.risk.limits import check_daily_loss, check_position_count
-        from gimmes.store.queries import get_daily_pnl
+        from gimmes.risk.limits import (
+            check_daily_loss,
+            check_position_count,
+            check_session_spending,
+        )
+        from gimmes.store.queries import get_daily_pnl, get_session_spending
+        from gimmes.store.session import get_active_session
 
         async with trading_context(config) as (client, broker, db):
             if broker:
@@ -950,6 +1000,22 @@ def risk_check() -> None:
                 )
                 raise typer.Exit(1)
 
+            # Session spending
+            active = get_active_session(config.db_path)
+            since = active["started_at"] if active else None
+            try:
+                session_spent = await get_session_spending(db, since=since)
+            except Exception as exc:
+                console.print(
+                    f"[red bold]RISK CHECK FAILED: Could not query"
+                    f" session spending — {exc}[/red bold]"
+                )
+                console.print(
+                    "[red]Cannot verify risk limits with unknown spending[/red]"
+                )
+                raise typer.Exit(1)
+            cap = config.risk.session_spending_cap
+
             unrealized_pnl = sum(p.unrealized_pnl for p in pos)
             total_daily_pnl = daily_pnl + unrealized_pnl
 
@@ -959,11 +1025,17 @@ def risk_check() -> None:
             console.print(f"Daily Realized P&L: ${daily_pnl:,.2f}")
             console.print(f"Unrealized P&L:     ${unrealized_pnl:,.2f}")
             console.print(f"Total Daily P&L:    ${total_daily_pnl:,.2f}")
+            console.print(f"Session Spending:   ${session_spent:,.2f} / ${cap:,.2f}")
 
             loss = check_daily_loss(total_daily_pnl, balance, config)
             count = check_position_count(len(pos), config)
+            spending = check_session_spending(session_spent, 0, config)
 
-            for check, label in [(loss, "Daily Loss"), (count, "Position Count")]:
+            for check, label in [
+                (loss, "Daily Loss"),
+                (count, "Position Count"),
+                (spending, "Session Spending"),
+            ]:
                 if check.passed:
                     console.print(f"  [green]✓[/green] {label}: OK")
                 else:
