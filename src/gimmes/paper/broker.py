@@ -21,10 +21,10 @@ from gimmes.models.order import (
     OrderSide,
 )
 from gimmes.models.portfolio import Position
-from gimmes.paper.fill_simulator import FillResult, simulate_fill
+from gimmes.paper.fill_simulator import FillResult, SimulatedFill, simulate_fill
 from gimmes.paper.schema import PAPER_SCHEMA_SQL
 from gimmes.store.database import Database
-from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 
 
 class PaperBroker:
@@ -352,9 +352,21 @@ class PaperBroker:
                     post_only=True,
                 )
 
-                result = simulate_fill(params, orderbooks[ticker], fees=fees)
-                if result.total_filled == 0:
-                    continue
+                # Paper mode: fill at limit price unconditionally.
+                # Real markets have opposing flow that hits resting bids;
+                # paper mode has none, so we simulate immediate fill to
+                # enable full position lifecycle testing.  (#215)
+                fill_fee = fee_for_order(fillable, price, is_taker=False, fees=fees)
+                fill = SimulatedFill(
+                    count=fillable, price=price, fee=fill_fee, is_taker=False,
+                )
+                result = FillResult(
+                    fills=[fill],
+                    remaining_count=0,
+                    total_filled=fillable,
+                    total_notional=fillable * price,
+                    total_fees=fill_fee,
+                )
 
                 async with self._db.transaction():
                     # Balance: BUY reservation already covers notional, just debit fees.
