@@ -2078,10 +2078,11 @@ def _communicate_interruptible(
     remains interruptible by KeyboardInterrupt.
 
     ``proc.communicate()`` blocks the main thread in a C-level read that
-    cannot be interrupted by SIGINT on macOS (SA_RESTART restarts the
-    underlying ``kevent``/``read`` syscall).  This function moves the
-    blocking read to a daemon thread and waits via ``Thread.join()``,
-    which is pure-Python and interruptible.
+    cannot be interrupted by SIGINT on macOS.  This function moves the
+    blocking read to a daemon thread and polls with short
+    ``Thread.join()`` intervals so the main thread can process pending
+    signals between iterations (CPython bug bpo-45274 prevents a single
+    blocking ``join()`` from being interrupted).
 
     The caller is responsible for killing the subprocess on
     ``TimeoutExpired`` or ``KeyboardInterrupt``; killing the process
@@ -2091,6 +2092,7 @@ def _communicate_interruptible(
     if the subprocess has not finished within *timeout* seconds.
     """
     import threading
+    import time
 
     if proc.stdout is None:
         raise ValueError(
@@ -2113,8 +2115,16 @@ def _communicate_interruptible(
     reader = threading.Thread(target=_reader, daemon=True)
     reader.start()
 
-    # join() is pure-Python and interruptible by KeyboardInterrupt
-    reader.join(timeout=timeout)
+    # Poll with short intervals so pending SIGINT can be delivered
+    # between iterations.  A single join(timeout=N) blocks signal
+    # delivery on macOS due to SA_RESTART on pthread_cond_timedwait.
+    poll_interval = 0.5
+    deadline = time.monotonic() + timeout
+    while reader.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        reader.join(timeout=min(poll_interval, remaining))
 
     if reader.is_alive():
         raise subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
@@ -2316,7 +2326,29 @@ def _autonomous_loop(
     cycle = 0
     consecutive_failures = 0
     session_status = "stopped"
+
+    # Custom SIGINT handler — Python's default SIGINT → KeyboardInterrupt
+    # delivery is blocked by Thread.join() on macOS (CPython bpo-45274).
+    # This handler fires at the C level and sends SIGTERM to the subprocess
+    # process group (non-blocking), then raises KeyboardInterrupt.  The
+    # actual process reaping happens in the except KeyboardInterrupt block.
+    import signal
+
+    # Accessed from the signal handler, which runs on the main thread in
+    # CPython.  Assignment is atomic under the GIL.
+    _active_proc: subprocess.Popen[bytes] | None = None
+
+    def _sigint_handler(signum: int, frame: object) -> None:
+        p = _active_proc
+        if p is not None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        raise KeyboardInterrupt
+
     proc = None
+    old_handler = signal.signal(signal.SIGINT, _sigint_handler)
     try:
         while max_cycles == 0 or cycle < max_cycles:
             cycle += 1
@@ -2343,9 +2375,13 @@ def _autonomous_loop(
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
-                stdout_bytes = _communicate_interruptible(
-                    proc, timeout=config.strategy.cycle_timeout,
-                )
+                _active_proc = proc
+                try:
+                    stdout_bytes = _communicate_interruptible(
+                        proc, timeout=config.strategy.cycle_timeout,
+                    )
+                finally:
+                    _active_proc = None
                 try:
                     with open(log_path, "wb") as log_file:
                         log_file.write(_wrap_stream_json(stdout_bytes))
@@ -2415,6 +2451,7 @@ def _autonomous_loop(
         session_status = "crashed"
         raise
     finally:
+        signal.signal(signal.SIGINT, old_handler)
         end_session(config.db_path, session_id, session_status)
 
     console.print("\n[yellow]Autonomous loop stopped.[/yellow]")

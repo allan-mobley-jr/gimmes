@@ -491,6 +491,80 @@ class TestAutonomousLoop:
         ):
             _autonomous_loop("driving_range", max_cycles=1)
 
+    def test_sigint_handler_installed_during_loop(self) -> None:
+        """A custom SIGINT handler is active during the cycle loop."""
+        import signal
+
+        captured = []
+
+        def comm_side_effect(proc, timeout):
+            captured.append(signal.getsignal(signal.SIGINT))
+            return b""
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=comm_side_effect,
+            ),
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        assert len(captured) == 1
+        # The handler should NOT be Python's default handler
+        assert captured[0] is not signal.default_int_handler
+
+    def test_sigint_handler_restored_after_loop(self) -> None:
+        """Original SIGINT handler is restored when the loop exits."""
+        import signal
+
+        original = signal.getsignal(signal.SIGINT)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1)
+
+        assert signal.getsignal(signal.SIGINT) is original
+
+    def test_sigint_handler_restored_after_interrupt(self) -> None:
+        """Original SIGINT handler is restored even on KeyboardInterrupt."""
+        import signal
+
+        original = signal.getsignal(signal.SIGINT)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch("os.killpg"),
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+        ):
+            _autonomous_loop("driving_range")
+
+        assert signal.getsignal(signal.SIGINT) is original
+
     def test_creates_cycle_log_file(self, tmp_path) -> None:
         """Each cycle writes a JSON log file under GIMMES_HOME/logs/."""
         import json
