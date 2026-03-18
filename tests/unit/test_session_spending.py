@@ -88,6 +88,30 @@ class TestGetSessionSpending:
         spent = await get_session_spending(db, since=cutoff.isoformat())
         assert spent == pytest.approx(5.0)
 
+    async def test_since_sqlite_format(self, db: Database) -> None:
+        """sessions.started_at uses SQLite datetime format (space separator)."""
+        now = datetime(2026, 3, 15, 12, 0, 0, tzinfo=UTC)
+        # Trade before the session start
+        await insert_trade(db, _trade(
+            action="open", price=0.50, count=10,
+            timestamp=now - timedelta(hours=5),
+        ))
+        # Trade after the session start
+        await insert_trade(db, _trade(
+            action="open", price=0.60, count=10,
+            timestamp=now - timedelta(hours=1),
+        ))
+        # SQLite datetime('now') format: space separator, no timezone
+        sqlite_since = "2026-03-15 10:00:00"
+        spent = await get_session_spending(db, since=sqlite_since)
+        # Only the 11:00 trade: 0.60 * 10 = 6.0
+        assert spent == pytest.approx(6.0)
+
+    async def test_since_unparseable_raises(self, db: Database) -> None:
+        """Unparseable 'since' value must raise, not silently return 0."""
+        with pytest.raises(ValueError, match="unparseable"):
+            await get_session_spending(db, since="not-a-timestamp")
+
     async def test_since_none_uses_today(self, db: Database) -> None:
         """Without 'since', only today's trades should be counted."""
         yesterday = datetime.now(UTC) - timedelta(days=1)

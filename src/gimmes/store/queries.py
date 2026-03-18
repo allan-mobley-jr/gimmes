@@ -352,12 +352,26 @@ async def get_session_spending(
     """Total dollars committed to new positions since a point in time.
 
     Sums ``price * count`` for all 'open' trades.  When *since* is given
-    (ISO timestamp from a session's ``started_at``), only trades on or
+    (a timestamp from a session's ``started_at``), only trades on or
     after that moment are counted.  Otherwise counts today's trades,
     matching :func:`get_daily_pnl` behaviour.
+
+    Uses ``datetime()`` to normalise timestamps so both ISO-8601
+    (``YYYY-MM-DDTHH:MM:SS+00:00``) and SQLite (``YYYY-MM-DD HH:MM:SS``)
+    formats compare correctly.
     """
     if since is not None:
-        time_filter = "timestamp >= ?"
+        # Validate that datetime() can parse the value — it returns NULL
+        # on unparseable input, which would silently exclude all rows and
+        # report zero spending (bypassing the session spending cap).
+        check = await db.conn.execute("SELECT datetime(?)", (since,))
+        check_row = await check.fetchone()
+        if check_row[0] is None:
+            raise ValueError(
+                f"Cannot compute session spending: unparseable "
+                f"timestamp {since!r}"
+            )
+        time_filter = "datetime(timestamp) >= datetime(?)"
         params = (since,)
     else:
         time_filter = "date(timestamp) = date('now')"
