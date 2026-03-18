@@ -648,6 +648,20 @@ class TestExtractTerminalText:
         data = "\n".join(lines).encode()
         assert _extract_terminal_text(data) == b"cycle done\n"
 
+    def test_stream_json_no_result_returns_empty(self, caplog) -> None:
+        import json
+        import logging
+
+        lines = [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"text": "working..."}}),
+        ]
+        data = "\n".join(lines).encode()
+        with caplog.at_level(logging.WARNING, logger="gimmes"):
+            result = _extract_terminal_text(data)
+        assert result == b""
+        assert "no result event" in caplog.text
+
     def test_stream_json_error_event(self) -> None:
         import json
 

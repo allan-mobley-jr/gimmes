@@ -2065,7 +2065,7 @@ def _communicate_interruptible(
     return b"".join(output)
 
 
-def _result_dict_to_text(data: dict) -> bytes:
+def _result_dict_to_text(data: dict[str, object]) -> bytes:
     """Extract terminal text from a Claude result dict."""
     if data.get("is_error"):
         detail = data.get("result") or data.get("subtype", "unknown")
@@ -2146,7 +2146,7 @@ def _wrap_stream_json(raw: bytes) -> bytes:
             events.append(_json.loads(line))
         except (_json.JSONDecodeError, UnicodeDecodeError):
             events.append(line.decode("utf-8", errors="replace"))
-    return _json.dumps(events, indent=2).encode("utf-8")
+    return _json.dumps(events, separators=(",", ":")).encode("utf-8")
 
 
 def _autonomous_loop(
