@@ -286,6 +286,126 @@ class PaperBroker:
                 (order_id,),
             )
 
+    async def fill_resting_orders(
+        self,
+        orderbooks: dict[str, Orderbook],
+        *,
+        fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+    ) -> list[Order]:
+        """Re-check resting orders against current orderbooks and fill any
+        that have become marketable.
+
+        For BUY orders the notional was already reserved at creation, so
+        filling only debits the additional fee.  For SELL orders the proceeds
+        are credited normally.
+
+        Returns orders that received at least one new fill.
+        """
+        cursor = await self._conn.execute(
+            "SELECT * FROM paper_orders WHERE status = 'resting'"
+        )
+        rows = await cursor.fetchall()
+
+        filled_orders: list[Order] = []
+        now = datetime.datetime.now(datetime.UTC)
+
+        for row in rows:
+            ticker = row["ticker"]
+            if ticker not in orderbooks:
+                continue
+
+            try:
+                remaining = int(row["remaining_count"])
+                side = OrderSide(row["side"])
+                action = OrderAction(row["action"])
+                price_cents = max(int(row["yes_price"]), int(row["no_price"]))
+                price = price_cents / 100.0
+
+                params = CreateOrderParams(
+                    ticker=ticker,
+                    action=action,
+                    side=side,
+                    count=remaining,
+                    yes_price=price if side == OrderSide.YES else None,
+                    no_price=price if side == OrderSide.NO else None,
+                    post_only=True,
+                )
+
+                result = simulate_fill(params, orderbooks[ticker], fees=fees)
+                if result.total_filled == 0:
+                    continue
+
+                async with self._db.transaction():
+                    # Balance: BUY reservation already covers notional, just debit fees.
+                    # SELL has no reservation — credit proceeds minus fees.
+                    if action == OrderAction.BUY:
+                        await self._update_balance(-result.total_fees)
+                    else:
+                        await self._update_balance(
+                            result.total_notional - result.total_fees
+                        )
+
+                    # Record fills
+                    for fill in result.fills:
+                        trade_id = f"paper-fill-{uuid.uuid4().hex[:12]}"
+                        fill_cents = int(round(fill.price * 100))
+                        await self._conn.execute(
+                            """INSERT INTO paper_fills
+                               (trade_id, order_id, ticker, action, side, count,
+                                yes_price, no_price, fee, is_taker, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                trade_id,
+                                row["order_id"],
+                                ticker,
+                                action.value,
+                                side.value,
+                                fill.count,
+                                fill_cents if side == OrderSide.YES else 0,
+                                fill_cents if side == OrderSide.NO else 0,
+                                fill.fee,
+                                0,  # maker fill
+                                now.isoformat(),
+                            ),
+                        )
+
+                    # Update position
+                    await self._update_position_from_fills(params, result)
+
+                    # Update order record
+                    new_remaining = remaining - result.total_filled
+                    new_status = "executed" if new_remaining == 0 else "resting"
+                    await self._conn.execute(
+                        """UPDATE paper_orders
+                           SET remaining_count = ?, status = ?,
+                               updated_at = datetime('now')
+                           WHERE order_id = ?""",
+                        (new_remaining, new_status, row["order_id"]),
+                    )
+
+                filled_orders.append(Order(
+                    order_id=row["order_id"],
+                    ticker=ticker,
+                    action=action,
+                    side=side,
+                    status=new_status,
+                    yes_price=int(row["yes_price"]) / 100.0,
+                    no_price=int(row["no_price"]) / 100.0,
+                    count=int(row["count"]),
+                    remaining_count=new_remaining,
+                    created_time=row["created_at"],
+                ))
+            except Exception:
+                import logging
+
+                logging.getLogger("gimmes").error(
+                    "Failed to process resting order %s; skipping",
+                    row["order_id"],
+                    exc_info=True,
+                )
+
+        return filled_orders
+
     async def list_orders(
         self,
         ticker: str | None = None,

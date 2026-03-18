@@ -986,6 +986,49 @@ def reconcile() -> None:
         from gimmes.store.queries import get_positions, sync_positions
 
         async with trading_context(config) as (client, broker, db):
+            # Fill resting paper orders against current market data
+            if broker:
+                resting = await broker.list_orders(status="resting")
+                if resting:
+                    from gimmes.kalshi.markets import get_orderbook
+
+                    tickers = {o.ticker for o in resting}
+                    orderbooks = {}
+                    for t in tickers:
+                        try:
+                            orderbooks[t] = await get_orderbook(client, t)
+                        except Exception as exc:
+                            import logging
+
+                            logging.getLogger("gimmes").warning(
+                                "Could not fetch orderbook for %s", t,
+                                exc_info=True,
+                            )
+                            console.print(
+                                f"  [yellow]Warning: could not fetch"
+                                f" orderbook for {t}: {exc}[/yellow]"
+                            )
+                    try:
+                        filled = await broker.fill_resting_orders(orderbooks)
+                    except Exception as exc:
+                        import logging
+
+                        logging.getLogger("gimmes").warning(
+                            "Failed to process resting orders: %s", exc,
+                            exc_info=True,
+                        )
+                        console.print(
+                            f"  [yellow]Warning: could not process"
+                            f" resting orders: {exc}[/yellow]"
+                        )
+                        filled = []
+                    for o in filled:
+                        console.print(
+                            f"  [green]Filled resting order {o.order_id}:"
+                            f" {o.action.value.upper()} {o.count}"
+                            f" {o.side.value.upper()} {o.ticker}[/green]"
+                        )
+
             old_positions = await get_positions(db)
             old_tickers = {p.ticker: p for p in old_positions}
 
