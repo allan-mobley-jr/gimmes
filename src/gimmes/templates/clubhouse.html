@@ -1095,8 +1095,8 @@
         }
 
         function cyclePositionFilter() {
-            var cycle = ['all', 'yes', 'no'];
-            var labels = { all: 'All sides', yes: 'YES only', no: 'NO only' };
+            const cycle = ['all', 'yes', 'no'];
+            const labels = { all: 'All sides', yes: 'YES only', no: 'NO only' };
             positionSideFilter = cycle[(cycle.indexOf(positionSideFilter) + 1) % cycle.length];
             document.getElementById('filter-positions-btn').textContent = labels[positionSideFilter];
             if (lastPositions) updatePositions(lastPositions);
