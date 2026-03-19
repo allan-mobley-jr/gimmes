@@ -293,20 +293,16 @@ class TestRecommendationModel:
 
 class TestRunStandalone:
     @pytest.fixture()
-    def _stub_server(self, monkeypatch):
-        """Stub uvicorn and signal so run_standalone returns immediately."""
-        self.timers: list = []
-        self.signal_handlers: dict = {}
-
-        parent = self
+    def stub(self, monkeypatch):
+        """Stub uvicorn so run_standalone returns immediately."""
+        captured = {"timers": [], "server": None}
 
         class FakeTimer:
             def __init__(self, delay, fn, args=None, kwargs=None):
                 self.delay = delay
                 self.fn = fn
-                self.args = args or []
                 self.daemon = False
-                parent.timers.append(self)
+                captured["timers"].append(self)
 
             def start(self):
                 pass
@@ -314,53 +310,41 @@ class TestRunStandalone:
         class FakeServer:
             def __init__(self, config):
                 self.config = config
-
-            def install_signal_handlers(self):
-                raise AssertionError(
-                    "uvicorn signal handlers should have been disabled"
-                )
+                self.handle_exit = None
 
             def run(self):
-                # Verify run_standalone overrode install_signal_handlers
-                self.install_signal_handlers()
-                parent.fake_server = self
+                captured["server"] = self
 
         monkeypatch.setattr("gimmes.clubhouse.server.threading.Timer", FakeTimer)
         monkeypatch.setattr("uvicorn.Config", lambda *a, **kw: None)
         monkeypatch.setattr("uvicorn.Server", FakeServer)
-        monkeypatch.setattr(
-            "signal.signal",
-            lambda sig, handler: self.signal_handlers.update({sig: handler}),
-        )
+        return captured
 
-    def test_opens_browser_by_default(self, _stub_server) -> None:
+    def test_opens_browser_by_default(self, stub) -> None:
         run_standalone(port=19391, open_browser=True)
 
-        assert len(self.timers) == 1
-        assert self.timers[0].delay == 1.0
-        assert self.timers[0].daemon is True
+        assert len(stub["timers"]) == 1
+        assert stub["timers"][0].delay == 1.0
+        assert stub["timers"][0].daemon is True
 
-    def test_no_browser_flag(self, _stub_server) -> None:
+    def test_no_browser_flag(self, stub) -> None:
         run_standalone(port=19392, open_browser=False)
 
-        assert self.timers == []
+        assert stub["timers"] == []
 
-    def test_sigint_handler_installed(self, _stub_server) -> None:
-        import signal
-
+    def test_handle_exit_overridden(self, stub) -> None:
         run_standalone(port=19393, open_browser=False)
 
-        assert signal.SIGINT in self.signal_handlers
+        assert stub["server"] is not None
+        assert stub["server"].handle_exit is not None
 
-    def test_sigint_handler_calls_exit(self, monkeypatch, _stub_server) -> None:
-        import signal
-
+    def test_handle_exit_calls_os_exit(self, monkeypatch, stub) -> None:
         run_standalone(port=19394, open_browser=False)
 
-        handler = self.signal_handlers[signal.SIGINT]
+        handler = stub["server"].handle_exit
         exit_codes: list[int] = []
         monkeypatch.setattr("os._exit", lambda code: exit_codes.append(code))
-        handler(signal.SIGINT, None)
+        handler(2, None)  # signal.SIGINT = 2
         assert exit_codes == [0]
 
 

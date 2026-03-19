@@ -209,7 +209,6 @@ def run_standalone(
 ) -> None:
     """Run the dashboard server in the foreground (blocking)."""
     import os
-    import signal
     import webbrowser
 
     import uvicorn
@@ -238,17 +237,15 @@ def run_standalone(
         timer.daemon = True
         timer.start()
 
-    def _handle_sigint(*_: object) -> None:
+    def _force_exit(_sig: int, _frame: object) -> None:
         print("\n  Clubhouse stopped.")
         os._exit(0)
-
-    signal.signal(signal.SIGINT, _handle_sigint)
 
     config = uvicorn.Config(
         app, host="127.0.0.1", port=actual_port, log_level="warning",
     )
     server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None
+    server.handle_exit = _force_exit  # type: ignore[assignment]
     server.run()
 
 
