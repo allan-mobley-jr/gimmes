@@ -283,6 +283,48 @@ class TestMarkToMarket:
         no_pos = [p for p in positions if p.side == "no"][0]
         assert no_pos.market_price == pytest.approx(0.40)  # 1 - 0.60
 
+    @pytest.mark.asyncio
+    async def test_mark_to_market_no_side_unrealized_pnl(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """NO-side unrealized P&L uses NO-price space, not YES-price."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.32,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+
+        # YES midpoint = 0.60 → NO price = 0.40 > entry ~0.32 → profit
+        await broker.mark_to_market("TEST-MKT", 0.60)
+        positions = await broker.get_positions()
+        no_pos = [p for p in positions if p.side == "no"][0]
+        assert no_pos.unrealized_pnl > 0
+
+    @pytest.mark.asyncio
+    async def test_mark_to_market_no_side_price_drop(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """NO-side shows negative unrealized P&L when NO price drops."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.32,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+
+        # YES midpoint = 0.90 → NO price = 0.10 < entry ~0.32 → loss
+        await broker.mark_to_market("TEST-MKT", 0.90)
+        positions = await broker.get_positions()
+        no_pos = [p for p in positions if p.side == "no"][0]
+        assert no_pos.unrealized_pnl < 0
+
 
 # ---------------------------------------------------------------------------
 # Settlement

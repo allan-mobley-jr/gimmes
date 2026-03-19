@@ -537,12 +537,8 @@ class PaperBroker:
                 avg_price = float(row["avg_price"])
                 side = row["side"]
 
-                if side == "yes":
-                    unrealized = (current_price - avg_price) * count
-                else:
-                    unrealized = (avg_price - current_price) * count
-
                 stored_price = current_price if side == "yes" else 1 - current_price
+                unrealized = (stored_price - avg_price) * count
                 await self._conn.execute(
                     """UPDATE paper_positions
                        SET market_price = ?, unrealized_pnl = ?,
