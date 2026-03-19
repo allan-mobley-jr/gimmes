@@ -220,4 +220,16 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 10
 
+    # Version 11: index on candidates.ticker for per-ticker lookups (#275)
+    if current < 11:
+        await db.conn.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_candidates_ticker"
+            " ON candidates(ticker);"
+        )
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (11,)
+        )
+        await db.conn.commit()
+        current = 11
+
     return current
