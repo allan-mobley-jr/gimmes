@@ -143,38 +143,36 @@ class PaperBroker:
         # Run fill simulation
         result = simulate_fill(params, orderbook, fees=fees)
 
-        # Determine status
-        if result.total_filled == params.count:
-            status = "executed"
-        elif result.total_filled > 0:
-            status = "executed"  # Partial taker fill — remainder abandoned
-        elif params.post_only:
-            status = "resting"  # Maker order rests on book
-        else:
-            status = "canceled"  # Taker found nothing
+        # Paper mode: fill maker order remainder immediately at limit price.
+        # Real markets have opposing flow that hits resting bids; paper mode
+        # has none, so we fill at limit to enable same-cycle position
+        # updates.  (#255)
+        if params.post_only and result.remaining_count > 0:
+            remaining = result.remaining_count
+            limit_price = params.price
+            fill_fee = fee_for_order(
+                remaining, limit_price, is_taker=False, fees=fees,
+            )
+            maker_fill = SimulatedFill(
+                count=remaining, price=limit_price, fee=fill_fee, is_taker=False,
+            )
+            result = FillResult(
+                fills=result.fills + [maker_fill],
+                remaining_count=0,
+                total_filled=params.count,
+                total_notional=result.total_notional + remaining * limit_price,
+                total_fees=result.total_fees + fill_fee,
+            )
+
+        # Determine status — any fill counts as executed (partial taker
+        # fills abandon the remainder rather than resting).
+        status = "executed" if result.total_filled > 0 else "canceled"
 
         # Pre-transaction balance validation
         if result.total_filled > 0 and params.action == OrderAction.BUY:
             cost = result.total_notional + result.total_fees
-            resting_cost = 0.0
-            if result.remaining_count > 0 and params.post_only:
-                resting_cost = result.remaining_count * (
-                    params.price
-                )
             balance = await self.get_balance()
-            if balance < cost + resting_cost:
-                return await self._reject_order(order_id, params, now)
-        elif (
-            params.action == OrderAction.BUY
-            and result.remaining_count > 0
-            and params.post_only
-            and result.total_filled == 0
-        ):
-            resting_cost = result.remaining_count * (
-                params.price
-            )
-            balance = await self.get_balance()
-            if balance < resting_cost:
+            if balance < cost:
                 return await self._reject_order(order_id, params, now)
 
         # All writes in one atomic transaction
@@ -188,17 +186,6 @@ class PaperBroker:
                     await self._update_balance(
                         result.total_notional - result.total_fees
                     )
-
-            # Reserve balance only for resting BUY maker orders
-            if (
-                result.remaining_count > 0
-                and params.post_only
-                and params.action == OrderAction.BUY
-            ):
-                resting_price = params.price
-                await self._update_balance(
-                    -(result.remaining_count * resting_price)
-                )
 
             # Insert order record
             await self._conn.execute(
@@ -264,7 +251,12 @@ class PaperBroker:
         )
 
     async def cancel_order(self, order_id: str) -> None:
-        """Cancel a resting order and refund reserved balance."""
+        """Cancel a resting order and refund reserved balance.
+
+        Note: since #255 maker orders fill immediately, so no new orders
+        enter 'resting' status.  This method is retained for any legacy
+        rows and for the CLI cancel command contract.
+        """
         cursor = await self._conn.execute(
             "SELECT * FROM paper_orders WHERE order_id = ? AND status = 'resting'",
             (order_id,),
@@ -295,9 +287,9 @@ class PaperBroker:
         """Re-check resting orders against current orderbooks and fill any
         that have become marketable.
 
-        For BUY orders the notional was already reserved at creation, so
-        filling only debits the additional fee.  For SELL orders the proceeds
-        are credited normally.
+        Since #255, maker orders fill immediately at creation so no new
+        orders enter 'resting' status.  This method is retained for any
+        legacy rows and is called by the CLI reconciliation loop.
 
         Returns orders that received at least one new fill.
         """
@@ -643,7 +635,7 @@ class PaperBroker:
 
         # Calculate weighted average fill price
         total_fill_cost = sum(
-            f.count * (f.price) for f in fill_result.fills
+            f.count * f.price for f in fill_result.fills
         )
         total_fees = sum(f.fee for f in fill_result.fills)
         filled = fill_result.total_filled
