@@ -99,7 +99,7 @@ class TestAutonomousLoop:
             patch("gimmes.store.session.end_session"),
             patch("gimmes.store.session.mark_stale_sessions", return_value=0),
             patch("gimmes.store.session.update_session_cycle"),
-            patch("asyncio.run"),
+            patch("asyncio.run", side_effect=lambda coro: coro.close()),
         ):
             yield
 
