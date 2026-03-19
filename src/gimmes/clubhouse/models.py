@@ -119,6 +119,20 @@ class RecommendationItem(BaseModel):
     status: str = "pending"
 
 
+class MarketDetailResponse(BaseModel):
+    ticker: str = ""
+    title: str = ""
+    subtitle: str = ""
+    status: str = ""
+    close_time: str | None = None
+    volume: int = 0
+    volume_24h: int = 0
+    open_interest: int = 0
+    yes_bid: float = 0.0
+    yes_ask: float = 0.0
+    last_price: float = 0.0
+
+
 class ConfigResponse(BaseModel):
     mode: str = "driving_range"
     strategy: dict = {}

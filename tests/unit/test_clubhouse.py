@@ -22,6 +22,7 @@ from gimmes.clubhouse.data import (
 )
 from gimmes.clubhouse.models import (
     ConfigResponse,
+    MarketDetailResponse,
     MetricsResponse,
     PortfolioResponse,
     RecommendationItem,
@@ -39,8 +40,10 @@ def _reset_config_cache(monkeypatch):
     import gimmes.clubhouse.data as data_mod
     monkeypatch.setenv("GIMMES_MODE", "driving_range")
     data_mod._cached_config = None
+    data_mod._kalshi_client = None
     yield
     data_mod._cached_config = None
+    data_mod._kalshi_client = None
 
 
 @pytest.fixture
@@ -364,4 +367,107 @@ class TestFastAPIApp:
         assert "/api/errors" in routes
         assert "/api/recommendations" in routes
         assert "/api/config" in routes
+        assert "/api/market/{ticker}" in routes
         assert "/api/stream" in routes
+
+
+class TestMarketDetailResponse:
+    def test_defaults(self) -> None:
+        resp = MarketDetailResponse()
+        assert resp.ticker == ""
+        assert resp.close_time is None
+        assert resp.volume == 0
+        assert resp.open_interest == 0
+        assert resp.subtitle == ""
+
+    def test_construction(self) -> None:
+        resp = MarketDetailResponse(
+            ticker="TEST-YES",
+            title="Will it rain?",
+            subtitle="Weather",
+            status="active",
+            close_time="2026-04-01T12:00:00",
+            volume=5000,
+            volume_24h=1200,
+            open_interest=800,
+            yes_bid=0.65,
+            yes_ask=0.67,
+            last_price=0.66,
+        )
+        assert resp.ticker == "TEST-YES"
+        assert resp.volume == 5000
+        assert resp.open_interest == 800
+        assert resp.close_time == "2026-04-01T12:00:00"
+
+
+class TestGetMarketDetail:
+    @pytest.fixture()
+    def patch_kalshi(self, monkeypatch):
+        """Patch the Kalshi client and get_market to return a configurable market."""
+        import gimmes.clubhouse.data as data_mod
+
+        captured_tickers: list[str] = []
+        market_to_return: list = []  # single-element list used as mutable holder
+
+        async def fake_get_market(_client, ticker):
+            captured_tickers.append(ticker)
+            return market_to_return[0]
+
+        monkeypatch.setattr(data_mod, "_kalshi_client", object())
+        monkeypatch.setattr("gimmes.kalshi.markets.get_market", fake_get_market)
+        return {"set_market": lambda m: market_to_return.append(m) or None,
+                "captured_tickers": captured_tickers,
+                "data_mod": data_mod}
+
+    @pytest.mark.asyncio
+    async def test_get_market_detail(self, patch_kalshi) -> None:
+        from datetime import UTC, datetime
+
+        from gimmes.models.market import Market, MarketStatus
+
+        patch_kalshi["set_market"](Market(
+            ticker="TEST-YES",
+            title="Will it rain?",
+            subtitle="Weather",
+            status=MarketStatus.ACTIVE,
+            volume=5000,
+            volume_24h=1200,
+            open_interest=800,
+            close_time=datetime(2026, 4, 1, 12, 0, 0, tzinfo=UTC),
+            yes_bid=0.65,
+            yes_ask=0.67,
+            last_price=0.66,
+        ))
+
+        result = await patch_kalshi["data_mod"].get_market_detail("TEST-YES")
+        assert result.ticker == "TEST-YES"
+        assert result.volume == 5000
+        assert result.open_interest == 800
+        assert result.status == "active"
+        assert result.close_time == "2026-04-01T12:00:00+00:00"
+        assert result.subtitle == "Weather"
+        assert patch_kalshi["captured_tickers"] == ["TEST-YES"]
+
+    @pytest.mark.asyncio
+    async def test_get_market_detail_no_close_time(self, patch_kalshi) -> None:
+        from gimmes.models.market import Market, MarketStatus
+
+        patch_kalshi["set_market"](Market(
+            ticker="TEST-YES",
+            status=MarketStatus.ACTIVE,
+            close_time=None,
+        ))
+
+        result = await patch_kalshi["data_mod"].get_market_detail("TEST-YES")
+        assert result.close_time is None
+
+    @pytest.mark.asyncio
+    async def test_get_market_detail_no_credentials(self, monkeypatch) -> None:
+        import gimmes.clubhouse.data as data_mod
+
+        monkeypatch.delenv("KALSHI_PROD_API_KEY", raising=False)
+        monkeypatch.delenv("KALSHI_PROD_PRIVATE_KEY_PATH", raising=False)
+        data_mod._cached_config = None
+
+        with pytest.raises(ValueError, match="API key not set"):
+            await data_mod.get_market_detail("TEST-YES")

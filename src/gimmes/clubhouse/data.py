@@ -14,6 +14,7 @@ from gimmes.clubhouse.models import (
     CandidateItem,
     ConfigResponse,
     ErrorItem,
+    MarketDetailResponse,
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
@@ -470,6 +471,35 @@ async def get_config_data() -> ConfigResponse:
         scanner=config.scanner.model_dump(),
         scoring=config.scoring.model_dump(),
         paper=config.paper.model_dump(),
+    )
+
+
+_kalshi_client: object | None = None
+
+
+async def get_market_detail(ticker: str) -> MarketDetailResponse:
+    """Fetch live market details from the Kalshi API."""
+    from gimmes.kalshi.markets import get_market
+
+    global _kalshi_client  # noqa: PLW0603
+    if _kalshi_client is None:
+        from gimmes.kalshi.client import KalshiClient
+
+        _kalshi_client = KalshiClient(_config())
+
+    market = await get_market(_kalshi_client, ticker)
+    return MarketDetailResponse(
+        ticker=market.ticker,
+        title=market.title,
+        subtitle=market.subtitle,
+        status=market.status.value,
+        close_time=market.close_time.isoformat() if market.close_time else None,
+        volume=market.volume,
+        volume_24h=market.volume_24h,
+        open_interest=market.open_interest,
+        yes_bid=market.yes_bid,
+        yes_ask=market.yes_ask,
+        last_price=market.last_price,
     )
 
 

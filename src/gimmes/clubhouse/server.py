@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -18,6 +19,7 @@ from gimmes.clubhouse.models import (
     CandidateItem,
     ConfigResponse,
     ErrorItem,
+    MarketDetailResponse,
     MetricsResponse,
     PortfolioResponse,
     PositionItem,
@@ -27,6 +29,8 @@ from gimmes.clubhouse.models import (
     TradeItem,
 )
 from gimmes.config import GIMMES_HOME
+
+logger = logging.getLogger("gimmes.clubhouse")
 
 DEFAULT_PORT = 1919
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -119,6 +123,18 @@ async def api_config() -> ConfigResponse:
     return await data.get_config_data()
 
 
+@app.get("/api/market/{ticker}")
+async def api_market_detail(ticker: str) -> MarketDetailResponse:
+    try:
+        return await data.get_market_detail(ticker)
+    except ValueError as e:
+        logger.warning("Market detail config error for %s: %s", ticker, e)
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception:
+        logger.warning("Market detail failed for %s", ticker, exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to fetch market data") from None
+
+
 # ---------------------------------------------------------------------------
 # SSE stream
 # ---------------------------------------------------------------------------
@@ -127,8 +143,6 @@ async def api_config() -> ConfigResponse:
 @app.get("/api/stream")
 async def api_stream() -> StreamingResponse:
     async def event_generator():
-        import logging
-
         sse_logger = logging.getLogger("gimmes.clubhouse.sse")
         last_fingerprint = ""
         while True:
