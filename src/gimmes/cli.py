@@ -407,11 +407,18 @@ def validate(
             unrealized_pnl = sum(p.unrealized_pnl for p in positions)
             total_daily_pnl = daily_pnl + unrealized_pnl
 
+            existing_cost_basis = 0.0
+            if size_up:
+                match = next((p for p in positions if p.ticker == ticker), None)
+                if match:
+                    existing_cost_basis = match.cost_basis
+
             existing_tickers = [p.ticker for p in positions]
             result = validate_trade(
                 market, trade_dollars, probability, balance,
                 total_daily_pnl, len(positions), existing_tickers, config,
                 fees=fees, session_spent=session_spent, size_up=size_up,
+                existing_cost_basis=existing_cost_basis,
             )
 
             console.print(f"\n[bold]Validation: {ticker}[/bold]")
@@ -597,14 +604,20 @@ def order(
 
                 true_prob = probability
 
-                if size_up and not any(
-                    p.ticker == ticker and p.side == side for p in positions
-                ):
-                    console.print(
-                        f"[red]SIZE UP rejected: no {side.upper()}"
-                        f" position in {ticker}[/red]"
+                existing_cost_basis = 0.0
+                if size_up:
+                    match = next(
+                        (p for p in positions
+                         if p.ticker == ticker and p.side == side),
+                        None,
                     )
-                    return
+                    if not match:
+                        console.print(
+                            f"[red]SIZE UP rejected: no {side.upper()}"
+                            f" position in {ticker}[/red]"
+                        )
+                        return
+                    existing_cost_basis = match.cost_basis
 
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
@@ -612,6 +625,7 @@ def order(
                     total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
                     session_spent=session_spent, size_up=size_up,
+                    existing_cost_basis=existing_cost_basis,
                 )
 
                 if not validation.approved:
