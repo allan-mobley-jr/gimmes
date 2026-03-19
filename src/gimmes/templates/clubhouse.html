@@ -953,7 +953,7 @@
         }
 
         function tradeEmptyRow() {
-            var msg = tradeEmptyMsgs[tradeFilter] || 'No entries today';
+            const msg = tradeEmptyMsgs[tradeFilter] || 'No entries today';
             return '<tr><td colspan="8" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
         }
 

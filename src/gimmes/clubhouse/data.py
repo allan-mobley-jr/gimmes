@@ -245,13 +245,18 @@ async def get_trades(db_path: Path, limit: int = 500) -> list[TradeItem]:
 
 
 async def get_candidates(db_path: Path, limit: int = 20) -> list[CandidateItem]:
-    """Get recent scanned candidates."""
+    """Get most recent assessment per candidate ticker."""
     items: list[CandidateItem] = []
 
     try:
         async with _connect(db_path) as conn:
             cursor = await conn.execute(
-                "SELECT * FROM candidates ORDER BY scanned_at DESC LIMIT ?", (limit,)
+                "SELECT c.* FROM candidates c"
+                " INNER JOIN ("
+                "   SELECT MAX(id) AS max_id FROM candidates GROUP BY ticker"
+                " ) latest ON c.id = latest.max_id"
+                " ORDER BY c.scanned_at DESC LIMIT ?",
+                (limit,),
             )
             rows = await cursor.fetchall()
             for row in rows:

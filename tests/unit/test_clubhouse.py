@@ -162,6 +162,22 @@ class TestDataLayer:
         assert candidates[0].ticker == "CAND-YES"
         assert candidates[0].gimme_score == 85
 
+    async def test_get_candidates_deduplicates_by_ticker(self, db_path: Path) -> None:
+        """Only the most recent assessment per ticker is returned (#257)."""
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO candidates (ticker, title, market_price,
+                   model_probability, edge, gimme_score, research_memo)
+                   VALUES ('CAND-YES', 'Updated', 0.75, 0.98, 0.23, 92, 'New memo')"""
+            )
+            await db.conn.commit()
+        candidates = await get_candidates(db_path)
+        # Two rows for CAND-YES exist, but only the latest should be returned
+        cand_yes = [c for c in candidates if c.ticker == "CAND-YES"]
+        assert len(cand_yes) == 1
+        assert cand_yes[0].gimme_score == 92
+        assert cand_yes[0].title == "Updated"
+
     async def test_get_metrics(self, db_path: Path) -> None:
         metrics = await get_metrics(db_path)
         assert isinstance(metrics, MetricsResponse)
