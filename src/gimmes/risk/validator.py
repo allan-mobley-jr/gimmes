@@ -98,8 +98,8 @@ def validate_trade(
         reason = size_check.reason
         if size_up and cost_basis > 0:
             reason += (
-                f" (${trade_dollars:.2f} new"
-                f" + ${cost_basis:.2f} existing)"
+                f" — ${trade_dollars:.2f} new"
+                f" + ${cost_basis:.2f} existing"
             )
         failures.append(reason)
 
