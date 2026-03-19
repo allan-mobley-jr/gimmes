@@ -297,11 +297,7 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
             resp.total_return = metrics.total_return
             resp.total_return_pct = metrics.total_return_pct
 
-            # Equity curve data for charting
-            resp.equity_curve = [
-                {"timestamp": s.get("timestamp", ""), "equity": s.get("total_equity", 0)}
-                for s in snapshots
-            ]
+            resp.equity_curve = metrics.equity_curve
     except Exception:
         logger.warning("get_metrics failed", exc_info=True)
 

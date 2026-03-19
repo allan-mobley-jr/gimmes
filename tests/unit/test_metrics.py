@@ -105,3 +105,58 @@ class TestCalculateMetrics:
         ]
         metrics = calculate_metrics([], snapshots)
         assert metrics.max_drawdown == 3000.0
+
+    def test_equity_curve_from_snapshots(self) -> None:
+        snapshots = [
+            {"timestamp": "2026-03-18T10:00:00", "total_equity": 10000},
+            {"timestamp": "2026-03-18T11:00:00", "total_equity": 10500},
+        ]
+        metrics = calculate_metrics([], snapshots, initial_bankroll=10000)
+        assert len(metrics.equity_curve) == 2
+        assert metrics.equity_curve[0]["equity"] == 10000
+        assert metrics.equity_curve[1]["equity"] == 10500
+
+    def test_equity_curve_fallback_from_trades(self) -> None:
+        trades = [
+            {"action": "open", "ticker": "A", "price": 0.60, "count": 10,
+             "timestamp": "2026-03-18T10:00:00"},
+            {"action": "close", "ticker": "A", "price": 0.80, "count": 10,
+             "timestamp": "2026-03-18T11:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [], initial_bankroll=100.0)
+        assert len(metrics.equity_curve) == 2
+        # After open: 100 - (10 * 0.60) = 94.0
+        assert metrics.equity_curve[0]["equity"] == 94.0
+        # After close: 94 + (10 * 0.80) = 102.0
+        assert metrics.equity_curve[1]["equity"] == 102.0
+        assert metrics.total_return == 2.0
+
+    def test_equity_curve_fallback_with_size_up(self) -> None:
+        trades = [
+            {"action": "open", "ticker": "A", "price": 0.60, "count": 10,
+             "timestamp": "2026-03-18T10:00:00"},
+            {"action": "size_up", "ticker": "A", "price": 0.65, "count": 5,
+             "timestamp": "2026-03-18T10:30:00"},
+            {"action": "close", "ticker": "A", "price": 0.80, "count": 15,
+             "timestamp": "2026-03-18T11:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [], initial_bankroll=100.0)
+        assert len(metrics.equity_curve) == 3
+        # open: 100 - 6.0 = 94.0
+        assert metrics.equity_curve[0]["equity"] == 94.0
+        # size_up: 94 - 3.25 = 90.75
+        assert metrics.equity_curve[1]["equity"] == 90.75
+        # close: 90.75 + 12.0 = 102.75
+        assert metrics.equity_curve[2]["equity"] == 102.75
+
+    def test_equity_curve_empty_when_no_data(self) -> None:
+        metrics = calculate_metrics([], [])
+        assert metrics.equity_curve == []
+
+    def test_equity_curve_fallback_skips_without_bankroll(self) -> None:
+        trades = [
+            {"action": "open", "ticker": "A", "price": 0.60, "count": 10,
+             "timestamp": "2026-03-18T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [], initial_bankroll=0)
+        assert metrics.equity_curve == []
