@@ -344,7 +344,8 @@ class TestRunStandalone:
         handler = stub["server"].handle_exit
         exit_codes: list[int] = []
         monkeypatch.setattr("os._exit", lambda code: exit_codes.append(code))
-        handler(2, None)  # signal.SIGINT = 2
+        import signal
+        handler(signal.SIGINT, None)
         assert exit_codes == [0]
 
 

@@ -238,7 +238,7 @@ def run_standalone(
         timer.start()
 
     def _force_exit(_sig: int, _frame: object) -> None:
-        print("\n  Clubhouse stopped.")
+        print("\n  Clubhouse stopped.", flush=True)
         os._exit(0)
 
     config = uvicorn.Config(
