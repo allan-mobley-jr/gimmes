@@ -110,25 +110,32 @@ class TestCreateOrder:
         assert pos.count == 10
 
     @pytest.mark.asyncio
-    async def test_resting_order_reserves_balance(
+    async def test_non_marketable_maker_fills_immediately(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Order that doesn't fill reserves balance for resting portion."""
+        """Non-marketable maker order fills immediately at limit price (#255)."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=0.65,  # Below ask — rests
+            yes_price=0.65,  # Below ask — fills immediately in paper mode
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
-        assert order.status == "resting"
-        assert order.remaining_count == 10
+        assert order.status == "executed"
+        assert order.remaining_count == 0
 
-        # Balance reduced by reserved amount (10 * $0.65 = $6.50)
+        # Balance reduced by notional + maker fee
+        notional = 10 * 0.65
+        fee = fee_for_order(10, 0.65, is_taker=False)
         balance = await broker.get_balance()
-        assert balance == pytest.approx(10_000.00 - 6.50)
+        assert balance == pytest.approx(10_000.00 - notional - fee)
+
+        # Position created in same call
+        positions = await broker.get_positions()
+        assert len(positions) == 1
+        assert positions[0].count == 10
 
     @pytest.mark.asyncio
     async def test_order_records_fills(
@@ -177,29 +184,6 @@ class TestCreateOrder:
 
 
 class TestCancel:
-    @pytest.mark.asyncio
-    async def test_cancel_resting_refunds_balance(
-        self, broker: PaperBroker, orderbook: Orderbook
-    ) -> None:
-        """Canceling a resting order refunds the reserved balance."""
-        params = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.BUY,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.65,  # Rests
-            post_only=True,
-        )
-        order = await broker.create_order(params, orderbook)
-        assert order.status == "resting"
-
-        balance_before = await broker.get_balance()
-        await broker.cancel_order(order.order_id)
-        balance_after = await broker.get_balance()
-
-        # Should refund 10 * $0.65 = $6.50
-        assert balance_after == pytest.approx(balance_before + 6.50)
-
     @pytest.mark.asyncio
     async def test_cancel_nonexistent_is_noop(self, broker: PaperBroker) -> None:
         """Canceling an unknown order ID does nothing."""
@@ -399,8 +383,8 @@ class TestListOrders:
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
         """Can filter orders by status."""
-        # Create a resting order
-        resting_params = CreateOrderParams(
+        # Both maker orders fill immediately in paper mode (#255)
+        params_a = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
@@ -408,10 +392,9 @@ class TestListOrders:
             yes_price=0.65,
             post_only=True,
         )
-        await broker.create_order(resting_params, orderbook)
+        await broker.create_order(params_a, orderbook)
 
-        # Create a filled order
-        filled_params = CreateOrderParams(
+        params_b = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
@@ -419,15 +402,13 @@ class TestListOrders:
             yes_price=0.70,
             post_only=True,
         )
-        await broker.create_order(filled_params, orderbook)
+        await broker.create_order(params_b, orderbook)
 
         resting = await broker.list_orders(status="resting")
-        assert len(resting) == 1
-        assert resting[0].status == "resting"
+        assert len(resting) == 0
 
         executed = await broker.list_orders(status="executed")
-        assert len(executed) == 1
-        assert executed[0].status == "executed"
+        assert len(executed) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -634,44 +615,35 @@ class TestSellOrder:
 # ---------------------------------------------------------------------------
 
 
-class TestFillRestingOrders:
+class TestMakerImmediateFill:
+    """Paper mode fills maker orders immediately at limit price (#255)."""
+
     @pytest.mark.asyncio
-    async def test_fill_resting_buy_when_marketable(
+    async def test_non_marketable_buy_fills_immediately(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting BUY becomes marketable → fills, creates position."""
+        """BUY below ask fills immediately, creates position in same call."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=0.65,  # Below ask (0.70) — rests
+            yes_price=0.65,  # Below ask (0.70)
             post_only=True,
         )
         order = await broker.create_order(params, orderbook)
-        assert order.status == "resting"
-
-        # New orderbook: ask has dropped to 0.65 (NO bid = 0.35)
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.63, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.35, quantity=100)],  # YES ask = 0.65
-        )
-        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        assert len(filled) == 1
-        assert filled[0].status == "executed"
-        assert filled[0].remaining_count == 0
+        assert order.status == "executed"
+        assert order.remaining_count == 0
 
         positions = await broker.get_positions()
         assert len(positions) == 1
         assert positions[0].count == 10
 
     @pytest.mark.asyncio
-    async def test_fill_resting_buy_balance_accounting(
+    async def test_immediate_fill_balance_accounting(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Filling a resting BUY only debits fees (reservation covers notional)."""
+        """Non-marketable maker fill debits notional + maker fees."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
@@ -681,53 +653,17 @@ class TestFillRestingOrders:
             post_only=True,
         )
         await broker.create_order(params, orderbook)
-        balance_after_rest = await broker.get_balance()
-        # Reservation: 10 * 0.65 = $6.50, so balance = $9,993.50
 
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.63, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.35, quantity=100)],
-        )
-        await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        balance_after_fill = await broker.get_balance()
-        # Only fees deducted from the reserved balance
+        notional = 10 * 0.65
         fees = fee_for_order(10, 0.65, is_taker=False)
-        assert balance_after_fill == pytest.approx(balance_after_rest - fees)
+        balance = await broker.get_balance()
+        assert balance == pytest.approx(10_000.00 - notional - fees)
 
     @pytest.mark.asyncio
-    async def test_resting_fills_at_limit_price(
+    async def test_immediate_fill_uses_maker_fees(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting order fills at limit price even if ask hasn't moved (#215)."""
-        params = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.BUY,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.65,
-            post_only=True,
-        )
-        order = await broker.create_order(params, orderbook)
-        assert order.status == "resting"
-
-        # Same orderbook — ask still at $0.70, above limit $0.65
-        filled = await broker.fill_resting_orders({"TEST-MKT": orderbook})
-
-        assert len(filled) == 1
-        assert filled[0].status == "executed"
-        assert filled[0].remaining_count == 0
-
-        positions = await broker.get_positions()
-        assert len(positions) == 1
-        assert positions[0].count == 10
-
-    @pytest.mark.asyncio
-    async def test_resting_fill_uses_maker_fees(
-        self, broker: PaperBroker, orderbook: Orderbook
-    ) -> None:
-        """Resting order fill uses maker fees, not taker fees."""
+        """Non-marketable maker fill uses maker fees, not taker fees."""
         params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
@@ -737,19 +673,16 @@ class TestFillRestingOrders:
             post_only=True,
         )
         await broker.create_order(params, orderbook)
-        balance_after_rest = await broker.get_balance()
 
-        await broker.fill_resting_orders({"TEST-MKT": orderbook})
-
-        balance_after_fill = await broker.get_balance()
-        fees = fee_for_order(10, 0.65, is_taker=False)
-        assert balance_after_fill == pytest.approx(balance_after_rest - fees)
+        fills = await broker.list_fills(ticker="TEST-MKT")
+        assert len(fills) == 1
+        assert fills[0].is_taker is False
 
     @pytest.mark.asyncio
-    async def test_resting_maker_bid_below_ask_fills(
+    async def test_maker_bid_below_ask_fills_immediately(
         self, broker: PaperBroker,
     ) -> None:
-        """Maker BUY at 73c fills on reconcile even with ask at 74c (#215)."""
+        """Maker BUY at 73c fills immediately even with ask at 74c (#255)."""
         ob = Orderbook(
             ticker="TEST-MKT",
             yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
@@ -764,68 +697,18 @@ class TestFillRestingOrders:
             post_only=True,
         )
         order = await broker.create_order(params, ob)
-        assert order.status == "resting"
-
-        filled = await broker.fill_resting_orders({"TEST-MKT": ob})
-        assert len(filled) == 1
-        assert filled[0].status == "executed"
+        assert order.status == "executed"
+        assert order.remaining_count == 0
 
         positions = await broker.get_positions()
         assert positions[0].count == 10
 
     @pytest.mark.asyncio
-    async def test_fill_resting_skips_missing_orderbook(
+    async def test_sell_above_bid_fills_immediately(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting order for a ticker not in orderbooks dict is skipped."""
-        params = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.BUY,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.65,
-            post_only=True,
-        )
-        await broker.create_order(params, orderbook)
-
-        filled = await broker.fill_resting_orders({})  # Empty dict
-        assert len(filled) == 0
-
-    @pytest.mark.asyncio
-    async def test_fill_records_persisted(
-        self, broker: PaperBroker, orderbook: Orderbook
-    ) -> None:
-        """Fill records are written to paper_fills with correct order_id."""
-        params = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.BUY,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.65,
-            post_only=True,
-        )
-        order = await broker.create_order(params, orderbook)
-        assert order.status == "resting"
-
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.63, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.35, quantity=100)],
-        )
-        await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        fills = await broker.list_fills(ticker="TEST-MKT")
-        assert len(fills) == 1
-        assert fills[0].order_id == order.order_id
-        assert fills[0].count == 10
-        assert fills[0].is_taker is False
-
-    @pytest.mark.asyncio
-    async def test_fill_resting_sell_order(
-        self, broker: PaperBroker, orderbook: Orderbook
-    ) -> None:
-        """Resting SELL becomes marketable → fills, reduces position."""
-        # First create a position by buying
+        """SELL above best bid fills immediately, reduces position."""
+        # Create position first
         buy_params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
@@ -836,7 +719,7 @@ class TestFillRestingOrders:
         )
         await broker.create_order(buy_params, orderbook)
 
-        # Place a SELL at 0.72 — above best bid (0.68), so it rests
+        # SELL at 0.72 — above best bid (0.68)
         sell_ob = Orderbook(
             ticker="TEST-MKT",
             yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
@@ -851,150 +734,125 @@ class TestFillRestingOrders:
             post_only=True,
         )
         order = await broker.create_order(sell_params, sell_ob)
-        assert order.status == "resting"
-        balance_after_rest = await broker.get_balance()
-
-        # New orderbook: bid rises to 0.73
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.73, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.27, quantity=500)],
-        )
-        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        assert len(filled) == 1
-        assert filled[0].status == "executed"
+        assert order.status == "executed"
+        assert order.remaining_count == 0
 
         # Position reduced from 10 to 5
         positions = await broker.get_positions()
         assert positions[0].count == 5
 
         # Balance credited (proceeds - fees)
-        balance_after_fill = await broker.get_balance()
         proceeds = 5 * 0.72
         fees = fee_for_order(5, 0.72, is_taker=False)
-        assert balance_after_fill == pytest.approx(balance_after_rest + proceeds - fees)
-
+        balance = await broker.get_balance()
+        buy_cost = 10 * 0.70 + fee_for_order(10, 0.70, is_taker=False)
+        assert balance == pytest.approx(10_000.00 - buy_cost + proceeds - fees)
 
     @pytest.mark.asyncio
-    async def test_fill_resting_sell_no_position_skipped(
+    async def test_fill_records_persisted(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting SELL with no backing position is skipped (no free money)."""
-        # Buy 10 — creates position
-        buy_params = CreateOrderParams(
+        """Fill records are written to paper_fills at creation time."""
+        params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
+            yes_price=0.65,
+            post_only=True,
+        )
+        order = await broker.create_order(params, orderbook)
+
+        fills = await broker.list_fills(ticker="TEST-MKT")
+        assert len(fills) == 1
+        assert fills[0].order_id == order.order_id
+        assert fills[0].count == 10
+        assert fills[0].is_taker is False
+
+    @pytest.mark.asyncio
+    async def test_partial_depth_fills_remainder_at_limit(
+        self, broker: PaperBroker,
+    ) -> None:
+        """Maker BUY with partial depth: fills at depth + synthetic remainder."""
+        # Only 180 contracts on opposing side at YES ask 0.70
+        limited_ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.30, quantity=180)],
+        )
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=500,
             yes_price=0.70,
             post_only=True,
         )
-        await broker.create_order(buy_params, orderbook)
+        order = await broker.create_order(params, limited_ob)
+        assert order.status == "executed"
+        assert order.remaining_count == 0
 
-        # Place resting SELL for 5 (above bid, rests while position exists)
-        sell_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
-        )
-        rest_sell = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.SELL,
-            side=OrderSide.YES,
-            count=5,
-            yes_price=0.72,
-            post_only=True,
-        )
-        order = await broker.create_order(rest_sell, sell_ob)
-        assert order.status == "resting"
+        # Two fills: 180 from depth + 320 synthetic
+        fills = await broker.list_fills(ticker="TEST-MKT")
+        assert len(fills) == 2
+        counts = sorted(f.count for f in fills)
+        assert counts == [180, 320]
+        assert all(not f.is_taker for f in fills)
 
-        # Now sell ALL 10 contracts, zeroing the position
-        sell_all = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.SELL,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.68,
-            post_only=True,
-        )
-        await broker.create_order(sell_all, orderbook)
+        # Full position created
         positions = await broker.get_positions()
-        assert len(positions) == 0  # Position fully liquidated
+        assert positions[0].count == 500
 
-        balance_before = await broker.get_balance()
-
-        # Market moves — bid rises above sell price
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.73, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.27, quantity=500)],
-        )
-        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        assert len(filled) == 0  # Skipped — no backing position
-        assert await broker.get_balance() == balance_before
+        # Balance = starting - (500 * 0.70) - maker_fee(180, 0.70) - maker_fee(320, 0.70)
+        notional = 500 * 0.70
+        fees = fee_for_order(180, 0.70, is_taker=False) + fee_for_order(320, 0.70, is_taker=False)
+        balance = await broker.get_balance()
+        assert balance == pytest.approx(10_000.00 - notional - fees)
 
     @pytest.mark.asyncio
-    async def test_fill_resting_sell_capped_to_held(
+    async def test_no_side_non_marketable_fills_immediately(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting SELL capped to actually held contracts."""
-        # Buy 10
-        buy_params = CreateOrderParams(
+        """NO-side non-marketable maker order fills immediately at limit price."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.25,  # Below NO ask (1 - 0.68 = 0.32)
+            post_only=True,
+        )
+        order = await broker.create_order(params, orderbook)
+        assert order.status == "executed"
+        assert order.remaining_count == 0
+
+        positions = await broker.get_positions()
+        no_pos = [p for p in positions if p.side == "no"]
+        assert len(no_pos) == 1
+        assert no_pos[0].count == 10
+
+        notional = 10 * 0.25
+        fees = fee_for_order(10, 0.25, is_taker=False)
+        balance = await broker.get_balance()
+        assert balance == pytest.approx(10_000.00 - notional - fees)
+
+    @pytest.mark.asyncio
+    async def test_fill_resting_orders_is_noop(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """fill_resting_orders returns empty when no orders are resting."""
+        params = CreateOrderParams(
             ticker="TEST-MKT",
             action=OrderAction.BUY,
             side=OrderSide.YES,
             count=10,
-            yes_price=0.70,
+            yes_price=0.65,
             post_only=True,
         )
-        await broker.create_order(buy_params, orderbook)
+        await broker.create_order(params, orderbook)
 
-        # Place resting SELL for 10 (above bid, rests)
-        sell_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
-        )
-        sell_params = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.SELL,
-            side=OrderSide.YES,
-            count=10,
-            yes_price=0.72,
-            post_only=True,
-        )
-        await broker.create_order(sell_params, sell_ob)
-
-        # Sell 7 through another order, leaving only 3 held
-        sell_some = CreateOrderParams(
-            ticker="TEST-MKT",
-            action=OrderAction.SELL,
-            side=OrderSide.YES,
-            count=7,
-            yes_price=0.68,
-            post_only=True,
-        )
-        await broker.create_order(sell_some, orderbook)
-
-        positions = await broker.get_positions()
-        assert positions[0].count == 3
-
-        # Now fill the resting SELL — should cap at 3
-        new_ob = Orderbook(
-            ticker="TEST-MKT",
-            yes_bids=[OrderbookLevel(price=0.73, quantity=200)],
-            no_bids=[OrderbookLevel(price=0.27, quantity=500)],
-        )
-        filled = await broker.fill_resting_orders({"TEST-MKT": new_ob})
-
-        assert len(filled) == 1
-        # Only 3 filled (capped), 7 still resting
-        assert filled[0].remaining_count == 7
-
-        positions = await broker.get_positions()
-        assert len(positions) == 0  # All 3 remaining sold
+        filled = await broker.fill_resting_orders({"TEST-MKT": orderbook})
+        assert len(filled) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1066,14 +924,14 @@ class TestNegativeBalanceGuard:
         assert balance == 10_000.00
 
     @pytest.mark.asyncio
-    async def test_resting_order_exceeding_balance_is_canceled(
+    async def test_maker_order_exceeding_balance_is_canceled(
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
-        """Resting BUY that would reserve more than available balance is rejected."""
+        """Maker BUY that would exceed available balance is rejected."""
         ob = Orderbook(
             ticker="EXPENSIVE",
             yes_bids=[],
-            no_bids=[],  # Nothing to fill, will rest
+            no_bids=[],  # No depth, but fills immediately in paper mode
         )
         params = CreateOrderParams(
             ticker="EXPENSIVE",
