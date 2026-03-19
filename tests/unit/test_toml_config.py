@@ -31,6 +31,18 @@ class TestLoadConfigMalformedToml:
         assert config.strategy is not None
 
 
+class TestMonitorPriceTrigger:
+    def test_default_is_10(self, tmp_path):
+        config = load_config(config_path=tmp_path / "nonexistent.toml")
+        assert config.risk.monitor_price_trigger_pp == 10
+
+    def test_loads_from_toml(self, tmp_path):
+        toml = tmp_path / "gimmes.toml"
+        toml.write_text("[risk]\nmonitor_price_trigger_pp = 15\n")
+        config = load_config(config_path=toml)
+        assert config.risk.monitor_price_trigger_pp == 15
+
+
 class TestPrivateKeyPasswordConfig:
     def test_reads_password_from_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KALSHI_PRIVATE_KEY_PASSWORD", "my-secret")
