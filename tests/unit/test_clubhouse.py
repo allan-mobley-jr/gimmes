@@ -141,6 +141,21 @@ class TestDataLayer:
         assert trades[0].ticker == "TEST-YES"
         assert trades[0].action == "open"
 
+    async def test_get_trades_excludes_yesterday(self, db_path: Path) -> None:
+        """Daily-scoped query excludes trades from previous days (#256)."""
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count, price,
+                   model_probability, gimme_score, edge, rationale, agent,
+                   timestamp) VALUES
+                   ('OLD-MKT', 'open', 'yes', 5, 0.50, 0.80, 70, 0.10,
+                    'old', 'closer', datetime('now', '-1 day'))"""
+            )
+            await db.conn.commit()
+        trades = await get_trades(db_path)
+        assert len(trades) == 1
+        assert trades[0].ticker == "TEST-YES"
+
     async def test_get_candidates(self, db_path: Path) -> None:
         candidates = await get_candidates(db_path)
         assert len(candidates) == 1
