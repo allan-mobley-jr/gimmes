@@ -26,6 +26,7 @@ class TradeRecord(TypedDict, total=False):
     edge: float
     kelly_fraction: float
     rationale: str
+    thesis: str
     agent: str
     order_id: str
     timestamp: str
@@ -41,8 +42,8 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
     cursor = await db.conn.execute(
         """INSERT INTO trades
            (ticker, action, side, count, price, model_probability,
-            gimme_score, edge, kelly_fraction, rationale, agent, order_id, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gimme_score, edge, kelly_fraction, rationale, thesis, agent, order_id, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             trade.ticker,
             trade.action.value,
@@ -54,6 +55,7 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
             trade.edge,
             trade.kelly_fraction,
             trade.rationale,
+            trade.thesis,
             trade.agent,
             trade.order_id,
             trade.timestamp.isoformat(),
@@ -442,6 +444,80 @@ async def get_recent_candidates(db: Database, limit: int = 20) -> list[dict]:
     """Get recent scanned candidates, newest first."""
     cursor = await db.conn.execute(
         "SELECT * FROM candidates ORDER BY scanned_at DESC LIMIT ?", (limit,)
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_thesis_for_ticker(db: Database, ticker: str) -> str:
+    """Return the most recent research_memo from candidates for a ticker.
+
+    Used by the order command to snapshot the Caddie's thesis at open time.
+    Returns an empty string if no candidate record exists.
+    """
+    cursor = await db.conn.execute(
+        "SELECT research_memo FROM candidates WHERE ticker = ?"
+        " ORDER BY scanned_at DESC, id DESC LIMIT 1",
+        (ticker,),
+    )
+    row = await cursor.fetchone()
+    return row["research_memo"] if row else ""
+
+
+async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  # type: ignore[type-arg]
+    """Return the most recent open trade record for a ticker, or None."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM trades WHERE ticker = ? AND action = 'open'"
+        " ORDER BY timestamp DESC LIMIT 1",
+        (ticker,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def has_open_position(db: Database, ticker: str) -> bool:
+    """Return True if the ticker has a position with count > 0."""
+    cursor = await db.conn.execute(
+        "SELECT 1 FROM positions WHERE ticker = ? AND count > 0",
+        (ticker,),
+    )
+    return await cursor.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# Position notes (thesis journal)
+# ---------------------------------------------------------------------------
+
+
+async def insert_position_note(
+    db: Database,
+    *,
+    ticker: str,
+    cycle: int = 0,
+    agent: str = "",
+    note_type: str = "observation",
+    body: str = "",
+) -> int:
+    """Append a note to the position_notes journal. Returns the row ID."""
+    cursor = await db.conn.execute(
+        """INSERT INTO position_notes (ticker, cycle, agent, note_type, body)
+           VALUES (?, ?, ?, ?, ?)""",
+        (ticker, cycle, agent, note_type, body),
+    )
+    await db.conn.commit()
+    return cursor.lastrowid or 0
+
+
+async def get_position_notes(
+    db: Database,
+    ticker: str,
+    *,
+    limit: int = 50,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Return position notes for a ticker, newest first."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM position_notes WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+        (ticker, limit),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
