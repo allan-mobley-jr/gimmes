@@ -263,6 +263,26 @@ class TestMarkToMarket:
         """Mark-to-market on nonexistent ticker is a no-op."""
         await broker.mark_to_market("NONEXISTENT", 0.50)  # Should not raise
 
+    @pytest.mark.asyncio
+    async def test_mark_to_market_no_side_stores_no_price(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """NO-side positions store 1 - yes_price as market_price."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.32,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+
+        await broker.mark_to_market("TEST-MKT", 0.60)
+        positions = await broker.get_positions()
+        no_pos = [p for p in positions if p.side == "no"][0]
+        assert no_pos.market_price == pytest.approx(0.40)  # 1 - 0.60
+
 
 # ---------------------------------------------------------------------------
 # Settlement
