@@ -345,12 +345,13 @@
     </div>
 
     <!-- Detail Modal -->
-    <div id="detail-modal" class="fixed inset-0 z-50 hidden items-center justify-center">
+    <div id="detail-modal" class="fixed inset-0 z-50 hidden items-center justify-center"
+         role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
         <div id="detail-modal-backdrop" class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
         <div class="relative bg-slate-800 border border-slate-700/50 rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto scrollbar-thin">
             <div class="flex items-center justify-between px-5 py-4 border-b border-slate-700/50">
                 <h3 id="detail-modal-title" class="text-lg font-bold text-white"></h3>
-                <button type="button" id="detail-modal-close" class="text-slate-400 hover:text-white transition-colors">
+                <button type="button" id="detail-modal-close" aria-label="Close" class="text-slate-400 hover:text-white transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
@@ -374,6 +375,7 @@
         let showSkipTrades = false;
         let lastTrades = null;
         let evtSource = null;
+        let modalTriggerEl = null;
         const tickerTitles = {};
 
         // ------------------------------------------------------------------
@@ -511,18 +513,45 @@
         // ------------------------------------------------------------------
         // Detail modal
         // ------------------------------------------------------------------
-        function openModal(title, bodyHtml) {
+        function openModal(title, bodyHtml, triggerEl) {
+            modalTriggerEl = triggerEl || null;
             document.getElementById('detail-modal-title').textContent = title;
             document.getElementById('detail-modal-body').innerHTML = bodyHtml;
             const modal = document.getElementById('detail-modal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
+            document.getElementById('detail-modal-close').focus();
         }
 
         function closeModal() {
             const modal = document.getElementById('detail-modal');
             modal.classList.add('hidden');
             modal.classList.remove('flex');
+            if (modalTriggerEl) {
+                modalTriggerEl.focus();
+                modalTriggerEl = null;
+            }
+        }
+
+        function handleModalKeydown(e) {
+            const modal = document.getElementById('detail-modal');
+            if (modal.classList.contains('hidden')) return;
+            if (e.key === 'Escape') { closeModal(); return; }
+            if (e.key !== 'Tab') return;
+
+            var focusable = modal.querySelectorAll(
+                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            );
+            if (focusable.length === 0) { e.preventDefault(); return; }
+            var first = focusable[0];
+            var last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
         }
 
         function modalRow(label, valueHtml) {
@@ -651,11 +680,11 @@
 
         function attachRowClickHandlers(tbody, dataAttr, items, modalTitle, buildBody) {
             tbody.querySelectorAll('tr[' + dataAttr + ']').forEach(function(row) {
-                row.addEventListener('click', function() {
-                    const idx = parseInt(this.getAttribute(dataAttr), 10);
+                function activate() {
+                    const idx = parseInt(row.getAttribute(dataAttr), 10);
                     const item = items[idx];
                     if (!item) return;
-                    openModal(modalTitle, buildBody(item) + marketDetailLoadingHtml());
+                    openModal(modalTitle, buildBody(item) + marketDetailLoadingHtml(), row);
                     if (item.ticker) {
                         const reqId = ++marketDetailRequestId;
                         fetchMarketDetail(item.ticker).then(function(md) {
@@ -664,10 +693,17 @@
                                 md ? marketDetailHtml(md) : marketDetailErrorHtml()
                             );
                         }).catch(function(err) {
-                            console.warn('Market detail render failed:', err);
                             if (reqId !== marketDetailRequestId) return;
+                            console.warn('Market detail render failed:', err);
                             replaceMarketDetailSection(marketDetailErrorHtml());
                         });
+                    }
+                }
+                row.addEventListener('click', activate);
+                row.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        activate();
                     }
                 });
             });
@@ -733,7 +769,7 @@
                 if (p.title) tickerTitles[p.ticker] = p.title;
                 const pnl = parseFloat(p.unrealized_pnl || 0);
                 const pnlClass = colorForPnl(pnl);
-                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" data-pos-idx="' + idx + '">'
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" tabindex="0" data-pos-idx="' + idx + '">'
                     + '<td class="py-2 pr-3 text-cyan-400 font-semibold">' + escapeHtml(p.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-slate-300">' + escapeHtml(p.side || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.count != null ? p.count : '--') + '</td>'
@@ -908,7 +944,7 @@
             }
             let html = '';
             visible.forEach(function(t, idx) {
-                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" data-trade-idx="' + idx + '">'
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" tabindex="0" data-trade-idx="' + idx + '">'
                     + '<td class="py-2 pr-2 text-xs text-slate-500">' + formatTimestamp(t.timestamp) + '</td>'
                     + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-2">' + actionBadge(t.action) + '</td>'
@@ -1239,9 +1275,7 @@
             connectSSE();
             document.getElementById('detail-modal-backdrop').addEventListener('click', closeModal);
             document.getElementById('detail-modal-close').addEventListener('click', closeModal);
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape') closeModal();
-            });
+            document.addEventListener('keydown', handleModalKeydown);
         });
     </script>
 </body>
