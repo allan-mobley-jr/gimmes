@@ -231,9 +231,13 @@
         <!-- ROW 5.5: ERROR LOG                                              -->
         <!-- ================================================================ -->
         <div id="errors-panel" class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5 hidden">
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
                 Error Log
-                <span id="error-count" class="ml-2 px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400"></span>
+                <span id="error-count" class="px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400"></span>
+                <button id="show-resolved-btn" onclick="toggleResolvedErrors()"
+                    class="ml-auto text-xs text-slate-500 hover:text-slate-300 transition-colors font-normal normal-case tracking-normal">
+                    Show resolved
+                </button>
             </h2>
             <div id="errors-container" class="max-h-[200px] overflow-y-auto scrollbar-thin space-y-1.5">
             </div>
@@ -245,8 +249,14 @@
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <!-- Recent Trades -->
             <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
-                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Recent Trades</h2>
-                <div class="overflow-x-auto">
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
+                    Trade Log
+                    <button id="show-skips-btn" onclick="toggleSkipTrades()"
+                        class="ml-auto text-xs text-slate-500 hover:text-slate-300 transition-colors font-normal normal-case tracking-normal">
+                        Show skips
+                    </button>
+                </h2>
+                <div class="max-h-[300px] overflow-x-auto overflow-y-auto scrollbar-thin">
                     <table class="w-full text-sm">
                         <thead>
                             <tr class="text-xs uppercase tracking-wider text-slate-500 border-b border-slate-700/50">
@@ -262,7 +272,7 @@
                         </thead>
                         <tbody id="trades-body" class="font-mono">
                             <tr>
-                                <td colspan="8" class="text-center text-slate-500 py-8">No recent trades</td>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No trades</td>
                             </tr>
                         </tbody>
                     </table>
@@ -272,7 +282,7 @@
             <!-- Candidate Pipeline -->
             <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
                 <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Candidate Pipeline</h2>
-                <div id="candidates-container" class="space-y-2 max-h-[300px] overflow-y-auto scrollbar-thin">
+                <div id="candidates-container" class="space-y-2 max-h-[400px] overflow-y-auto scrollbar-thin">
                     <div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">
                         No candidates in pipeline
                     </div>
@@ -343,6 +353,10 @@
         // ------------------------------------------------------------------
         let lastUpdateTime = null;
         let equityChart = null;
+        let showResolvedErrors = false;
+        let lastErrors = null;
+        let showSkipTrades = false;
+        let lastTrades = null;
         let evtSource = null;
 
         // ------------------------------------------------------------------
@@ -430,12 +444,17 @@
         // ------------------------------------------------------------------
         // Action badge color
         // ------------------------------------------------------------------
+        const actionColors = {
+            open:    'bg-emerald-500/20 text-emerald-400',
+            buy:     'bg-emerald-500/20 text-emerald-400',
+            close:   'bg-cyan-500/20 text-cyan-400',
+            sell:    'bg-cyan-500/20 text-cyan-400',
+            size_up: 'bg-amber-500/20 text-amber-400',
+        };
         function actionBadge(action) {
-            const a = (action || '').toLowerCase();
-            if (a === 'open' || a === 'buy') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-emerald-500/20 text-emerald-400">' + escapeHtml(action) + '</span>';
-            if (a === 'close' || a === 'sell') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400">' + escapeHtml(action) + '</span>';
-            if (a === 'skip') return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400">' + escapeHtml(action) + '</span>';
-            return '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400">' + escapeHtml(action || '--') + '</span>';
+            const key = (action || '').toLowerCase();
+            const cls = actionColors[key] || 'bg-slate-500/20 text-slate-400';
+            return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(action || '--') + '</span>';
         }
 
         // ------------------------------------------------------------------
@@ -629,6 +648,7 @@
         }
 
         function updateErrors(errors) {
+            lastErrors = errors;
             const panel = document.getElementById('errors-panel');
             const container = document.getElementById('errors-container');
             const countBadge = document.getElementById('error-count');
@@ -639,8 +659,15 @@
             }
 
             panel.classList.remove('hidden');
-            const unresolved = errors.filter(function(e) { return !e.resolved; }).length;
-            countBadge.textContent = unresolved > 0 ? unresolved + ' unresolved' : errors.length + ' total';
+            const unresolved = errors.filter(function(e) { return !e.resolved; });
+            countBadge.textContent = unresolved.length > 0
+                ? unresolved.length + ' unresolved' : 'all resolved';
+
+            const visible = showResolvedErrors ? errors : unresolved;
+            if (visible.length === 0) {
+                container.innerHTML = '<div class="text-center text-slate-500 py-4 text-sm">All errors resolved</div>';
+                return;
+            }
 
             const sevColors = {
                 critical: 'bg-red-500/30 text-red-300 border-red-500/50',
@@ -651,7 +678,7 @@
             };
 
             let html = '';
-            errors.forEach(function(e) {
+            visible.forEach(function(e) {
                 const cls = sevColors[e.severity] || sevColors.error;
                 const resolvedIcon = e.resolved
                     ? '<span class="text-emerald-400 text-xs" title="Resolved">&#10003;</span>'
@@ -668,13 +695,21 @@
         }
 
         function updateTrades(trades) {
+            lastTrades = trades;
             const tbody = document.getElementById('trades-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No recent trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No trades</td></tr>';
+                return;
+            }
+            const visible = showSkipTrades ? trades : trades.filter(function(t) {
+                return (t.action || '').toLowerCase() !== 'skip';
+            });
+            if (visible.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No trades</td></tr>';
                 return;
             }
             let html = '';
-            trades.forEach(function(t) {
+            visible.forEach(function(t) {
                 html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
                     + '<td class="py-2 pr-2 text-xs text-slate-500">' + formatTimestamp(t.timestamp) + '</td>'
                     + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
@@ -776,13 +811,31 @@
                 }
                 let html = '';
                 Object.keys(data).forEach(function(key) {
+                    const val = data[key];
+                    const displayVal = Array.isArray(val)
+                        ? '<span title="' + escapeHtml(val.join(', ')).replace(/"/g, '&quot;') + '">' + val.length + ' items</span>'
+                        : escapeHtml(String(val));
                     html += '<div class="flex justify-between gap-2">'
                         + '<dt class="text-slate-500 truncate">' + escapeHtml(key) + '</dt>'
-                        + '<dd class="text-slate-300 font-mono text-right shrink-0">' + escapeHtml(String(data[key])) + '</dd>'
+                        + '<dd class="text-slate-300 font-mono text-right shrink-0">' + displayVal + '</dd>'
                         + '</div>';
                 });
                 el.innerHTML = html;
             });
+        }
+
+        function toggleResolvedErrors() {
+            showResolvedErrors = !showResolvedErrors;
+            document.getElementById('show-resolved-btn').textContent =
+                showResolvedErrors ? 'Hide resolved' : 'Show resolved';
+            if (lastErrors) updateErrors(lastErrors);
+        }
+
+        function toggleSkipTrades() {
+            showSkipTrades = !showSkipTrades;
+            document.getElementById('show-skips-btn').textContent =
+                showSkipTrades ? 'Hide skips' : 'Show skips';
+            if (lastTrades) updateTrades(lastTrades);
         }
 
         function updateStatus(status) {
