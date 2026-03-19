@@ -42,6 +42,7 @@ def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
 def _run(coro):  # type: ignore[no-untyped-def]
     """Run an async coroutine from sync CLI context with error handling."""
     import logging
+    import sqlite3
 
     import httpx
 
@@ -63,6 +64,12 @@ def _run(coro):  # type: ignore[no-untyped-def]
         logger.debug("Transport error", exc_info=True)
         console.print(f"[red]Connection error: {e}[/red]")
         raise typer.Exit(1)
+    except sqlite3.Error as e:
+        logger.debug("Database error", exc_info=True)
+        console.print(f"[red]Database error: {e}[/red]")
+        raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except (ConnectionError, ValueError, RuntimeError) as e:
         logger.debug("CLI error", exc_info=True)
         console.print(f"[red]Error: {e}[/red]")
@@ -1328,16 +1335,17 @@ def log_outcome(
 
         async with Database(config.db_path) as db:
             updated = await update_trade_outcome(db, ticker, outcome)
-            if updated:
-                console.print(
-                    f"[green]Recorded outcome '{outcome}' for"
-                    f" {updated} trade(s) on {ticker}[/green]"
-                )
-            else:
-                console.print(
-                    f"[yellow]No trades found for {ticker}"
-                    " (or already recorded)[/yellow]"
-                )
+
+        if updated:
+            console.print(
+                f"[green]Recorded outcome '{outcome}' for"
+                f" {updated} trade(s) on {ticker}[/green]"
+            )
+        else:
+            console.print(
+                f"[yellow]No trades found for {ticker}"
+                " (or already recorded)[/yellow]"
+            )
 
     _run(_log())
 
