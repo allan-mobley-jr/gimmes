@@ -256,11 +256,13 @@
             <!-- Recent Trades -->
             <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
                 <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
-                    Trade Log
-                    <button id="show-skips-btn" onclick="toggleSkipTrades()"
-                        class="ml-auto text-xs text-slate-500 hover:text-slate-300 transition-colors font-normal normal-case tracking-normal">
-                        Show skips
-                    </button>
+                    Daily Log
+                    <select id="trade-filter" onchange="changeTradeFilter(this.value)"
+                        class="ml-auto text-xs text-slate-400 bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 font-normal normal-case tracking-normal focus:outline-none focus:border-slate-500">
+                        <option value="trades" selected>Trades only</option>
+                        <option value="all">All</option>
+                        <option value="skips">Skips</option>
+                    </select>
                 </h2>
                 <div class="max-h-[400px] overflow-x-auto overflow-y-auto scrollbar-thin">
                     <table class="w-full text-sm">
@@ -278,7 +280,7 @@
                         </thead>
                         <tbody id="trades-body" class="font-mono">
                             <tr>
-                                <td colspan="8" class="text-center text-slate-500 py-8">No trades</td>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No trades today</td>
                             </tr>
                         </tbody>
                     </table>
@@ -378,7 +380,8 @@
         let equityChart = null;
         let showResolvedErrors = false;
         let lastErrors = null;
-        let showSkipTrades = false;
+        let tradeFilter = 'trades';
+        const tradeEmptyMsgs = { all: 'No entries today', trades: 'No trades today', skips: 'No skips today' };
         let lastTrades = null;
         let positionSideFilter = 'all';
         let lastPositions = null;
@@ -948,18 +951,31 @@
             container.innerHTML = html;
         }
 
+        function tradeEmptyRow() {
+            var msg = tradeEmptyMsgs[tradeFilter] || 'No entries today';
+            return '<tr><td colspan="8" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
+        }
+
+        function isSkipTrade(t) {
+            return (t.action || '').toLowerCase() === 'skip';
+        }
+
+        function filterTrades(trades) {
+            if (tradeFilter === 'all') return trades;
+            if (tradeFilter === 'skips') return trades.filter(isSkipTrade);
+            return trades.filter(function(t) { return !isSkipTrade(t); });
+        }
+
         function updateTrades(trades) {
             lastTrades = trades;
             const tbody = document.getElementById('trades-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No trades</td></tr>';
+                tbody.innerHTML = tradeEmptyRow();
                 return;
             }
-            const visible = showSkipTrades ? trades : trades.filter(function(t) {
-                return (t.action || '').toLowerCase() !== 'skip';
-            });
+            const visible = filterTrades(trades);
             if (visible.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">No trades</td></tr>';
+                tbody.innerHTML = tradeEmptyRow();
                 return;
             }
             let html = '';
@@ -1087,10 +1103,8 @@
             if (lastErrors) updateErrors(lastErrors);
         }
 
-        function toggleSkipTrades() {
-            showSkipTrades = !showSkipTrades;
-            document.getElementById('show-skips-btn').textContent =
-                showSkipTrades ? 'Hide skips' : 'Show skips';
+        function changeTradeFilter(value) {
+            tradeFilter = value;
             if (lastTrades) updateTrades(lastTrades);
         }
 

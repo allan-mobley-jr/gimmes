@@ -211,14 +211,16 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
     return items
 
 
-async def get_trades(db_path: Path, limit: int = 50) -> list[TradeItem]:
-    """Get recent trade decisions."""
+async def get_trades(db_path: Path, limit: int = 500) -> list[TradeItem]:
+    """Get trade decisions for the current day."""
     items: list[TradeItem] = []
 
     try:
         async with _connect(db_path) as conn:
             cursor = await conn.execute(
-                "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,)
+                "SELECT * FROM trades WHERE date(timestamp) = date('now')"
+                " ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
             )
             rows = await cursor.fetchall()
             for row in rows:
