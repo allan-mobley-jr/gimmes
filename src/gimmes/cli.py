@@ -1049,6 +1049,7 @@ def risk_check() -> None:
             console.print(f"Unrealized P&L:     ${unrealized_pnl:,.2f}")
             console.print(f"Total Daily P&L:    ${total_daily_pnl:,.2f}")
             console.print(f"Session Spending:   ${session_spent:,.2f} / ${cap:,.2f}")
+            console.print(f"Price Trigger:      {config.risk.monitor_price_trigger_pp}pp")
 
             loss = check_daily_loss(total_daily_pnl, balance, config)
             count = check_position_count(len(pos), config)
