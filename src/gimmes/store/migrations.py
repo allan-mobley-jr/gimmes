@@ -85,6 +85,11 @@ _V8_COLUMNS: list[str] = [
     "ALTER TABLE trades ADD COLUMN thesis TEXT NOT NULL DEFAULT ''",
 ]
 
+# ALTER TABLE ADD COLUMN statements for v10: session_id on activity_log.
+_V10_COLUMNS: list[str] = [
+    "ALTER TABLE activity_log ADD COLUMN session_id INTEGER DEFAULT NULL",
+]
+
 
 async def get_schema_version(db: Database) -> int:
     """Get the current schema version."""
@@ -205,5 +210,14 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 9
+
+    # Version 10: session_id column on activity_log (ALTER TABLE, idempotent)
+    if current < 10:
+        await _run_alter_columns(db, _V10_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (10,)
+        )
+        await db.conn.commit()
+        current = 10
 
     return current

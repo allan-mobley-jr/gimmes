@@ -92,7 +92,7 @@ For rejected candidates:
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase start --message "Closer processing approved candidates"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent closer --phase start --message "Closer processing approved candidates"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -100,7 +100,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after processing all candidates:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent closer --phase complete --message "Closer executed N trades"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent closer --phase complete --message "Closer executed N trades"
 ```
 
 Substitute the actual number of trades successfully placed. If the command fails, note the failure in your output and continue. Do not retry.

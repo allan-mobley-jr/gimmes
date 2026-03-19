@@ -124,7 +124,7 @@ NEVER skip this step — missing outcome data degrades all Pro analyses. If the 
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase start --message "Monitor checking open positions"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase start --message "Monitor checking open positions"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -132,7 +132,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after producing the monitoring report:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent monitor --phase complete --message "Monitor reviewed N positions, M flagged for Caddie Master"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase complete --message "Monitor reviewed N positions, M flagged for Caddie Master"
 ```
 
 Substitute actual values: number of positions reviewed and number flagged. If the command fails, note the failure in your output and continue. Do not retry.

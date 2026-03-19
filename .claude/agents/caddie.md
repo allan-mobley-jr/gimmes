@@ -121,7 +121,7 @@ If `market-info` fails for a candidate, log the candidate with `--price 0 --prob
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase start --message "Caddie starting research on candidates"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase start --message "Caddie starting research on candidates"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -129,7 +129,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after finishing research on all candidates:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
 ```
 
 Substitute actual values: number of candidates researched and number with recommendation PROCEED. If the command fails, note the failure in your output and continue. Do not retry.

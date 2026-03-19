@@ -7,10 +7,12 @@ import sqlite3
 from pathlib import Path
 
 from gimmes.store.session import (
+    close_orphan_activities,
     create_session,
     end_session,
     get_active_session,
     get_latest_session,
+    get_max_global_cycle,
     mark_stale_sessions,
     pid_alive,
     update_session_cycle,
@@ -224,3 +226,97 @@ class TestMarkStaleSessions:
 
     def test_returns_zero_for_nonexistent_db(self, tmp_path: Path) -> None:
         assert mark_stale_sessions(tmp_path / "nonexistent.db") == 0
+
+
+class TestGetMaxGlobalCycle:
+    def test_returns_zero_for_nonexistent_db(self, tmp_path: Path) -> None:
+        assert get_max_global_cycle(tmp_path / "nonexistent.db") == 0
+
+    def test_returns_zero_when_no_sessions(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        assert get_max_global_cycle(db_path) == 0
+
+    def test_returns_max_across_sessions(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        sid1 = create_session(db_path, "driving_range", os.getpid())
+        update_session_cycle(db_path, sid1, 5)
+        sid2 = create_session(db_path, "driving_range", os.getpid())
+        update_session_cycle(db_path, sid2, 12)
+        assert get_max_global_cycle(db_path) == 12
+
+
+def _init_db_with_activity(db_path: Path) -> None:
+    """Create DB with sessions + activity_log tables."""
+    _init_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle INTEGER NOT NULL DEFAULT 0,
+            agent TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '',
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            session_id INTEGER DEFAULT NULL
+        );
+    """)
+    conn.close()
+
+
+class TestCloseOrphanActivities:
+    def test_returns_zero_for_nonexistent_db(self, tmp_path: Path) -> None:
+        assert close_orphan_activities(tmp_path / "nonexistent.db") == 0
+
+    def test_returns_zero_when_no_orphans(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        _init_db_with_activity(db_path)
+        sid = create_session(db_path, "driving_range", os.getpid())
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE sessions SET status = 'crashed' WHERE id = ?", (sid,)
+        )
+        # Insert start + complete pair — not orphaned
+        conn.execute(
+            "INSERT INTO activity_log (cycle, agent, phase, session_id) "
+            "VALUES (1, 'scout', 'start', ?)", (sid,)
+        )
+        conn.execute(
+            "INSERT INTO activity_log (cycle, agent, phase, session_id) "
+            "VALUES (1, 'scout', 'complete', ?)", (sid,)
+        )
+        conn.commit()
+        conn.close()
+        assert close_orphan_activities(db_path) == 0
+
+    def test_closes_orphan_starts(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        _init_db_with_activity(db_path)
+        sid = create_session(db_path, "driving_range", os.getpid())
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE sessions SET status = 'crashed' WHERE id = ?", (sid,)
+        )
+        # Insert start with no matching complete — orphaned
+        conn.execute(
+            "INSERT INTO activity_log (cycle, agent, phase, session_id) "
+            "VALUES (1, 'scout', 'start', ?)", (sid,)
+        )
+        conn.commit()
+        conn.close()
+
+        assert close_orphan_activities(db_path) == 1
+
+        # Verify crash_recovery entry was created
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM activity_log WHERE phase = 'crash_recovery'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row["agent"] == "scout"
+        assert row["cycle"] == 1
+        assert row["session_id"] == sid

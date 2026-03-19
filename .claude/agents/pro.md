@@ -44,7 +44,7 @@ MUST use these definitions. NEVER upgrade confidence based on subjective judgmen
 - Missed opportunity audit: >= 10 logged skips with outcomes
 
 If total closed trades < 20, MUST:
-1. Log: `python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase complete --message "Pro: insufficient data (N closed trades < 20 minimum)"`
+1. Log: `python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase complete --message "Pro: insufficient data (N closed trades < 20 minimum)"`
    If the command fails, note the failure in your output and continue. Do not retry.
 2. Report "Insufficient data for analysis"
 3. Exit — NEVER speculate with small samples.
@@ -54,7 +54,7 @@ If total closed trades < 20, MUST:
 ### Step 0: Log Start
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase start --message "Pro starting strategy analysis"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase start --message "Pro starting strategy analysis"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -127,7 +127,7 @@ If `gh issue create` fails, note the failure in your output and continue. Do not
 ### Step 5: Log Completion (REQUIRED — you are not done until this runs)
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent pro --phase complete --message "Pro: N analyses run, M recommendations filed, K issues created"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase complete --message "Pro: N analyses run, M recommendations filed, K issues created"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.

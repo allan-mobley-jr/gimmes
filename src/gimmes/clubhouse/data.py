@@ -383,6 +383,7 @@ async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
                     message=row["message"],
                     details=row["details"],
                     timestamp=row["timestamp"],
+                    session_id=_row_get(row, "session_id") or None,
                 ))
     except Exception:
         logger.warning("get_activity failed", exc_info=True)

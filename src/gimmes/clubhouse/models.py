@@ -90,6 +90,7 @@ class ActivityItem(BaseModel):
     message: str = ""
     details: str = ""
     timestamp: str = ""
+    session_id: int | None = None
 
 
 class ErrorItem(BaseModel):
