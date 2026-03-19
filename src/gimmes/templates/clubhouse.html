@@ -272,7 +272,7 @@
                         </thead>
                         <tbody id="trades-body" class="font-mono">
                             <tr>
-                                <td colspan="8" class="text-center text-slate-500 py-8">No recent trades</td>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No trades</td>
                             </tr>
                         </tbody>
                     </table>
@@ -444,14 +444,14 @@
         // ------------------------------------------------------------------
         // Action badge color
         // ------------------------------------------------------------------
+        const actionColors = {
+            open:    'bg-emerald-500/20 text-emerald-400',
+            buy:     'bg-emerald-500/20 text-emerald-400',
+            close:   'bg-cyan-500/20 text-cyan-400',
+            sell:    'bg-cyan-500/20 text-cyan-400',
+            size_up: 'bg-amber-500/20 text-amber-400',
+        };
         function actionBadge(action) {
-            const actionColors = {
-                open:    'bg-emerald-500/20 text-emerald-400',
-                buy:     'bg-emerald-500/20 text-emerald-400',
-                close:   'bg-cyan-500/20 text-cyan-400',
-                sell:    'bg-cyan-500/20 text-cyan-400',
-                size_up: 'bg-amber-500/20 text-amber-400',
-            };
             const key = (action || '').toLowerCase();
             const cls = actionColors[key] || 'bg-slate-500/20 text-slate-400';
             return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(action || '--') + '</span>';
@@ -813,7 +813,7 @@
                 Object.keys(data).forEach(function(key) {
                     const val = data[key];
                     const displayVal = Array.isArray(val)
-                        ? '<span title="' + escapeHtml(val.join(', ')) + '">' + val.length + ' items</span>'
+                        ? '<span title="' + escapeHtml(val.join(', ')).replace(/"/g, '&quot;') + '">' + val.length + ' items</span>'
                         : escapeHtml(String(val));
                     html += '<div class="flex justify-between gap-2">'
                         + '<dt class="text-slate-500 truncate">' + escapeHtml(key) + '</dt>'
