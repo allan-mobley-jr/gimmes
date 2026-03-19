@@ -358,6 +358,7 @@
         let showSkipTrades = false;
         let lastTrades = null;
         let evtSource = null;
+        const tickerTitles = {};
 
         // ------------------------------------------------------------------
         // Formatting helpers
@@ -534,10 +535,12 @@
             }
             let html = '';
             positions.forEach(function(p) {
+                if (p.title) tickerTitles[p.ticker] = p.title;
                 const pnl = parseFloat(p.unrealized_pnl || 0);
                 const pnlClass = colorForPnl(pnl);
+                const posTitle = escapeHtml(p.title || '').replace(/"/g, '&quot;');
                 html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
-                    + '<td class="py-2 pr-3 text-cyan-400 font-semibold">' + escapeHtml(p.ticker || '--') + '</td>'
+                    + '<td class="py-2 pr-3 text-cyan-400 font-semibold" title="' + posTitle + '">' + escapeHtml(p.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-slate-300">' + escapeHtml(p.side || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.count != null ? p.count : '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.avg_price) + '</td>'
@@ -710,9 +713,10 @@
             }
             let html = '';
             visible.forEach(function(t) {
+                const tradeTitle = escapeHtml(tickerTitles[t.ticker] || '').replace(/"/g, '&quot;');
                 html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
                     + '<td class="py-2 pr-2 text-xs text-slate-500">' + formatTimestamp(t.timestamp) + '</td>'
-                    + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-cyan-400 font-semibold" title="' + tradeTitle + '">' + escapeHtml(t.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-2">' + actionBadge(t.action) + '</td>'
                     + '<td class="py-2 pr-2 text-slate-300">' + escapeHtml(t.side || '--') + '</td>'
                     + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.count != null ? t.count : '--') + '</td>'
@@ -735,6 +739,7 @@
 
             let html = '';
             candidates.forEach(function(c, idx) {
+                if (c.title) tickerTitles[c.ticker] = c.title;
                 const edgeClass = parseFloat(c.edge || 0) > 0 ? 'text-emerald-400' : 'text-red-400';
                 const memoId = 'memo-' + idx;
                 html += '<div class="bg-slate-700/30 border border-slate-600/30 rounded-lg p-3">'
