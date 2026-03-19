@@ -44,29 +44,85 @@ python -m gimmes positions
 - If `positions` shows position count >= `max_open_positions` (default 15) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
 - Otherwise → proceed with full cycle.
 
-### Step 2: Monitor (if positions exist)
+### Step 2: Monitor Review (if positions exist)
 
-If there are open positions, dispatch the **Monitor** agent to review them.
+**If there are no open positions, skip to Step 3.**
 
-Launch the Monitor agent (`monitor.md`) to:
-1. Review all open positions with mark-to-market data
-2. Check for material news or price movements
-3. Recommend HOLD, CLOSE, or SIZE UP for each position
+#### 2a. Crash recovery check
 
-**If Monitor recommends CLOSE on any position:**
-Dispatch the **Closer** agent to execute the close. Run:
+Before dispatching Monitor, check for any orphaned close decisions from prior cycles — Caddie Master `decision` notes that were written but whose Closer dispatch may not have completed:
+
 ```bash
-python -m gimmes cancel ORDER_ID  # For resting orders to close
+python -m gimmes positions
 ```
 
-Log all close decisions to the database.
-
-**If Monitor recommends SIZE UP on any position:**
-Full SIZE UP execution is not yet supported (the duplicate position check blocks adding to existing positions). Instead, MUST log the recommendation for audit:
+For each open position, check its note history:
 ```bash
-python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 0 --score 0 --rationale "Monitor: [reason from Monitor report]" --agent monitor
+python -m gimmes position-notes TICKER --limit 10
 ```
-Use the position's current market price from the Monitor report as `CURRENT_PRICE`. This creates an audit trail for Pro analysis — do NOT attempt to place additional orders. If the log-trade command fails, note the failure in your output and continue. Do not retry.
+
+If any position has a `decision` note (type=decision, agent=caddie-master) but no subsequent close trade visible in `python -m gimmes trades --ticker TICKER --action close`, the close was lost to a crash. Log the discovery and re-dispatch Closer for that position before proceeding with the regular Monitor cycle.
+
+#### 2b. Dispatch Monitor
+
+Launch the Monitor agent (`monitor.md`). Monitor will:
+1. Read the full original thesis for each position via `gimmes position-context`.
+2. Write observation notes to the journal.
+3. Write flag notes for positions meeting trigger conditions.
+4. Produce a monitoring report.
+
+Wait for Monitor to complete and return its report before proceeding.
+
+#### 2c. Review flagged positions
+
+After Monitor returns, review its report. For each position Monitor flagged:
+
+1. Read the full position context and note history yourself:
+   ```bash
+   python -m gimmes position-context TICKER
+   python -m gimmes position-notes TICKER
+   ```
+
+2. Review Monitor's flag note. Understand specifically: what changed, and whether it was already in the original thesis.
+
+3. **Confer with Monitor using SendMessage if you need deeper analysis.** Use this when:
+   - You want Monitor to clarify whether a data point was already present in the original thesis.
+   - You want Monitor's assessment of whether a price move is liquidity-driven vs. information-driven.
+   - You want Monitor to search for additional context on a news item.
+
+   You may go back and forth as many times as needed. Wait for each Monitor response before asking the next question. When you have enough information to make a judgment call, proceed to step 4.
+
+4. Make your own deliberate decision — **HOLD** or **CLOSE**:
+   - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact.
+   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, or risk limits require action.
+
+5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
+   ```bash
+   python -m gimmes position-note TICKER \
+     --cycle $GIMMES_CYCLE \
+     --agent caddie-master \
+     --type decision \
+     --body "Decision: [HOLD or CLOSE].
+   Reasoning: [your specific reasoning referencing the original thesis and what Monitor reported].
+   Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?]"
+   ```
+   If this command fails, do not proceed with a close — log the failure and move on.
+
+6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
+   - Cancel any resting orders first: `python -m gimmes cancel ORDER_ID`
+   - Then dispatch the Closer agent to execute the sell.
+
+7. **If the decision is HOLD**, no further action for this position this cycle.
+
+#### 2d. SIZE UP (audit only)
+
+Full SIZE UP execution is not yet supported (the duplicate position check blocks adding to existing positions). If Monitor flags a position with extraordinary additional edge, log for audit:
+
+```bash
+python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 0 --score 0 --rationale "Caddie Master: [reason]" --agent caddie-master
+```
+
+Do NOT attempt to place additional orders. If the log-trade command fails, note the failure and continue. Do not retry.
 
 ### Step 3: Scout
 
@@ -156,7 +212,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 ## Execution Order
 
 - ALL agent dispatches MUST be foreground (NEVER use `run_in_background: true`). Wait for each agent to return its results before proceeding.
-- Steps 2 and 3 MUST run sequentially — Step 2 (Monitor) MUST complete before Step 3 (Scout) begins. Monitor may recommend closing positions, which changes risk budget available for Scout candidates.
+- Steps 2 and 3 MUST run sequentially — Step 2 (Monitor + Caddie Master review) MUST complete before Step 3 (Scout) begins. Any close decisions from Step 2 change the risk budget available for Scout candidates.
 - Steps 4, 5, 6 MUST be sequential — Caddie needs Scout output, Closer needs Caddie output, Scorecard reports on the full cycle.
 
 ## Recovery

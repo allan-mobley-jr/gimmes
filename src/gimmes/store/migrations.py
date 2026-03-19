@@ -80,6 +80,11 @@ _V5_COLUMNS: list[str] = [
     "ALTER TABLE candidates ADD COLUMN time_to_resolution_score REAL NOT NULL DEFAULT 0",
 ]
 
+# ALTER TABLE ADD COLUMN statements for v8: thesis snapshot on trades.
+_V8_COLUMNS: list[str] = [
+    "ALTER TABLE trades ADD COLUMN thesis TEXT NOT NULL DEFAULT ''",
+]
+
 
 async def get_schema_version(db: Database) -> int:
     """Get the current schema version."""
@@ -167,5 +172,38 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 7
+
+    # Version 8: thesis snapshot column on trades (ALTER TABLE, idempotent)
+    if current < 8:
+        await _run_alter_columns(db, _V8_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (8,)
+        )
+        await db.conn.commit()
+        current = 8
+
+    # Version 9: position_notes journal table
+    if current < 9:
+        await db.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS position_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                cycle INTEGER NOT NULL DEFAULT 0,
+                agent TEXT NOT NULL DEFAULT '',
+                note_type TEXT NOT NULL DEFAULT 'observation'
+                    CHECK (note_type IN ('observation', 'flag', 'decision', 'context')),
+                body TEXT NOT NULL DEFAULT '',
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_position_notes_ticker
+                ON position_notes(ticker);
+            CREATE INDEX IF NOT EXISTS idx_position_notes_cycle
+                ON position_notes(cycle);
+        """)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (9,)
+        )
+        await db.conn.commit()
+        current = 9
 
     return current

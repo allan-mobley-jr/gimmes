@@ -28,6 +28,7 @@ class TradeDecision(BaseModel):
     edge: float = 0.0
     kelly_fraction: float = 0.0
     rationale: str = ""
+    thesis: str = ""
     agent: str = ""  # Which agent made the decision
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)

@@ -755,13 +755,28 @@ def order(
 
                 if result.status in ("executed", "resting"):
                     from gimmes.models.trade import TradeDecision
-                    from gimmes.store.queries import sync_positions_with_trade
+                    from gimmes.store.queries import (
+                        get_thesis_for_ticker,
+                        sync_positions_with_trade,
+                    )
 
                     trade_action = (
                         TradeDecision.Action.OPEN
                         if is_buy
                         else TradeDecision.Action.CLOSE
                     )
+                    if is_buy:
+                        try:
+                            thesis = await get_thesis_for_ticker(db, ticker)
+                        except sqlite3.Error:
+                            logger.warning(
+                                "Failed to fetch thesis for %s; "
+                                "recording trade with empty thesis",
+                                ticker, exc_info=True,
+                            )
+                            thesis = ""
+                    else:
+                        thesis = ""
                     trade = TradeDecision(
                         ticker=ticker,
                         action=trade_action,
@@ -775,6 +790,7 @@ def order(
                             else 0.0
                         ),
                         rationale="CLI order",
+                        thesis=thesis,
                         agent="cli",
                         order_id=result.order_id,
                     )
@@ -1324,6 +1340,158 @@ def log_outcome(
                 )
 
     _run(_log())
+
+
+def _print_note(note: dict) -> None:  # type: ignore[type-arg]
+    """Print a single position note with its metadata header."""
+    console.print(
+        f"[dim][#{note['id']}] {note['timestamp']} | cycle={note['cycle']}"
+        f" | {note['agent']} | {note['note_type']}[/dim]"
+    )
+    console.print(note["body"])
+
+
+@app.command(name="position-context")
+def position_context(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+) -> None:
+    """Show the full thesis and note history for an open position."""
+    config = load_config()
+
+    async def _ctx() -> None:
+        import sqlite3
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import (
+            get_open_trade_for_ticker,
+            get_position_notes,
+            has_open_position,
+        )
+
+        try:
+            async with Database(config.db_path) as db:
+                trade = await get_open_trade_for_ticker(db, ticker)
+                is_open = await has_open_position(db, ticker)
+                notes = await get_position_notes(db, ticker, limit=20)
+        except sqlite3.Error as exc:
+            console.print(f"[red]Database error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+
+        if not trade or not is_open:
+            console.print(f"[yellow]No open position found for {ticker}[/yellow]")
+            return
+
+        console.print(f"\n[bold]Position Context: {ticker}[/bold]\n")
+        console.print("[bold]--- OPEN TRADE ---[/bold]")
+        console.print(f"Opened:           {trade['timestamp']}")
+        console.print(
+            f"Side:             {trade['side'].upper()}"
+            f"  Count: {trade['count']}  Entry: ${trade['price']:.2f}"
+        )
+        console.print(
+            f"Model Prob:       {trade['model_probability']:.0%}"
+            f"  Edge: {trade['edge']:+.1%}"
+            f"  GimmeScore: {trade['gimme_score']:.0f}"
+        )
+        console.print(f"Agent:            {trade['agent']}  Order ID: {trade['order_id']}")
+
+        console.print("\n[bold]--- ORIGINAL THESIS ---[/bold]")
+        thesis = trade.get("thesis", "")
+        if thesis:
+            console.print(thesis)
+        else:
+            console.print("[dim][No thesis stored — position predates v8 migration][/dim]")
+
+        console.print("\n[bold]--- POSITION NOTES (last 20) ---[/bold]")
+        if notes:
+            for n in reversed(notes):
+                console.print()
+                _print_note(n)
+        else:
+            console.print("[dim]No notes yet.[/dim]")
+
+        decisions = [n for n in notes if n["note_type"] == "decision"]
+        if decisions:
+            console.print("\n[bold yellow]--- CADDIE MASTER DECISIONS ---[/bold yellow]")
+            for n in decisions:
+                console.print(f"[#{n['id']}] cycle={n['cycle']} — {n['body'][:120]}...")
+
+    _run(_ctx())
+
+
+@app.command(name="position-note")
+def position_note(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+    cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
+    agent: str = typer.Option("manual", "--agent", "-a", help="Agent name"),
+    note_type: str = typer.Option(
+        "observation", "--type", "-t",
+        help="Note type: observation, flag, decision, context",
+    ),
+    body: str = typer.Option(..., "--body", "-b", help="Note content"),
+) -> None:
+    """Append a note to the position journal."""
+    valid_types = ("observation", "flag", "decision", "context")
+    if note_type not in valid_types:
+        console.print(f"[red]Invalid type '{note_type}': must be one of {valid_types}[/red]")
+        raise typer.Exit(1)
+
+    config = load_config()
+
+    async def _note() -> None:
+        import sqlite3
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import insert_position_note
+
+        try:
+            async with Database(config.db_path) as db:
+                row_id = await insert_position_note(
+                    db, ticker=ticker, cycle=cycle, agent=agent,
+                    note_type=note_type, body=body,
+                )
+        except sqlite3.Error as exc:
+            console.print(f"[red]Database error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+        console.print(
+            f"[green]Logged position note #{row_id}"
+            f" ({note_type}) for {ticker}[/green]"
+        )
+
+    _run(_note())
+
+
+@app.command(name="position-notes")
+def position_notes(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max notes to return"),
+) -> None:
+    """Show the position journal for a ticker."""
+    config = load_config()
+
+    async def _notes() -> None:
+        import sqlite3
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_position_notes
+
+        try:
+            async with Database(config.db_path) as db:
+                notes = await get_position_notes(db, ticker, limit=limit)
+        except sqlite3.Error as exc:
+            console.print(f"[red]Database error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+
+        if not notes:
+            console.print(f"[yellow]No notes found for {ticker}[/yellow]")
+            return
+
+        console.print(f"\n[bold]Position Notes: {ticker} ({len(notes)} notes)[/bold]\n")
+        for n in reversed(notes):
+            _print_note(n)
+            console.print()
+
+    _run(_notes())
 
 
 @app.command(name="log-activity")
