@@ -438,7 +438,7 @@ async def get_snapshots(db: Database, limit: int = 500) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Candidates — recent
+# Candidates
 # ---------------------------------------------------------------------------
 
 
@@ -464,6 +464,19 @@ async def get_thesis_for_ticker(db: Database, ticker: str) -> str:
     )
     row = await cursor.fetchone()
     return row["research_memo"] if row else ""
+
+
+async def get_candidate_for_ticker(
+    db: Database, ticker: str, *, limit: int = 1,
+) -> list[dict]:
+    """Return the most recent candidate row(s) for a specific ticker."""
+    cursor = await db.conn.execute(
+        "SELECT * FROM candidates WHERE ticker = ?"
+        " ORDER BY scanned_at DESC, id DESC LIMIT ?",
+        (ticker, limit),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
 
 
 async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  # type: ignore[type-arg]

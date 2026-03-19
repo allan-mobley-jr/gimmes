@@ -1,8 +1,8 @@
-"""Tests for thesis anchoring and position notes journal (issue #221).
+"""Tests for thesis anchoring, position notes journal, and candidate lookups.
 
 Covers: migration v8 (thesis column on trades), migration v9 (position_notes table),
 get_thesis_for_ticker, get_open_trade_for_ticker, insert_position_note, get_position_notes,
-and thesis round-trip through _insert_trade_row.
+get_candidate_for_ticker, and thesis round-trip through _insert_trade_row.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import pytest
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
 from gimmes.store.queries import (
+    get_candidate_for_ticker,
     get_open_trade_for_ticker,
     get_position_notes,
     get_thesis_for_ticker,
@@ -262,3 +263,45 @@ class TestPositionNotes:
                 db, ticker="TYPES-TICKER", note_type=note_type, body=f"{note_type} body"
             )
             assert row_id > 0
+
+
+# ---------------------------------------------------------------------------
+# get_candidate_for_ticker (#275)
+# ---------------------------------------------------------------------------
+
+
+class TestGetCandidateForTicker:
+    async def test_returns_empty_list_when_no_match(self, db: Database) -> None:
+        result = await get_candidate_for_ticker(db, "NONEXISTENT")
+        assert result == []
+
+    async def test_returns_most_recent(self, db: Database) -> None:
+        await insert_candidate(db, "CD-TICKER", "Title", 0.70, 0.88, 0.18, 60, "old")
+        await insert_candidate(db, "CD-TICKER", "Title", 0.73, 0.92, 0.19, 82, "new")
+        result = await get_candidate_for_ticker(db, "CD-TICKER")
+        assert len(result) == 1
+        assert result[0]["gimme_score"] == 82
+        assert result[0]["research_memo"] == "new"
+
+    async def test_limit_returns_multiple(self, db: Database) -> None:
+        for i in range(3):
+            await insert_candidate(
+                db, "MULTI-CD", "T", 0.70, 0.90, 0.20, 70 + i, f"memo {i}",
+            )
+        result = await get_candidate_for_ticker(db, "MULTI-CD", limit=2)
+        assert len(result) == 2
+        assert result[0]["gimme_score"] == 72  # newest first
+
+    async def test_includes_full_row(self, db: Database) -> None:
+        await insert_candidate(
+            db, "FULL-CD", "Full Title", 0.65, 0.90, 0.25, 85, "memo",
+        )
+        result = await get_candidate_for_ticker(db, "FULL-CD")
+        row = result[0]
+        assert row["ticker"] == "FULL-CD"
+        assert row["title"] == "Full Title"
+        assert row["market_price"] == 0.65
+        assert row["model_probability"] == 0.90
+        assert row["edge"] == 0.25
+        assert row["gimme_score"] == 85
+        assert "scanned_at" in row

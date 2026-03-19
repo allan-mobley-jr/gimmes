@@ -977,6 +977,62 @@ def trades(
 
 
 @app.command()
+def candidates(
+    ticker: str | None = typer.Option(
+        None, "--ticker", "-t", help="Filter by ticker",
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-n", help="Number of records to show",
+    ),
+) -> None:
+    """List scanned candidate records from the database."""
+
+    async def _candidates() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import (
+            get_candidate_for_ticker,
+            get_recent_candidates,
+        )
+
+        async with Database() as db:
+            if ticker:
+                records = await get_candidate_for_ticker(
+                    db, ticker, limit=limit,
+                )
+            else:
+                records = await get_recent_candidates(db, limit=limit)
+
+        if not records:
+            console.print("[dim]No candidate records found[/dim]")
+            return
+
+        title = f"Candidates for {ticker}" if ticker else f"Candidates (last {limit})"
+        table = Table(title=title)
+        table.add_column("Ticker")
+        table.add_column("Score", justify="right")
+        table.add_column("Price", justify="right")
+        table.add_column("Prob", justify="right")
+        table.add_column("Edge", justify="right")
+        table.add_column("Scanned")
+
+        for c in records:
+            table.add_row(
+                str(c.get("ticker", "")),
+                f"{c.get('gimme_score', 0):.0f}",
+                f"${c.get('market_price', 0):.2f}",
+                f"{c.get('model_probability', 0):.0%}",
+                f"{c.get('edge', 0):+.1%}",
+                str(c.get("scanned_at", ""))[:19],
+            )
+
+        console.print(table)
+
+    _run(_candidates())
+
+
+@app.command()
 def positions() -> None:
     """List open positions."""
     config = load_config()

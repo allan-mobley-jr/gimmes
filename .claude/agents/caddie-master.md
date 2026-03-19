@@ -158,11 +158,36 @@ Launch the Scout agent (`scout.md`) to:
 
 **If Scout returns zero candidates in its shortlist**, MUST skip directly to Step 6. NEVER run Steps 4-5.
 
-### Step 4: Caddie
+### Step 4: Caddie (with Research Cooldown)
 
-Dispatch the **Caddie** agent to research ALL candidates from the Scout's shortlist.
+Before dispatching the Caddie, check each Scout candidate for recent prior research.
 
-**Completeness rule (MUST follow — no exceptions):** MUST dispatch the Caddie for every candidate the Scout shortlisted. NEVER drop or deprioritize candidates to save time or cost. The Caddie Master does not filter — that is the Caddie's job via GimmeScore.
+#### 4a. Cooldown Check
+
+For each candidate ticker from the Scout's shortlist, run:
+
+```bash
+python -m gimmes candidates --ticker TICKER
+```
+
+Evaluate the output using these rules:
+
+1. **No prior research** (no records found) → send to Caddie
+2. **Prior score < 60** (clear PASS) → skip re-research, log the skip:
+   ```bash
+   python -m gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+     --rationale "Cooldown: prior score SCORE (<60), skipping re-research" \
+     --agent caddie-master
+   ```
+3. **Prior score 60-74** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
+4. **Prior score >= 75 with open position** (check `python -m gimmes positions` for the ticker) → skip, already traded
+5. **Prior score >= 75, no open position** → likely cap-blocked or rejected by validation. Send to Caddie with context that prior research exists.
+
+#### 4b. Dispatch Caddie
+
+Dispatch the **Caddie** agent to research ALL candidates that passed the cooldown check.
+
+**Completeness rule (MUST follow — no exceptions):** Every candidate from the Scout's shortlist MUST be accounted for — either sent to Caddie (passed cooldown) or logged as a skip with cooldown rationale. The Caddie Master MUST NOT silently drop candidates.
 
 Launch the Caddie agent (`caddie.md`) to:
 1. Research each candidate's underlying event
