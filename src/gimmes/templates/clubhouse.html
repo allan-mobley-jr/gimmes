@@ -344,6 +344,22 @@
 
     </div>
 
+    <!-- Detail Modal -->
+    <div id="detail-modal" class="fixed inset-0 z-50 hidden items-center justify-center">
+        <div id="detail-modal-backdrop" class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+        <div class="relative bg-slate-800 border border-slate-700/50 rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto scrollbar-thin">
+            <div class="flex items-center justify-between px-5 py-4 border-b border-slate-700/50">
+                <h3 id="detail-modal-title" class="text-lg font-bold text-white"></h3>
+                <button type="button" id="detail-modal-close" class="text-slate-400 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div id="detail-modal-body" class="px-5 py-4 space-y-4"></div>
+        </div>
+    </div>
+
     <!-- ================================================================== -->
     <!-- JAVASCRIPT                                                         -->
     <!-- ================================================================== -->
@@ -479,6 +495,103 @@
         }
 
         // ------------------------------------------------------------------
+        // Detail modal
+        // ------------------------------------------------------------------
+        function openModal(title, bodyHtml) {
+            document.getElementById('detail-modal-title').textContent = title;
+            document.getElementById('detail-modal-body').innerHTML = bodyHtml;
+            const modal = document.getElementById('detail-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('detail-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function modalRow(label, valueHtml) {
+            return '<div class="flex justify-between items-baseline py-1.5 border-b border-slate-700/30">'
+                + '<span class="text-xs uppercase tracking-wider text-slate-500">' + escapeHtml(label) + '</span>'
+                + '<span class="text-sm text-slate-200 font-mono text-right">' + valueHtml + '</span>'
+                + '</div>';
+        }
+
+        function findRationaleForTicker(ticker) {
+            if (!lastTrades) return '';
+            const match = lastTrades.find(function(t) { return t.ticker === ticker && t.rationale; });
+            return match ? match.rationale : '';
+        }
+
+        function tickerValue(ticker) {
+            return '<span class="text-cyan-400 font-semibold">' + escapeHtml(ticker) + '</span>';
+        }
+
+        function pnlValue(val) {
+            return '<span class="' + colorForPnl(val) + '">' + formatCurrency(val) + '</span>';
+        }
+
+        function rationaleBlock(label, text) {
+            if (!text) return '';
+            return '<div class="mt-3">'
+                + '<p class="text-xs uppercase tracking-wider text-slate-500 mb-1">' + escapeHtml(label) + '</p>'
+                + '<p class="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed bg-slate-700/30 rounded-lg p-3">'
+                + escapeHtml(text) + '</p></div>';
+        }
+
+        function buildModalBody(title, rows, rationale) {
+            let html = '';
+            if (title) {
+                html += '<p class="text-sm text-slate-300 leading-relaxed">' + escapeHtml(title) + '</p>';
+            }
+            html += '<div class="space-y-0">';
+            rows.forEach(function(r) { html += modalRow(r[0], r[1]); });
+            html += '</div>';
+            html += rationale;
+            return html;
+        }
+
+        function buildTradeModalBody(t) {
+            return buildModalBody(tickerTitles[t.ticker] || '', [
+                ['Ticker',      tickerValue(t.ticker)],
+                ['Action',      actionBadge(t.action)],
+                ['Side',        escapeHtml(t.side || '--')],
+                ['Quantity',    escapeHtml(t.count != null ? String(t.count) : '--')],
+                ['Price',       formatPrice(t.price)],
+                ['Gimme Score', t.gimme_score != null ? parseFloat(t.gimme_score).toFixed(1) : '--'],
+                ['Edge',        t.edge != null ? formatPercent(t.edge) : '--'],
+                ['Model Prob.', t.model_probability != null ? formatPercent(t.model_probability) : '--'],
+                ['Agent',       agentBadge(t.agent)],
+                ['Time',        formatTimestamp(t.timestamp)],
+            ], rationaleBlock('Rationale', t.rationale));
+        }
+
+        function buildPositionModalBody(p) {
+            return buildModalBody(p.title || tickerTitles[p.ticker] || '', [
+                ['Ticker',          tickerValue(p.ticker)],
+                ['Side',            escapeHtml(p.side || '--')],
+                ['Quantity',        escapeHtml(p.count != null ? String(p.count) : '--')],
+                ['Avg Price',       formatPrice(p.avg_price)],
+                ['Market Price',    formatPrice(p.market_price)],
+                ['Cost Basis',      formatCurrencyPlain(p.cost_basis)],
+                ['Market Value',    formatCurrencyPlain(p.market_value)],
+                ['Unrealized P&L',  pnlValue(p.unrealized_pnl)],
+                ['Realized P&L',    pnlValue(p.realized_pnl)],
+            ], rationaleBlock('Thesis (from latest trade)', findRationaleForTicker(p.ticker)));
+        }
+
+        function attachRowClickHandlers(tbody, dataAttr, items, modalTitle, buildBody) {
+            tbody.querySelectorAll('tr[' + dataAttr + ']').forEach(function(row) {
+                row.addEventListener('click', function() {
+                    const idx = parseInt(this.getAttribute(dataAttr), 10);
+                    const item = items[idx];
+                    if (item) openModal(modalTitle, buildBody(item));
+                });
+            });
+        }
+
+        // ------------------------------------------------------------------
         // Update functions
         // ------------------------------------------------------------------
         function updateDashboard(data) {
@@ -534,13 +647,12 @@
                 return;
             }
             let html = '';
-            positions.forEach(function(p) {
+            positions.forEach(function(p, idx) {
                 if (p.title) tickerTitles[p.ticker] = p.title;
                 const pnl = parseFloat(p.unrealized_pnl || 0);
                 const pnlClass = colorForPnl(pnl);
-                const posTitle = escapeHtml(p.title || '').replace(/"/g, '&quot;');
-                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
-                    + '<td class="py-2 pr-3 text-cyan-400 font-semibold" title="' + posTitle + '">' + escapeHtml(p.ticker || '--') + '</td>'
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" data-pos-idx="' + idx + '">'
+                    + '<td class="py-2 pr-3 text-cyan-400 font-semibold">' + escapeHtml(p.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-slate-300">' + escapeHtml(p.side || '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + (p.count != null ? p.count : '--') + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.avg_price) + '</td>'
@@ -550,6 +662,7 @@
                     + '</tr>';
             });
             tbody.innerHTML = html;
+            attachRowClickHandlers(tbody, 'data-pos-idx', positions, 'Position Detail', buildPositionModalBody);
         }
 
         function updateRisk(risk) {
@@ -712,11 +825,10 @@
                 return;
             }
             let html = '';
-            visible.forEach(function(t) {
-                const tradeTitle = escapeHtml(tickerTitles[t.ticker] || '').replace(/"/g, '&quot;');
-                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors">'
+            visible.forEach(function(t, idx) {
+                html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" data-trade-idx="' + idx + '">'
                     + '<td class="py-2 pr-2 text-xs text-slate-500">' + formatTimestamp(t.timestamp) + '</td>'
-                    + '<td class="py-2 pr-2 text-cyan-400 font-semibold" title="' + tradeTitle + '">' + escapeHtml(t.ticker || '--') + '</td>'
+                    + '<td class="py-2 pr-2 text-cyan-400 font-semibold">' + escapeHtml(t.ticker || '--') + '</td>'
                     + '<td class="py-2 pr-2">' + actionBadge(t.action) + '</td>'
                     + '<td class="py-2 pr-2 text-slate-300">' + escapeHtml(t.side || '--') + '</td>'
                     + '<td class="py-2 pr-2 text-right text-slate-200">' + (t.count != null ? t.count : '--') + '</td>'
@@ -726,6 +838,7 @@
                     + '</tr>';
             });
             tbody.innerHTML = html;
+            attachRowClickHandlers(tbody, 'data-trade-idx', visible, 'Trade Detail', buildTradeModalBody);
         }
 
         function updateCandidates(candidates) {
@@ -1042,6 +1155,11 @@
             initChart();
             initialLoad();
             connectSSE();
+            document.getElementById('detail-modal-backdrop').addEventListener('click', closeModal);
+            document.getElementById('detail-modal-close').addEventListener('click', closeModal);
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') closeModal();
+            });
         });
     </script>
 </body>
