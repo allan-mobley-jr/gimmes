@@ -23,16 +23,28 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED), execu
 5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
 6. **Log completion** (see Activity Logging below)
 
+## SIZE UP Execution
+
+When Caddie Master dispatches you for a SIZE UP (adding to an existing position), execute this sequence:
+
+1. **Validate**: `python -m gimmes validate TICKER --prob P --size-up` — MUST pass all checks. The `--size-up` flag allows the duplicate position check to pass.
+2. **Size**: `python -m gimmes size TICKER --prob P`
+3. **Order**: `python -m gimmes order TICKER --prob P --size-up --yes`
+4. **Log success**: The order command logs the trade atomically.
+5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score 0 --rationale "SIZE UP rejected: [which check failed]" --agent closer`
+
+All safety checks except the duplicate position check and position count check are still enforced (SIZE UP adds to an existing position, not a new one).
+
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
 
 - [ ] Validation passed (all checks green) — REQUIRED
 - [ ] Edge after fees >= 5pp (`min_edge_after_fees`) — REQUIRED
 - [ ] True probability >= 90% (`min_true_probability`) — REQUIRED
 - [ ] Position size <= 5% of bankroll (`max_position_pct`) — REQUIRED
-- [ ] Not a duplicate position — REQUIRED
+- [ ] Not a duplicate position — REQUIRED (waived for SIZE UP via `--size-up`)
 - [ ] Settlement rules are clear (no red flags from Caddie) — REQUIRED
 - [ ] Daily loss limit not breached (`daily_loss_limit_pct = 15%`) — REQUIRED
-- [ ] Position count < max (`max_open_positions = 15`) — REQUIRED
+- [ ] Position count < max (`max_open_positions = 15`) — REQUIRED (waived for SIZE UP)
 
 ## Order Failure Protocol
 

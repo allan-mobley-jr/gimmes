@@ -126,6 +126,74 @@ class TestValidateTrade:
         assert result.approved is False
         assert any("duplicate" in f.lower() or "already" in f.lower() for f in result.failures)
 
+    def test_size_up_bypasses_duplicate_check(self, config: GimmesConfig) -> None:
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=["KXTEST"],
+            config=config,
+            size_up=True,
+        )
+        assert result.approved is True
+        assert any("size up" in c.lower() for c in result.checks)
+
+    def test_size_up_still_enforces_other_checks(self, config: GimmesConfig) -> None:
+        """SIZE UP bypasses duplicate check but other checks still apply."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=-2000,  # Exceeds 15% daily loss on 10k bankroll
+            open_position_count=3,
+            existing_tickers=["KXTEST"],
+            config=config,
+            size_up=True,
+        )
+        assert result.approved is False
+        assert any("daily" in f.lower() or "loss" in f.lower() for f in result.failures)
+        assert not any("duplicate" in f.lower() or "already" in f.lower() for f in result.failures)
+
+    def test_size_up_rejects_when_no_existing_position(self, config: GimmesConfig) -> None:
+        """SIZE UP must fail if there's no existing position to add to."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],  # No existing position
+            config=config,
+            size_up=True,
+        )
+        assert result.approved is False
+        assert any("no existing position" in f.lower() for f in result.failures)
+
+    def test_size_up_skips_position_count_check(self, config: GimmesConfig) -> None:
+        """SIZE UP should not be blocked by position count at max."""
+        market = _make_market()
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=15,  # At max
+            existing_tickers=["KXTEST"],
+            config=config,
+            size_up=True,
+        )
+        assert result.approved is True
+        assert any("position count" in c.lower() and "skipped" in c.lower() for c in result.checks)
+
     def test_settlement_risk_high(self, config: GimmesConfig) -> None:
         market = _make_market(
             rules_primary="Kalshi reserves the right to cancel at sole discretion. "
