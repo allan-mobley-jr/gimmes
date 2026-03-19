@@ -145,14 +145,18 @@ async def get_portfolio(db_path: Path) -> PortfolioResponse:
                 if resp.balance == 0:
                     resp.balance = snap["balance"]
 
-            # Calculate unrealized P&L from positions
+            # Calculate unrealized P&L and portfolio value from positions
             table = _position_table(config)
             cursor = await conn.execute(
-                f"SELECT COALESCE(SUM(unrealized_pnl), 0) as total FROM {table} WHERE count > 0"
+                f"""SELECT COALESCE(SUM(unrealized_pnl), 0) as total_pnl,
+                           COALESCE(SUM(count * market_price), 0) as total_mv
+                    FROM {table} WHERE count > 0"""
             )
             row = await cursor.fetchone()
             if row:
-                resp.unrealized_pnl = row["total"]
+                resp.unrealized_pnl = row["total_pnl"]
+                if not config.is_championship or not resp.portfolio_value:
+                    resp.portfolio_value = row["total_mv"]
 
             # Recalculate total equity if we have live balance
             if resp.balance > 0:
@@ -184,6 +188,10 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
             )
             rows = await cursor.fetchall()
             for row in rows:
+                # paper_positions lacks market_value; compute from count * price
+                stored_mv = float(_row_get(row, "market_value", 0) or 0)
+                market_value = stored_mv if stored_mv else row["count"] * row["market_price"]
+
                 items.append(PositionItem(
                     ticker=row["ticker"],
                     title=str(_row_get(row, "title", "") or ""),
@@ -192,7 +200,7 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
                     avg_price=row["avg_price"],
                     market_price=row["market_price"],
                     cost_basis=row["cost_basis"],
-                    market_value=float(_row_get(row, "market_value", 0) or 0),
+                    market_value=market_value,
                     unrealized_pnl=row["unrealized_pnl"],
                     realized_pnl=row["realized_pnl"],
                 ))
