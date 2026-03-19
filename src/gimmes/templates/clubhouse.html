@@ -350,7 +350,7 @@
         <div class="relative bg-slate-800 border border-slate-700/50 rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto scrollbar-thin">
             <div class="flex items-center justify-between px-5 py-4 border-b border-slate-700/50">
                 <h3 id="detail-modal-title" class="text-lg font-bold text-white"></h3>
-                <button id="detail-modal-close" class="text-slate-400 hover:text-white transition-colors">
+                <button type="button" id="detail-modal-close" class="text-slate-400 hover:text-white transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
@@ -373,7 +373,6 @@
         let lastErrors = null;
         let showSkipTrades = false;
         let lastTrades = null;
-        let lastPositions = null;
         let evtSource = null;
         const tickerTitles = {};
 
@@ -642,7 +641,6 @@
         }
 
         function updatePositions(positions) {
-            lastPositions = positions;
             const tbody = document.getElementById('positions-body');
             if (!positions || positions.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">No open positions</td></tr>';
