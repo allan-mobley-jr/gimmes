@@ -194,6 +194,67 @@ class TestValidateTrade:
         assert result.approved is True
         assert any("position count" in c.lower() and "skipped" in c.lower() for c in result.checks)
 
+    def test_size_up_checks_aggregate_position_size(self, config: GimmesConfig) -> None:
+        """SIZE UP should reject when aggregate exposure exceeds max_position_pct."""
+        market = _make_market()
+        # max_position_pct=0.05, bankroll=10000 → max $500
+        # $300 new + $300 existing = $600 > $500
+        result = validate_trade(
+            market=market,
+            trade_dollars=300,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=["KXTEST"],
+            config=config,
+            size_up=True,
+            existing_cost_basis=300,
+        )
+        assert result.approved is False
+        assert any("exceeds max" in f.lower() for f in result.failures)
+
+    def test_size_up_aggregate_within_limit_passes(self, config: GimmesConfig) -> None:
+        """SIZE UP should pass when aggregate exposure is within max_position_pct."""
+        market = _make_market()
+        # $100 new + $300 existing = $400 < $500
+        result = validate_trade(
+            market=market,
+            trade_dollars=100,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=["KXTEST"],
+            config=config,
+            size_up=True,
+            existing_cost_basis=300,
+        )
+        assert result.approved is True
+        assert any("new" in c.lower() and "existing" in c.lower() for c in result.checks)
+
+    def test_non_size_up_ignores_existing_cost_basis(self, config: GimmesConfig) -> None:
+        """Non-SIZE UP trades should not consider existing_cost_basis."""
+        market = _make_market()
+        # $200 trade alone is fine (< $500), but $200 + $400 = $600 would fail
+        # Since size_up=False, only $200 should be checked
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+            size_up=False,
+            existing_cost_basis=400,
+        )
+        assert result.approved is True
+        # Should NOT mention "existing" in the size check
+        size_checks = [c for c in result.checks if "position size" in c.lower()]
+        assert all("existing" not in c.lower() for c in size_checks)
+
     def test_settlement_risk_high(self, config: GimmesConfig) -> None:
         market = _make_market(
             rules_primary="Kalshi reserves the right to cancel at sole discretion. "

@@ -45,6 +45,7 @@ def validate_trade(
     session_spent: float = 0.0,
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
     size_up: bool = False,
+    existing_cost_basis: float = 0.0,
 ) -> ValidationResult:
     """Run all pre-trade validation checks.
 
@@ -80,12 +81,27 @@ def validate_trade(
         else:
             failures.append(count_check.reason)
 
-    # 3. Position size
-    size_check = check_position_size(trade_dollars, bankroll, config)
+    # 3. Position size (aggregate for SIZE UP)
+    cost_basis = max(0.0, existing_cost_basis)
+    size_dollars = trade_dollars + cost_basis if size_up else trade_dollars
+    size_check = check_position_size(size_dollars, bankroll, config)
     if size_check.passed:
-        checks.append(f"Position size OK (${trade_dollars:.2f})")
+        if size_up and cost_basis > 0:
+            checks.append(
+                f"Position size OK (${trade_dollars:.2f} new"
+                f" + ${cost_basis:.2f} existing"
+                f" = ${size_dollars:.2f})"
+            )
+        else:
+            checks.append(f"Position size OK (${trade_dollars:.2f})")
     else:
-        failures.append(size_check.reason)
+        reason = size_check.reason
+        if size_up and cost_basis > 0:
+            reason += (
+                f" (${trade_dollars:.2f} new"
+                f" + ${cost_basis:.2f} existing)"
+            )
+        failures.append(reason)
 
     # 4. Balance check
     if trade_dollars <= bankroll:
