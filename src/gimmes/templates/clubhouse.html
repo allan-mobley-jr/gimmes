@@ -118,7 +118,13 @@
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
             <!-- Open Positions (60%) -->
             <div class="lg:col-span-3 bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
-                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Open Positions</h2>
+                <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
+                    Open Positions
+                    <button id="filter-positions-btn" onclick="cyclePositionFilter()"
+                        class="ml-auto text-xs text-slate-500 hover:text-slate-300 transition-colors font-normal normal-case tracking-normal">
+                        All sides
+                    </button>
+                </h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm">
                         <thead>
@@ -374,6 +380,8 @@
         let lastErrors = null;
         let showSkipTrades = false;
         let lastTrades = null;
+        let positionSideFilter = 'all';
+        let lastPositions = null;
         let evtSource = null;
         let modalTriggerEl = null;
         const tickerTitles = {};
@@ -765,14 +773,20 @@
         }
 
         function updatePositions(positions) {
+            lastPositions = positions;
             const tbody = document.getElementById('positions-body');
-            if (!positions || positions.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">No open positions</td></tr>';
+            if (!positions) positions = [];
+            positions.forEach(function(p) { if (p.title) tickerTitles[p.ticker] = p.title; });
+            const visible = positionSideFilter === 'all'
+                ? positions
+                : positions.filter(function(p) { return (p.side || '').toLowerCase() === positionSideFilter; });
+            if (visible.length === 0) {
+                const msg = positionSideFilter === 'all' ? 'No open positions' : 'No ' + positionSideFilter.toUpperCase() + ' positions';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
                 return;
             }
             let html = '';
-            positions.forEach(function(p, idx) {
-                if (p.title) tickerTitles[p.ticker] = p.title;
+            visible.forEach(function(p, idx) {
                 const pnl = parseFloat(p.unrealized_pnl || 0);
                 const pnlClass = colorForPnl(pnl);
                 html += '<tr class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors cursor-pointer" tabindex="0" data-pos-idx="' + idx + '">'
@@ -786,7 +800,7 @@
                     + '</tr>';
             });
             tbody.innerHTML = html;
-            attachRowClickHandlers(tbody, 'data-pos-idx', positions, 'Position Detail', buildPositionModalBody);
+            attachRowClickHandlers(tbody, 'data-pos-idx', visible, 'Position Detail', buildPositionModalBody);
         }
 
         function updateRisk(risk) {
@@ -1078,6 +1092,14 @@
             document.getElementById('show-skips-btn').textContent =
                 showSkipTrades ? 'Hide skips' : 'Show skips';
             if (lastTrades) updateTrades(lastTrades);
+        }
+
+        function cyclePositionFilter() {
+            var cycle = ['all', 'yes', 'no'];
+            var labels = { all: 'All sides', yes: 'YES only', no: 'NO only' };
+            positionSideFilter = cycle[(cycle.indexOf(positionSideFilter) + 1) % cycle.length];
+            document.getElementById('filter-positions-btn').textContent = labels[positionSideFilter];
+            if (lastPositions) updatePositions(lastPositions);
         }
 
         function updateStatus(status) {
