@@ -1348,7 +1348,7 @@ def _print_note(note: dict) -> None:  # type: ignore[type-arg]
         f"[dim][#{note['id']}] {note['timestamp']} | cycle={note['cycle']}"
         f" | {note['agent']} | {note['note_type']}[/dim]"
     )
-    console.print(note["body"])
+    console.print(note["body"], markup=False)
 
 
 @app.command(name="position-context")
@@ -1398,7 +1398,7 @@ def position_context(
         console.print("\n[bold]--- ORIGINAL THESIS ---[/bold]")
         thesis = trade.get("thesis", "")
         if thesis:
-            console.print(thesis)
+            console.print(thesis, markup=False)
         else:
             console.print("[dim][No thesis stored — position predates v8 migration][/dim]")
 
@@ -1414,7 +1414,8 @@ def position_context(
         if decisions:
             console.print("\n[bold yellow]--- CADDIE MASTER DECISIONS ---[/bold yellow]")
             for n in decisions:
-                console.print(f"[#{n['id']}] cycle={n['cycle']} — {n['body'][:120]}...")
+                console.print(f"[#{n['id']}] cycle={n['cycle']} —")
+                console.print(n["body"][:120] + "...", markup=False)
 
     _run(_ctx())
 
