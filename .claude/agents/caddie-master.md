@@ -167,7 +167,7 @@ Before dispatching the Caddie, check each Scout candidate for recent prior resea
 For each candidate ticker from the Scout's shortlist, run:
 
 ```bash
-python -m gimmes candidates --ticker TICKER
+python -m gimmes candidates --ticker TICKER --limit 1
 ```
 
 Evaluate the output using these rules:
