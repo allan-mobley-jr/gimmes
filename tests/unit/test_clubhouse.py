@@ -123,12 +123,14 @@ class TestDataLayer:
     async def test_get_portfolio(self, db_path: Path) -> None:
         portfolio = await get_portfolio(db_path)
         assert portfolio.balance == 9500.0
+        assert portfolio.portfolio_value == pytest.approx(7.0)  # 10 * 0.70
 
     async def test_get_positions(self, db_path: Path) -> None:
         positions = await get_positions(db_path)
         assert len(positions) == 1
         assert positions[0].ticker == "TEST-YES"
         assert positions[0].count == 10
+        assert positions[0].market_value == pytest.approx(7.0)  # 10 * 0.70
 
     async def test_get_trades(self, db_path: Path) -> None:
         trades = await get_trades(db_path)
