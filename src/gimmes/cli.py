@@ -334,6 +334,7 @@ def validate(
     ticker: str = typer.Argument(..., help="Market ticker"),
     probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
     dollars: float = typer.Option(0, "--dollars", "-d", help="Trade size in dollars (0=auto-size)"),
+    size_up: bool = typer.Option(False, "--size-up", help="Allow adding to existing position"),
 ) -> None:
     """Pre-trade validation for a market."""
     config = load_config()
@@ -410,7 +411,7 @@ def validate(
             result = validate_trade(
                 market, trade_dollars, probability, balance,
                 total_daily_pnl, len(positions), existing_tickers, config,
-                fees=fees, session_spent=session_spent,
+                fees=fees, session_spent=session_spent, size_up=size_up,
             )
 
             console.print(f"\n[bold]Validation: {ticker}[/bold]")
@@ -450,6 +451,9 @@ def order(
     ),
     force: bool = typer.Option(
         False, "--force", help="Override validation failures (use with caution)",
+    ),
+    size_up: bool = typer.Option(
+        False, "--size-up", help="Allow adding to existing position (SIZE UP)",
     ),
 ) -> None:
     """Place an order on Kalshi (runs pre-trade validation first)."""
@@ -597,7 +601,7 @@ def order(
                     market, trade_dollars, true_prob, balance,
                     total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
-                    session_spent=session_spent,
+                    session_spent=session_spent, size_up=size_up,
                 )
 
                 if not validation.approved:
@@ -767,11 +771,14 @@ def order(
                         sync_positions_with_trade,
                     )
 
-                    trade_action = (
-                        TradeDecision.Action.OPEN
-                        if is_buy
-                        else TradeDecision.Action.CLOSE
-                    )
+                    if is_buy:
+                        trade_action = (
+                            TradeDecision.Action.SIZE_UP
+                            if size_up
+                            else TradeDecision.Action.OPEN
+                        )
+                    else:
+                        trade_action = TradeDecision.Action.CLOSE
                     if is_buy:
                         try:
                             thesis = await get_thesis_for_ticker(db, ticker)

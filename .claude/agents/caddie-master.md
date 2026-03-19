@@ -61,7 +61,11 @@ For each open position, check its note history:
 python -m gimmes position-notes TICKER --limit 10
 ```
 
-If any position has a `decision` note (type=decision, agent=caddie-master) but no subsequent close trade visible in `python -m gimmes trades --ticker TICKER --action close`, the close was lost to a crash. Log the discovery and re-dispatch Closer for that position before proceeding with the regular Monitor cycle.
+If any position has a `decision` note (type=decision, agent=caddie-master) with no subsequent matching trade, the dispatch was lost to a crash:
+- **CLOSE decisions**: no subsequent close trade in `python -m gimmes trades --ticker TICKER --action close` → re-dispatch Closer to close.
+- **SIZE UP decisions**: no subsequent open trade after the decision timestamp in `python -m gimmes trades --ticker TICKER --action open` → re-dispatch Closer with `--size-up`.
+
+Resolve any orphaned decisions before proceeding with the regular Monitor cycle.
 
 #### 2b. Dispatch Monitor
 
@@ -114,15 +118,34 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 7. **If the decision is HOLD**, no further action for this position this cycle.
 
-#### 2d. SIZE UP (audit only)
+#### 2d. SIZE UP
 
-Full SIZE UP execution is not yet supported (the duplicate position check blocks adding to existing positions). If Monitor flags a position with extraordinary additional edge, log for audit:
+If Monitor flags a position where the current edge has *increased* since entry (e.g., price dropped while thesis remains fully intact), Caddie Master may decide to SIZE UP — buy additional contracts.
 
-```bash
-python -m gimmes log-trade TICKER --action size_up --price CURRENT_PRICE --prob 0 --score 0 --rationale "Caddie Master: [reason]" --agent caddie-master
-```
+**Decision criteria** — SIZE UP only when ALL hold:
+- The original thesis is fully intact (no degradation)
+- Current edge after fees is *larger* than at entry
+- Monitor's flag indicates a favorable price move, not adverse news
+- Position count is below max and daily loss limit is not breached
 
-Do NOT attempt to place additional orders. If the log-trade command fails, note the failure and continue. Do not retry.
+**Execution flow** (mirrors the CLOSE pattern):
+
+1. **Log decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
+   ```bash
+   python -m gimmes position-note TICKER \
+     --cycle $GIMMES_CYCLE \
+     --agent caddie-master \
+     --type decision \
+     --body "Decision: SIZE UP.
+   Reasoning: [specific reasoning referencing original thesis and Monitor's flag].
+   Edge assessment: [entry edge vs current edge]."
+   ```
+   If this command fails, do not proceed with the size up — log the failure and move on.
+
+2. **Dispatch Closer** to execute the buy with `--size-up`:
+   - Closer runs `python -m gimmes validate TICKER --prob P --size-up`
+   - If validation passes, `python -m gimmes size TICKER --prob P`
+   - Place order: `python -m gimmes order TICKER --prob P --size-up --yes`
 
 ### Step 3: Scout
 

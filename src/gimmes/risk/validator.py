@@ -44,6 +44,7 @@ def validate_trade(
     is_taker: bool = False,
     session_spent: float = 0.0,
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+    size_up: bool = False,
 ) -> ValidationResult:
     """Run all pre-trade validation checks.
 
@@ -68,12 +69,16 @@ def validate_trade(
     else:
         failures.append(loss_check.reason)
 
-    # 2. Position count
-    count_check = check_position_count(open_position_count, config)
-    if count_check.passed:
-        checks.append(f"Position count OK ({open_position_count}/{config.risk.max_open_positions})")
+    # 2. Position count (skipped for SIZE UP — not adding a new position)
+    if size_up:
+        checks.append("Position count check skipped (SIZE UP, no new position)")
     else:
-        failures.append(count_check.reason)
+        count_check = check_position_count(open_position_count, config)
+        if count_check.passed:
+            max_pos = config.risk.max_open_positions
+            checks.append(f"Position count OK ({open_position_count}/{max_pos})")
+        else:
+            failures.append(count_check.reason)
 
     # 3. Position size
     size_check = check_position_size(trade_dollars, bankroll, config)
@@ -121,11 +126,17 @@ def validate_trade(
     else:
         checks.append("Edge check skipped (no probability provided)")
 
-    # 7. Duplicate check
+    # 7. Duplicate check (skipped for SIZE UP — adding to existing position)
     if market.ticker in existing_tickers:
-        failures.append(f"Already have position in {market.ticker}")
+        if size_up:
+            checks.append(f"Duplicate check skipped (SIZE UP for {market.ticker})")
+        else:
+            failures.append(f"Already have position in {market.ticker}")
     else:
-        checks.append("No duplicate position")
+        if size_up:
+            failures.append(f"SIZE UP requested but no existing position in {market.ticker}")
+        else:
+            checks.append("No duplicate position")
 
     # 8. Settlement risk
     settlement = scan_settlement_rules(market.rules_primary)
