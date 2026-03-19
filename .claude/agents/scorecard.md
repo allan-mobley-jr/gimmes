@@ -80,7 +80,7 @@ MUST produce this exact format:
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scorecard --phase start --message "Scorecard generating performance report"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase start --message "Scorecard generating performance report"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -88,7 +88,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after producing the scorecard:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scorecard --phase complete --message "Scorecard: N trades, $X P&L, strategy HEALTH_STATUS"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase complete --message "Scorecard: N trades, $X P&L, strategy HEALTH_STATUS"
 ```
 
 Substitute actual values: total trade count, net P&L, and strategy health rating. If the command fails, note the failure in your output and continue. Do not retry.

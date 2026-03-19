@@ -1542,6 +1542,7 @@ def log_activity(
     phase: str = typer.Option("", "--phase", help="Phase (start/complete/error)"),
     message: str = typer.Option("", "--message", "-m", help="Activity message"),
     details: str = typer.Option("", "--details", "-d", help="Additional details"),
+    session_id: int = typer.Option(0, "--session-id", help="Session ID"),
 ) -> None:
     """Log agent activity to the activity_log table."""
     config = load_config()
@@ -1554,6 +1555,7 @@ def log_activity(
             row_id = await insert_activity(
                 db, cycle=cycle, agent=agent, phase=phase,
                 message=message, details=details,
+                session_id=session_id or None,
             )
             console.print(f"[green]Logged activity #{row_id}[/green]")
 
@@ -2476,8 +2478,10 @@ def _autonomous_loop(
 
     # --- Session management ---
     from gimmes.store.session import (
+        close_orphan_activities,
         create_session,
         end_session,
+        get_max_global_cycle,
         mark_stale_sessions,
         update_session_cycle,
     )
@@ -2497,11 +2501,17 @@ def _autonomous_loop(
         console.print(
             f"[dim]Cleaned up {stale} stale session(s) from prior crash[/dim]"
         )
+        orphans = close_orphan_activities(config.db_path)
+        if orphans:
+            console.print(
+                f"[dim]Closed {orphans} orphan activity entries[/dim]"
+            )
 
     session_id = create_session(config.db_path, mode, os.getpid())
 
-    # Set mode in process env for backward compat with subprocesses
+    # Set mode and session ID in process env for subprocesses
     os.environ["GIMMES_MODE"] = mode
+    os.environ["GIMMES_SESSION_ID"] = str(session_id)
 
     env = os.environ.copy()
 
@@ -2532,7 +2542,8 @@ def _autonomous_loop(
         console.print(f"Max cycles: {max_cycles}")
     console.print("Press Ctrl+C to stop\n")
 
-    cycle = 0
+    cycle = get_max_global_cycle(config.db_path)
+    cycles_run = 0
     consecutive_failures = 0
     session_status = "stopped"
 
@@ -2559,8 +2570,9 @@ def _autonomous_loop(
     proc = None
     old_handler = signal.signal(signal.SIGINT, _sigint_handler)
     try:
-        while max_cycles == 0 or cycle < max_cycles:
+        while max_cycles == 0 or cycles_run < max_cycles:
             cycle += 1
+            cycles_run += 1
             console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
 
             update_session_cycle(config.db_path, session_id, cycle)
@@ -2648,7 +2660,7 @@ def _autonomous_loop(
             else:
                 consecutive_failures = 0
 
-            if max_cycles > 0 and cycle >= max_cycles:
+            if max_cycles > 0 and cycles_run >= max_cycles:
                 break
 
             console.print(f"[dim]Next cycle in {pause_seconds}s...[/dim]")

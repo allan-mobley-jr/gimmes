@@ -167,6 +167,74 @@ def end_session(
         )
 
 
+def get_max_global_cycle(db_path: Path) -> int:
+    """Return the highest cycle number recorded across all sessions."""
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(cycle_count), 0) FROM sessions"
+            ).fetchone()
+            # COALESCE guarantees a non-NULL scalar; row is always present
+            return int(row[0])
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            logger.warning("get_max_global_cycle failed: %s", exc)
+        return 0
+    except sqlite3.DatabaseError as exc:
+        logger.error("get_max_global_cycle failed: %s", exc)
+        return 0
+
+
+def close_orphan_activities(db_path: Path) -> int:
+    """Insert synthetic crash_recovery entries for orphan start activities.
+
+    An orphan start is a 'start' phase entry in activity_log from a crashed
+    session that has no matching 'complete', 'error', or 'crash_recovery'.
+    Returns the count of synthetic entries inserted.
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cursor = conn.execute("""
+                SELECT DISTINCT al.session_id, al.cycle, al.agent
+                FROM activity_log al
+                JOIN sessions s ON s.id = al.session_id
+                WHERE s.status = 'crashed'
+                  AND al.phase = 'start'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM activity_log a2
+                      WHERE a2.session_id = al.session_id
+                        AND a2.cycle = al.cycle
+                        AND a2.agent = al.agent
+                        AND a2.phase IN ('complete', 'error', 'crash_recovery')
+                  )
+            """)
+            orphans = cursor.fetchall()
+            for sid, cyc, agent in orphans:
+                conn.execute(
+                    """INSERT INTO activity_log
+                       (cycle, agent, phase, message, session_id)
+                       VALUES (?, ?, 'crash_recovery',
+                               'Session crashed — synthetic close', ?)""",
+                    (cyc, agent, sid),
+                )
+            if orphans:
+                conn.commit()
+            return len(orphans)
+        finally:
+            conn.close()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        logger.error("close_orphan_activities failed: %s", exc)
+        return 0
+
+
 def mark_stale_sessions(db_path: Path) -> int:
     """Mark active sessions with dead PIDs as crashed. Returns count."""
     if not db_path.exists():

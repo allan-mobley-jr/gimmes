@@ -24,7 +24,7 @@ Run one complete autonomous trading cycle. Each invocation is one cycle — the 
 ### Step 0: Log Cycle Start
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -227,7 +227,7 @@ Launch the Pro agent (`pro.md`) to:
 MUST run this step unconditionally — regardless of which earlier steps were skipped or whether Step 7 ran.
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.

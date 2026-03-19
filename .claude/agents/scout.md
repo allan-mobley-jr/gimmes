@@ -71,7 +71,7 @@ MUST produce a structured shortlist in this exact format:
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase start --message "Scout scanning for gimme candidates"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scout --phase start --message "Scout scanning for gimme candidates"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -79,7 +79,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after producing the shortlist:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent scout --phase complete --message "Scout found N candidates"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scout --phase complete --message "Scout found N candidates"
 ```
 
 Substitute the actual number of candidates in the shortlist. If the command fails, note the failure in your output and continue. Do not retry.

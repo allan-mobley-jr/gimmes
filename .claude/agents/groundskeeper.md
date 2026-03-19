@@ -125,7 +125,7 @@ Issues filed: K
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent groundskeeper --phase start --message "Groundskeeper reviewing error log"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase start --message "Groundskeeper reviewing error log"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -133,7 +133,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after finishing the error review:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --agent groundskeeper --phase complete --message "Groundskeeper: N errors reviewed, M issues filed"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase complete --message "Groundskeeper: N errors reviewed, M issues filed"
 ```
 
 Substitute actual values: total unresolved errors reviewed and number of GitHub issues filed. If the command fails, note the failure in your output and continue. Do not retry.

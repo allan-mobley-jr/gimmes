@@ -401,12 +401,14 @@ async def insert_activity(
     phase: str = "",
     message: str = "",
     details: str = "",
+    session_id: int | None = None,
 ) -> int:
     """Insert an activity log entry. Returns the row ID."""
     cursor = await db.conn.execute(
-        """INSERT INTO activity_log (cycle, agent, phase, message, details)
-           VALUES (?, ?, ?, ?, ?)""",
-        (cycle, agent, phase, message, details),
+        """INSERT INTO activity_log
+           (cycle, agent, phase, message, details, session_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (cycle, agent, phase, message, details, session_id),
     )
     await db.conn.commit()
     return cursor.lastrowid or 0
