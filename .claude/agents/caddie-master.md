@@ -63,7 +63,7 @@ python -m gimmes position-notes TICKER --limit 10
 
 If any position has a `decision` note (type=decision, agent=caddie-master) with no subsequent matching trade, the dispatch was lost to a crash:
 - **CLOSE decisions**: no subsequent close trade in `python -m gimmes trades --ticker TICKER --action close` → re-dispatch Closer to close.
-- **SIZE UP decisions**: no subsequent open trade after the decision timestamp in `python -m gimmes trades --ticker TICKER --action open` → re-dispatch Closer with `--size-up`.
+- **SIZE UP decisions**: no subsequent size_up trade after the decision timestamp in `python -m gimmes trades --ticker TICKER --action size_up` → re-dispatch Closer with `--size-up`.
 
 Resolve any orphaned decisions before proceeding with the regular Monitor cycle.
 
@@ -126,7 +126,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 - The original thesis is fully intact (no degradation)
 - Current edge after fees is *larger* than at entry
 - Monitor's flag indicates a favorable price move, not adverse news
-- Position count is below max and daily loss limit is not breached
+- Daily loss limit is not breached
 
 **Execution flow** (mirrors the CLOSE pattern):
 

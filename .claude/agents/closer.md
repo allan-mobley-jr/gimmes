@@ -33,7 +33,7 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 4. **Log success**: The order command logs the trade atomically.
 5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score 0 --rationale "SIZE UP rejected: [which check failed]" --agent closer`
 
-All safety checks except the duplicate position check are still enforced.
+All safety checks except the duplicate position check and position count check are still enforced (SIZE UP adds to an existing position, not a new one).
 
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
 
@@ -44,7 +44,7 @@ All safety checks except the duplicate position check are still enforced.
 - [ ] Not a duplicate position — REQUIRED (waived for SIZE UP via `--size-up`)
 - [ ] Settlement rules are clear (no red flags from Caddie) — REQUIRED
 - [ ] Daily loss limit not breached (`daily_loss_limit_pct = 15%`) — REQUIRED
-- [ ] Position count < max (`max_open_positions = 15`) — REQUIRED
+- [ ] Position count < max (`max_open_positions = 15`) — REQUIRED (waived for SIZE UP)
 
 ## Order Failure Protocol
 
