@@ -2501,11 +2501,11 @@ def _autonomous_loop(
         console.print(
             f"[dim]Cleaned up {stale} stale session(s) from prior crash[/dim]"
         )
-        orphans = close_orphan_activities(config.db_path)
-        if orphans:
-            console.print(
-                f"[dim]Closed {orphans} orphan activity entries[/dim]"
-            )
+    orphans = close_orphan_activities(config.db_path)
+    if orphans:
+        console.print(
+            f"[dim]Closed {orphans} orphan activity entries[/dim]"
+        )
 
     session_id = create_session(config.db_path, mode, os.getpid())
 
