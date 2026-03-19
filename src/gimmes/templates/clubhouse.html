@@ -379,7 +379,7 @@
 
         function formatPercent(val) {
             if (val == null || isNaN(val)) return '0%';
-            return parseFloat(val).toFixed(1) + '%';
+            return (parseFloat(val) * 100).toFixed(1) + '%';
         }
 
         function colorForPnl(val) {
