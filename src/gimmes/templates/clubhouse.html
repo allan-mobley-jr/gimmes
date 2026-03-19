@@ -452,7 +452,7 @@
         function formatDateTime(isoStr) {
             if (!isoStr) return '--';
             const d = new Date(isoStr);
-            return d.toLocaleDateString('en-US', {
+            return d.toLocaleString('en-US', {
                 month: 'short', day: 'numeric', year: 'numeric',
                 hour: '2-digit', minute: '2-digit', hour12: true
             });
@@ -642,6 +642,8 @@
             ], rationaleBlock('Thesis (from latest trade)', findRationaleForTicker(p.ticker)));
         }
 
+        let marketDetailRequestId = 0;
+
         function replaceMarketDetailSection(html) {
             const section = document.getElementById('market-detail-section');
             if (section) section.outerHTML = html;
@@ -655,13 +657,15 @@
                     if (!item) return;
                     openModal(modalTitle, buildBody(item) + marketDetailLoadingHtml());
                     if (item.ticker) {
-                        const expectedTicker = item.ticker;
+                        const reqId = ++marketDetailRequestId;
                         fetchMarketDetail(item.ticker).then(function(md) {
-                            const resolved = md && md.ticker === expectedTicker;
+                            if (reqId !== marketDetailRequestId) return;
                             replaceMarketDetailSection(
-                                resolved ? marketDetailHtml(md) : marketDetailErrorHtml()
+                                md ? marketDetailHtml(md) : marketDetailErrorHtml()
                             );
-                        }).catch(function() {
+                        }).catch(function(err) {
+                            console.warn('Market detail render failed:', err);
+                            if (reqId !== marketDetailRequestId) return;
                             replaceMarketDetailSection(marketDetailErrorHtml());
                         });
                     }
