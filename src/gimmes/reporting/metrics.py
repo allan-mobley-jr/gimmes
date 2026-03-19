@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -19,6 +19,7 @@ class PerformanceMetrics:
     sharpe_ratio: float = 0.0
     total_return: float = 0.0
     total_return_pct: float = 0.0
+    equity_curve: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
 
 
 def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, float]:
@@ -67,6 +68,49 @@ def calculate_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float
     return (mean / std) * math.sqrt(252)
 
 
+def _equity_curve_from_trades(
+    trades: list[dict],  # type: ignore[type-arg]
+    initial_bankroll: float,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Build a cash-balance equity curve from trade history."""
+    cash = initial_bankroll
+    curve: list[dict] = []  # type: ignore[type-arg]
+    for t in sorted(trades, key=lambda x: x.get("timestamp", "")):
+        action = t.get("action", "")
+        cost = t.get("count", 0) * t.get("price", 0.0)
+        if action in ("open", "size_up"):
+            cash -= cost
+        elif action == "close":
+            cash += cost
+        else:
+            continue
+        curve.append({"timestamp": t.get("timestamp", ""), "equity": cash})
+    return curve
+
+
+def _apply_equity_curve(
+    metrics: PerformanceMetrics,
+    curve: list[dict],  # type: ignore[type-arg]
+    initial_bankroll: float,
+) -> None:
+    """Populate drawdown, return, Sharpe, and equity_curve on *metrics*."""
+    equity_values = [pt["equity"] for pt in curve]
+    metrics.max_drawdown, metrics.max_drawdown_pct = calculate_max_drawdown(
+        equity_values
+    )
+    if initial_bankroll > 0:
+        metrics.total_return = equity_values[-1] - initial_bankroll
+        metrics.total_return_pct = metrics.total_return / initial_bankroll
+    if len(equity_values) >= 2:
+        daily_returns = [
+            (equity_values[i] - equity_values[i - 1]) / equity_values[i - 1]
+            for i in range(1, len(equity_values))
+            if equity_values[i - 1] > 0
+        ]
+        metrics.sharpe_ratio = calculate_sharpe(daily_returns)
+    metrics.equity_curve = curve
+
+
 def calculate_metrics(
     trades: list[dict],  # type: ignore[type-arg]
     snapshots: list[dict],  # type: ignore[type-arg]
@@ -102,23 +146,16 @@ def calculate_metrics(
     if predicted_edges:
         metrics.avg_edge_predicted = sum(predicted_edges) / len(predicted_edges)
 
-    # Equity curve from snapshots
+    # Equity curve — prefer snapshots, fall back to trade-derived curve
     if snapshots:
-        equity_curve = [s.get("total_equity", 0) for s in snapshots]
-        if equity_curve:
-            metrics.max_drawdown, metrics.max_drawdown_pct = calculate_max_drawdown(equity_curve)
-
-            if initial_bankroll > 0 and equity_curve:
-                metrics.total_return = equity_curve[-1] - initial_bankroll
-                metrics.total_return_pct = metrics.total_return / initial_bankroll
-
-            # Daily returns for Sharpe
-            if len(equity_curve) >= 2:
-                daily_returns = [
-                    (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
-                    for i in range(1, len(equity_curve))
-                    if equity_curve[i - 1] > 0
-                ]
-                metrics.sharpe_ratio = calculate_sharpe(daily_returns)
+        curve = [
+            {"timestamp": s.get("timestamp", ""), "equity": s.get("total_equity", 0)}
+            for s in snapshots
+        ]
+        _apply_equity_curve(metrics, curve, initial_bankroll)
+    elif trades and initial_bankroll > 0:
+        curve = _equity_curve_from_trades(trades, initial_bankroll)
+        if curve:
+            _apply_equity_curve(metrics, curve, initial_bankroll)
 
     return metrics
