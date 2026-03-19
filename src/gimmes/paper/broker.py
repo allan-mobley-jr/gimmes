@@ -542,12 +542,13 @@ class PaperBroker:
                 else:
                     unrealized = (avg_price - current_price) * count
 
+                stored_price = current_price if side == "yes" else 1 - current_price
                 await self._conn.execute(
                     """UPDATE paper_positions
                        SET market_price = ?, unrealized_pnl = ?,
                            updated_at = datetime('now')
                        WHERE ticker = ? AND side = ?""",
-                    (current_price, unrealized, ticker, side),
+                    (stored_price, unrealized, ticker, side),
                 )
 
     async def settle(self, ticker: str, result: str) -> None:
