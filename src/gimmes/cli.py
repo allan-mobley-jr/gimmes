@@ -596,6 +596,16 @@ def order(
                         return
 
                 true_prob = probability
+
+                if size_up and not any(
+                    p.ticker == ticker and p.side == side for p in positions
+                ):
+                    console.print(
+                        f"[red]SIZE UP rejected: no {side.upper()}"
+                        f" position in {ticker}[/red]"
+                    )
+                    return
+
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
                     market, trade_dollars, true_prob, balance,
