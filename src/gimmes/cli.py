@@ -303,12 +303,13 @@ def size(
             price = market.midpoint or market.last_price
             fees = get_multipliers(market.series_ticker)
 
+            bankroll = config.risk.bankroll
             kf = kelly_fraction(
                 price, probability,
                 fraction=config.sizing.kelly_fraction, fees=fees,
             )
             contracts = position_size(
-                balance, price, probability,
+                bankroll, price, probability,
                 fraction=config.sizing.kelly_fraction,
                 max_position_pct=config.sizing.max_position_pct, fees=fees,
             )
@@ -321,7 +322,8 @@ def size(
             console.print(f"True Probability: {probability:.1%}")
             console.print(f"Edge After Fees: {edge:.1%}")
             console.print(f"Kelly Fraction: {kf:.4f}")
-            console.print(f"Bankroll: ${balance:,.2f}")
+            console.print(f"Bankroll: ${bankroll:,.2f}")
+            console.print(f"Balance:  ${balance:,.2f}")
             console.print(f"Contracts: [bold]{contracts}[/bold]")
             console.print(f"Est. Cost: ${cost:,.2f}")
             console.print(f"Est. Fee: ${fee:,.2f}")
@@ -342,8 +344,7 @@ def validate(
     async def _validate() -> None:
         from gimmes.kalshi.markets import get_market
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl, get_session_spending
-        from gimmes.store.session import get_active_session
+        from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.kelly import position_size
 
@@ -351,23 +352,22 @@ def validate(
             market = await get_market(client, ticker)
 
             price = market.midpoint or market.last_price
+            bankroll = config.risk.bankroll
 
             if broker:
-                balance = await broker.get_balance()
                 positions = await _mark_positions_to_market(
                     broker, client, known_prices={ticker: price},
                 )
             else:
-                from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.kalshi.portfolio import get_all_positions
                 from gimmes.store.queries import sync_positions
-                balance = await get_balance(client)
                 positions = await get_all_positions(client)
                 await sync_positions(db, positions)
 
             fees = get_multipliers(market.series_ticker)
             if dollars <= 0:
                 contracts = position_size(
-                    balance, price, probability,
+                    bankroll, price, probability,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                 )
@@ -388,19 +388,17 @@ def validate(
                 )
                 raise typer.Exit(1)
 
-            # Session spending: use active session boundary or fall back to today
-            active = get_active_session(config.db_path)
-            since = active["started_at"] if active else None
+            # Deployed cost basis for bankroll check
             try:
-                session_spent = await get_session_spending(db, since=since)
+                deployed = await get_deployed_cost_basis(db)
             except Exception as exc:
                 console.print(
                     f"[red bold]VALIDATION FAILED: Could not query"
-                    f" session spending — {exc}[/red bold]"
+                    f" deployed cost basis — {exc}[/red bold]"
                 )
                 console.print(
-                    "[red]Refusing to validate with unknown spending "
-                    "(session spending cap may be breached)[/red]"
+                    "[red]Refusing to validate with unknown deployed"
+                    " capital (bankroll limit may be breached)[/red]"
                 )
                 raise typer.Exit(1)
 
@@ -415,9 +413,9 @@ def validate(
 
             existing_tickers = [p.ticker for p in positions]
             result = validate_trade(
-                market, trade_dollars, probability, balance,
+                market, trade_dollars, probability, bankroll,
                 total_daily_pnl, len(positions), existing_tickers, config,
-                fees=fees, session_spent=session_spent, size_up=size_up,
+                fees=fees, deployed_cost_basis=deployed, size_up=size_up,
                 existing_cost_basis=existing_cost_basis,
             )
 
@@ -478,8 +476,7 @@ def order(
         from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl, get_session_spending, insert_error
-        from gimmes.store.session import get_active_session
+        from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis, insert_error
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import position_size
@@ -491,16 +488,14 @@ def order(
             mkt_price = market.midpoint or market.last_price
             fees = get_multipliers(market.series_ticker)
 
-            # Get balance and positions for both sizing and validation
+            # Get positions for validation
             if broker:
-                balance = await broker.get_balance()
                 positions = await _mark_positions_to_market(
                     broker, client, known_prices={ticker: mkt_price},
                 )
             else:
-                from gimmes.kalshi.portfolio import get_all_positions, get_balance
+                from gimmes.kalshi.portfolio import get_all_positions
                 from gimmes.store.queries import sync_positions
-                balance = await get_balance(client)
                 positions = await get_all_positions(client)
                 await sync_positions(db, positions)
 
@@ -508,9 +503,10 @@ def order(
             is_buy = order_action == OrderAction.BUY
             is_taker = config.orders.preferred_order_type != "maker"
 
+            bankroll = config.risk.bankroll
             if is_buy and count <= 0 and probability is not None:
                 final_count = position_size(
-                    balance, mkt_price, probability,
+                    bankroll, mkt_price, probability,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                 )
@@ -576,28 +572,26 @@ def order(
                 unrealized_pnl = sum(p.unrealized_pnl for p in positions)
                 total_daily_pnl = daily_pnl + unrealized_pnl
 
-                # Session spending: use active session boundary or today
-                active = get_active_session(config.db_path)
-                since = active["started_at"] if active else None
+                # Deployed cost basis for bankroll check
                 try:
-                    session_spent = await get_session_spending(db, since=since)
+                    deployed = await get_deployed_cost_basis(db)
                 except Exception as exc:
                     if force:
-                        session_spent = 0.0
+                        deployed = 0.0
                         console.print(
-                            f"[yellow]Warning: Could not query session"
-                            f" spending ({exc}) — using 0.0 (--force)"
+                            f"[yellow]Warning: Could not query deployed"
+                            f" cost basis ({exc}) — using 0.0 (--force)"
                             f"[/yellow]"
                         )
                     else:
                         console.print(
-                            f"[red bold]Cannot query session spending:"
-                            f" {exc}[/red bold]"
+                            f"[red bold]Cannot query deployed cost"
+                            f" basis: {exc}[/red bold]"
                         )
                         console.print(
                             "[red]Refusing to order with unknown"
-                            " spending (session cap may be"
-                            " breached). Use --force to"
+                            " deployed capital (bankroll limit may"
+                            " be breached). Use --force to"
                             " override.[/red]"
                         )
                         return
@@ -621,10 +615,10 @@ def order(
 
                 existing_tickers = [p.ticker for p in positions]
                 validation = validate_trade(
-                    market, trade_dollars, true_prob, balance,
+                    market, trade_dollars, true_prob, bankroll,
                     total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
-                    session_spent=session_spent, size_up=size_up,
+                    deployed_cost_basis=deployed, size_up=size_up,
                     existing_cost_basis=existing_cost_basis,
                 )
 
@@ -1105,12 +1099,11 @@ def risk_check() -> None:
 
     async def _check() -> None:
         from gimmes.risk.limits import (
+            check_bankroll,
             check_daily_loss,
             check_position_count,
-            check_session_spending,
         )
-        from gimmes.store.queries import get_daily_pnl, get_session_spending
-        from gimmes.store.session import get_active_session
+        from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis
 
         async with trading_context(config) as (client, broker, db):
             if broker:
@@ -1134,42 +1127,41 @@ def risk_check() -> None:
                 )
                 raise typer.Exit(1)
 
-            # Session spending
-            active = get_active_session(config.db_path)
-            since = active["started_at"] if active else None
             try:
-                session_spent = await get_session_spending(db, since=since)
+                deployed = await get_deployed_cost_basis(db)
             except Exception as exc:
                 console.print(
                     f"[red bold]RISK CHECK FAILED: Could not query"
-                    f" session spending — {exc}[/red bold]"
+                    f" deployed cost basis — {exc}[/red bold]"
                 )
                 console.print(
-                    "[red]Cannot verify risk limits with unknown spending[/red]"
+                    "[red]Cannot verify risk limits with unknown"
+                    " deployed capital[/red]"
                 )
                 raise typer.Exit(1)
-            cap = config.risk.session_spending_cap
+            bankroll = config.risk.bankroll
 
             unrealized_pnl = sum(p.unrealized_pnl for p in pos)
             total_daily_pnl = daily_pnl + unrealized_pnl
 
             console.print("\n[bold]Risk Check[/bold]")
-            console.print(f"Balance: ${balance:,.2f}")
-            console.print(f"Open Positions: {len(pos)}/{config.risk.max_open_positions}")
+            console.print(f"Balance:            ${balance:,.2f}")
+            console.print(f"Bankroll:           ${bankroll:,.2f}")
+            console.print(f"Deployed Capital:   ${deployed:,.2f} / ${bankroll:,.2f}")
+            console.print(f"Open Positions:     {len(pos)}/{config.risk.max_open_positions}")
             console.print(f"Daily Realized P&L: ${daily_pnl:,.2f}")
             console.print(f"Unrealized P&L:     ${unrealized_pnl:,.2f}")
             console.print(f"Total Daily P&L:    ${total_daily_pnl:,.2f}")
-            console.print(f"Session Spending:   ${session_spent:,.2f} / ${cap:,.2f}")
             console.print(f"Price Trigger:      {config.risk.monitor_price_trigger_pp}pp")
 
-            loss = check_daily_loss(total_daily_pnl, balance, config)
+            loss = check_daily_loss(total_daily_pnl, bankroll, config)
             count = check_position_count(len(pos), config)
-            spending = check_session_spending(session_spent, 0, config)
+            bankroll_chk = check_bankroll(deployed, 0, config)
 
             for check, label in [
                 (loss, "Daily Loss"),
                 (count, "Position Count"),
-                (spending, "Session Spending"),
+                (bankroll_chk, "Bankroll"),
             ]:
                 if check.passed:
                     console.print(f"  [green]✓[/green] {label}: OK")

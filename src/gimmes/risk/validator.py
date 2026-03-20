@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from gimmes.config import GimmesConfig
 from gimmes.models.market import Market
 from gimmes.risk.limits import (
+    check_bankroll,
     check_daily_loss,
     check_position_count,
     check_position_size,
-    check_session_spending,
 )
 from gimmes.risk.settlement import scan_settlement_rules
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
@@ -42,7 +42,7 @@ def validate_trade(
     config: GimmesConfig,
     *,
     is_taker: bool = False,
-    session_spent: float = 0.0,
+    deployed_cost_basis: float = 0.0,
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
     size_up: bool = False,
     existing_cost_basis: float = 0.0,
@@ -54,7 +54,7 @@ def validate_trade(
     2. Position count limit
     3. Single position size limit
     4. Balance sufficient
-    4b. Session spending cap (callers must track and pass session_spent)
+    4b. Bankroll cap (callers must track and pass deployed_cost_basis)
     5. Minimum true probability gate (skipped when true_probability is None)
     6. Edge after fees meets minimum (skipped when true_probability is None)
     7. Duplicate position check
@@ -109,14 +109,12 @@ def validate_trade(
     else:
         failures.append(f"Insufficient balance: need ${trade_dollars:.2f}, have ${bankroll:.2f}")
 
-    # 4b. Session spending cap (championship mode guard)
-    spending_check = check_session_spending(session_spent, trade_dollars, config)
-    if spending_check.passed:
-        cap = config.risk.session_spending_cap
-        if cap > 0:
-            checks.append(f"Session spending OK (${session_spent + trade_dollars:.2f}/${cap:.2f})")
+    # 4b. Bankroll check (total cost basis + proposed trade vs bankroll)
+    bankroll_check = check_bankroll(deployed_cost_basis, trade_dollars, config)
+    if bankroll_check.passed:
+        checks.append(f"Bankroll OK (${deployed_cost_basis + trade_dollars:.2f}/${bankroll:.2f})")
     else:
-        failures.append(spending_check.reason)
+        failures.append(bankroll_check.reason)
 
     # 5. Minimum true probability gate (skipped when probability is unknown)
     if true_probability is not None:

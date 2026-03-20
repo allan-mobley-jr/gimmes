@@ -51,7 +51,7 @@ class SizingConfig(BaseModel):
 class RiskConfig(BaseModel):
     max_open_positions: int = Field(default=15, gt=0)
     daily_loss_limit_pct: float = Field(default=0.15, gt=0.0, le=1.0)
-    session_spending_cap: float = Field(default=500.0, ge=0.0)
+    bankroll: float = Field(default=500.0, gt=0.0)
     monitor_price_trigger_pp: int = Field(default=10, ge=1, le=50)
 
 

@@ -42,6 +42,7 @@ python -m gimmes positions
 **Decision gates (MUST follow — no exceptions):**
 - If `risk-check` reports daily loss limit breached → MUST skip directly to Step 6 (Scorecard only). NEVER run Steps 2-5.
 - If `positions` shows position count >= `max_open_positions` (default 15) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
+- If `risk-check` reports Bankroll limit breached (deployed capital >= bankroll) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
 - Otherwise → proceed with full cycle.
 
 ### Step 2: Monitor Review (if positions exist)
