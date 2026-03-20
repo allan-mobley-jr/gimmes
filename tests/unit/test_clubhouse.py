@@ -202,6 +202,33 @@ class TestDataLayer:
         risk = await get_risk(db_path)
         assert risk.position_count == 1
         assert risk.max_positions == 15
+        # Daily P&L includes unrealized (no close trades, so realized = 0)
+        assert risk.daily_pnl == pytest.approx(0.50)  # unrealized only
+        # Positive P&L → loss pct stays 0
+        assert risk.daily_loss_pct == 0.0
+
+    async def test_get_risk_negative_pnl(self, db_path: Path) -> None:
+        """Negative combined P&L triggers daily_loss_pct using bankroll."""
+        async with Database(db_path) as db:
+            # Add a close trade with a loss: bought at 0.65, sold at 0.50
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count, price,
+                   model_probability, gimme_score, edge, rationale, agent)
+                   VALUES ('TEST-YES', 'close', 'yes', 10, 0.50,
+                   0.92, 80, 0.27, 'test', 'closer')"""
+            )
+            # Update position to show negative unrealized on remaining
+            await db.conn.execute(
+                """UPDATE paper_positions SET unrealized_pnl = -2.0
+                   WHERE ticker = 'TEST-YES'"""
+            )
+            await db.conn.commit()
+        risk = await get_risk(db_path)
+        # Realized: (0.50 - 0.65) * 10 = -1.50, Unrealized: -2.0
+        # Total: -3.50
+        assert risk.daily_pnl == pytest.approx(-3.50)
+        # Loss pct = 3.50 / 500 (default bankroll) = 0.007
+        assert risk.daily_loss_pct == pytest.approx(0.007)
 
     async def test_get_activity(self, db_path: Path) -> None:
         activity = await get_activity(db_path)

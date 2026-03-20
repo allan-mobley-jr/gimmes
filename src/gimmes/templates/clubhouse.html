@@ -797,7 +797,7 @@
                 equityEl.textContent = formatCurrencyPlain(portfolio.total_equity);
             }
             if (portfolio.daily_pnl != null) {
-                const pnl = parseFloat(portfolio.daily_pnl);
+                const pnl = parseFloat(portfolio.daily_pnl) + parseFloat(portfolio.unrealized_pnl || 0);
                 pnlEl.textContent = formatCurrency(pnl);
                 pnlEl.className = 'text-2xl font-bold font-mono ' + colorForPnl(pnl);
             }
