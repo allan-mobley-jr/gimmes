@@ -286,6 +286,7 @@ async def insert_candidate(
     score: float,
     memo: str,
     *,
+    cap_blocked: bool = False,
     edge_size_score: float = 0,
     signal_strength_score: float = 0,
     liquidity_depth_score: float = 0,
@@ -299,15 +300,30 @@ async def insert_candidate(
     cursor = await db.conn.execute(
         """INSERT INTO candidates
            (ticker, title, market_price, model_probability, edge, gimme_score,
-            research_memo, edge_size_score, signal_strength_score,
+            research_memo, cap_blocked, edge_size_score, signal_strength_score,
             liquidity_depth_score, settlement_clarity_score, time_to_resolution_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ticker, title, market_price, model_prob, edge, score, memo,
-         edge_size_score, signal_strength_score, liquidity_depth_score,
-         settlement_clarity_score, time_to_resolution_score),
+         int(cap_blocked), edge_size_score, signal_strength_score,
+         liquidity_depth_score, settlement_clarity_score,
+         time_to_resolution_score),
     )
     await db.conn.commit()
     return cursor.lastrowid or 0
+
+
+async def mark_cap_blocked(db: Database, ticker: str) -> bool:
+    """Mark the most recent candidate for a ticker as cap-blocked.
+
+    Returns True if a row was updated, False otherwise.
+    """
+    cursor = await db.conn.execute(
+        "UPDATE candidates SET cap_blocked = 1"
+        " WHERE id = (SELECT MAX(id) FROM candidates WHERE ticker = ?)",
+        (ticker,),
+    )
+    await db.conn.commit()
+    return cursor.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

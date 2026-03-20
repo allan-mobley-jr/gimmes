@@ -58,9 +58,14 @@ If the order command fails (non-zero exit code or error output), MUST:
 
 When ANY safety check fails, MUST:
 1. Log the skip with the specific failure reason
-2. If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
-3. Report the rejection in the Execution Report with the specific failed check(s)
-4. NEVER override or retry — a failed check is final for this cycle
+2. **If the rejection was due to session spending cap** (validate output contains "Session spending cap exceeded"): mark the candidate as cap-blocked:
+   ```bash
+   python -m gimmes mark-cap-blocked TICKER
+   ```
+   If the command fails, note the failure in your output and continue.
+3. If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
+4. Report the rejection in the Execution Report with the specific failed check(s)
+5. NEVER override or retry — a failed check is final for this cycle
 
 ## Output Format
 

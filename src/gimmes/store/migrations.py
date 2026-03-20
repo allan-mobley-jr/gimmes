@@ -90,6 +90,11 @@ _V10_COLUMNS: list[str] = [
     "ALTER TABLE activity_log ADD COLUMN session_id INTEGER DEFAULT NULL",
 ]
 
+# ALTER TABLE ADD COLUMN statements for v12: cap_blocked flag on candidates.
+_V12_COLUMNS: list[str] = [
+    "ALTER TABLE candidates ADD COLUMN cap_blocked INTEGER NOT NULL DEFAULT 0",
+]
+
 
 async def get_schema_version(db: Database) -> int:
     """Get the current schema version."""
@@ -231,5 +236,14 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 11
+
+    # Version 12: cap_blocked flag on candidates (#276)
+    if current < 12:
+        await _run_alter_columns(db, _V12_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (12,)
+        )
+        await db.conn.commit()
+        current = 12
 
     return current

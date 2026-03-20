@@ -181,11 +181,13 @@ Evaluate the output using these rules:
    ```
 3. **Prior score 60-74** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
 4. **Prior score >= 75 with open position** (check `python -m gimmes positions` for the ticker) → skip, already traded
-5. **Prior score >= 75, no open position** → likely cap-blocked or rejected by validation. Send to Caddie with context that prior research exists.
+5. **Prior score >= 75, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
 #### 4b. Dispatch Caddie
 
 Dispatch the **Caddie** agent to research ALL candidates that passed the cooldown check.
+
+**Priority rule:** Process cap-blocked candidates before new candidates when dispatching to Caddie.
 
 **Completeness rule (MUST follow — no exceptions):** Every candidate from the Scout's shortlist MUST be accounted for — either sent to Caddie (passed cooldown) or logged as a skip with cooldown rationale. The Caddie Master MUST NOT silently drop candidates.
 

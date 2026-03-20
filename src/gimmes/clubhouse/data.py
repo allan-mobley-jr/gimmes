@@ -269,6 +269,7 @@ async def get_candidates(db_path: Path, limit: int = 20) -> list[CandidateItem]:
                     gimme_score=row["gimme_score"],
                     research_memo=row["research_memo"],
                     scanned_at=row["scanned_at"],
+                    cap_blocked=bool(_row_get(row, "cap_blocked", 0)),
                 ))
     except Exception:
         logger.warning("get_candidates failed", exc_info=True)
