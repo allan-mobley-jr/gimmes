@@ -18,7 +18,7 @@ For each approved candidate (GimmeScore >= 75, Caddie recommends PROCEED), execu
 
 1. **Validate**: `python -m gimmes validate TICKER --prob P` — MUST pass all checks. If ANY check fails → MUST reject (go to step 5).
 2. **Size**: `python -m gimmes size TICKER --prob P` — MUST run only after validate passes.
-3. **Order**: `python -m gimmes order TICKER --prob P --yes` — MUST run only after steps 1-2 pass.
+3. **Order**: `python -m gimmes order TICKER --prob P --yes --agent closer` — MUST run only after steps 1-2 pass.
 4. **Log success**: The order command logs the trade and syncs positions atomically — no separate log-trade needed.
 5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
 6. **Log completion** (see Activity Logging below)
@@ -29,7 +29,7 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 
 1. **Validate**: `python -m gimmes validate TICKER --prob P --size-up` — MUST pass all checks. The `--size-up` flag allows the duplicate position check to pass.
 2. **Size**: `python -m gimmes size TICKER --prob P`
-3. **Order**: `python -m gimmes order TICKER --prob P --size-up --yes`
+3. **Order**: `python -m gimmes order TICKER --prob P --size-up --yes --agent closer`
 4. **Log success**: The order command logs the trade atomically.
 5. **Log rejection** (if steps 1-2 failed): `python -m gimmes log-trade TICKER --action skip --prob P --score 0 --rationale "SIZE UP rejected: [which check failed]" --agent closer`
 
