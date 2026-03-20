@@ -269,3 +269,39 @@ class TestCheckUpdateDev:
         result = run_function("check_update_dev", repo=repo)
         assert "Update available" in result.stdout
         assert "3 commits ahead" in result.stdout
+
+
+# -- _post-update venv bypass ------------------------------------------------
+
+
+class TestPostUpdateVenvBypass:
+    """The venv check should not block _post-update (it creates the venv)."""
+
+    def test_venv_check_blocks_normal_commands(self, tmp_path: Path) -> None:
+        """Without _post-update, a missing venv causes exit 1."""
+        home = tmp_path / "gimmes_home"
+        repo = home / "repo"
+        repo.mkdir(parents=True)
+        init_repo(repo)
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" version'
+        )
+        assert result.returncode == 1
+        combined = result.stdout + result.stderr
+        assert "virtual environment not found" in combined
+
+    def test_venv_check_bypassed_for_post_update(self, tmp_path: Path) -> None:
+        """_post-update skips the venv check so uv sync can create it."""
+        home = tmp_path / "gimmes_home"
+        repo = home / "repo"
+        repo.mkdir(parents=True)
+        init_repo(repo)
+        # The script will fail at uv sync (no real project), but it should
+        # NOT fail at the venv check
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" _post-update v1.0.0 2>&1'
+        )
+        combined = result.stdout + result.stderr
+        assert "virtual environment not found" not in combined
