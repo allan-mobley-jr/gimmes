@@ -325,32 +325,42 @@ async def get_risk(db_path: Path) -> RiskResponse:
 
     try:
         async with _connect(db_path) as conn:
-            # Daily P&L
+            # Realized P&L — match canonical get_daily_pnl query
             cursor = await conn.execute(
                 """SELECT COALESCE(SUM(
-                    CASE WHEN action = 'close' THEN (price - edge) * count ELSE 0 END
+                    (c.price - COALESCE(
+                        (SELECT price FROM trades o
+                         WHERE o.ticker = c.ticker
+                           AND o.action = 'open'
+                           AND o.timestamp <= c.timestamp
+                         ORDER BY o.timestamp DESC
+                         LIMIT 1),
+                    0)) * c.count
                 ), 0) as daily_pnl
-                FROM trades WHERE date(timestamp) = date('now')"""
+                FROM trades c
+                WHERE c.action = 'close'
+                  AND date(c.timestamp) = date('now')"""
             )
             row = await cursor.fetchone()
-            if row:
-                resp.daily_pnl = row["daily_pnl"]
+            realized_pnl = row["daily_pnl"] if row else 0.0
 
-            # Balance for percentage calculation
-            balance = config.paper.starting_balance
-            if not config.is_championship:
-                cursor = await conn.execute(
-                    "SELECT balance FROM paper_balance WHERE id = 1"
-                )
-                row = await cursor.fetchone()
-                if row:
-                    balance = row["balance"]
+            # Unrealized P&L from open positions
+            table = _position_table(config)
+            cursor = await conn.execute(
+                f"SELECT COALESCE(SUM(unrealized_pnl), 0) as total_unrealized"
+                f" FROM {table} WHERE count > 0"
+            )
+            row = await cursor.fetchone()
+            unrealized_pnl = row["total_unrealized"] if row else 0.0
 
-            if balance > 0:
-                resp.daily_loss_pct = abs(resp.daily_pnl) / balance
+            resp.daily_pnl = realized_pnl + unrealized_pnl
+
+            # Daily loss percentage — use bankroll as denominator
+            bankroll = config.risk.bankroll
+            if bankroll > 0 and resp.daily_pnl < 0:
+                resp.daily_loss_pct = abs(resp.daily_pnl) / bankroll
 
             # Position count + largest position
-            table = _position_table(config)
             cursor = await conn.execute(
                 f"SELECT COUNT(*) as cnt FROM {table} WHERE count > 0"
             )
