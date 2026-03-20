@@ -210,25 +210,25 @@ class TestDataLayer:
     async def test_get_risk_negative_pnl(self, db_path: Path) -> None:
         """Negative combined P&L triggers daily_loss_pct using bankroll."""
         async with Database(db_path) as db:
-            # Add a close trade with a loss: bought at 0.65, sold at 0.50
+            # Partial close: sell 5 of 10 contracts at a loss (0.65→0.50)
             await db.conn.execute(
                 """INSERT INTO trades (ticker, action, side, count, price,
                    model_probability, gimme_score, edge, rationale, agent)
-                   VALUES ('TEST-YES', 'close', 'yes', 10, 0.50,
+                   VALUES ('TEST-YES', 'close', 'yes', 5, 0.50,
                    0.92, 80, 0.27, 'test', 'closer')"""
             )
-            # Update position to show negative unrealized on remaining
+            # Update position: 5 remaining with negative unrealized
             await db.conn.execute(
-                """UPDATE paper_positions SET unrealized_pnl = -2.0
+                """UPDATE paper_positions SET count = 5, unrealized_pnl = -1.0
                    WHERE ticker = 'TEST-YES'"""
             )
             await db.conn.commit()
         risk = await get_risk(db_path)
-        # Realized: (0.50 - 0.65) * 10 = -1.50, Unrealized: -2.0
-        # Total: -3.50
-        assert risk.daily_pnl == pytest.approx(-3.50)
-        # Loss pct = 3.50 / 500 (default bankroll) = 0.007
-        assert risk.daily_loss_pct == pytest.approx(0.007)
+        # Realized: (0.50 - 0.65) * 5 = -0.75, Unrealized: -1.0
+        # Total: -1.75
+        assert risk.daily_pnl == pytest.approx(-1.75)
+        # Loss pct = 1.75 / 500 (default bankroll) = 0.0035
+        assert risk.daily_loss_pct == pytest.approx(0.0035)
 
     async def test_get_activity(self, db_path: Path) -> None:
         activity = await get_activity(db_path)
