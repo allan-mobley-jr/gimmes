@@ -576,11 +576,17 @@ def _parse_input(raw: str, setting: Setting) -> int | float | str | list[str]:
     return raw
 
 
-def _prompt_setting(setting: Setting, current_value: object) -> object:
+def _prompt_setting(
+    setting: Setting, current_value: object, *, is_new: bool = False,
+) -> object:
     """Prompt the user for a single setting. Returns the new value or current if skipped."""
     display = _format_current(current_value, setting)
 
-    console.print(f"\n  [bold]{setting.name}[/bold]")
+    if is_new:
+        label = f"[bold yellow] NEW [/bold yellow] [bold]{setting.name}[/bold]"
+    else:
+        label = f"[bold]{setting.name}[/bold]"
+    console.print(f"\n  {label}")
     console.print(f"  Current value: [cyan]{display}[/cyan]")
 
     # Show description indented
@@ -632,6 +638,10 @@ def run_config_wizard(section_filter: str | None = None) -> None:
 
     doc = _load_toml(TOML_FILE)
 
+    from gimmes.config_sync import EXAMPLE_TOML_PATH, new_keys
+
+    new_key_set = new_keys(TOML_FILE, EXAMPLE_TOML_PATH)
+
     console.print("\n[bold cyan]GIMMES Configuration Wizard[/bold cyan]")
     console.print("[dim]Walk through each setting. Press Enter to keep the current value.[/dim]\n")
 
@@ -659,7 +669,7 @@ def run_config_wizard(section_filter: str | None = None) -> None:
             if current is None:
                 current = setting.default
 
-            new_value = _prompt_setting(setting, current)
+            new_value = _prompt_setting(setting, current, is_new=setting.key in new_key_set)
             if new_value != current:
                 _set_nested(doc, setting.key, new_value)
                 changed = True

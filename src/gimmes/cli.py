@@ -2120,6 +2120,53 @@ def config(
     run_config_wizard(section_filter=section)
 
 
+@app.command("config-sync")
+def config_sync() -> None:
+    """Sync gimmes.toml with the latest example config (add new keys, remove deprecated)."""
+    from gimmes.config import DEFAULT_CONFIG_PATH
+    from gimmes.config_sync import EXAMPLE_TOML_PATH, sync_config
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        console.print(
+            f"[red]Config file not found at {DEFAULT_CONFIG_PATH}[/red]\n"
+            "Run [bold]gimmes init[/bold] first."
+        )
+        raise typer.Exit(1)
+
+    if not EXAMPLE_TOML_PATH.exists():
+        console.print(
+            f"[red]Example config not found at {EXAMPLE_TOML_PATH}[/red]\n"
+            "Your gimmes installation may be corrupted."
+        )
+        raise typer.Exit(1)
+
+    try:
+        result = sync_config(DEFAULT_CONFIG_PATH, EXAMPLE_TOML_PATH)
+    except Exception as exc:
+        console.print(
+            f"[yellow]Config sync skipped: {exc}[/yellow]\n"
+            "Your config file may have a syntax error. "
+            "Run [bold]gimmes config[/bold] or edit the file manually."
+        )
+        raise typer.Exit(1)
+
+    if not result.added and not result.removed:
+        console.print("[dim]Config is up to date.[/dim]")
+        return
+
+    console.print("[bold]Config synced.[/bold]")
+    if result.added:
+        console.print(f"  [green]Added ({len(result.added)}):[/green]")
+        for key in result.added:
+            console.print(f"    {key}")
+    if result.removed:
+        console.print(f"  [yellow]Removed ({len(result.removed)}):[/yellow]")
+        for key in result.removed:
+            console.print(f"    {key}")
+    if result.added:
+        console.print("\nRun [bold]gimmes config[/bold] to review new settings.")
+
+
 @app.command()
 def init(
     headless: bool = typer.Option(
