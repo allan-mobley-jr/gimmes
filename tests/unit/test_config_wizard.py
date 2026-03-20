@@ -294,7 +294,7 @@ class TestRunConfigWizard:
 
         prompted_keys: list[str] = []
 
-        def fake_prompt(setting: Setting, current: object) -> object:
+        def fake_prompt(setting: Setting, current: object, **kwargs: object) -> object:
             prompted_keys.append(setting.key)
             return current
 

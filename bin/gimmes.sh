@@ -200,6 +200,10 @@ case "${1:-}" in
         else
             "$PYTHON" -m pip install -e . --quiet
         fi
+        # Sync user config with latest example (add new keys, remove deprecated)
+        if [ -f "$GIMMES_HOME/config/gimmes.toml" ]; then
+            "$PYTHON" -m gimmes config-sync || echo "Warning: config sync failed (run 'gimmes config-sync' manually)"
+        fi
         show_banner
         echo "Updated to $update_label"
         ;;
