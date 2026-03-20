@@ -460,6 +460,9 @@ def order(
     size_up: bool = typer.Option(
         False, "--size-up", help="Allow adding to existing position (SIZE UP)",
     ),
+    agent: str = typer.Option(
+        "cli", "--agent", help="Agent identifier for trade/error logging",
+    ),
 ) -> None:
     """Place an order on Kalshi (runs pre-trade validation first)."""
     config = load_config()
@@ -702,7 +705,7 @@ def order(
                         severity=ErrorSeverity.ERROR,
                         category=ErrorCategory.ORDER_FAILURE,
                         error_code="http_status_error",
-                        component="cli.order", agent="cli",
+                        component="cli.order", agent=agent,
                         message=f"Order placement failed ({exc.response.status_code}): {detail}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,
@@ -723,7 +726,7 @@ def order(
                         severity=ErrorSeverity.ERROR,
                         category=ErrorCategory.ORDER_FAILURE,
                         error_code="timeout",
-                        component="cli.order", agent="cli",
+                        component="cli.order", agent=agent,
                         message=f"Order placement timed out: {exc}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,
@@ -754,7 +757,7 @@ def order(
                         severity=ErrorSeverity.ERROR,
                         category=ErrorCategory.ORDER_FAILURE,
                         error_code=error_code,
-                        component="cli.order", agent="cli",
+                        component="cli.order", agent=agent,
                         message=f"Order placement failed: {exc}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,
@@ -821,9 +824,9 @@ def order(
                             if probability is not None
                             else 0.0
                         ),
-                        rationale="CLI order",
+                        rationale=f"{agent} order",
                         thesis=thesis,
-                        agent="cli",
+                        agent=agent,
                         order_id=result.order_id,
                     )
                     await sync_positions_with_trade(
@@ -840,7 +843,7 @@ def order(
                         severity=ErrorSeverity.WARNING,
                         category=ErrorCategory.DATA_INTEGRITY,
                         error_code="position_sync_db_error",
-                        component="cli.order", agent="cli",
+                        component="cli.order", agent=agent,
                         message=f"Position sync failed after order {result.order_id}: {exc}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,
@@ -866,7 +869,7 @@ def order(
                         severity=ErrorSeverity.WARNING,
                         category=ErrorCategory.DATA_INTEGRITY,
                         error_code="position_sync_failed",
-                        component="cli.order", agent="cli",
+                        component="cli.order", agent=agent,
                         message=f"Position sync failed after order {result.order_id}: {exc}",
                         stack_trace=traceback.format_exc(),
                         context=json.dumps({"ticker": ticker, "side": side,

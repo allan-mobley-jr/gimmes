@@ -89,7 +89,7 @@ def _stub_config():
 
 def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
-    insert_error_side_effect=None,
+    insert_error_side_effect=None, extra_args=None,
 ):
     """Invoke the order CLI command with a mocked broker."""
     mock_console = MagicMock()
@@ -161,7 +161,8 @@ def _run_order_cli(
         from gimmes.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, _ORDER_CLI_ARGS)
+        cli_args = _ORDER_CLI_ARGS + (extra_args or [])
+        result = runner.invoke(app, cli_args)
     finally:
         for p in patches:
             p.stop()
@@ -379,6 +380,28 @@ class TestOrderErrorLogging:
         assert ctx["side"] == "yes"
         assert ctx["count"] == 10
         assert ctx["price"] == 0.40
+
+    def test_agent_flag_propagates_to_error_log(self) -> None:
+        """The --agent flag value flows through to error log entries."""
+        exc = httpx.ReadTimeout("timeout")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(
+            broker, extra_args=["--agent", "closer"],
+        )
+
+        entry = _error_entry(mock_insert)
+        assert entry.agent == "closer"
+
+    def test_agent_defaults_to_cli(self) -> None:
+        """Without --agent, error logs default to 'cli'."""
+        exc = httpx.ReadTimeout("timeout")
+        broker = _make_mock_broker(create_order_side_effect=exc)
+
+        _, _, mock_insert = _run_order_cli(broker)
+
+        entry = _error_entry(mock_insert)
+        assert entry.agent == "cli"
 
 
 class TestErrorLoggingResilience:
