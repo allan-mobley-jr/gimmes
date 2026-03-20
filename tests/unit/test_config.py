@@ -134,6 +134,40 @@ class TestSaveConfigValues:
         assert json.loads(rows[1][1]) == 80  # strategy.gimme_threshold
 
 
+class TestSaveAutoCreatesTable:
+    def test_creates_table_when_missing(self, tmp_path):
+        """save_config_values auto-creates the config table in a pre-migration DB."""
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE other (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        save_config_values({"strategy.gimme_threshold": 80}, db_path=db)
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = ?",
+            ("strategy.gimme_threshold",),
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == 80
+
+    def test_creates_db_and_table_from_scratch(self, tmp_path):
+        """save_config_values works when the DB file does not exist."""
+        db = tmp_path / "subdir" / "new.db"
+
+        save_config_values({"risk.bankroll": 500.0}, db_path=db)
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = ?",
+            ("risk.bankroll",),
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == 500.0
+
+
 class TestLoadConfig:
     def test_loads_defaults_when_no_db(self, tmp_path):
         config = load_config(db_path=tmp_path / "nonexistent.db")

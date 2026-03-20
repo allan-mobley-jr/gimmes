@@ -671,8 +671,17 @@ def save_config_value(key: str, value: object, db_path: Path | None = None) -> N
 def save_config_values(values: dict[str, object], db_path: Path | None = None) -> None:
     """Write multiple config values atomically."""
     resolved_db = db_path or GIMMES_HOME / "gimmes.db"
+    resolved_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(resolved_db))
     try:
+        # Ensure config table exists (handles pre-migration databases)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS config ("
+            "key TEXT PRIMARY KEY, "
+            "value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
         for key, value in values.items():
             conn.execute(
                 "INSERT OR REPLACE INTO config (key, value, updated_at) "
