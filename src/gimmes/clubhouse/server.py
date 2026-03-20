@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -29,8 +30,15 @@ from gimmes.clubhouse.models import (
     TradeItem,
 )
 from gimmes.config import GIMMES_HOME
+from gimmes.models.portfolio import PortfolioSnapshot
+from gimmes.store.database import Database
+from gimmes.store.queries import insert_snapshot
 
 logger = logging.getLogger("gimmes.clubhouse")
+
+_SNAPSHOT_INTERVAL = timedelta(minutes=5)
+_last_snapshot_time: datetime | None = None
+_snapshot_lock = asyncio.Lock()
 
 DEFAULT_PORT = 1919
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -136,6 +144,48 @@ async def api_market_detail(ticker: str) -> MarketDetailResponse:
 
 
 # ---------------------------------------------------------------------------
+# Periodic snapshot writer
+# ---------------------------------------------------------------------------
+
+
+async def _maybe_write_snapshot(
+    db_path: Path,
+    portfolio: PortfolioResponse,
+    risk: RiskResponse,
+    snap_logger: logging.Logger,
+) -> None:
+    """Write a mark-to-market snapshot if enough time has elapsed.
+
+    Uses module-level state so concurrent SSE clients don't duplicate writes.
+    """
+    global _last_snapshot_time
+
+    if portfolio.balance <= 0:
+        return
+
+    async with _snapshot_lock:
+        now = datetime.now()
+        if _last_snapshot_time is not None and now - _last_snapshot_time < _SNAPSHOT_INTERVAL:
+            return
+
+        try:
+            snap = PortfolioSnapshot(
+                timestamp=now,
+                balance=portfolio.balance,
+                portfolio_value=portfolio.portfolio_value,
+                total_equity=portfolio.total_equity,
+                open_position_count=risk.position_count,
+                daily_pnl=portfolio.daily_pnl,
+                total_pnl=portfolio.total_pnl,
+            )
+            async with Database(db_path) as db:
+                await insert_snapshot(db, snap)
+            _last_snapshot_time = now
+        except Exception:
+            snap_logger.warning("Snapshot write failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # SSE stream
 # ---------------------------------------------------------------------------
 
@@ -158,9 +208,16 @@ async def api_stream() -> StreamingResponse:
                     activity = await data.get_activity(_db_path)
                     trades = await data.get_trades(_db_path)
                     candidates = await data.get_candidates(_db_path, limit=10)
-                    metrics = await data.get_metrics(_db_path)
                     errors = await data.get_errors_data(_db_path, limit=10)
                     recs = await data.get_recommendations_data(_db_path, limit=10)
+
+                    # Write periodic mark-to-market snapshot
+                    await _maybe_write_snapshot(
+                        _db_path, portfolio, risk, sse_logger,
+                    )
+
+                    # Fetch metrics after snapshot write (includes new snapshot)
+                    metrics = await data.get_metrics(_db_path)
 
                     payload = json.dumps({
                         "status": status.model_dump(),
