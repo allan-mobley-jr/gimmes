@@ -86,7 +86,7 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 - `agent_failure` → Review agent logs for the failing cycle
 - `order_failure` → Check order parameters and market status
 - `risk_breach` → Review risk limits and current exposure immediately
-- `config_error` → Validate gimmes.toml settings
+- `config_error` → Validate config settings
 - `network_error` → Check network connectivity and API endpoint reachability
 - `paper_broker` → Inspect paper trading state for inconsistencies
 

@@ -22,7 +22,7 @@ You are the Scout — the first agent in the GIMMES trading pipeline. Your job i
 
 ## Decision Criteria
 
-A gimme candidate MUST meet ALL of these minimum thresholds (from gimmes.toml):
+A gimme candidate MUST meet ALL of these minimum thresholds (from config):
 - Price between $0.55 and $0.85 (`min_market_price` / `max_market_price`)
 - 24h volume >= 100 (`scanner.min_volume`)
 - Open interest >= 50 (`scanner.min_open_interest`)

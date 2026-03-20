@@ -246,4 +246,19 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 12
 
+    # Version 13: config key-value table (#292)
+    if current < 13:
+        await db.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (13,)
+        )
+        await db.conn.commit()
+        current = 13
+
     return current
