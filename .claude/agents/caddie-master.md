@@ -206,11 +206,74 @@ python -m gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
 ```
 If a fallback `log-trade` command fails, note the failure in your output and continue. Do not retry failed log commands.
 
-**If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Step 5.
+**If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Steps 4c-5.
+
+#### 4c. Review & Approve
+
+For each candidate with GimmeScore >= 75 and recommendation = PROCEED, the Caddie Master MUST independently review the research before dispatching Closer. NEVER dispatch Closer without completing this review.
+
+For each PROCEED candidate:
+
+1. **Read the research independently** — form your own view before conferring:
+   ```bash
+   python -m gimmes candidates --ticker TICKER --limit 1
+   python -m gimmes market-info TICKER
+   ```
+   If the candidate would add to an existing position, also read the position context:
+   ```bash
+   python -m gimmes position-context TICKER
+   ```
+   If any of these commands fail, REJECT the candidate — you cannot review without the data.
+
+2. **Confer with Caddie using SendMessage.** Probe the research with pointed questions:
+   - Is the thesis robust to the most likely contrary scenario?
+   - Are the confidence signals genuinely independent, or do they trace back to a common source?
+   - Does this candidate correlate with any open positions (same underlying event, same sector, same directional bet)?
+   - What is the strongest contrarian case, and why is it wrong?
+   - Is the timing right, or could waiting one cycle yield better information?
+
+   Go back and forth as many times as needed. Wait for each Caddie response before asking the next question. When you have enough information to make a judgment call, proceed to step 3.
+
+3. **Make a deliberate decision** — APPROVE or REJECT:
+   - **APPROVE**: The thesis survives scrutiny, signals are genuinely independent, and the opportunity is not redundant with the existing portfolio.
+   - **REJECT**: The thesis has a hole the Caddie cannot close, signals are not truly independent, the position would over-concentrate the portfolio, or the timing is wrong.
+
+4. **Log the decision BEFORE dispatching Closer** (audit trail):
+   ```bash
+   python -m gimmes position-note TICKER \
+     --cycle $GIMMES_CYCLE \
+     --agent caddie-master \
+     --type decision \
+     --body "Decision: APPROVE for open.
+   Reasoning: [specific reasoning referencing the Caddie's research and your conferral].
+   Thesis robustness: [survived or did not survive scrutiny — cite the key exchange].
+   Signal independence: [confirmed independent or not — explain].
+   Portfolio correlation: [none, or describe overlap with existing positions]."
+   ```
+   For REJECT decisions:
+   ```bash
+   python -m gimmes position-note TICKER \
+     --cycle $GIMMES_CYCLE \
+     --agent caddie-master \
+     --type decision \
+     --body "Decision: REJECT for open.
+   Reasoning: [specific reasoning — what failed scrutiny].
+   Key concern: [the issue that could not be resolved in conferral]."
+   ```
+   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with rationale "Decision note failed to write" and move to the next candidate.
+
+5. **Log rejected candidates as skips** so the decision is auditable:
+   ```bash
+   python -m gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
+     --rationale "Caddie Master review: REJECT — [brief reason]" --agent caddie-master
+   ```
+   If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
+
+**Only APPROVED candidates proceed to Step 5.** If all PROCEED candidates are rejected in review, skip to Step 6.
 
 ### Step 5: Closer
 
-For each approved candidate (GimmeScore >= 75, recommendation = PROCEED), dispatch the **Closer** agent.
+For each APPROVED candidate from Step 4c, dispatch the **Closer** agent.
 
 Launch the Closer agent (`closer.md`) to:
 1. Run `python -m gimmes validate TICKER --prob P` for each candidate
@@ -264,7 +327,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 
 - ALL agent dispatches MUST be foreground (NEVER use `run_in_background: true`). Wait for each agent to return its results before proceeding.
 - Steps 2 and 3 MUST run sequentially — Step 2 (Monitor + Caddie Master review) MUST complete before Step 3 (Scout) begins. Any close decisions from Step 2 change the risk budget available for Scout candidates.
-- Steps 4, 5, 6 MUST be sequential — Caddie needs Scout output, Closer needs Caddie output, Scorecard reports on the full cycle.
+- Steps 4, 4c, 5, 6 MUST be sequential — Caddie needs Scout output, Caddie Master review needs Caddie output, Closer needs Caddie Master approval, Scorecard reports on the full cycle.
 
 ## Recovery
 
