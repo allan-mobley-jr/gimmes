@@ -81,6 +81,8 @@ class RiskResponse(BaseModel):
     max_positions: int = 15
     largest_position_pct: float = 0.0
     max_position_pct: float = 0.05
+    bankroll: float = 0.0
+    deployed_cost_basis: float = 0.0
 
 
 class ActivityItem(BaseModel):

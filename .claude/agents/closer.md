@@ -58,7 +58,7 @@ If the order command fails (non-zero exit code or error output), MUST:
 
 When ANY safety check fails, MUST:
 1. Log the skip with the specific failure reason
-2. **If the rejection was due to session spending cap** (validate output contains "Session spending cap exceeded"): mark the candidate as cap-blocked:
+2. **If the rejection was due to bankroll limit** (validate output contains "Bankroll exceeded"): mark the candidate as cap-blocked:
    ```bash
    python -m gimmes mark-cap-blocked TICKER
    ```

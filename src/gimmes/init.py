@@ -55,7 +55,7 @@ max_position_pct = 0.05       # Max 5% of bankroll per position
 [risk]
 max_open_positions = 15       # Concurrent position limit
 daily_loss_limit_pct = 0.15   # Auto-stop at 15% daily drawdown
-session_spending_cap = 500.00 # Max dollars committed per autonomous session
+bankroll = 500.00             # Max total cost basis across all open positions
 monitor_price_trigger_pp = 10 # Flag positions moving >= Npp from entry
 
 [orders]

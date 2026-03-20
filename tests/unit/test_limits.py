@@ -2,10 +2,10 @@
 
 from gimmes.config import GimmesConfig
 from gimmes.risk.limits import (
+    check_bankroll,
     check_daily_loss,
     check_position_count,
     check_position_size,
-    check_session_spending,
 )
 
 
@@ -53,28 +53,23 @@ class TestPositionSize:
         assert result.passed is False
 
 
-class TestSessionSpending:
-    def test_under_cap(self, config: GimmesConfig) -> None:
-        # Default cap is 500; 100 spent + 200 trade = 300 < 500
-        result = check_session_spending(100, 200, config)
+class TestBankroll:
+    def test_under_limit(self, config: GimmesConfig) -> None:
+        # 200 deployed + 100 trade = 300 < 500 bankroll
+        result = check_bankroll(200, 100, config)
         assert result.passed is True
 
-    def test_over_cap(self, config: GimmesConfig) -> None:
-        # 400 spent + 200 trade = 600 > 500
-        result = check_session_spending(400, 200, config)
+    def test_over_limit(self, config: GimmesConfig) -> None:
+        # 400 deployed + 200 trade = 600 > 500
+        result = check_bankroll(400, 200, config)
         assert result.passed is False
-        assert "spending cap" in result.reason.lower()
+        assert "bankroll" in result.reason.lower()
 
-    def test_exactly_at_cap(self, config: GimmesConfig) -> None:
-        # 300 spent + 200 trade = 500 == 500 — should pass (> not >=)
-        result = check_session_spending(300, 200, config)
+    def test_exactly_at_limit(self, config: GimmesConfig) -> None:
+        # 300 + 200 = 500 == 500 — should pass (> not >=)
+        result = check_bankroll(300, 200, config)
         assert result.passed is True
 
-    def test_zero_cap_disabled(self, config: GimmesConfig) -> None:
-        config.risk.session_spending_cap = 0.0
-        result = check_session_spending(9999, 9999, config)
-        assert result.passed is True
-
-    def test_zero_spending_under_cap(self, config: GimmesConfig) -> None:
-        result = check_session_spending(0, 200, config)
+    def test_zero_deployed(self, config: GimmesConfig) -> None:
+        result = check_bankroll(0, 200, config)
         assert result.passed is True

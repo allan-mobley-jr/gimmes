@@ -118,9 +118,8 @@ def _run_order_cli(
             MagicMock(return_value=MagicMock(approved=True, failures=[])),
         ),
         patch("gimmes.store.queries.get_daily_pnl", AsyncMock(return_value=0.0)),
-        patch("gimmes.store.queries.get_session_spending", AsyncMock(return_value=0.0)),
+        patch("gimmes.store.queries.get_deployed_cost_basis", AsyncMock(return_value=0.0)),
         patch("gimmes.store.queries.insert_error", mock_insert_error),
-        patch("gimmes.store.session.get_active_session", MagicMock(return_value=None)),
         patch("gimmes.strategy.fees.fee_for_order", MagicMock(return_value=0.03)),
     ]
 

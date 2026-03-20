@@ -320,6 +320,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
         daily_loss_limit_pct=config.risk.daily_loss_limit_pct,
         max_positions=config.risk.max_open_positions,
         max_position_pct=config.sizing.max_position_pct,
+        bankroll=config.risk.bankroll,
     )
 
     try:
@@ -358,11 +359,16 @@ async def get_risk(db_path: Path) -> RiskResponse:
                 resp.position_count = row["cnt"]
 
             cursor = await conn.execute(
-                f"SELECT MAX(cost_basis) as largest FROM {table} WHERE count > 0"
+                f"SELECT MAX(cost_basis) as largest,"
+                f" COALESCE(SUM(cost_basis), 0) as deployed"
+                f" FROM {table} WHERE count > 0"
             )
             row = await cursor.fetchone()
-            if row and row["largest"] and balance > 0:
-                resp.largest_position_pct = row["largest"] / balance
+            if row:
+                bankroll = config.risk.bankroll
+                if row["largest"] and bankroll > 0:
+                    resp.largest_position_pct = row["largest"] / bankroll
+                resp.deployed_cost_basis = row["deployed"]
     except Exception:
         logger.warning("get_risk failed", exc_info=True)
 

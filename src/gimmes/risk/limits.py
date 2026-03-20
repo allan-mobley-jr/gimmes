@@ -54,19 +54,17 @@ def check_position_size(
     return RiskLimitCheck(passed=True)
 
 
-def check_session_spending(
-    session_spent: float, trade_dollars: float, config: GimmesConfig
+def check_bankroll(
+    deployed_cost_basis: float, trade_dollars: float, config: GimmesConfig
 ) -> RiskLimitCheck:
-    """Check if session spending cap would be exceeded."""
-    cap = config.risk.session_spending_cap
-    if cap <= 0:
-        return RiskLimitCheck(passed=True)
-    projected = session_spent + trade_dollars
-    if projected > cap:
+    """Check if proposed trade would exceed bankroll allocation."""
+    bankroll = config.risk.bankroll
+    projected = deployed_cost_basis + trade_dollars
+    if projected > bankroll:
         return RiskLimitCheck(
             passed=False,
-            reason=f"Session spending cap exceeded: "
-            f"${session_spent:.2f} spent + ${trade_dollars:.2f} "
-            f"> ${cap:.2f} cap",
+            reason=f"Bankroll exceeded: "
+            f"${deployed_cost_basis:.2f} deployed + ${trade_dollars:.2f} "
+            f"> ${bankroll:.2f} bankroll",
         )
     return RiskLimitCheck(passed=True)

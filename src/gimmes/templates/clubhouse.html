@@ -181,6 +181,16 @@
                             <div id="risk-largest-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
                         </div>
                     </div>
+                    <!-- Bankroll -->
+                    <div>
+                        <div class="flex justify-between text-sm mb-1.5">
+                            <span class="text-slate-300">Bankroll</span>
+                            <span id="risk-bankroll-label" class="font-mono text-slate-400">$0 / $500</span>
+                        </div>
+                        <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="risk-bankroll-bar" class="h-full bg-emerald-500 rounded-full gauge-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -835,6 +845,17 @@
                 const ratio = limit > 0 ? Math.min(pct / limit, 1) : 0;
                 document.getElementById('risk-largest-label').textContent = formatPercent(pct) + ' / ' + formatPercent(limit);
                 const bar = document.getElementById('risk-largest-bar');
+                bar.style.width = (ratio * 100) + '%';
+                bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
+            }
+            // Bankroll utilization
+            if (risk.bankroll > 0) {
+                const deployed = parseFloat(risk.deployed_cost_basis || 0);
+                const bankroll = parseFloat(risk.bankroll);
+                const ratio = Math.min(deployed / bankroll, 1);
+                document.getElementById('risk-bankroll-label').textContent =
+                    '$' + deployed.toFixed(0) + ' / $' + bankroll.toFixed(0);
+                const bar = document.getElementById('risk-bankroll-bar');
                 bar.style.width = (ratio * 100) + '%';
                 bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
             }
