@@ -127,6 +127,7 @@ class TestDataLayer:
         portfolio = await get_portfolio(db_path)
         assert portfolio.balance == 9500.0
         assert portfolio.portfolio_value == pytest.approx(7.0)  # 10 * 0.70
+        assert portfolio.total_equity == pytest.approx(9507.0)  # 9500 + 7.0
 
     async def test_get_positions(self, db_path: Path) -> None:
         positions = await get_positions(db_path)

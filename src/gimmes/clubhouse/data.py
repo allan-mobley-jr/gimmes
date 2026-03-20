@@ -161,7 +161,7 @@ async def get_portfolio(db_path: Path) -> PortfolioResponse:
 
             # Recalculate total equity if we have live balance
             if resp.balance > 0:
-                resp.total_equity = resp.balance + resp.unrealized_pnl
+                resp.total_equity = resp.balance + resp.portfolio_value
     except Exception:
         logger.warning("get_portfolio failed", exc_info=True)
 
