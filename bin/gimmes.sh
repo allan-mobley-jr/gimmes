@@ -155,7 +155,7 @@ if [ ! -d "$REPO" ]; then
     exit 1
 fi
 
-if [ ! -f "$PYTHON" ]; then
+if [ ! -f "$PYTHON" ] && [ "${1:-}" != "_post-update" ]; then
     echo "Error: Python virtual environment not found at $REPO/.venv"
     echo "Try running: gimmes update"
     exit 1
@@ -195,6 +195,18 @@ case "${1:-}" in
             update_label=$(git rev-parse --short HEAD)
         fi
 
+        # Re-exec into the updated script for post-update steps.
+        # This ensures uv sync, config-sync, and banner use the NEW code.
+        # The || guard ensures a clear error message if exec fails under set -e.
+        exec "$REPO/bin/gimmes.sh" _post-update "$update_label" || {
+            echo "Error: failed to run post-update step."
+            echo "Try running: gimmes update"
+            exit 1
+        }
+        ;;
+    _post-update)
+        update_label="${2:-unknown}"
+        cd "$REPO"
         if command -v uv &>/dev/null; then
             uv sync --quiet
         else
