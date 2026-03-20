@@ -155,7 +155,7 @@ async def api_stream() -> StreamingResponse:
                     portfolio = await data.get_portfolio(_db_path)
                     positions = await data.get_positions(_db_path)
                     risk = await data.get_risk(_db_path)
-                    activity = await data.get_activity(_db_path, limit=20)
+                    activity = await data.get_activity(_db_path)
                     trades = await data.get_trades(_db_path)
                     candidates = await data.get_candidates(_db_path, limit=10)
                     metrics = await data.get_metrics(_db_path)

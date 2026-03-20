@@ -235,7 +235,29 @@
         <!-- ROW 5: AGENT ACTIVITY FEED                                      -->
         <!-- ================================================================ -->
         <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Agent Activity</h2>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
+                Agent Activity
+                <select id="activity-agent-filter" onchange="changeActivityFilter()"
+                    aria-label="Filter by agent"
+                    class="ml-auto text-xs text-slate-400 bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 font-normal normal-case tracking-normal focus:outline-none focus:border-slate-500">
+                    <option value="all" selected>All agents</option>
+                    <option value="caddie-master">caddie-master</option>
+                    <option value="scout">scout</option>
+                    <option value="caddie">caddie</option>
+                    <option value="closer">closer</option>
+                    <option value="monitor">monitor</option>
+                    <option value="scorecard">scorecard</option>
+                    <option value="groundskeeper">groundskeeper</option>
+                    <option value="pro">pro</option>
+                </select>
+                <select id="activity-phase-filter" onchange="changeActivityFilter()"
+                    aria-label="Filter by phase"
+                    class="text-xs text-slate-400 bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 font-normal normal-case tracking-normal focus:outline-none focus:border-slate-500">
+                    <option value="all" selected>All phases</option>
+                    <option value="start">start</option>
+                    <option value="complete">complete</option>
+                </select>
+            </h2>
             <div id="activity-feed" class="max-h-[200px] overflow-y-auto scrollbar-thin space-y-1.5">
                 <div id="activity-empty" class="flex items-center justify-center py-10 text-slate-500 text-sm">
                     No active loop -- start one with <code class="ml-1.5 px-2 py-0.5 bg-slate-700/50 rounded text-slate-400 font-mono text-xs">gimmes driving_range</code>
@@ -392,6 +414,9 @@
         let showResolvedErrors = false;
         let lastErrors = null;
         let tradeFilter = 'trades';
+        let activityAgentFilter = 'all';
+        let activityPhaseFilter = 'all';
+        let lastActivity = null;
         const tradeEmptyMsgs = { all: 'No entries today', trades: 'No trades today', skips: 'No skips today' };
         let lastTrades = null;
         let positionSideFilter = 'all';
@@ -905,7 +930,22 @@
             }
         }
 
+        function filterActivity(activity) {
+            return activity.filter(function(entry) {
+                if (activityAgentFilter !== 'all' && (entry.agent || '').toLowerCase() !== activityAgentFilter) return false;
+                if (activityPhaseFilter !== 'all' && (entry.phase || '').toLowerCase() !== activityPhaseFilter) return false;
+                return true;
+            });
+        }
+
+        function changeActivityFilter() {
+            activityAgentFilter = document.getElementById('activity-agent-filter').value;
+            activityPhaseFilter = document.getElementById('activity-phase-filter').value;
+            if (lastActivity) updateActivity(lastActivity);
+        }
+
         function updateActivity(activity) {
+            lastActivity = activity;
             const feed = document.getElementById('activity-feed');
             const emptyEl = document.getElementById('activity-empty');
 
@@ -914,8 +954,14 @@
                 return;
             }
 
+            const visible = filterActivity(activity);
+            if (visible.length === 0) {
+                feed.innerHTML = '<div class="flex items-center justify-center py-10 text-slate-500 text-sm">No matching activity</div>';
+                return;
+            }
+
             let html = '';
-            activity.forEach(function(entry) {
+            visible.forEach(function(entry) {
                 html += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-slate-700/20 transition-colors text-sm">'
                     + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[65px]">' + formatTimestamp(entry.timestamp) + '</span>'
                     + agentBadge(entry.agent)

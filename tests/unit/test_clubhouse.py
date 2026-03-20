@@ -208,6 +208,18 @@ class TestDataLayer:
         assert activity[0].agent == "scout"
         assert activity[0].cycle == 1
 
+    async def test_get_activity_excludes_yesterday(self, db_path: Path) -> None:
+        """Daily-scoped query excludes activity from previous days."""
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO activity_log (cycle, agent, phase, message, timestamp)
+                   VALUES (0, 'monitor', 'start', 'old entry', datetime('now', '-1 day'))"""
+            )
+            await db.conn.commit()
+        activity = await get_activity(db_path)
+        assert len(activity) == 1
+        assert activity[0].message == "Found 3 candidates"
+
     async def test_get_errors_data(self, db_path: Path) -> None:
         errors = await get_errors_data(db_path)
         assert len(errors) == 1

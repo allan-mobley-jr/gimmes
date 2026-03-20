@@ -375,8 +375,8 @@ async def get_risk(db_path: Path) -> RiskResponse:
     return resp
 
 
-async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
-    """Get recent activity log entries."""
+async def get_activity(db_path: Path) -> list[ActivityItem]:
+    """Get today's activity log entries."""
     items: list[ActivityItem] = []
 
     try:
@@ -386,7 +386,9 @@ async def get_activity(db_path: Path, limit: int = 50) -> list[ActivityItem]:
                 return items
 
             cursor = await conn.execute(
-                "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT * FROM activity_log"
+                " WHERE date(timestamp) = date('now')"
+                " ORDER BY id DESC"
             )
             rows = await cursor.fetchall()
             for row in rows:
