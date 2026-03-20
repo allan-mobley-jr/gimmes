@@ -1013,6 +1013,7 @@
                 html += '<div class="bg-slate-700/30 border border-slate-600/30 rounded-lg p-3">'
                     + '<div class="flex items-center justify-between mb-1">'
                     + '<span class="text-cyan-400 font-mono font-semibold text-sm">' + escapeHtml(c.ticker || '--') + '</span>'
+                    + (c.cap_blocked ? '<span class="ml-2 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">Cap blocked</span>' : '')
                     + '<div class="flex items-center gap-3 text-xs font-mono">'
                     + '<span class="text-slate-400">Mkt: ' + formatPrice(c.market_price) + '</span>'
                     + '<span class="text-slate-300">Score: ' + (c.gimme_score != null ? parseFloat(c.gimme_score).toFixed(1) : '--') + '</span>'

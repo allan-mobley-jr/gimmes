@@ -60,6 +60,7 @@ class CandidateItem(BaseModel):
     gimme_score: float = 0.0
     research_memo: str = ""
     scanned_at: str = ""
+    cap_blocked: bool = False
 
 
 class MetricsResponse(BaseModel):

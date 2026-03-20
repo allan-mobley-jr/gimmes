@@ -178,6 +178,21 @@ class TestDataLayer:
         assert cand_yes[0].gimme_score == 92
         assert cand_yes[0].title == "Updated"
 
+    async def test_get_candidates_includes_cap_blocked(self, db_path: Path) -> None:
+        """Cap-blocked flag is surfaced in CandidateItem (#276)."""
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO candidates (ticker, title, market_price,
+                   model_probability, edge, gimme_score, research_memo,
+                   cap_blocked)
+                   VALUES ('CAP-MKT', 'Blocked', 0.70, 0.90, 0.20, 82, 'memo', 1)"""
+            )
+            await db.conn.commit()
+        candidates = await get_candidates(db_path)
+        cap_mkt = [c for c in candidates if c.ticker == "CAP-MKT"]
+        assert len(cap_mkt) == 1
+        assert cap_mkt[0].cap_blocked is True
+
     async def test_get_metrics(self, db_path: Path) -> None:
         metrics = await get_metrics(db_path)
         assert isinstance(metrics, MetricsResponse)

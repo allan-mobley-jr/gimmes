@@ -1015,21 +1015,45 @@ def candidates(
         table.add_column("Price", justify="right")
         table.add_column("Prob", justify="right")
         table.add_column("Edge", justify="right")
+        table.add_column("Status")
         table.add_column("Scanned")
 
         for c in records:
+            status = "[yellow]CAP BLOCKED[/yellow]" if c.get("cap_blocked") else ""
             table.add_row(
                 str(c.get("ticker", "")),
                 f"{c.get('gimme_score', 0):.0f}",
                 f"${c.get('market_price', 0):.2f}",
                 f"{c.get('model_probability', 0):.0%}",
                 f"{c.get('edge', 0):+.1%}",
+                status,
                 str(c.get("scanned_at", ""))[:19],
             )
 
         console.print(table)
 
     _run(_candidates())
+
+
+@app.command(name="mark-cap-blocked")
+def mark_cap_blocked_cmd(
+    ticker: str = typer.Argument(..., help="Market ticker"),
+) -> None:
+    """Mark the most recent candidate for a ticker as cap-blocked."""
+
+    async def _mark() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import mark_cap_blocked
+
+        async with Database() as db:
+            updated = await mark_cap_blocked(db, ticker)
+        if updated:
+            console.print(f"[yellow]Marked {ticker} as cap-blocked[/yellow]")
+        else:
+            console.print(f"[red]No candidate found for {ticker}[/red]")
+            raise typer.Exit(1)
+
+    _run(_mark())
 
 
 @app.command()

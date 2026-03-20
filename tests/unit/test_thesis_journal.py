@@ -23,6 +23,7 @@ from gimmes.store.queries import (
     insert_candidate,
     insert_position_note,
     insert_trade,
+    mark_cap_blocked,
 )
 
 
@@ -305,3 +306,38 @@ class TestGetCandidateForTicker:
         assert row["edge"] == 0.25
         assert row["gimme_score"] == 85
         assert "scanned_at" in row
+
+
+# ---------------------------------------------------------------------------
+# mark_cap_blocked (#276)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkCapBlocked:
+    async def test_marks_most_recent_candidate(self, db: Database) -> None:
+        await insert_candidate(db, "CAP-TICKER", "T", 0.70, 0.90, 0.20, 80, "memo")
+        updated = await mark_cap_blocked(db, "CAP-TICKER")
+        assert updated is True
+        rows = await get_candidate_for_ticker(db, "CAP-TICKER")
+        assert rows[0]["cap_blocked"] == 1
+
+    async def test_returns_false_when_no_match(self, db: Database) -> None:
+        updated = await mark_cap_blocked(db, "NONEXISTENT")
+        assert updated is False
+
+    async def test_only_marks_latest_row(self, db: Database) -> None:
+        await insert_candidate(db, "MULTI-CAP", "T", 0.70, 0.90, 0.20, 70, "old")
+        await insert_candidate(db, "MULTI-CAP", "T", 0.73, 0.92, 0.19, 85, "new")
+        await mark_cap_blocked(db, "MULTI-CAP")
+        rows = await get_candidate_for_ticker(db, "MULTI-CAP", limit=2)
+        # Latest (higher id) is marked, older is not
+        assert rows[0]["cap_blocked"] == 1
+        assert rows[1]["cap_blocked"] == 0
+
+    async def test_insert_with_cap_blocked_flag(self, db: Database) -> None:
+        await insert_candidate(
+            db, "FLAG-TICKER", "T", 0.70, 0.90, 0.20, 80, "memo",
+            cap_blocked=True,
+        )
+        rows = await get_candidate_for_ticker(db, "FLAG-TICKER")
+        assert rows[0]["cap_blocked"] == 1
