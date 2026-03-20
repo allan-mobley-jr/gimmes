@@ -48,7 +48,7 @@ gimmes init
 ```
 
 The wizard will:
-1. Generate `~/.gimmes/.env` and `~/.gimmes/config/gimmes.toml` from example files
+1. Generate `~/.gimmes/.env` and initialize the config database
 2. Walk you through creating a Kalshi API key (go to Account Settings → API Keys)
 3. Find your downloaded private key, validate it, and install it securely
 4. Verify your credentials work
@@ -147,7 +147,7 @@ Press **Ctrl+C** to stop. Run the command again to resume — the loop reads dat
 
 ## Walking the Course Solo
 
-Skip the agents and play each shot yourself. Every CLI command respects your `gimmes.toml` strategy parameters.
+Skip the agents and play each shot yourself. Every CLI command respects your configured strategy parameters.
 
 ```bash
 # 1. Spot candidates on the course
@@ -324,7 +324,7 @@ gimmes log-error         # Log a structured error (used by agents/system)
 gimmes resolve-error ID  # Mark an error as resolved (--issue-url to link GitHub issue)
 gimmes lesson            # Run strategy analysis (--analysis TYPE, --dry-run)
 gimmes recommendations   # View past strategy recommendations (--status, --parameter)
-gimmes tune              # Interactively apply pending recommendations to gimmes.toml
+gimmes tune              # Interactively apply pending strategy recommendations
 ```
 
 ---
@@ -421,30 +421,15 @@ Minimum required edge before any trade: **5 percentage points** after fees.
 
 ## Configuration
 
-Strategy parameters live in `~/.gimmes/config/gimmes.toml`:
+Strategy parameters are stored in the SQLite database (`~/.gimmes/gimmes.db`) and managed through the interactive wizard:
 
-```toml
-[strategy]
-gimme_threshold = 75          # Minimum GimmeScore to execute (0-100)
-min_market_price = 0.55       # Only scan markets above this price
-max_market_price = 0.85       # Only scan markets below this price
-min_true_probability = 0.90   # Model must see >=90% to qualify
-min_edge_after_fees = 0.05    # 5pp minimum edge after fee math
-
-[sizing]
-kelly_fraction = 0.25         # Conservative quarter-Kelly
-max_position_pct = 0.05       # Max 5% of bankroll per position
-
-[risk]
-max_open_positions = 15       # Concurrent position limit
-daily_loss_limit_pct = 0.15   # Auto-stop at 15% daily drawdown
-
-[orders]
-preferred_order_type = "maker" # Limit orders; no takers by default
-
-[paper]
-starting_balance = 10000.00   # Virtual bankroll for driving range mode
+```bash
+gimmes config              # Walk through all settings interactively
+gimmes config --section risk  # Jump to a specific section
+gimmes tune                # Apply pending strategy recommendations
 ```
+
+The Pydantic config models in `config.py` are the single source of truth — each field's type, default, constraints, and wizard metadata are defined in one place. Adding a new config parameter automatically makes it appear in the wizard.
 
 ---
 
@@ -454,13 +439,12 @@ starting_balance = 10000.00   # Virtual bankroll for driving range mode
 ~/.gimmes/                       # User data (created by gimmes init)
 ├── bin/gimmes                   # Global CLI command (symlink)
 ├── .env                         # API credentials
-├── config/gimmes.toml           # Strategy parameters
 ├── keys/kalshi_private.pem      # RSA private key
-├── gimmes.db                    # SQLite database
+├── gimmes.db                    # SQLite database (config + trade data)
 └── repo/                        # Cloned source code
     ├── src/gimmes/
     │   ├── cli.py               # Typer CLI entry point + trading_context routing
-    │   ├── config.py            # Two-layer config (env vars + TOML)
+    │   ├── config.py            # Two-layer config (env vars + SQLite)
     │   ├── clubhouse/           # Web dashboard (FastAPI + SSE)
     │   ├── templates/           # Jinja2 HTML template (Tailwind + Chart.js)
     │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
@@ -472,7 +456,6 @@ starting_balance = 10000.00   # Virtual bankroll for driving range mode
     │   └── reporting/           # P&L, metrics, Rich console formatting
     ├── bin/gimmes.sh            # CLI wrapper (symlink target)
     ├── install.sh               # One-liner installer
-    ├── config/gimmes.example.toml
     ├── tests/
     └── pyproject.toml
 ```

@@ -54,6 +54,3 @@ uv.lock
 
 # Claude Code local settings
 .claude/settings.local.json
-
-# Config overrides
-config/gimmes.toml

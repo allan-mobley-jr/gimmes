@@ -15,13 +15,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from rich.console import Console
 
-from gimmes.config import GIMMES_HOME
+from gimmes.config import GIMMES_HOME, config_keys_in_db, save_config_value
 
 console = Console()
 
 # User files live in GIMMES_HOME (~/.gimmes/ by default)
 ENV_FILE = GIMMES_HOME / ".env"
-TOML_FILE = GIMMES_HOME / "config" / "gimmes.toml"
 
 # Default content generated inline (no dependency on repo example files)
 _DEFAULT_ENV = """\
@@ -39,35 +38,8 @@ KALSHI_PROD_PRIVATE_KEY_PATH=~/.gimmes/keys/kalshi_private.pem
 # KALSHI_PRIVATE_KEY_PASSWORD=
 """
 
-_DEFAULT_TOML = """\
-[strategy]
-gimme_threshold = 75          # Minimum GimmeScore to execute (0-100)
-min_market_price = 0.55       # Only scan markets above this price
-max_market_price = 0.85       # Only scan markets below this price
-min_true_probability = 0.90   # Model must see >=90% to qualify
-min_edge_after_fees = 0.05    # 5pp minimum edge after fee math
-cycle_timeout = 2700              # Max seconds per autonomous cycle (45 min)
-
-[sizing]
-kelly_fraction = 0.25         # Conservative quarter-Kelly
-max_position_pct = 0.05       # Max 5% of bankroll per position
-
-[risk]
-max_open_positions = 15       # Concurrent position limit
-daily_loss_limit_pct = 0.15   # Auto-stop at 15% daily drawdown
-bankroll = 500.00             # Max total cost basis across all open positions
-monitor_price_trigger_pp = 10 # Flag positions moving >= Npp from entry
-
-[orders]
-preferred_order_type = "maker" # Limit orders; no takers by default
-
-[scanner]
-min_volume = 100              # Minimum 24h volume to consider
-min_open_interest = 50        # Minimum open interest
-max_days_to_resolution = 90   # Skip markets resolving too far out
-min_days_to_resolution = 0.5  # Skip markets resolving too soon (12h)
-# Curated series with informational edge — use `gimmes discover CAT` to find more
-series = [
+# Curated series watchlist seeded into the database on first init.
+DEFAULT_SERIES = [
     # Inflation & CPI
     "KXCPI", "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
     "KXECONSTATCPI", "KXECONSTATCPICORE", "KXECONSTATCPIYOY", "KXECONSTATCORECPIYOY",
@@ -92,16 +64,6 @@ series = [
     "CONTROLH", "CONTROLS",
 ]
 
-[paper]
-starting_balance = 10000.00    # Virtual bankroll for driving range mode
-
-[scoring.weights]
-edge_size = 0.30              # Larger edge = higher score
-signal_strength = 0.25        # More/stronger confirming signals
-liquidity_depth = 0.15        # Can we actually fill?
-settlement_clarity = 0.15     # Red flags penalize heavily
-time_to_resolution = 0.15     # Sweet spot preferred
-"""
 KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
 
@@ -427,6 +389,28 @@ async def _verify_connection() -> bool:
         return False
 
 
+DB_PATH = GIMMES_HOME / "gimmes.db"
+
+
+async def _ensure_db() -> None:
+    """Ensure the database exists and has the latest schema."""
+    from gimmes.store.database import Database
+
+    async with Database(DB_PATH):
+        pass  # connect() runs schema creation + migrations
+
+
+def _seed_default_config() -> None:
+    """Initialize the database and seed the default series watchlist."""
+    asyncio.run(_ensure_db())
+
+    if "scanner.series" not in config_keys_in_db(DB_PATH):
+        save_config_value("scanner.series", DEFAULT_SERIES, db_path=DB_PATH)
+        console.print("[green]Seeded default config:[/green] scanner.series watchlist")
+    else:
+        console.print("[dim]Config already seeded[/dim]")
+
+
 def run_init(*, headless: bool = False) -> None:
     """Run the init flow. Interactive by default; headless when flag or no TTY."""
     headless = _is_headless(headless)
@@ -444,10 +428,10 @@ def run_init(*, headless: bool = False) -> None:
         console.print("[dim](headless mode)[/dim]")
     console.print()
 
-    # Step 1: Create default config files
+    # Step 1: Create default config files and seed database
     console.print("[bold]Step 1: Configuration files[/bold]\n")
     _write_default_file(ENV_FILE, _DEFAULT_ENV, ".env", headless=headless)
-    _write_default_file(TOML_FILE, _DEFAULT_TOML, "config/gimmes.toml", headless=headless)
+    _seed_default_config()
 
     if not headless:
         # --- Interactive path ---

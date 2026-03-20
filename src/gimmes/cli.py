@@ -1947,13 +1947,25 @@ def recommendations(
     _run(_recs())
 
 
+def _parse_recommendation_value(raw: str) -> object:
+    """Convert a recommendation string value to the appropriate Python type."""
+    try:
+        if "." in raw:
+            return float(raw)
+        return int(raw)
+    except ValueError:
+        if raw.lower() in ("true", "false"):
+            return raw.lower() == "true"
+        return raw
+
+
 @app.command()
 def tune() -> None:
-    """Interactively apply pending strategy recommendations to gimmes.toml."""
+    """Interactively apply pending strategy recommendations."""
     config = load_config()
 
     async def _tune() -> None:
-        from gimmes.config import DEFAULT_CONFIG_PATH
+        from gimmes.config import save_config_value
         from gimmes.store.database import Database
         from gimmes.store.queries import get_recommendations, update_recommendation_status
 
@@ -1979,10 +1991,11 @@ def tune() -> None:
                 if answer == "q":
                     break
                 if answer == "y":
-                    _apply_toml_change(
-                        DEFAULT_CONFIG_PATH,
+                    typed_value = _parse_recommendation_value(row["recommended_value"])
+                    save_config_value(
                         row["parameter_path"],
-                        row["recommended_value"],
+                        typed_value,
+                        db_path=config.db_path,
                     )
                     await update_recommendation_status(db, row["id"], "implemented")
                     console.print("  [green]Applied and marked as implemented[/green]")
@@ -1995,85 +2008,11 @@ def tune() -> None:
 
             if applied:
                 console.print(
-                    f"\n[green]Applied {applied} change(s)"
-                    f" to {DEFAULT_CONFIG_PATH}[/green]"
+                    f"\n[green]Applied {applied} change(s) to database[/green]"
                 )
                 console.print("[dim]Restart the trading loop for changes to take effect[/dim]")
 
     _run(_tune())
-
-
-def _apply_toml_change(
-    toml_path: Path, parameter_path: str, new_value: str
-) -> None:
-    """Update a single value in gimmes.toml using tomlkit for safe editing.
-
-    Supports arbitrary nesting depth (e.g., "scoring.weights.edge_size").
-    Preserves comments, formatting, and creates missing sections as needed.
-    Writes to a temp file first, validates the result, then replaces the original.
-    """
-    import shutil
-    import tempfile
-    import tomllib
-
-    import tomlkit
-
-    path = Path(toml_path)
-    if path.exists():
-        doc = tomlkit.parse(path.read_text())
-    else:
-        doc = tomlkit.document()
-
-    # Convert value to the appropriate type
-    try:
-        if "." in new_value:
-            typed_value: object = float(new_value)
-        else:
-            typed_value = int(new_value)
-    except ValueError:
-        if new_value.lower() in ("true", "false"):
-            typed_value = new_value.lower() == "true"
-        else:
-            typed_value = new_value
-
-    # Set the value using dotted path, creating tables as needed
-    parts = parameter_path.split(".")
-    current: dict = doc  # type: ignore[assignment]
-    for part in parts[:-1]:
-        if part not in current:
-            current[part] = tomlkit.table()
-        elif not isinstance(current[part], dict):
-            raise ValueError(
-                f"Cannot set '{parameter_path}': "
-                f"'{part}' is a scalar, not a table"
-            )
-        current = current[part]
-    current[parts[-1]] = typed_value
-
-    # Write to temp file, validate, then replace
-    new_text = tomlkit.dumps(doc)
-    try:
-        tomllib.loads(new_text)
-    except tomllib.TOMLDecodeError as e:
-        raise ValueError(f"Generated invalid TOML: {e}") from e
-
-    # Ensure parent directory exists
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Backup original if it exists
-    if path.exists():
-        backup = path.with_name(path.name + ".bak")
-        shutil.copy2(path, backup)
-
-    # Atomic write via temp file
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".toml")
-    try:
-        with open(fd, "w") as f:
-            f.write(new_text)
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 @app.command()
@@ -2118,53 +2057,6 @@ def config(
     from gimmes.config_wizard import run_config_wizard
 
     run_config_wizard(section_filter=section)
-
-
-@app.command("config-sync")
-def config_sync() -> None:
-    """Sync gimmes.toml with the latest example config (add new keys, remove deprecated)."""
-    from gimmes.config import DEFAULT_CONFIG_PATH
-    from gimmes.config_sync import EXAMPLE_TOML_PATH, sync_config
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        console.print(
-            f"[red]Config file not found at {DEFAULT_CONFIG_PATH}[/red]\n"
-            "Run [bold]gimmes init[/bold] first."
-        )
-        raise typer.Exit(1)
-
-    if not EXAMPLE_TOML_PATH.exists():
-        console.print(
-            f"[red]Example config not found at {EXAMPLE_TOML_PATH}[/red]\n"
-            "Your gimmes installation may be corrupted."
-        )
-        raise typer.Exit(1)
-
-    try:
-        result = sync_config(DEFAULT_CONFIG_PATH, EXAMPLE_TOML_PATH)
-    except Exception as exc:
-        console.print(
-            f"[yellow]Config sync skipped: {exc}[/yellow]\n"
-            "Your config file may have a syntax error. "
-            "Run [bold]gimmes config[/bold] or edit the file manually."
-        )
-        raise typer.Exit(1)
-
-    if not result.added and not result.removed:
-        console.print("[dim]Config is up to date.[/dim]")
-        return
-
-    console.print("[bold]Config synced.[/bold]")
-    if result.added:
-        console.print(f"  [green]Added ({len(result.added)}):[/green]")
-        for key in result.added:
-            console.print(f"    {key}")
-    if result.removed:
-        console.print(f"  [yellow]Removed ({len(result.removed)}):[/yellow]")
-        for key in result.removed:
-            console.print(f"    {key}")
-    if result.added:
-        console.print("\nRun [bold]gimmes config[/bold] to review new settings.")
 
 
 @app.command()

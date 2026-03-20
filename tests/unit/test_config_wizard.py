@@ -6,108 +6,94 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import tomlkit
 from click.exceptions import Exit as ClickExit
 
+from gimmes.config import (
+    CONFIG_SECTIONS,
+    GimmesConfig,
+)
 from gimmes.config_wizard import (
-    SECTION_KEYS,
-    SETTINGS,
     Setting,
     _format_current,
-    _get_nested,
-    _load_toml,
+    _iter_section_settings,
+    _iter_sections,
     _parse_input,
-    _save_toml,
-    _set_nested,
-    _validate_scoring_weights,
+    _scoring_weights_total,
     run_config_wizard,
 )
 
 # ---------------------------------------------------------------------------
-# Setting metadata tests
+# Model introspection tests
 # ---------------------------------------------------------------------------
 
 
-class TestSettingMetadata:
-    def test_all_settings_have_valid_section(self) -> None:
-        for s in SETTINGS:
-            assert s.section in SECTION_KEYS, f"{s.key} has unknown section {s.section}"
+class TestModelMetadata:
+    def test_all_sections_have_metadata(self) -> None:
+        for field_name, model_cls in CONFIG_SECTIONS:
+            extra = model_cls.model_config.get("json_schema_extra", {})
+            assert "section_name" in extra, f"{field_name} missing section_name"
+            assert "section_description" in extra, f"{field_name} missing section_description"
 
-    def test_all_settings_have_description(self) -> None:
-        for s in SETTINGS:
-            assert len(s.description) > 20, f"{s.key} has a too-short description"
+    def test_all_fields_have_display_name(self) -> None:
+        for field_name, model_cls in CONFIG_SECTIONS:
+            settings = _iter_section_settings(field_name, model_cls)
+            for s in settings:
+                assert s.name, f"{s.key} has empty display_name"
 
-    def test_all_settings_have_valid_type(self) -> None:
-        for s in SETTINGS:
-            assert s.type in ("int", "float", "str", "list"), f"{s.key} has invalid type {s.type}"
+    def test_all_fields_have_description(self) -> None:
+        for field_name, model_cls in CONFIG_SECTIONS:
+            settings = _iter_section_settings(field_name, model_cls)
+            for s in settings:
+                assert len(s.description) > 20, f"{s.key} has too-short description"
+
+    def test_all_fields_have_valid_type(self) -> None:
+        for field_name, model_cls in CONFIG_SECTIONS:
+            settings = _iter_section_settings(field_name, model_cls)
+            for s in settings:
+                valid = ("int", "float", "str", "list")
+                assert s.type in valid, f"{s.key} has invalid type {s.type}"
 
     def test_scoring_weights_have_five_entries(self) -> None:
-        weights = [s for s in SETTINGS if s.key.startswith("scoring.weights.")]
-        assert len(weights) == 5
+        scoring_cls = type(GimmesConfig.model_fields["scoring"].default_factory())
+        settings = _iter_section_settings("scoring", scoring_cls)
+        weight_settings = [s for s in settings if "weights" in s.key]
+        assert len(weight_settings) == 5
 
     def test_scoring_weight_defaults_sum_to_one(self) -> None:
-        weights = [s for s in SETTINGS if s.key.startswith("scoring.weights.")]
-        total = sum(s.default for s in weights)  # type: ignore[arg-type]
+        scoring_cls = type(GimmesConfig.model_fields["scoring"].default_factory())
+        settings = _iter_section_settings("scoring", scoring_cls)
+        weight_settings = [s for s in settings if "weights" in s.key]
+        total = sum(s.default for s in weight_settings)
         assert abs(total - 1.0) < 0.01
 
+    def test_iter_sections_yields_all(self) -> None:
+        sections = list(_iter_sections())
+        keys = [s[0] for s in sections]
+        assert "paper" in keys
+        assert "strategy" in keys
+        assert "risk" in keys
+        assert "scoring" in keys
 
-# ---------------------------------------------------------------------------
-# TOML helpers
-# ---------------------------------------------------------------------------
+    def test_bankroll_is_in_risk_section(self) -> None:
+        """Regression: bankroll must appear in the wizard (issue #292)."""
+        from gimmes.config import RiskConfig
+        settings = _iter_section_settings("risk", RiskConfig)
+        keys = [s.key for s in settings]
+        assert "risk.bankroll" in keys
 
+    def test_monitor_price_trigger_is_in_risk_section(self) -> None:
+        """Regression: all risk fields must appear in the wizard."""
+        from gimmes.config import RiskConfig
+        settings = _iter_section_settings("risk", RiskConfig)
+        keys = [s.key for s in settings]
+        assert "risk.monitor_price_trigger_pp" in keys
 
-class TestTomlHelpers:
-    def test_load_toml_existing_file(self, tmp_path: Path) -> None:
-        f = tmp_path / "test.toml"
-        f.write_text('[strategy]\ngimme_threshold = 80\n')
-        doc = _load_toml(f)
-        assert doc["strategy"]["gimme_threshold"] == 80  # type: ignore[index]
-
-    def test_load_toml_missing_file(self, tmp_path: Path) -> None:
-        doc = _load_toml(tmp_path / "missing.toml")
-        assert len(doc) == 0
-
-    def test_get_nested_simple(self) -> None:
-        doc = tomlkit.parse("[strategy]\ngimme_threshold = 75\n")
-        assert _get_nested(doc, "strategy.gimme_threshold") == 75
-
-    def test_get_nested_deep(self) -> None:
-        doc = tomlkit.parse("[scoring.weights]\nedge_size = 0.30\n")
-        assert _get_nested(doc, "scoring.weights.edge_size") == 0.30
-
-    def test_get_nested_missing(self) -> None:
-        doc = tomlkit.parse("")
-        assert _get_nested(doc, "strategy.gimme_threshold") is None
-
-    def test_set_nested_creates_tables(self) -> None:
-        doc = tomlkit.document()
-        _set_nested(doc, "strategy.gimme_threshold", 80)
-        assert doc["strategy"]["gimme_threshold"] == 80  # type: ignore[index]
-
-    def test_set_nested_deep(self) -> None:
-        doc = tomlkit.document()
-        _set_nested(doc, "scoring.weights.edge_size", 0.40)
-        assert doc["scoring"]["weights"]["edge_size"] == 0.40  # type: ignore[index]
-
-    def test_save_toml_roundtrip(self, tmp_path: Path) -> None:
-        f = tmp_path / "config" / "test.toml"
-        doc = tomlkit.document()
-        _set_nested(doc, "strategy.gimme_threshold", 80)
-        _save_toml(doc, f)
-        assert f.exists()
-        loaded = _load_toml(f)
-        assert _get_nested(loaded, "strategy.gimme_threshold") == 80
-
-    def test_save_toml_preserves_comments(self, tmp_path: Path) -> None:
-        f = tmp_path / "test.toml"
-        original = '[strategy]\ngimme_threshold = 75  # Minimum score\n'
-        f.write_text(original)
-        doc = _load_toml(f)
-        doc["strategy"]["gimme_threshold"] = 80  # type: ignore[index]
-        _save_toml(doc, f)
-        content = f.read_text()
-        assert "# Minimum score" in content
-        assert "80" in content
+    def test_cycle_timeout_is_in_strategy_section(self) -> None:
+        """Regression: cycle_timeout was missing from the wizard."""
+        from gimmes.config import StrategyConfig
+        settings = _iter_section_settings("strategy", StrategyConfig)
+        keys = [s.key for s in settings]
+        assert "strategy.cycle_timeout" in keys
 
 
 # ---------------------------------------------------------------------------
@@ -213,32 +199,33 @@ class TestFormatCurrent:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateScoringWeights:
-    def test_valid_weights(self) -> None:
-        doc = tomlkit.parse(
-            "[scoring.weights]\n"
-            "edge_size = 0.30\n"
-            "signal_strength = 0.25\n"
-            "liquidity_depth = 0.15\n"
-            "settlement_clarity = 0.15\n"
-            "time_to_resolution = 0.15\n"
-        )
-        assert _validate_scoring_weights(doc) is True
+class TestScoringWeightsTotal:
+    def test_valid_weights_sum_to_one(self) -> None:
+        overrides = {
+            "scoring": {"weights": {
+                "edge_size": 0.30,
+                "signal_strength": 0.25,
+                "liquidity_depth": 0.15,
+                "settlement_clarity": 0.15,
+                "time_to_resolution": 0.15,
+            }},
+        }
+        assert abs(_scoring_weights_total(overrides) - 1.0) < 0.01
 
-    def test_invalid_weights(self) -> None:
-        doc = tomlkit.parse(
-            "[scoring.weights]\n"
-            "edge_size = 0.50\n"
-            "signal_strength = 0.50\n"
-            "liquidity_depth = 0.15\n"
-            "settlement_clarity = 0.15\n"
-            "time_to_resolution = 0.15\n"
-        )
-        assert _validate_scoring_weights(doc) is False
+    def test_invalid_weights_exceed_one(self) -> None:
+        overrides = {
+            "scoring": {"weights": {
+                "edge_size": 0.50,
+                "signal_strength": 0.50,
+                "liquidity_depth": 0.15,
+                "settlement_clarity": 0.15,
+                "time_to_resolution": 0.15,
+            }},
+        }
+        assert abs(_scoring_weights_total(overrides) - 1.0) > 0.01
 
-    def test_missing_weights_treated_as_zero(self) -> None:
-        doc = tomlkit.parse("[scoring.weights]\nedge_size = 0.30\n")
-        assert _validate_scoring_weights(doc) is False
+    def test_missing_weights_uses_defaults(self) -> None:
+        assert abs(_scoring_weights_total({}) - 1.0) < 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -247,51 +234,58 @@ class TestValidateScoringWeights:
 
 
 class TestRunConfigWizard:
-    def test_exits_when_toml_missing(self, tmp_path: Path) -> None:
-        with patch("gimmes.config_wizard.TOML_FILE", tmp_path / "missing.toml"):
+    @pytest.fixture()
+    def db_file(self, tmp_path: Path) -> Path:
+        """Create a temporary database with the config table."""
+        import sqlite3
+        db = tmp_path / "gimmes.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_exits_when_db_missing(self, tmp_path: Path) -> None:
+        with patch("gimmes.config_wizard.DB_PATH", tmp_path / "missing.db"):
             with pytest.raises(ClickExit):
                 run_config_wizard()
 
-    def test_invalid_section_exits(self, tmp_path: Path) -> None:
-        f = tmp_path / "gimmes.toml"
-        f.write_text("[strategy]\ngimme_threshold = 75\n")
-        with patch("gimmes.config_wizard.TOML_FILE", f):
+    def test_invalid_section_exits(self, db_file: Path) -> None:
+        with patch("gimmes.config_wizard.DB_PATH", db_file):
             with pytest.raises(ClickExit):
                 run_config_wizard(section_filter="nonexistent")
 
-    def test_no_changes_when_all_defaults_kept(self, tmp_path: Path) -> None:
-        f = tmp_path / "gimmes.toml"
-        f.write_text("[paper]\nstarting_balance = 10000.00\n")
-
+    def test_no_changes_when_all_defaults_kept(self, db_file: Path) -> None:
         with (
-            patch("gimmes.config_wizard.TOML_FILE", f),
+            patch("gimmes.config_wizard.DB_PATH", db_file),
             patch("gimmes.config_wizard._prompt_setting", return_value=10000.0),
-            patch("gimmes.config_wizard._save_toml") as mock_save,
+            patch("gimmes.config_wizard.save_config_value") as mock_save,
         ):
             run_config_wizard(section_filter="paper")
 
         mock_save.assert_not_called()
 
-    def test_saves_changed_value(self, tmp_path: Path) -> None:
-        f = tmp_path / "gimmes.toml"
-        f.write_text("[paper]\nstarting_balance = 10000.00\n")
-
+    def test_saves_changed_value(self, db_file: Path) -> None:
         with (
-            patch("gimmes.config_wizard.TOML_FILE", f),
+            patch("gimmes.config_wizard.DB_PATH", db_file),
             patch("gimmes.config_wizard._prompt_setting", return_value=5000.0),
         ):
             run_config_wizard(section_filter="paper")
 
-        doc = tomlkit.parse(f.read_text())
-        assert doc["paper"]["starting_balance"] == 5000.0  # type: ignore[index]
+        import json
+        import sqlite3
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'paper.starting_balance'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0]) == 5000.0
 
-    def test_section_filter_limits_settings(self, tmp_path: Path) -> None:
-        f = tmp_path / "gimmes.toml"
-        f.write_text(
-            "[paper]\nstarting_balance = 10000.00\n"
-            "[strategy]\ngimme_threshold = 75\n"
-        )
-
+    def test_section_filter_limits_settings(self, db_file: Path) -> None:
         prompted_keys: list[str] = []
 
         def fake_prompt(setting: Setting, current: object, **kwargs: object) -> object:
@@ -299,7 +293,7 @@ class TestRunConfigWizard:
             return current
 
         with (
-            patch("gimmes.config_wizard.TOML_FILE", f),
+            patch("gimmes.config_wizard.DB_PATH", db_file),
             patch("gimmes.config_wizard._prompt_setting", side_effect=fake_prompt),
         ):
             run_config_wizard(section_filter="paper")

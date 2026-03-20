@@ -196,7 +196,7 @@ case "${1:-}" in
         fi
 
         # Re-exec into the updated script for post-update steps.
-        # This ensures uv sync, config-sync, and banner use the NEW code.
+        # This ensures uv sync and banner use the NEW code.
         # The || guard ensures a clear error message if exec fails under set -e.
         exec "$REPO/bin/gimmes.sh" _post-update "$update_label" || {
             echo "Error: failed to run post-update step."
@@ -211,10 +211,6 @@ case "${1:-}" in
             uv sync --quiet
         else
             "$PYTHON" -m pip install -e . --quiet
-        fi
-        # Sync user config with latest example (add new keys, remove deprecated)
-        if [ -f "$GIMMES_HOME/config/gimmes.toml" ]; then
-            "$PYTHON" -m gimmes config-sync || echo "Warning: config sync failed (run 'gimmes config-sync' manually)"
         fi
         show_banner
         echo "Updated to $update_label"
@@ -261,7 +257,7 @@ Diagnostics:
 Strategy:
   gimmes lesson            Run strategy analysis and recommendations
   gimmes recommendations   View past strategy recommendations
-  gimmes tune              Apply pending recommendations to gimmes.toml
+  gimmes tune              Apply pending strategy recommendations
 
 Dashboard:
   gimmes clubhouse         Launch web dashboard (http://127.0.0.1:1919)

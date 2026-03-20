@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import stat
-import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,7 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from gimmes.init import (
-    _DEFAULT_TOML,
+    DEFAULT_SERIES,
     _clear_shell_history,
     _encrypt_private_key,
     _find_downloaded_key,
@@ -456,7 +455,7 @@ class TestHeadless:
         }
         with (
             patch("gimmes.init.ENV_FILE", tmp_path / ".env"),
-            patch("gimmes.init.TOML_FILE", tmp_path / "config" / "gimmes.toml"),
+            patch("gimmes.init._seed_default_config"),
             patch.dict(os.environ, env, clear=True),
             pytest.raises((SystemExit, click.exceptions.Exit)),
         ):
@@ -467,7 +466,6 @@ class TestHeadless:
         source.write_bytes(sample_pem)
 
         env_file = tmp_path / ".env"
-        toml_file = tmp_path / "config" / "gimmes.toml"
         keys_dir = tmp_path / "keys"
 
         env = {
@@ -477,8 +475,8 @@ class TestHeadless:
         }
         with (
             patch("gimmes.init.ENV_FILE", env_file),
-            patch("gimmes.init.TOML_FILE", toml_file),
             patch("gimmes.init.KEYS_DIR", keys_dir),
+            patch("gimmes.init._seed_default_config"),
             patch("gimmes.init._verify_connection", new=AsyncMock(return_value=True)),
             patch.dict(os.environ, env, clear=True),
         ):
@@ -488,7 +486,6 @@ class TestHeadless:
         env_content = env_file.read_text()
         assert "test-api-key-uuid" in env_content
         assert "test-password" in env_content
-        assert toml_file.exists()
         assert (keys_dir / "kalshi_private.pem").exists()
 
     def test_run_init_headless_invalid_key_content(self, tmp_path: Path) -> None:
@@ -502,7 +499,7 @@ class TestHeadless:
         }
         with (
             patch("gimmes.init.ENV_FILE", tmp_path / ".env"),
-            patch("gimmes.init.TOML_FILE", tmp_path / "config" / "gimmes.toml"),
+            patch("gimmes.init._seed_default_config"),
             patch("gimmes.init.KEYS_DIR", tmp_path / "keys"),
             patch.dict(os.environ, env, clear=True),
             pytest.raises((SystemExit, click.exceptions.Exit)),
@@ -510,24 +507,13 @@ class TestHeadless:
             run_init(headless=True)
 
 
-class TestDefaultToml:
-    """Regression tests for the _DEFAULT_TOML template."""
+class TestDefaultSeries:
+    """Regression tests for the DEFAULT_SERIES list."""
 
-    @pytest.fixture()
-    def toml_data(self) -> dict:
-        return tomllib.loads(_DEFAULT_TOML)
+    def test_series_is_nonempty_list(self) -> None:
+        assert isinstance(DEFAULT_SERIES, list)
+        assert DEFAULT_SERIES
+        assert all(isinstance(s, str) for s in DEFAULT_SERIES)
 
-    _EXPECTED_SECTIONS = {"strategy", "sizing", "risk", "orders", "scanner", "paper", "scoring"}
-
-    def test_default_toml_is_valid(self, toml_data: dict) -> None:
-        assert toml_data.keys() >= self._EXPECTED_SECTIONS
-
-    def test_default_toml_has_series_list(self, toml_data: dict) -> None:
-        series = toml_data["scanner"]["series"]
-        assert isinstance(series, list)
-        assert series
-        assert all(isinstance(s, str) for s in series)
-
-    def test_default_toml_no_duplicate_series(self, toml_data: dict) -> None:
-        series = toml_data["scanner"]["series"]
-        assert len(series) == len(set(series))
+    def test_no_duplicate_series(self) -> None:
+        assert len(DEFAULT_SERIES) == len(set(DEFAULT_SERIES))
