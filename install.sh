@@ -212,6 +212,7 @@ case "$SHELL_NAME" in
             echo "fish_add_path $BIN_DIR" > "$FISH_CONFIG"
             ok "Added to PATH in $FISH_CONFIG"
         fi
+        RC_FILE="$FISH_CONFIG"
         ;;
     *)
         warn "Could not detect shell. Add this to your shell config manually:"
