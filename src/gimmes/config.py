@@ -316,23 +316,37 @@ class RiskConfig(BaseModel):
             "max_val": 0.50,
         },
     )
-    bankroll: float = Field(
-        default=500.0, gt=0.0,
+    bankroll_paper: float = Field(
+        default=5_000.0, gt=0.0,
         json_schema_extra={
-            "display_name": "Bankroll",
+            "display_name": "Paper Bankroll",
             "description": (
-                "The maximum total cost basis you're willing to have deployed across all\n"
-                "open positions at once. This is a hard cap on capital at risk — once the\n"
-                "sum of your open positions hits this limit, no new trades are allowed.\n"
+                "The maximum total cost basis for paper (driving range) trading.\n"
+                "This caps deployed capital across all open paper positions.\n"
                 "\n"
-                "This is different from your account balance. It's the portion of your\n"
-                "funds you're willing to have actively working in the market.\n"
-                "\n"
-                "  • 500.00 (default): Conservative starting point\n"
-                "  • Lower (e.g. 200): Limit exposure while learning\n"
-                "  • Higher (e.g. 2000): Allow more capital deployment"
+                "  • 5,000.00 (default): Half of the $10,000 paper balance\n"
+                "  • Lower (e.g. 1000): Limit paper exposure while learning\n"
+                "  • Higher (e.g. 8000): Allow more paper capital deployment"
             ),
             "min_val": 1.0,
+            "max_val": 1_000_000.0,
+        },
+    )
+    bankroll_real: float = Field(
+        default=0.0, ge=0.0,
+        json_schema_extra={
+            "display_name": "Championship Bankroll",
+            "description": (
+                "The maximum total cost basis for championship (real money) trading.\n"
+                "This caps deployed capital across all open real positions.\n"
+                "Set to 0 until you're ready — you'll be prompted to confirm\n"
+                "or adjust every time you enter championship mode.\n"
+                "\n"
+                "  • 0 (default): Not yet configured — must set before trading\n"
+                "  • 500: Conservative starting point for real money\n"
+                "  • Higher (e.g. 2000): Allow more real capital deployment"
+            ),
+            "min_val": 0.0,
             "max_val": 1_000_000.0,
         },
     )
@@ -620,6 +634,13 @@ class GimmesConfig(BaseModel):
     @property
     def is_championship(self) -> bool:
         return self.mode == Mode.CHAMPIONSHIP
+
+    @property
+    def bankroll(self) -> float:
+        """Return the mode-appropriate bankroll."""
+        if self.is_championship:
+            return self.risk.bankroll_real
+        return self.risk.bankroll_paper
 
 
 # ---------------------------------------------------------------------------

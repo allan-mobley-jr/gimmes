@@ -18,6 +18,7 @@ from gimmes.cli import (
     _wrap_stream_json,
     app,
 )
+from gimmes.config import GimmesConfig, Mode, RiskConfig
 
 runner = CliRunner()
 
@@ -822,10 +823,11 @@ class TestChampionshipCommand:
 
     def test_invokes_loop_with_championship_mode(self) -> None:
         with (
+            patch("gimmes.cli._championship_gate"),
             patch("gimmes.cli._set_mode"),
             patch("gimmes.cli._autonomous_loop") as mock_loop,
         ):
-            runner.invoke(app, ["championship", "--cycles", "1"], input="y\n")
+            runner.invoke(app, ["championship", "--cycles", "1"])
 
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=60,
@@ -849,8 +851,11 @@ class TestSwitchCommand:
             mock_set.assert_not_called()
 
     def test_switch_to_championship_with_confirmation(self) -> None:
-        with patch("gimmes.cli._set_mode") as mock_set:
-            runner.invoke(app, ["switch", "championship"], input="y\n")
+        with (
+            patch("gimmes.cli._championship_gate"),
+            patch("gimmes.cli._set_mode") as mock_set,
+        ):
+            runner.invoke(app, ["switch", "championship"])
 
         mock_set.assert_called_once_with("championship")
 
@@ -867,8 +872,11 @@ class TestSwitchCommand:
 
     def test_toggle_from_driving_range(self) -> None:
         """Omitting target toggles from driving_range to championship."""
-        with patch("gimmes.cli._set_mode") as mock_set:
-            runner.invoke(app, ["switch"], input="y\n")
+        with (
+            patch("gimmes.cli._championship_gate"),
+            patch("gimmes.cli._set_mode") as mock_set,
+        ):
+            runner.invoke(app, ["switch"])
 
         mock_set.assert_called_once_with("championship")
 
@@ -920,15 +928,85 @@ class TestStartCommand:
     def test_start_championship_with_confirmation(self, monkeypatch) -> None:
         monkeypatch.setenv("GIMMES_MODE", "championship")
         with (
+            patch("gimmes.cli._championship_gate"),
             patch("gimmes.cli._autonomous_loop") as mock_loop,
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
-            runner.invoke(app, ["start", "--cycles", "1"], input="y\n")
+            runner.invoke(app, ["start", "--cycles", "1"])
 
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
         )
+
+
+class TestChampionshipGate:
+    """Tests for _championship_gate: real-money confirmation + bankroll prompt."""
+
+    def test_abort_on_decline(self) -> None:
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(app, ["championship"], input="n\n")
+        assert result.exit_code != 0
+        mock_loop.assert_not_called()
+
+    def test_bankroll_unset_prompts_for_value(self) -> None:
+        with (
+            patch("gimmes.config.save_config_value") as mock_save,
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop"),
+        ):
+            runner.invoke(
+                app, ["championship", "--cycles", "1"],
+                input="y\n750\n",
+            )
+
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("risk.bankroll_real", 750.0)
+        assert "db_path" in kwargs
+
+    def test_bankroll_set_shows_confirm_prompt(self) -> None:
+        """When bankroll_real is already set, user can keep it by pressing Enter."""
+        with (
+            patch("gimmes.cli.load_config") as mock_load,
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop"),
+            patch("gimmes.config.save_config_value") as mock_save,
+        ):
+            mock_load.return_value = GimmesConfig(
+                mode=Mode.CHAMPIONSHIP,
+                risk=RiskConfig(bankroll_real=500.0),
+            )
+            # "y" confirms real money, Enter keeps the current bankroll
+            runner.invoke(
+                app, ["championship", "--cycles", "1"],
+                input="y\n\n",
+            )
+
+        # No save needed when keeping existing value
+        mock_save.assert_not_called()
+
+    def test_bankroll_zero_rejects_empty_input(self) -> None:
+        """When bankroll_real is 0, empty input is rejected — must enter a number."""
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop"),
+            patch("gimmes.config.save_config_value") as mock_save,
+        ):
+            # "y" confirms, empty rejected, then "500" accepted
+            result = runner.invoke(
+                app, ["championship", "--cycles", "1"],
+                input="y\n\n500\n",
+            )
+
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("risk.bankroll_real", 500.0)
+        assert "db_path" in kwargs
+        assert "must set a bankroll" in result.output.lower()
 
 
 class TestOrderYesFlag:

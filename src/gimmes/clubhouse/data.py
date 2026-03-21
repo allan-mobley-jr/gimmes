@@ -350,7 +350,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
         daily_loss_limit_pct=config.risk.daily_loss_limit_pct,
         max_positions=config.risk.max_open_positions,
         max_position_pct=config.sizing.max_position_pct,
-        bankroll=config.risk.bankroll,
+        bankroll=config.bankroll,
     )
 
     try:
@@ -386,7 +386,7 @@ async def get_risk(db_path: Path) -> RiskResponse:
             resp.daily_pnl = realized_pnl + unrealized_pnl
 
             # Daily loss percentage — use bankroll as denominator
-            bankroll = config.risk.bankroll
+            bankroll = config.bankroll
             if bankroll > 0 and resp.daily_pnl < 0:
                 resp.daily_loss_pct = abs(resp.daily_pnl) / bankroll
 
@@ -405,7 +405,6 @@ async def get_risk(db_path: Path) -> RiskResponse:
             )
             row = await cursor.fetchone()
             if row:
-                bankroll = config.risk.bankroll
                 if row["largest"] and bankroll > 0:
                     resp.largest_position_pct = row["largest"] / bankroll
                 resp.deployed_cost_basis = row["deployed"]

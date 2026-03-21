@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from gimmes.config import (
     DEFAULT_SERIES,
+    GimmesConfig,
+    Mode,
+    RiskConfig,
     _load_config_from_db,
     config_keys_in_db,
     load_config,
@@ -84,10 +89,10 @@ class TestConfigKeysInDb:
         db = tmp_path / "test.db"
         _create_config_db(db)
         save_config_value("strategy.gimme_threshold", 80, db_path=db)
-        save_config_value("risk.bankroll", 1000.0, db_path=db)
+        save_config_value("risk.bankroll_paper", 1000.0, db_path=db)
 
         result = config_keys_in_db(db)
-        assert result == {"strategy.gimme_threshold", "risk.bankroll"}
+        assert result == {"strategy.gimme_threshold", "risk.bankroll_paper"}
 
 
 class TestSaveConfigValue:
@@ -124,14 +129,14 @@ class TestSaveConfigValues:
 
         save_config_values({
             "strategy.gimme_threshold": 80,
-            "risk.bankroll": 1000.0,
+            "risk.bankroll_paper": 1000.0,
         }, db_path=db)
 
         conn = sqlite3.connect(str(db))
         rows = conn.execute("SELECT key, value FROM config ORDER BY key").fetchall()
         conn.close()
         assert len(rows) == 2
-        assert json.loads(rows[0][1]) == 1000.0  # risk.bankroll
+        assert json.loads(rows[0][1]) == 1000.0  # risk.bankroll_paper
         assert json.loads(rows[1][1]) == 80  # strategy.gimme_threshold
 
 
@@ -158,12 +163,12 @@ class TestSaveAutoCreatesTable:
         """save_config_values works when the DB file does not exist."""
         db = tmp_path / "subdir" / "new.db"
 
-        save_config_values({"risk.bankroll": 500.0}, db_path=db)
+        save_config_values({"risk.bankroll_paper": 500.0}, db_path=db)
 
         conn = sqlite3.connect(str(db))
         row = conn.execute(
             "SELECT value FROM config WHERE key = ?",
-            ("risk.bankroll",),
+            ("risk.bankroll_paper",),
         ).fetchone()
         conn.close()
         assert json.loads(row[0]) == 500.0
@@ -173,7 +178,7 @@ class TestLoadConfig:
     def test_loads_defaults_when_no_db(self, tmp_path):
         config = load_config(db_path=tmp_path / "nonexistent.db")
         assert config.strategy.gimme_threshold == 75
-        assert config.risk.bankroll == 500.0
+        assert config.risk.bankroll_paper == 5_000.0
 
     def test_loads_overrides_from_db(self, tmp_path):
         db = tmp_path / "test.db"
@@ -248,3 +253,107 @@ class TestPrivateKeyPasswordConfig:
         monkeypatch.setenv("KALSHI_PRIVATE_KEY_PASSWORD", "")
         config = load_config(db_path=tmp_path / "nonexistent.db")
         assert config.private_key_password is None
+
+
+class TestBankrollProperty:
+    def test_driving_range_returns_paper(self):
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            risk=RiskConfig(bankroll_paper=3000.0, bankroll_real=800.0),
+        )
+        assert config.bankroll == 3000.0
+
+    def test_championship_returns_real(self):
+        config = GimmesConfig(
+            mode=Mode.CHAMPIONSHIP,
+            risk=RiskConfig(bankroll_paper=3000.0, bankroll_real=800.0),
+        )
+        assert config.bankroll == 800.0
+
+    def test_championship_default_is_zero(self):
+        config = GimmesConfig(mode=Mode.CHAMPIONSHIP)
+        assert config.bankroll == 0.0
+
+
+class TestMigrationV14:
+    """Migration v14: split risk.bankroll → bankroll_paper (bankroll_real stays 0)."""
+
+    def _seed_v13_db(self, path, bankroll_value=None):
+        """Create a DB at version 13 with optional risk.bankroll row."""
+        import json
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL, "
+            "applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (13)")
+        conn.execute(
+            "CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        if bankroll_value is not None:
+            conn.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?)",
+                ("risk.bankroll", json.dumps(bankroll_value)),
+            )
+        conn.commit()
+        conn.close()
+
+    @pytest.mark.asyncio
+    async def test_migrates_old_bankroll_to_paper_only(self, tmp_path):
+        from gimmes.store.database import Database
+        from gimmes.store.migrations import run_migrations
+
+        db_path = tmp_path / "v14.db"
+        self._seed_v13_db(db_path, bankroll_value=750.0)
+
+        async with Database(db_path) as db:
+            version = await run_migrations(db)
+
+        assert version >= 14
+        conn = sqlite3.connect(str(db_path))
+        # bankroll_paper should have the old value
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'risk.bankroll_paper'"
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row[0]) == 750.0
+        # bankroll_real should NOT exist (stays at default 0)
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'risk.bankroll_real'"
+        ).fetchone()
+        assert row is None
+        # old key should be deleted
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'risk.bankroll'"
+        ).fetchone()
+        assert row is None
+        conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_old_key_still_bumps_version(self, tmp_path):
+        from gimmes.store.database import Database
+        from gimmes.store.migrations import run_migrations
+
+        db_path = tmp_path / "v14_fresh.db"
+        self._seed_v13_db(db_path)  # no bankroll row
+
+        async with Database(db_path) as db:
+            version = await run_migrations(db)
+
+        assert version >= 14
+
+    @pytest.mark.asyncio
+    async def test_idempotent(self, tmp_path):
+        from gimmes.store.database import Database
+        from gimmes.store.migrations import run_migrations
+
+        db_path = tmp_path / "v14_idem.db"
+        self._seed_v13_db(db_path, bankroll_value=750.0)
+
+        async with Database(db_path) as db:
+            await run_migrations(db)
+        async with Database(db_path) as db:
+            version = await run_migrations(db)
+
+        assert version >= 14

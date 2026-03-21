@@ -261,4 +261,28 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 13
 
+    # Version 14: split risk.bankroll → bankroll_paper + bankroll_real (#299)
+    # Only migrate old value to bankroll_paper. bankroll_real stays at default
+    # (0) so the championship gate forces explicit confirmation on first entry.
+    if current < 14:
+        cursor = await db.conn.execute(
+            "SELECT value FROM config WHERE key = 'risk.bankroll'"
+        )
+        row = await cursor.fetchone()
+        if row:
+            old_value = row[0]
+            await db.conn.execute(
+                "INSERT OR IGNORE INTO config (key, value, updated_at) "
+                "VALUES ('risk.bankroll_paper', ?, datetime('now'))",
+                (old_value,),
+            )
+            await db.conn.execute(
+                "DELETE FROM config WHERE key = 'risk.bankroll'"
+            )
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (14,)
+        )
+        await db.conn.commit()
+        current = 14
+
     return current

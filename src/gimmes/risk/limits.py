@@ -58,7 +58,7 @@ def check_bankroll(
     deployed_cost_basis: float, trade_dollars: float, config: GimmesConfig
 ) -> RiskLimitCheck:
     """Check if proposed trade would exceed bankroll allocation."""
-    bankroll = config.risk.bankroll
+    bankroll = config.bankroll
     projected = deployed_cost_basis + trade_dollars
     if projected > bankroll:
         return RiskLimitCheck(

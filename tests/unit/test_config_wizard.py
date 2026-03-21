@@ -79,7 +79,8 @@ class TestModelMetadata:
         from gimmes.config import RiskConfig
         settings = _iter_section_settings("risk", RiskConfig)
         keys = [s.key for s in settings]
-        assert "risk.bankroll" in keys
+        assert "risk.bankroll_paper" in keys
+        assert "risk.bankroll_real" in keys
 
     def test_monitor_price_trigger_is_in_risk_section(self) -> None:
         """Regression: all risk fields must appear in the wizard."""

@@ -303,7 +303,7 @@ def size(
             price = market.midpoint or market.last_price
             fees = get_multipliers(market.series_ticker)
 
-            bankroll = config.risk.bankroll
+            bankroll = config.bankroll
             kf = kelly_fraction(
                 price, probability,
                 fraction=config.sizing.kelly_fraction, fees=fees,
@@ -352,7 +352,7 @@ def validate(
             market = await get_market(client, ticker)
 
             price = market.midpoint or market.last_price
-            bankroll = config.risk.bankroll
+            bankroll = config.bankroll
 
             if broker:
                 positions = await _mark_positions_to_market(
@@ -506,7 +506,7 @@ def order(
             is_buy = order_action == OrderAction.BUY
             is_taker = config.orders.preferred_order_type != "maker"
 
-            bankroll = config.risk.bankroll
+            bankroll = config.bankroll
             if is_buy and count <= 0 and probability is not None:
                 final_count = position_size(
                     bankroll, mkt_price, probability,
@@ -1142,7 +1142,7 @@ def risk_check() -> None:
                     " deployed capital[/red]"
                 )
                 raise typer.Exit(1)
-            bankroll = config.risk.bankroll
+            bankroll = config.bankroll
 
             unrealized_pnl = sum(p.unrealized_pnl for p in pos)
             total_daily_pnl = daily_pnl + unrealized_pnl
@@ -2218,12 +2218,7 @@ def switch(
         return
 
     if target == Mode.CHAMPIONSHIP.value:
-        console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
-        console.print(
-            "Switching to championship mode means all trades use real money.\n"
-        )
-        if not typer.confirm("Switch to championship mode?"):
-            raise typer.Abort()
+        _championship_gate(config)
 
     _set_mode(target)
 
@@ -2238,15 +2233,77 @@ def switch(
 # ---------------------------------------------------------------------------
 
 
-def _confirm_championship() -> None:
-    """Show championship warning and prompt for confirmation. Aborts on decline."""
+def _parse_dollars(raw: str) -> float | None:
+    """Parse a user-entered dollar string like '$1,500' into a float, or None on failure."""
+    try:
+        return float(raw.replace(",", "").replace("$", ""))
+    except ValueError:
+        return None
+
+
+def _championship_gate(config: GimmesConfig) -> None:
+    """Championship entry gate: confirm real-money risk, then set/confirm bankroll.
+
+    All championship entry points must call this before proceeding.
+    Aborts on decline.
+    """
+    from gimmes.config import save_config_value
+
+    console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
     console.print(
         "This will trade with real money on Kalshi autonomously.\n"
         "The system will scan markets, research candidates, and execute trades\n"
         "without asking for confirmation on each order.\n"
     )
-    if not typer.confirm("Are you sure you want to start autonomous trading with real money?"):
+    if not typer.confirm("Are you sure you want to trade with real money?"):
         raise typer.Abort()
+
+    current_bankroll = config.risk.bankroll_real
+    if current_bankroll <= 0:
+        console.print(
+            "\n[bold]How much capital are you willing to have deployed?[/bold]"
+        )
+        console.print(
+            "[dim]This is the maximum total cost basis across all open positions.[/dim]"
+        )
+        while True:
+            raw = typer.prompt("  Championship bankroll ($)", default="", show_default=False)
+            if raw.strip() == "":
+                console.print("  [red]You must set a bankroll before trading.[/red]")
+                continue
+            value = _parse_dollars(raw)
+            if value is None:
+                console.print("  [red]Enter a number (e.g. 500).[/red]")
+                continue
+            if value <= 0:
+                console.print("  [red]Bankroll must be greater than $0.[/red]")
+                continue
+            break
+    else:
+        console.print(
+            f"\n[bold]Your championship bankroll is ${current_bankroll:,.2f}[/bold]"
+        )
+        raw = typer.prompt(
+            "  Keep this or enter new amount ($)",
+            default=str(current_bankroll),
+        )
+        value = _parse_dollars(raw)
+        if value is None:
+            console.print("[red]Invalid amount.[/red]")
+            raise typer.Abort()
+        if value <= 0:
+            console.print("[red]Bankroll must be greater than $0.[/red]")
+            raise typer.Abort()
+
+    if value != current_bankroll:
+        try:
+            save_config_value("risk.bankroll_real", value, db_path=config.db_path)
+        except Exception as exc:
+            console.print(
+                f"[red]Error: Could not save championship bankroll: {exc}[/red]"
+            )
+            raise typer.Exit(1)
+        console.print(f"  [green]Championship bankroll set to ${value:,.2f}[/green]")
 
 
 @app.command(name="start", rich_help_panel="Autonomous Trading")
@@ -2265,7 +2322,7 @@ def start(
     _mode_banner(config)
 
     if config.is_championship:
-        _confirm_championship()
+        _championship_gate(config)
 
     _autonomous_loop(mode_val, max_cycles=cycles, pause_seconds=pause,
                      no_dashboard=no_dashboard)
@@ -2719,8 +2776,8 @@ def championship(
     ),
 ) -> None:
     """Switch to Championship mode and start autonomous trading loop (REAL MONEY)."""
-    console.print("\n[red bold]⚠  CHAMPIONSHIP MODE — REAL MONEY ⚠[/red bold]")
-    _confirm_championship()
+    config = load_config()
+    _championship_gate(config)
     _set_mode("championship")
     _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause,
                      no_dashboard=no_dashboard)
