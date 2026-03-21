@@ -209,3 +209,194 @@ class TestConfigGet:
 
         assert result.exit_code == 1
         assert "Database not found" in result.output
+
+    def test_get_specific_list_shows_full(self, db_file: Path) -> None:
+        # Seed a list with more than 6 items
+        items = [f"TICKER{i}" for i in range(10)]
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(items)),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "get", "scanner.series"])
+
+        assert result.exit_code == 0
+        # All items should be visible — no truncation
+        for item in items:
+            assert item in result.output
+        # Should NOT show "[10 items]" truncation marker
+        assert "[10 items]" not in result.output
+
+
+class TestConfigAdd:
+    def test_add_to_list(self, db_file: Path) -> None:
+        # Seed a small list
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(["KXCPI", "KXGDP"])),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "add", "scanner.series", "KXFED"])
+
+        assert result.exit_code == 0
+        assert "Added" in result.output
+        assert "KXFED" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == ["KXCPI", "KXGDP", "KXFED"]
+
+    def test_add_duplicate_is_noop(self, db_file: Path) -> None:
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(["KXCPI", "KXGDP"])),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "add", "scanner.series", "KXCPI"])
+
+        assert result.exit_code == 0
+        assert "already in" in result.output
+
+    def test_add_to_non_list_field_errors(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "add", "strategy.gimme_threshold", "80"]
+            )
+
+        assert result.exit_code == 1
+        assert "not a list field" in result.output
+
+    def test_add_invalid_key_errors(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "add", "bad.key", "FOO"])
+
+        assert result.exit_code == 1
+        assert "Unknown config key" in result.output
+
+    def test_add_exits_when_db_missing(self, tmp_path: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            result = runner.invoke(app, ["config", "add", "scanner.series", "KXFED"])
+
+        assert result.exit_code == 1
+        assert "Database not found" in result.output
+
+    def test_add_to_default_list(self, db_file: Path) -> None:
+        """Adding to an unset field should copy the default list and append."""
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "add", "scanner.series", "NEWTICKERXYZ"])
+
+        assert result.exit_code == 0
+        assert "Added" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        saved = json.loads(row[0])
+        assert "NEWTICKERXYZ" in saved
+        assert len(saved) > 1  # Should include defaults plus new item
+
+
+class TestConfigRemove:
+    def test_remove_from_list(self, db_file: Path) -> None:
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(["KXCPI", "KXGDP", "KXFED"])),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "remove", "scanner.series", "KXGDP"])
+
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert "KXGDP" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == ["KXCPI", "KXFED"]
+
+    def test_remove_nonexistent_item_errors(self, db_file: Path) -> None:
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(["KXCPI", "KXGDP"])),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "remove", "scanner.series", "NOTHERE"]
+            )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_remove_from_non_list_field_errors(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "remove", "strategy.gimme_threshold", "80"]
+            )
+
+        assert result.exit_code == 1
+        assert "not a list field" in result.output
+
+    def test_remove_invalid_key_errors(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "remove", "bad.key", "FOO"])
+
+        assert result.exit_code == 1
+        assert "Unknown config key" in result.output
+
+    def test_remove_last_item_leaves_empty_list(self, db_file: Path) -> None:
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps(["KXCPI"])),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "remove", "scanner.series", "KXCPI"])
+
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == []
+
+    def test_remove_exits_when_db_missing(self, tmp_path: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            result = runner.invoke(
+                app, ["config", "remove", "scanner.series", "KXCPI"]
+            )
+
+        assert result.exit_code == 1
+        assert "Database not found" in result.output

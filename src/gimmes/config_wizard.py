@@ -140,9 +140,11 @@ SECTION_KEYS = [key for key, _ in CONFIG_SECTIONS]
 # ---------------------------------------------------------------------------
 
 
-def _format_current(value: object, setting: Setting) -> str:
+def _format_current(value: object, setting: Setting, *, full: bool = False) -> str:
     """Format a value for display."""
     if setting.type == "list" and isinstance(value, list):
+        if full:
+            return "\n  ".join(str(v) for v in value)
         if len(value) > 6:
             return f"[{len(value)} items] {', '.join(str(v) for v in value[:6])}..."
         return ", ".join(str(v) for v in value)
