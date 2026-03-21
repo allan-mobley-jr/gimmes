@@ -224,7 +224,13 @@ async def get_trades(
         before_id: Fetch older entries (id < before_id). Used for scroll-down.
         since_id: Fetch newer entries (id > since_id). Used for SSE deltas.
         limit: Page size (ignored when since_id is set).
+
+    Raises:
+        ValueError: If both before_id and since_id are provided.
     """
+    if before_id is not None and since_id is not None:
+        raise ValueError("before_id and since_id are mutually exclusive")
+
     items: list[TradeItem] = []
 
     try:
@@ -422,7 +428,13 @@ async def get_activity(
         before_id: Fetch older entries (id < before_id). Used for scroll-down.
         since_id: Fetch newer entries (id > since_id). Used for SSE deltas.
         limit: Page size (ignored when since_id is set).
+
+    Raises:
+        ValueError: If both before_id and since_id are provided.
     """
+    if before_id is not None and since_id is not None:
+        raise ValueError("before_id and since_id are mutually exclusive")
+
     items: list[ActivityItem] = []
 
     try:
