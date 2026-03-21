@@ -218,17 +218,19 @@ case "${1:-}" in
     help)
         show_banner
         cat <<'HELP'
-Setup:
+Setup & Config:
   gimmes init              First-time setup (API credentials, config)
   gimmes config            Interactive configuration wizard
   gimmes config set K V    Set a single config value directly
   gimmes config get [K]    Show config value(s)
-  gimmes mode              Show current mode and connection status
-  gimmes switch [MODE]     Switch trading mode (omit MODE to toggle)
   gimmes tour_guide        Interactive product tour (The Starter)
   gimmes caddie_shop       Conversational config advisor (The Caddie Shop)
   gimmes update            Pull latest code and reinstall
   gimmes version           Show version and check for updates
+
+Mode & Status:
+  gimmes mode              Show current mode and connection status
+  gimmes switch [MODE]     Switch trading mode (omit MODE to toggle)
 
 Market Research:
   gimmes discover CAT      Explore series in a Kalshi category
@@ -241,21 +243,19 @@ Trading:
   gimmes validate TICKER -p P  Pre-trade validation
   gimmes order TICKER      Place an order
   gimmes cancel ORDER_ID   Cancel a resting order
-  gimmes log-trade TICKER  Log a trade decision
   gimmes trades            List trade records (--ticker, --action)
-  gimmes log-outcome TICKER  Record a market resolution (--outcome yes/no)
+  gimmes candidates        List scored candidates (--ticker)
 
 Portfolio:
   gimmes positions         List open positions
   gimmes reconcile         Sync positions with broker/API
   gimmes risk-check        Check risk limits and daily P&L
   gimmes report            Performance scorecard
+  gimmes position-context TICKER  Full thesis + note history for a position
+  gimmes position-notes TICKER    Position journal entries
 
 Diagnostics:
-  gimmes log-activity      Log agent activity to the database
-  gimmes log-error         Log a structured error
   gimmes errors            View error logs (--severity, --category, --unresolved)
-  gimmes resolve-error ID  Mark an error as resolved
 
 Strategy:
   gimmes lesson            Run strategy analysis and recommendations
@@ -265,7 +265,7 @@ Strategy:
 Dashboard:
   gimmes clubhouse         Launch web dashboard (http://127.0.0.1:1919)
 
-Autonomous:
+Autonomous Trading:
   gimmes start             Autonomous loop using current mode from .env
   gimmes driving_range     Autonomous loop -- paper trading (auto-starts dashboard)
   gimmes championship      Autonomous loop -- real money (auto-starts dashboard)
