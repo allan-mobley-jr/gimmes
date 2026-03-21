@@ -413,6 +413,11 @@ def run_init(*, headless: bool = False) -> None:
         # Step 2: Credential readiness gate
         console.print("\n[bold]Step 2: Kalshi API credentials[/bold]\n")
         console.print(
+            "[dim]Even in paper mode (Driving Range), GIMMES uses real Kalshi market data\n"
+            "for realistic practice. API credentials are required for market data access —\n"
+            "no real orders will be placed in paper mode.[/dim]\n"
+        )
+        console.print(
             "To trade on Kalshi, you need an API key and a private key.\n"
             "\n"
             "[bold]Here's how to get them:[/bold]\n"
@@ -431,7 +436,8 @@ def run_init(*, headless: bool = False) -> None:
         ready = typer.confirm("Have you created the API key and downloaded the private key?")
         if not ready:
             console.print(
-                "\n[dim]No problem. Run [bold]gimmes init[/bold] again when you're ready.[/dim]"
+                "\n[dim]No problem. Run [bold]gimmes init[/bold] again when you're ready.\n"
+                "API credentials are required even for paper trading (market data access).[/dim]"
             )
             raise typer.Exit(0)
 
