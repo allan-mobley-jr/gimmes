@@ -307,7 +307,7 @@ def _clear_shell_history(*, headless: bool = False) -> None:
         "\nAs a security precaution, shell history can be cleared "
         "to ensure no credentials remain on disk."
     )
-    if not typer.confirm("Clear shell history?", default=True):
+    if not typer.confirm("Clear shell history?", default=False):
         console.print("[dim]Skipped. You can clear history manually later.[/dim]")
         return
 
