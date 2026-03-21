@@ -80,6 +80,7 @@ class PaperTradingConfig(BaseModel):
                 "The virtual bankroll you start with in Driving Range (paper trading) mode.\n"
                 "This is play money — no real dollars are at risk. It lets you practice\n"
                 "and see how the system performs before using real funds.\n"
+                "(The Paper Bankroll setting separately limits how much can be invested at once.)\n"
                 "\n"
                 "A higher balance lets you take more/larger positions. A lower balance\n"
                 "forces tighter discipline, which can be better practice."
@@ -323,6 +324,8 @@ class RiskConfig(BaseModel):
             "description": (
                 "The maximum total cost basis for paper (driving range) trading.\n"
                 "This caps deployed capital across all open paper positions.\n"
+                "It is separate from your starting balance — it limits how much\n"
+                "of that virtual money can be actively invested at once.\n"
                 "\n"
                 "  • 5,000.00 (default): Half of the $10,000 paper balance\n"
                 "  • Lower (e.g. 1000): Limit paper exposure while learning\n"
