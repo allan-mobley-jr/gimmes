@@ -9,6 +9,7 @@ import pytest
 
 from gimmes.config import (
     DEFAULT_SERIES,
+    SERIES_CATEGORIES,
     GimmesConfig,
     Mode,
     RiskConfig,
@@ -222,6 +223,14 @@ class TestDefaultSeries:
         save_config_value("scanner.series", [], db_path=db)
         config = load_config(db_path=db)
         assert config.scanner.series == []
+
+    def test_default_series_matches_categories(self):
+        flat = [t for tickers in SERIES_CATEGORIES.values() for t in tickers]
+        assert flat == DEFAULT_SERIES
+
+    def test_series_categories_no_duplicates(self):
+        all_tickers = [t for tickers in SERIES_CATEGORIES.values() for t in tickers]
+        assert len(all_tickers) == len(set(all_tickers)), "Duplicate ticker in SERIES_CATEGORIES"
 
 
 class TestMonitorPriceTrigger:
