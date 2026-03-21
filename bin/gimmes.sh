@@ -174,6 +174,10 @@ case "${1:-}" in
             exit 1
         fi
 
+        if ! git checkout . --quiet 2>/dev/null; then
+            echo "Warning: could not clean local changes; update may fail."
+        fi
+
         latest_tag=$(latest_remote_tag)
         update_label=""
 
@@ -197,12 +201,7 @@ case "${1:-}" in
 
         # Re-exec into the updated script for post-update steps.
         # This ensures uv sync and banner use the NEW code.
-        # The || guard ensures a clear error message if exec fails under set -e.
-        exec "$REPO/bin/gimmes.sh" _post-update "$update_label" || {
-            echo "Error: failed to run post-update step."
-            echo "Try running: gimmes update"
-            exit 1
-        }
+        exec "$REPO/bin/gimmes.sh" _post-update "$update_label"
         ;;
     _post-update)
         update_label="${2:-unknown}"
