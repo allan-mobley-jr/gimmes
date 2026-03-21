@@ -895,7 +895,7 @@
                 const bankroll = parseFloat(risk.bankroll);
                 const ratio = Math.min(deployed / bankroll, 1);
                 document.getElementById('risk-bankroll-label').textContent =
-                    '$' + deployed.toFixed(0) + ' / $' + bankroll.toFixed(0);
+                    `$${formatNumber(Math.round(deployed))} / $${formatNumber(Math.round(bankroll))}`;
                 const bar = document.getElementById('risk-bankroll-bar');
                 bar.style.width = (ratio * 100) + '%';
                 bar.className = 'h-full rounded-full gauge-bar ' + gaugeColor(ratio);
