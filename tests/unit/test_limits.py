@@ -1,6 +1,6 @@
 """Unit tests for risk limits."""
 
-from gimmes.config import GimmesConfig
+from gimmes.config import GimmesConfig, Mode, RiskConfig
 from gimmes.risk.limits import (
     check_bankroll,
     check_daily_loss,
@@ -73,3 +73,21 @@ class TestBankroll:
     def test_zero_deployed(self, config: GimmesConfig) -> None:
         result = check_bankroll(0, 200, config)
         assert result.passed is True
+
+    def test_championship_mode_uses_real_bankroll(self) -> None:
+        champ_config = GimmesConfig(
+            mode=Mode.CHAMPIONSHIP,
+            risk=RiskConfig(bankroll_paper=5000.0, bankroll_real=500.0),
+        )
+        # 300 + 200 = 500 == bankroll_real → passes (> not >=)
+        result = check_bankroll(300, 200, champ_config)
+        assert result.passed is True
+        # 400 + 200 = 600 > 500 bankroll_real → fails
+        result = check_bankroll(400, 200, champ_config)
+        assert result.passed is False
+
+    def test_championship_zero_bankroll_blocks_trading(self) -> None:
+        champ_config = GimmesConfig(mode=Mode.CHAMPIONSHIP)
+        # bankroll_real defaults to 0; any positive trade should fail
+        result = check_bankroll(0, 1, champ_config)
+        assert result.passed is False

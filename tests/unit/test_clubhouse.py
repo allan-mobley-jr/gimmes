@@ -296,8 +296,8 @@ class TestDataLayer:
         # Realized: (0.50 - 0.65) * 5 = -0.75, Unrealized: -1.0
         # Total: -1.75
         assert risk.daily_pnl == pytest.approx(-1.75)
-        # Loss pct = 1.75 / 500 (default bankroll) = 0.0035
-        assert risk.daily_loss_pct == pytest.approx(0.0035)
+        # Loss pct = 1.75 / 5000 (default paper bankroll) = 0.00035
+        assert risk.daily_loss_pct == pytest.approx(0.00035)
 
     async def test_get_activity(self, db_path: Path) -> None:
         activity = await get_activity(db_path)
