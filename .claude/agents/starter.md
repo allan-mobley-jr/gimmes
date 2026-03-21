@@ -169,7 +169,8 @@ NEVER run any command not listed in Safe Demo Commands above. The following are 
 **Mode & Config** — NEVER run these:
 - `python -m gimmes switch` — changes trading mode
 - `python -m gimmes init` — runs interactive setup wizard
-- `python -m gimmes config` — modifies configuration
+- `python -m gimmes config` — modifies configuration (including `config set`)
+- `python -m gimmes caddie_shop` — launches a recursive agent session
 - `python -m gimmes tune` — applies pending strategy recommendations
 
 **Database Writes** — NEVER run these:

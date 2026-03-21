@@ -242,6 +242,42 @@ def _scoring_weights_total(overrides: dict) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Key resolution & validation (shared by wizard and CLI)
+# ---------------------------------------------------------------------------
+
+
+def resolve_setting(key: str) -> Setting:
+    """Find the Setting matching a dotted key (e.g. 'strategy.gimme_threshold').
+
+    Raises ValueError with a list of valid keys if not found.
+    """
+    for _section_key, _section_name, _section_desc, settings in _iter_sections():
+        for s in settings:
+            if s.key == key:
+                return s
+
+    all_keys = sorted(
+        s.key
+        for _, _, _, settings in _iter_sections()
+        for s in settings
+    )
+    raise ValueError(
+        f"Unknown config key: {key}\n"
+        f"Valid keys: {', '.join(all_keys)}"
+    )
+
+
+def validate_config_value(key: str, raw_value: str) -> tuple[Setting, object]:
+    """Resolve a dotted key and validate/parse a raw string value.
+
+    Returns (setting, parsed_value). Raises ValueError on bad key or value.
+    """
+    setting = resolve_setting(key)
+    parsed = _parse_input(raw_value, setting)
+    return setting, parsed
+
+
+# ---------------------------------------------------------------------------
 # Main wizard
 # ---------------------------------------------------------------------------
 

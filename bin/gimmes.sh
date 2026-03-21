@@ -221,9 +221,12 @@ case "${1:-}" in
 Setup:
   gimmes init              First-time setup (API credentials, config)
   gimmes config            Interactive configuration wizard
+  gimmes config set K V    Set a single config value directly
+  gimmes config get [K]    Show config value(s)
   gimmes mode              Show current mode and connection status
   gimmes switch [MODE]     Switch trading mode (omit MODE to toggle)
   gimmes tour_guide        Interactive product tour (The Starter)
+  gimmes caddie_shop       Conversational config advisor (The Caddie Shop)
   gimmes update            Pull latest code and reinstall
   gimmes version           Show version and check for updates
 
