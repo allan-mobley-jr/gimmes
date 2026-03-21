@@ -65,8 +65,21 @@ def _run(coro):  # type: ignore[no-untyped-def]
         console.print(f"[red]Connection error: {e}[/red]")
         raise typer.Exit(1)
     except sqlite3.Error as e:
-        logger.debug("Database error", exc_info=True)
-        console.print(f"[red]Database error: {e}[/red]")
+        logger.warning("Database error: %s: %s", type(e).__name__, e, exc_info=True)
+        from gimmes.config import GIMMES_HOME
+
+        db_path = GIMMES_HOME / "gimmes.db"
+        if not db_path.exists():
+            console.print(
+                "[red]Database not found.[/red] "
+                "Run [bold]gimmes init[/bold] to set up GIMMES."
+            )
+        else:
+            console.print(
+                f"[red]Database error: {e}.[/red] "
+                "Try [bold]gimmes reconcile[/bold] or reinstall with "
+                "[bold]gimmes update[/bold]."
+            )
         raise typer.Exit(1)
     except typer.Exit:
         raise

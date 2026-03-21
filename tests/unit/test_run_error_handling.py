@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -25,9 +27,8 @@ async def _raise(exc: Exception):
 
 def _run_expecting_exit(exc: Exception) -> str:
     """Run _run() with an exception-raising coroutine, return the console output."""
-    with patch("gimmes.cli.console") as mock_console:
-        with pytest.raises(ClickExit) as exc_info:
-            _run(_raise(exc))
+    with patch("gimmes.cli.console") as mock_console, pytest.raises(ClickExit) as exc_info:
+        _run(_raise(exc))
     assert exc_info.value.exit_code == 1
     return mock_console.print.call_args[0][0]
 
@@ -88,3 +89,23 @@ class TestRunExistingErrors:
         output = _run_expecting_exit(exc)
         assert "Connection refused" in output
         assert "API error" not in output
+
+
+class TestRunSqliteError:
+    def test_db_missing_suggests_init(self, tmp_path: Path) -> None:
+        """When the DB file doesn't exist, suggest 'gimmes init'."""
+        exc = sqlite3.OperationalError("unable to open database file")
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            output = _run_expecting_exit(exc)
+        assert "Database not found" in output
+        assert "gimmes init" in output
+
+    def test_db_exists_shows_error_and_suggests_reconcile(self, tmp_path: Path) -> None:
+        """When the DB file exists, show the error and suggest reconcile."""
+        (tmp_path / "gimmes.db").touch()
+        exc = sqlite3.OperationalError("database disk image is malformed")
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            output = _run_expecting_exit(exc)
+        assert "database disk image is malformed" in output
+        assert "gimmes reconcile" in output
+        assert "gimmes update" in output
