@@ -155,24 +155,36 @@ def _format_current(value: object, setting: Setting, *, full: bool = False) -> s
     return str(value)
 
 
+def _check_range(
+    val: int | float,
+    lo: float | None,
+    hi: float | None,
+    fmt: type = float,
+) -> None:
+    """Raise ValueError if *val* is outside [lo, hi]. Uses *fmt* for display."""
+    below = lo is not None and val < lo
+    above = hi is not None and val > hi
+    if not below and not above:
+        return
+    if lo is not None and hi is not None:
+        raise ValueError(f"Must be between {fmt(lo)} and {fmt(hi)}")
+    if below:
+        raise ValueError(f"Must be at least {fmt(lo)}")
+    raise ValueError(f"Must be at most {fmt(hi)}")
+
+
 def _parse_input(raw: str, setting: Setting) -> int | float | str | list[str]:
     """Parse and validate user input for a setting. Raises ValueError on bad input."""
     raw = raw.strip()
 
     if setting.type == "int":
         val = int(raw)
-        if setting.min_val is not None and val < setting.min_val:
-            raise ValueError(f"Must be at least {int(setting.min_val)}")
-        if setting.max_val is not None and val > setting.max_val:
-            raise ValueError(f"Must be at most {int(setting.max_val)}")
+        _check_range(val, setting.min_val, setting.max_val, fmt=int)
         return val
 
     if setting.type == "float":
         val = float(raw)
-        if setting.min_val is not None and val < setting.min_val:
-            raise ValueError(f"Must be at least {setting.min_val}")
-        if setting.max_val is not None and val > setting.max_val:
-            raise ValueError(f"Must be at most {setting.max_val}")
+        _check_range(val, setting.min_val, setting.max_val)
         return val
 
     if setting.type == "str":

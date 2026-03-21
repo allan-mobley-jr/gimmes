@@ -2537,6 +2537,9 @@ def _championship_gate(config: GimmesConfig) -> None:
             if value <= 0:
                 console.print("  [red]Bankroll must be greater than $0.[/red]")
                 continue
+            if value > 1_000_000:
+                console.print("  [red]Bankroll cannot exceed $1,000,000.[/red]")
+                continue
             break
     else:
         console.print(
@@ -2552,6 +2555,9 @@ def _championship_gate(config: GimmesConfig) -> None:
             raise typer.Abort()
         if value <= 0:
             console.print("[red]Bankroll must be greater than $0.[/red]")
+            raise typer.Abort()
+        if value > 1_000_000:
+            console.print("[red]Bankroll cannot exceed $1,000,000.[/red]")
             raise typer.Abort()
 
     if value != current_bankroll:

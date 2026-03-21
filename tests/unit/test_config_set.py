@@ -64,7 +64,7 @@ class TestConfigSet:
             result = runner.invoke(app, ["config", "set", "strategy.gimme_threshold", "200"])
 
         assert result.exit_code == 1
-        assert "at most" in result.output
+        assert "between" in result.output
 
     def test_set_no_change(self, db_file: Path) -> None:
         # Pre-seed the default value
