@@ -296,7 +296,9 @@ def validate_config_value(key: str, raw_value: str) -> tuple[Setting, object]:
 # ---------------------------------------------------------------------------
 
 
-def run_config_wizard(section_filter: str | None = None) -> None:
+def run_config_wizard(
+    section_filter: str | None = None, *, new_only: bool = False,
+) -> None:
     """Run the interactive config wizard, reading/writing the database."""
     from gimmes.config import _load_config_from_db
 
@@ -310,9 +312,6 @@ def run_config_wizard(section_filter: str | None = None) -> None:
     overrides = _load_config_from_db(DB_PATH)
     existing_keys = config_keys_in_db(DB_PATH)
 
-    console.print("\n[bold cyan]GIMMES Configuration Wizard[/bold cyan]")
-    console.print("[dim]Walk through each setting. Press Enter to keep the current value.[/dim]\n")
-
     if section_filter:
         if section_filter not in SECTION_KEYS:
             console.print(
@@ -321,10 +320,37 @@ def run_config_wizard(section_filter: str | None = None) -> None:
             )
             raise typer.Exit(1)
 
+    if new_only:
+        # Early exit when --new-only has nothing to show
+        all_keys = {
+            s.key
+            for _, _, _, settings in _iter_sections()
+            for s in settings
+        }
+        new_keys = all_keys - existing_keys
+        if section_filter:
+            new_keys = {k for k in new_keys if k.startswith(f"{section_filter}.")}
+        if not new_keys:
+            console.print(
+                "[green]All settings are already configured."
+                " Nothing new to set up.[/green]"
+            )
+            return
+        console.print("\n[bold cyan]GIMMES Configuration Wizard — New Settings Only[/bold cyan]")
+        console.print("[dim]Only settings added since your last configuration are shown.[/dim]\n")
+    else:
+        console.print("\n[bold cyan]GIMMES Configuration Wizard[/bold cyan]")
+        console.print(
+            "[dim]Walk through each setting. Press Enter to keep the current value.[/dim]\n"
+        )
+
     changed = False
 
     for section_key, section_name, section_desc, settings in _iter_sections():
         if section_filter and section_key != section_filter:
+            continue
+
+        if new_only and not any(s.key not in existing_keys for s in settings):
             continue
 
         header = Text(f" {section_name} ", style="bold white on blue")
@@ -333,6 +359,9 @@ def run_config_wizard(section_filter: str | None = None) -> None:
         for setting in settings:
             current = _get_current_value(overrides, setting.key, setting.default)
             is_new = setting.key not in existing_keys
+
+            if new_only and not is_new:
+                continue
 
             new_value = _prompt_setting(setting, current, is_new=is_new)
             if new_value != current:
