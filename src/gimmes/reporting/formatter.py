@@ -128,6 +128,16 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
     console.print(table)
 
 
+def format_kv_table(title: str, rows: list[tuple[str, str]]) -> Table:
+    """Build a two-column Rich table for key-value display."""
+    table = Table(title=title, show_header=False)
+    table.add_column("Key", style="cyan")
+    table.add_column("Value", style="white", justify="right")
+    for key, value in rows:
+        table.add_row(key, value)
+    return table
+
+
 def pnl_to_markdown(summary: PnLSummary) -> str:
     """Format P&L summary as markdown."""
     sign = "+" if summary.net_pnl >= 0 else ""
