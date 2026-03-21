@@ -299,8 +299,8 @@ gimmes caddie_shop       # Launch The Caddie Shop — conversational config advi
 gimmes scan              # Scan markets for gimme candidates
 gimmes score TICKER      # Score a specific market
 gimmes size TICKER -p P  # Calculate position size
-gimmes validate TICKER   # Pre-trade validation
-gimmes order TICKER      # Place an order (paper or real)
+gimmes validate TICKER -p P  # Pre-trade validation
+gimmes order TICKER -p P     # Place an order (paper or real)
 gimmes cancel ORDER_ID   # Cancel a resting order
 ```
 
