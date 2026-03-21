@@ -392,6 +392,28 @@ class TestRunConfigWizard:
         # But other settings should have been prompted (they are all "new")
         assert len(prompted_keys) > 0
 
+    def test_new_only_persists_defaults_for_new_settings(self, db_file: Path) -> None:
+        """Keeping the default on a new setting still saves it so it won't reappear."""
+        import json
+        import sqlite3
+
+        def fake_prompt(setting: Setting, current: object, **kwargs: object) -> object:
+            return current  # keep the default
+
+        with (
+            patch("gimmes.config_wizard.DB_PATH", db_file),
+            patch("gimmes.config_wizard._prompt_setting", side_effect=fake_prompt),
+        ):
+            run_config_wizard(section_filter="paper", new_only=True)
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'paper.starting_balance'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0]) == 10000.0  # default was persisted
+
     def test_new_only_no_new_settings_exits_early(self, db_file: Path) -> None:
         import json
         import sqlite3
