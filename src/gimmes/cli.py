@@ -1535,8 +1535,6 @@ def position_context(
     config = load_config()
 
     async def _ctx() -> None:
-        import sqlite3
-
         from gimmes.store.database import Database
         from gimmes.store.queries import (
             get_open_trade_for_ticker,
@@ -1544,14 +1542,10 @@ def position_context(
             has_open_position,
         )
 
-        try:
-            async with Database(config.db_path) as db:
-                trade = await get_open_trade_for_ticker(db, ticker)
-                is_open = await has_open_position(db, ticker)
-                notes = await get_position_notes(db, ticker, limit=20)
-        except sqlite3.Error as exc:
-            console.print(f"[red]Database error: {exc}[/red]")
-            raise typer.Exit(1) from exc
+        async with Database(config.db_path) as db:
+            trade = await get_open_trade_for_ticker(db, ticker)
+            is_open = await has_open_position(db, ticker)
+            notes = await get_position_notes(db, ticker, limit=20)
 
         if not trade or not is_open:
             console.print(f"[yellow]No open position found for {ticker}[/yellow]")
@@ -1616,20 +1610,14 @@ def position_note(
     config = load_config()
 
     async def _note() -> None:
-        import sqlite3
-
         from gimmes.store.database import Database
         from gimmes.store.queries import insert_position_note
 
-        try:
-            async with Database(config.db_path) as db:
-                row_id = await insert_position_note(
-                    db, ticker=ticker, cycle=cycle, agent=agent,
-                    note_type=note_type, body=body,
-                )
-        except sqlite3.Error as exc:
-            console.print(f"[red]Database error: {exc}[/red]")
-            raise typer.Exit(1) from exc
+        async with Database(config.db_path) as db:
+            row_id = await insert_position_note(
+                db, ticker=ticker, cycle=cycle, agent=agent,
+                note_type=note_type, body=body,
+            )
         console.print(
             f"[green]Logged position note #{row_id}"
             f" ({note_type}) for {ticker}[/green]"
@@ -1647,17 +1635,11 @@ def position_notes(
     config = load_config()
 
     async def _notes() -> None:
-        import sqlite3
-
         from gimmes.store.database import Database
         from gimmes.store.queries import get_position_notes
 
-        try:
-            async with Database(config.db_path) as db:
-                notes = await get_position_notes(db, ticker, limit=limit)
-        except sqlite3.Error as exc:
-            console.print(f"[red]Database error: {exc}[/red]")
-            raise typer.Exit(1) from exc
+        async with Database(config.db_path) as db:
+            notes = await get_position_notes(db, ticker, limit=limit)
 
         if not notes:
             console.print(f"[yellow]No notes found for {ticker}[/yellow]")
