@@ -219,6 +219,7 @@ case "${1:-}" in
         cat <<'HELP'
 Setup & Config:
   gimmes init              First-time setup (API credentials, config)
+  gimmes init --headless   Non-interactive setup (requires env vars)
   gimmes config            Interactive configuration wizard
   gimmes config set K V    Set a single config value directly
   gimmes config get [K]    Show config value(s)

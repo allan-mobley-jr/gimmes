@@ -285,6 +285,8 @@ gimmes update            # Pull latest code and reinstall
 gimmes version           # Show version and check for updates
 ```
 
+For CI/Docker/automation, use `gimmes init --headless`. Requires env vars: `KALSHI_PROD_API_KEY`, `KALSHI_PROD_PRIVATE_KEY_PATH` (path to an unencrypted PEM), and `KALSHI_PRIVATE_KEY_PASSWORD`.
+
 ### Mode & Status
 ```bash
 gimmes mode              # Show current mode and connection status
