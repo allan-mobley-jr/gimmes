@@ -289,10 +289,9 @@ def score(
             orderbook = await get_orderbook(client, ticker)
             qs = quick_score(market, config)
 
-            price = market.midpoint if market.midpoint is not None else market.last_price
             table = format_kv_table(market.title, [
                 ("Ticker", market.ticker),
-                ("Price", f"${price:.2f}"),
+                ("Price", f"${market.midpoint:.2f}"),
                 ("Volume 24h", str(market.volume_24h)),
                 ("Open Interest", str(market.open_interest)),
                 ("Spread", f"${market.spread:.2f}"),
