@@ -175,8 +175,13 @@ def mode() -> None:
 
         connected = False
         balance = None
+        has_credentials = (
+            bool(config.api_key)
+            and str(config.private_key_path) != "."
+            and config.private_key_path.exists()
+        )
 
-        if config.api_key and config.private_key_path.exists():
+        if has_credentials:
             try:
                 async with trading_context(config) as (client, broker, _db):
                     if broker:
@@ -190,6 +195,12 @@ def mode() -> None:
                 logging.getLogger("gimmes").debug("mode: connection check failed: %s", exc)
 
         format_mode_status(config.mode.value, connected, balance)
+
+        if not has_credentials:
+            console.print(
+                "\n[yellow]Not configured yet."
+                " Run [bold]gimmes init[/bold] to set up your API credentials.[/yellow]"
+            )
 
         if active:
             console.print(
