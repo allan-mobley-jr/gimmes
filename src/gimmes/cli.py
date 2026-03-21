@@ -281,6 +281,7 @@ def score(
     async def _score() -> None:
         from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import get_market, get_orderbook
+        from gimmes.reporting.formatter import format_kv_table
         from gimmes.strategy.scorer import quick_score
 
         async with KalshiClient(config) as client:
@@ -288,15 +289,17 @@ def score(
             orderbook = await get_orderbook(client, ticker)
             qs = quick_score(market, config)
 
-            console.print(f"\n[bold]{market.title}[/bold]")
-            console.print(f"Ticker: {market.ticker}")
-            console.print(f"Price: ${market.midpoint or market.last_price:.2f}")
-            console.print(f"Volume 24h: {market.volume_24h}")
-            console.print(f"Open Interest: {market.open_interest}")
-            console.print(f"Spread: ${market.spread:.2f}")
-            console.print(f"Best YES Bid: {orderbook.best_yes_bid}")
-            console.print(f"Best YES Ask: {orderbook.best_yes_ask}")
-            console.print(f"Quick Score: [bold]{qs:.0f}[/bold]/100")
+            table = format_kv_table(market.title, [
+                ("Ticker", market.ticker),
+                ("Price", f"${market.midpoint:.2f}"),
+                ("Volume 24h", str(market.volume_24h)),
+                ("Open Interest", str(market.open_interest)),
+                ("Spread", f"${market.spread:.2f}"),
+                ("Best YES Bid", str(orderbook.best_yes_bid)),
+                ("Best YES Ask", str(orderbook.best_yes_ask)),
+                ("Quick Score", f"[bold]{qs:.0f}[/bold]/100"),
+            ])
+            console.print(table)
 
     _run(_score())
 
@@ -311,6 +314,7 @@ def size(
 
     async def _size() -> None:
         from gimmes.kalshi.markets import get_market
+        from gimmes.reporting.formatter import format_kv_table
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
         from gimmes.strategy.kelly import kelly_fraction, position_size
@@ -341,16 +345,18 @@ def size(
             edge = edge_after_fees(price, probability, fees=fees)
             cost = contracts * price + fee
 
-            console.print(f"\n[bold]Position Sizing: {ticker}[/bold]")
-            console.print(f"Market Price: ${price:.2f}")
-            console.print(f"True Probability: {probability:.1%}")
-            console.print(f"Edge After Fees: {edge:.1%}")
-            console.print(f"Kelly Fraction: {kf:.4f}")
-            console.print(f"Bankroll: ${bankroll:,.2f}")
-            console.print(f"Balance:  ${balance:,.2f}")
-            console.print(f"Contracts: [bold]{contracts}[/bold]")
-            console.print(f"Est. Cost: ${cost:,.2f}")
-            console.print(f"Est. Fee: ${fee:,.2f}")
+            table = format_kv_table(f"Position Sizing: {ticker}", [
+                ("Market Price", f"${price:.2f}"),
+                ("True Probability", f"{probability:.1%}"),
+                ("Edge After Fees", f"{edge:.1%}"),
+                ("Kelly Fraction", f"{kf:.4f}"),
+                ("Bankroll", f"${bankroll:,.2f}"),
+                ("Balance", f"${balance:,.2f}"),
+                ("Contracts", f"[bold]{contracts}[/bold]"),
+                ("Est. Cost", f"${cost:,.2f}"),
+                ("Est. Fee", f"${fee:,.2f}"),
+            ])
+            console.print(table)
 
     _run(_size())
 
@@ -1045,7 +1051,7 @@ def candidates(
                 str(c.get("ticker", "")),
                 f"{c.get('gimme_score', 0):.0f}",
                 f"${c.get('market_price', 0):.2f}",
-                f"{c.get('model_probability', 0):.0%}",
+                f"{c.get('model_probability', 0):.1%}",
                 f"{c.get('edge', 0):+.1%}",
                 status,
                 str(c.get("scanned_at", ""))[:19],
@@ -1125,6 +1131,7 @@ def risk_check() -> None:
     config = load_config()
 
     async def _check() -> None:
+        from gimmes.reporting.formatter import format_kv_table
         from gimmes.risk.limits import (
             check_bankroll,
             check_daily_loss,
@@ -1171,15 +1178,17 @@ def risk_check() -> None:
             unrealized_pnl = sum(p.unrealized_pnl for p in pos)
             total_daily_pnl = daily_pnl + unrealized_pnl
 
-            console.print("\n[bold]Risk Check[/bold]")
-            console.print(f"Balance:            ${balance:,.2f}")
-            console.print(f"Bankroll:           ${bankroll:,.2f}")
-            console.print(f"Deployed Capital:   ${deployed:,.2f} / ${bankroll:,.2f}")
-            console.print(f"Open Positions:     {len(pos)}/{config.risk.max_open_positions}")
-            console.print(f"Daily Realized P&L: ${daily_pnl:,.2f}")
-            console.print(f"Unrealized P&L:     ${unrealized_pnl:,.2f}")
-            console.print(f"Total Daily P&L:    ${total_daily_pnl:,.2f}")
-            console.print(f"Price Trigger:      {config.risk.monitor_price_trigger_pp}pp")
+            table = format_kv_table("Risk Check", [
+                ("Balance", f"${balance:,.2f}"),
+                ("Bankroll", f"${bankroll:,.2f}"),
+                ("Deployed Capital", f"${deployed:,.2f} / ${bankroll:,.2f}"),
+                ("Open Positions", f"{len(pos)}/{config.risk.max_open_positions}"),
+                ("Daily Realized P&L", f"${daily_pnl:,.2f}"),
+                ("Unrealized P&L", f"${unrealized_pnl:,.2f}"),
+                ("Total Daily P&L", f"${total_daily_pnl:,.2f}"),
+                ("Price Trigger", f"{config.risk.monitor_price_trigger_pp}pp"),
+            ])
+            console.print(table)
 
             loss = check_daily_loss(total_daily_pnl, bankroll, config)
             count = check_position_count(len(pos), config)
@@ -1335,6 +1344,7 @@ def market_info(
     async def _info() -> None:
         from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import get_market, get_orderbook
+        from gimmes.reporting.formatter import format_kv_table
         from gimmes.risk.settlement import scan_settlement_rules
 
         async with KalshiClient(config) as client:
@@ -1342,27 +1352,27 @@ def market_info(
             orderbook = await get_orderbook(client, ticker)
             settlement = scan_settlement_rules(market.rules_primary)
 
-            console.print(f"\n[bold]{market.title}[/bold]")
-            console.print(f"Ticker: {market.ticker}")
-            console.print(f"Event: {market.event_ticker}")
-            console.print(f"Status: {market.status.value}")
-            console.print(f"\nYES Bid: ${market.yes_bid:.2f}  |  YES Ask: ${market.yes_ask:.2f}")
-            console.print(f"Last Price: ${market.last_price:.2f}  |  Spread: ${market.spread:.2f}")
-            console.print(f"Volume: {market.volume}  |  24h Vol: {market.volume_24h}")
-            console.print(f"Open Interest: {market.open_interest}")
-            console.print(f"Close Time: {market.close_time}")
-
-            console.print("\nOrderbook:")
-            console.print(f"  Best YES Bid: {orderbook.best_yes_bid}")
-            console.print(f"  Best YES Ask: {orderbook.best_yes_ask}")
-            console.print(f"  Depth (YES bids): {len(orderbook.yes_bids)} levels")
-
             risk_color = {"low": "green", "medium": "yellow", "high": "red"}.get(
                 settlement.risk_level, "white"
             )
-            console.print(
-                f"\nSettlement Risk: [{risk_color}]{settlement.summary}[/{risk_color}]"
-            )
+            table = format_kv_table(market.title, [
+                ("Ticker", market.ticker),
+                ("Event", market.event_ticker),
+                ("Status", market.status.value),
+                ("YES Bid", f"${market.yes_bid:.2f}"),
+                ("YES Ask", f"${market.yes_ask:.2f}"),
+                ("Last Price", f"${market.last_price:.2f}"),
+                ("Spread", f"${market.spread:.2f}"),
+                ("Volume", str(market.volume)),
+                ("Volume 24h", str(market.volume_24h)),
+                ("Open Interest", str(market.open_interest)),
+                ("Close Time", str(market.close_time)),
+                ("Best YES Bid", str(orderbook.best_yes_bid)),
+                ("Best YES Ask", str(orderbook.best_yes_ask)),
+                ("Depth (YES bids)", f"{len(orderbook.yes_bids)} levels"),
+                ("Settlement Risk", f"[{risk_color}]{settlement.summary}[/{risk_color}]"),
+            ])
+            console.print(table)
 
     _run(_info())
 
@@ -1522,13 +1532,13 @@ def position_context(
 
         console.print(f"\n[bold]Position Context: {ticker}[/bold]\n")
         console.print("[bold]--- OPEN TRADE ---[/bold]")
-        console.print(f"Opened:           {trade['timestamp']}")
+        console.print(f"Opened:           {str(trade['timestamp'])[:19]}")
         console.print(
             f"Side:             {trade['side'].upper()}"
             f"  Count: {trade['count']}  Entry: ${trade['price']:.2f}"
         )
         console.print(
-            f"Model Prob:       {trade['model_probability']:.0%}"
+            f"Model Prob:       {trade['model_probability']:.1%}"
             f"  Edge: {trade['edge']:+.1%}"
             f"  GimmeScore: {trade['gimme_score']:.0f}"
         )
@@ -1780,7 +1790,7 @@ def errors(
                     resolved = "[green]Yes[/green]" if row["resolved"] else "[red]No[/red]"
                     table.add_row(
                         str(row["id"]),
-                        row["timestamp"],
+                        str(row["timestamp"])[:19],
                         f"[{sev_color}]{sev}[/{sev_color}]",
                         row["category"],
                         row.get("error_code", ""),
