@@ -963,7 +963,10 @@ class TestChampionshipGate:
                 input="y\n750\n",
             )
 
-        mock_save.assert_called_once_with("risk.bankroll_real", 750.0)
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("risk.bankroll_real", 750.0)
+        assert "db_path" in kwargs
 
     def test_bankroll_set_shows_confirm_prompt(self) -> None:
         """When bankroll_real is already set, user can keep it by pressing Enter."""
@@ -999,7 +1002,10 @@ class TestChampionshipGate:
                 input="y\n\n500\n",
             )
 
-        mock_save.assert_called_once_with("risk.bankroll_real", 500.0)
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("risk.bankroll_real", 500.0)
+        assert "db_path" in kwargs
         assert "must set a bankroll" in result.output.lower()
 
 

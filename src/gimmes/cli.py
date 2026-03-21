@@ -2297,7 +2297,7 @@ def _championship_gate(config: GimmesConfig) -> None:
 
     if value != current_bankroll:
         try:
-            save_config_value("risk.bankroll_real", value)
+            save_config_value("risk.bankroll_real", value, db_path=config.db_path)
         except Exception as exc:
             console.print(
                 f"[red]Error: Could not save championship bankroll: {exc}[/red]"
