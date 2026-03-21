@@ -115,7 +115,7 @@ mkdir -p "$GIMMES_HOME"
 # Recover from interrupted clone (directory exists but isn't a git repo)
 if [ -d "$REPO_DIR" ] && [ ! -d "$REPO_DIR/.git" ]; then
     warn "Found incomplete installation at $REPO_DIR. Removing..."
-    if ! rm -rf "$REPO_DIR"; then
+    if ! rm -rf -- "$REPO_DIR"; then
         err "Could not remove $REPO_DIR. Remove it manually and re-run the installer."
         exit 1
     fi
