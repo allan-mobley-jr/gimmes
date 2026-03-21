@@ -140,9 +140,34 @@ SECTION_KEYS = [key for key, _ in CONFIG_SECTIONS]
 # ---------------------------------------------------------------------------
 
 
-def _format_current(value: object, setting: Setting, *, full: bool = False) -> str:
+def _format_list_grouped(values: list[object], categories: dict[str, list[str]]) -> str:
+    """Format a list with items grouped under category headings."""
+    value_set = {str(v) for v in values}
+    parts: list[str] = []
+    categorised: set[str] = set()
+    for cat_name, cat_tickers in categories.items():
+        present = [t for t in cat_tickers if t in value_set]
+        if not present:
+            continue
+        categorised.update(present)
+        parts.append(f"\n  {cat_name} ({len(present)})\n    {', '.join(present)}")
+    other = [str(v) for v in values if str(v) not in categorised]
+    if other:
+        parts.append(f"\n  Other ({len(other)})\n    {', '.join(other)}")
+    return "".join(parts)
+
+
+def _format_current(
+    value: object,
+    setting: Setting,
+    *,
+    full: bool = False,
+    categories: dict[str, list[str]] | None = None,
+) -> str:
     """Format a value for display."""
     if setting.type == "list" and isinstance(value, list):
+        if full and categories:
+            return _format_list_grouped(value, categories)
         if full:
             return "\n  " + "\n  ".join(str(v) for v in value)
         if len(value) > 6:

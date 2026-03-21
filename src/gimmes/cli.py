@@ -2187,7 +2187,7 @@ def config_get(
     """Show current configuration value(s)."""
     from rich.table import Table
 
-    from gimmes.config import _load_config_from_db
+    from gimmes.config import SERIES_CATEGORIES, _load_config_from_db
     from gimmes.config_wizard import (
         _format_current,
         _get_current_value,
@@ -2206,7 +2206,8 @@ def config_get(
             raise typer.Exit(1) from None
 
         current = _get_current_value(overrides, key, setting.default)
-        formatted = _format_current(current, setting, full=True)
+        categories = SERIES_CATEGORIES if key == "scanner.series" else None
+        formatted = _format_current(current, setting, full=True, categories=categories)
         console.print(f"[cyan]{key}[/cyan]: [bold]{formatted}[/bold]")
         console.print(f"[dim]Default: {_format_current(setting.default, setting)}[/dim]")
         console.print(f"[dim]{setting.description}[/dim]")

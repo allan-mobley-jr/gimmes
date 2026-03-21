@@ -253,6 +253,29 @@ class TestFormatCurrent:
         s = Setting(key="a.b", name="", description="", type="int", default=0)
         assert _format_current(75, s) == "75"
 
+    def test_format_list_full_with_categories(self) -> None:
+        s = Setting(key="a.b", name="", description="", type="list", default=[])
+        cats = {"CatA": ["X", "Y"], "CatB": ["Z"]}
+        result = _format_current(["X", "Y", "Z"], s, full=True, categories=cats)
+        assert "CatA (2)" in result
+        assert "CatB (1)" in result
+        assert "X, Y" in result
+
+    def test_format_list_full_categories_other_group(self) -> None:
+        s = Setting(key="a.b", name="", description="", type="list", default=[])
+        cats = {"CatA": ["X"]}
+        result = _format_current(["X", "CUSTOM"], s, full=True, categories=cats)
+        assert "CatA (1)" in result
+        assert "Other (1)" in result
+        assert "CUSTOM" in result
+
+    def test_format_list_full_categories_omits_empty(self) -> None:
+        s = Setting(key="a.b", name="", description="", type="list", default=[])
+        cats = {"CatA": ["X"], "CatB": ["Y"]}
+        result = _format_current(["X"], s, full=True, categories=cats)
+        assert "CatA" in result
+        assert "CatB" not in result
+
 
 # ---------------------------------------------------------------------------
 # Scoring weight validation
