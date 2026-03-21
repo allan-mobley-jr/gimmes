@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
@@ -92,8 +92,11 @@ async def api_positions() -> list[PositionItem]:
 
 
 @app.get("/api/trades")
-async def api_trades() -> list[TradeItem]:
-    return await data.get_trades(_db_path)
+async def api_trades(
+    before: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> list[TradeItem]:
+    return await data.get_trades(_db_path, limit=limit, before_id=before)
 
 
 @app.get("/api/candidates")
@@ -112,8 +115,11 @@ async def api_risk() -> RiskResponse:
 
 
 @app.get("/api/activity")
-async def api_activity() -> list[ActivityItem]:
-    return await data.get_activity(_db_path)
+async def api_activity(
+    before: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> list[ActivityItem]:
+    return await data.get_activity(_db_path, limit=limit, before_id=before)
 
 
 @app.get("/api/errors")
@@ -195,6 +201,9 @@ async def api_stream() -> StreamingResponse:
     async def event_generator():
         sse_logger = logging.getLogger("gimmes.clubhouse.sse")
         last_fingerprint = ""
+        last_trade_id = 0
+        last_activity_id = 0
+        watermarks_initialized = False
         while True:
             try:
                 fp = await data.get_change_fingerprint(_db_path)
@@ -205,8 +214,6 @@ async def api_stream() -> StreamingResponse:
                     portfolio = await data.get_portfolio(_db_path)
                     positions = await data.get_positions(_db_path)
                     risk = await data.get_risk(_db_path)
-                    activity = await data.get_activity(_db_path)
-                    trades = await data.get_trades(_db_path)
                     candidates = await data.get_candidates(_db_path, limit=10)
                     errors = await data.get_errors_data(_db_path, limit=10)
                     recs = await data.get_recommendations_data(_db_path, limit=10)
@@ -219,18 +226,58 @@ async def api_stream() -> StreamingResponse:
                     # Fetch metrics after snapshot write (includes new snapshot)
                     metrics = await data.get_metrics(_db_path)
 
-                    payload = json.dumps({
+                    payload_dict: dict = {
                         "status": status.model_dump(),
                         "portfolio": portfolio.model_dump(),
                         "positions": [p.model_dump() for p in positions],
                         "risk": risk.model_dump(),
-                        "activity": [a.model_dump() for a in activity],
-                        "trades": [t.model_dump() for t in trades],
                         "candidates": [c.model_dump() for c in candidates],
                         "metrics": metrics.model_dump(),
                         "errors": [e.model_dump() for e in errors],
                         "recommendations": [r.model_dump() for r in recs],
-                    })
+                    }
+
+                    if not watermarks_initialized:
+                        # First push: initialize watermarks from current max IDs.
+                        # Client gets initial data via REST, so skip activity/trades.
+                        try:
+                            init_trades = await data.get_trades(
+                                _db_path, limit=1,
+                            )
+                            if init_trades:
+                                last_trade_id = init_trades[0].id
+                            init_activity = await data.get_activity(
+                                _db_path, limit=1,
+                            )
+                            if init_activity:
+                                last_activity_id = init_activity[0].id
+                            watermarks_initialized = True
+                        except Exception:
+                            sse_logger.warning(
+                                "SSE watermark init failed, will retry",
+                                exc_info=True,
+                            )
+                    else:
+                        # Subsequent pushes: send only new items since watermark
+                        new_trades = await data.get_trades(
+                            _db_path, since_id=last_trade_id,
+                        )
+                        if new_trades:
+                            payload_dict["new_trades"] = [
+                                t.model_dump() for t in new_trades
+                            ]
+                            last_trade_id = new_trades[0].id
+
+                        new_activity = await data.get_activity(
+                            _db_path, since_id=last_activity_id,
+                        )
+                        if new_activity:
+                            payload_dict["new_activity"] = [
+                                a.model_dump() for a in new_activity
+                            ]
+                            last_activity_id = new_activity[0].id
+
+                    payload = json.dumps(payload_dict)
 
                     yield f"data: {payload}\n\n"
             except asyncio.CancelledError:

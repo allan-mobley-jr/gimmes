@@ -142,8 +142,8 @@ class TestDataLayer:
         assert trades[0].ticker == "TEST-YES"
         assert trades[0].action == "open"
 
-    async def test_get_trades_excludes_yesterday(self, db_path: Path) -> None:
-        """Daily-scoped query excludes trades from previous days (#256)."""
+    async def test_get_trades_includes_historical(self, db_path: Path) -> None:
+        """Trades from previous days are included (no daily scope)."""
         async with Database(db_path) as db:
             await db.conn.execute(
                 """INSERT INTO trades (ticker, action, side, count, price,
@@ -154,8 +154,77 @@ class TestDataLayer:
             )
             await db.conn.commit()
         trades = await get_trades(db_path)
-        assert len(trades) == 1
-        assert trades[0].ticker == "TEST-YES"
+        tickers = [t.ticker for t in trades]
+        assert "TEST-YES" in tickers
+        assert "OLD-MKT" in tickers
+
+    async def test_get_trades_before_id(self, db_path: Path) -> None:
+        """before_id paginates through results in DESC order."""
+        async with Database(db_path) as db:
+            for i in range(4):
+                await db.conn.execute(
+                    f"""INSERT INTO trades (ticker, action, side, count, price,
+                       model_probability, gimme_score, edge, rationale, agent)
+                       VALUES ('PAGE-{i}', 'open', 'yes', 1, 0.50, 0.80, 70, 0.10,
+                        'test', 'closer')"""
+                )
+            await db.conn.commit()
+        # 5 total trades: TEST-YES + PAGE-0..3
+        page1 = await get_trades(db_path, limit=3)
+        assert len(page1) == 3
+        assert page1[0].id > page1[1].id > page1[2].id
+        page2 = await get_trades(db_path, limit=3, before_id=page1[-1].id)
+        assert len(page2) == 2  # 5 - 3 = 2 remaining
+        assert page2[0].id < page1[-1].id
+
+    async def test_get_trades_since_id(self, db_path: Path) -> None:
+        """since_id returns newly inserted items."""
+        trades = await get_trades(db_path)
+        max_id = trades[0].id
+        newer = await get_trades(db_path, since_id=max_id)
+        assert newer == []
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count, price,
+                   model_probability, gimme_score, edge, rationale, agent)
+                   VALUES ('NEW-MKT', 'open', 'yes', 1, 0.50, 0.80, 70, 0.10,
+                    'new', 'closer')"""
+            )
+            await db.conn.commit()
+        newer = await get_trades(db_path, since_id=max_id)
+        assert len(newer) == 1
+        assert newer[0].ticker == "NEW-MKT"
+        assert newer[0].id > max_id
+
+    async def test_get_trades_since_id_ignores_limit(self, db_path: Path) -> None:
+        """since_id returns all new items regardless of limit."""
+        trades = await get_trades(db_path)
+        max_id = trades[0].id
+        async with Database(db_path) as db:
+            for i in range(5):
+                await db.conn.execute(
+                    f"""INSERT INTO trades (ticker, action, side, count, price,
+                       model_probability, gimme_score, edge, rationale, agent)
+                       VALUES ('DELTA-{i}', 'open', 'yes', 1, 0.50, 0.80, 70, 0.10,
+                        'test', 'closer')"""
+                )
+            await db.conn.commit()
+        newer = await get_trades(db_path, since_id=max_id, limit=2)
+        assert len(newer) == 5
+
+    async def test_get_trades_respects_limit(self, db_path: Path) -> None:
+        """Limit parameter caps the result set."""
+        async with Database(db_path) as db:
+            for i in range(5):
+                await db.conn.execute(
+                    f"""INSERT INTO trades (ticker, action, side, count, price,
+                       model_probability, gimme_score, edge, rationale, agent)
+                       VALUES ('BULK-{i}', 'open', 'yes', 1, 0.50, 0.80, 70, 0.10,
+                        'test', 'closer')"""
+                )
+            await db.conn.commit()
+        trades = await get_trades(db_path, limit=3)
+        assert len(trades) == 3
 
     async def test_get_candidates(self, db_path: Path) -> None:
         candidates = await get_candidates(db_path)
@@ -236,8 +305,8 @@ class TestDataLayer:
         assert activity[0].agent == "scout"
         assert activity[0].cycle == 1
 
-    async def test_get_activity_excludes_yesterday(self, db_path: Path) -> None:
-        """Daily-scoped query excludes activity from previous days."""
+    async def test_get_activity_includes_historical(self, db_path: Path) -> None:
+        """Activity from previous days is included (no daily scope)."""
         async with Database(db_path) as db:
             await db.conn.execute(
                 """INSERT INTO activity_log (cycle, agent, phase, message, timestamp)
@@ -245,8 +314,56 @@ class TestDataLayer:
             )
             await db.conn.commit()
         activity = await get_activity(db_path)
-        assert len(activity) == 1
-        assert activity[0].message == "Found 3 candidates"
+        assert len(activity) == 2
+        messages = [a.message for a in activity]
+        assert "Found 3 candidates" in messages
+        assert "old entry" in messages
+
+    async def test_get_activity_before_id(self, db_path: Path) -> None:
+        """before_id paginates through results in DESC order."""
+        async with Database(db_path) as db:
+            for i in range(4):
+                await db.conn.execute(
+                    f"""INSERT INTO activity_log (cycle, agent, phase, message)
+                       VALUES ({i}, 'scout', 'start', 'Page entry {i}')"""
+                )
+            await db.conn.commit()
+        # 5 total: fixture + 4 new
+        page1 = await get_activity(db_path, limit=3)
+        assert len(page1) == 3
+        assert page1[0].id > page1[1].id > page1[2].id
+        page2 = await get_activity(db_path, limit=3, before_id=page1[-1].id)
+        assert len(page2) == 2
+        assert page2[0].id < page1[-1].id
+
+    async def test_get_activity_since_id(self, db_path: Path) -> None:
+        """since_id returns newly inserted items."""
+        activity = await get_activity(db_path)
+        max_id = activity[0].id
+        newer = await get_activity(db_path, since_id=max_id)
+        assert newer == []
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO activity_log (cycle, agent, phase, message)
+                   VALUES (2, 'closer', 'complete', 'New activity')"""
+            )
+            await db.conn.commit()
+        newer = await get_activity(db_path, since_id=max_id)
+        assert len(newer) == 1
+        assert newer[0].message == "New activity"
+        assert newer[0].id > max_id
+
+    async def test_get_activity_respects_limit(self, db_path: Path) -> None:
+        """Limit parameter caps the result set."""
+        async with Database(db_path) as db:
+            for i in range(5):
+                await db.conn.execute(
+                    f"""INSERT INTO activity_log (cycle, agent, phase, message)
+                       VALUES ({i}, 'scout', 'start', 'Entry {i}')"""
+                )
+            await db.conn.commit()
+        activity = await get_activity(db_path, limit=3)
+        assert len(activity) == 3
 
     async def test_get_errors_data(self, db_path: Path) -> None:
         errors = await get_errors_data(db_path)

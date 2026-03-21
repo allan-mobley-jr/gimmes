@@ -258,10 +258,11 @@
                     <option value="complete">complete</option>
                 </select>
             </h2>
-            <div id="activity-feed" class="max-h-[200px] overflow-y-auto scrollbar-thin space-y-1.5">
+            <div id="activity-feed" class="max-h-[400px] overflow-y-auto scrollbar-thin space-y-1.5">
                 <div id="activity-empty" class="flex items-center justify-center py-10 text-slate-500 text-sm">
                     No active loop -- start one with <code class="ml-1.5 px-2 py-0.5 bg-slate-700/50 rounded text-slate-400 font-mono text-xs">gimmes driving_range</code>
                 </div>
+                <div id="activity-sentinel" class="h-1"></div>
             </div>
         </div>
 
@@ -288,7 +289,7 @@
             <!-- Recent Trades -->
             <div class="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5">
                 <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
-                    Daily Log
+                    Trade Log
                     <select id="trade-filter" onchange="changeTradeFilter(this.value)"
                         aria-label="Filter daily log entries"
                         class="ml-auto text-xs text-slate-400 bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 font-normal normal-case tracking-normal focus:outline-none focus:border-slate-500">
@@ -297,7 +298,7 @@
                         <option value="skips">Skips</option>
                     </select>
                 </h2>
-                <div class="max-h-[400px] overflow-x-auto overflow-y-auto scrollbar-thin">
+                <div id="trades-scroll" class="max-h-[400px] overflow-x-auto overflow-y-auto scrollbar-thin">
                     <table class="w-full text-sm">
                         <thead>
                             <tr class="text-xs uppercase tracking-wider text-slate-500 border-b border-slate-700/50">
@@ -313,10 +314,11 @@
                         </thead>
                         <tbody id="trades-body" class="font-mono">
                             <tr>
-                                <td colspan="8" class="text-center text-slate-500 py-8">No trades today</td>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No trades yet</td>
                             </tr>
                         </tbody>
                     </table>
+                    <div id="trades-sentinel" class="h-1"></div>
                 </div>
             </div>
 
@@ -416,14 +418,28 @@
         let tradeFilter = 'trades';
         let activityAgentFilter = 'all';
         let activityPhaseFilter = 'all';
-        let lastActivity = null;
-        const tradeEmptyMsgs = { all: 'No entries today', trades: 'No trades today', skips: 'No skips today' };
-        let lastTrades = null;
+        const tradeEmptyMsgs = { all: 'No entries', trades: 'No trades', skips: 'No skips' };
         let positionSideFilter = 'all';
         let lastPositions = null;
         let evtSource = null;
         let modalTriggerEl = null;
         const tickerTitles = {};
+
+        // Paginated state for activity
+        let activityItems = [];
+        let activitySeenIds = new Set();
+        let activityOldestId = null;
+        let activityLoading = false;
+        let activityExhausted = false;
+        let activityObserver = null;
+
+        // Paginated state for trades
+        let tradeItems = [];
+        let tradeSeenIds = new Set();
+        let tradeOldestId = null;
+        let tradeLoading = false;
+        let tradeExhausted = false;
+        let tradesObserver = null;
 
         // ------------------------------------------------------------------
         // Formatting helpers
@@ -615,8 +631,8 @@
         }
 
         function findRationaleForTicker(ticker) {
-            if (!lastTrades) return '';
-            const match = lastTrades.find(function(t) { return t.ticker === ticker && t.rationale; });
+            if (!tradeItems.length) return '';
+            const match = tradeItems.find(function(t) { return t.ticker === ticker && t.rationale; });
             return match ? match.rationale : '';
         }
 
@@ -774,10 +790,10 @@
                 updateChart(data.metrics);
                 updatePerformance(data.metrics);
             }
-            if (data.activity) updateActivity(data.activity);
+            if (data.new_activity && data.new_activity.length > 0) prependActivity(data.new_activity);
+            if (data.new_trades && data.new_trades.length > 0) prependTrades(data.new_trades);
             if (data.errors) updateErrors(data.errors);
             if (data.recommendations) updateRecommendations(data.recommendations);
-            if (data.trades) updateTrades(data.trades);
             if (data.candidates) updateCandidates(data.candidates);
             if (data.config) updateConfig(data.config);
             if (data.status) updateStatus(data.status);
@@ -941,22 +957,22 @@
         function changeActivityFilter() {
             activityAgentFilter = document.getElementById('activity-agent-filter').value;
             activityPhaseFilter = document.getElementById('activity-phase-filter').value;
-            if (lastActivity) updateActivity(lastActivity);
+            renderActivity();
         }
 
-        function updateActivity(activity) {
-            lastActivity = activity;
+        function renderActivity() {
             const feed = document.getElementById('activity-feed');
             const emptyEl = document.getElementById('activity-empty');
 
-            if (!activity || activity.length === 0) {
+            if (activityItems.length === 0) {
                 if (emptyEl) emptyEl.style.display = 'flex';
                 return;
             }
 
-            const visible = filterActivity(activity);
+            const visible = filterActivity(activityItems);
             if (visible.length === 0) {
-                feed.innerHTML = '<div class="flex items-center justify-center py-10 text-slate-500 text-sm">No matching activity</div>';
+                feed.innerHTML = '<div class="flex items-center justify-center py-10 text-slate-500 text-sm">No matching activity</div>'
+                    + '<div id="activity-sentinel" class="h-1"></div>';
                 return;
             }
 
@@ -969,7 +985,46 @@
                     + '<span class="text-slate-300 break-words">' + escapeHtml(entry.message || '') + '</span>'
                     + '</div>';
             });
+            html += '<div id="activity-sentinel" class="h-1"></div>';
             feed.innerHTML = html;
+            if (activityObserver) activityObserver.disconnect();
+            activityObserver = setupScrollObserver('activity-sentinel', loadMoreActivity);
+        }
+
+        function prependActivity(newItems) {
+            var toAdd = [];
+            newItems.forEach(function(a) {
+                if (!activitySeenIds.has(a.id)) {
+                    activitySeenIds.add(a.id);
+                    toAdd.push(a);
+                }
+            });
+            if (toAdd.length === 0) return;
+            activityItems = toAdd.concat(activityItems);
+            renderActivity();
+        }
+
+        async function loadMoreActivity() {
+            if (activityLoading || activityExhausted) return;
+            activityLoading = true;
+            var url = '/api/activity?limit=50';
+            if (activityOldestId !== null) url += '&before=' + activityOldestId;
+            var items = await fetchEndpoint(url);
+            activityLoading = false;
+            if (items === null) return;
+            if (items.length === 0) {
+                activityExhausted = true;
+                return;
+            }
+            items.forEach(function(a) {
+                if (!activitySeenIds.has(a.id)) {
+                    activitySeenIds.add(a.id);
+                    activityItems.push(a);
+                }
+            });
+            activityOldestId = items[items.length - 1].id;
+            if (items.length < 50) activityExhausted = true;
+            renderActivity();
         }
 
         function updateErrors(errors) {
@@ -1020,7 +1075,7 @@
         }
 
         function tradeEmptyRow() {
-            const msg = tradeEmptyMsgs[tradeFilter] || 'No entries today';
+            const msg = tradeEmptyMsgs[tradeFilter] || 'No entries';
             return '<tr><td colspan="8" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
         }
 
@@ -1034,14 +1089,13 @@
             return trades.filter(function(t) { return !isSkipTrade(t); });
         }
 
-        function updateTrades(trades) {
-            lastTrades = trades;
+        function renderTrades() {
             const tbody = document.getElementById('trades-body');
-            if (!trades || trades.length === 0) {
+            if (tradeItems.length === 0) {
                 tbody.innerHTML = tradeEmptyRow();
                 return;
             }
-            const visible = filterTrades(trades);
+            const visible = filterTrades(tradeItems);
             if (visible.length === 0) {
                 tbody.innerHTML = tradeEmptyRow();
                 return;
@@ -1061,6 +1115,49 @@
             });
             tbody.innerHTML = html;
             attachRowClickHandlers(tbody, 'data-trade-idx', visible, 'Trade Detail', buildTradeModalBody);
+            if (tradesObserver) tradesObserver.disconnect();
+            tradesObserver = setupScrollObserver('trades-sentinel', loadMoreTrades);
+        }
+
+        function prependTrades(newItems) {
+            var toAdd = [];
+            newItems.forEach(function(t) {
+                if (!tradeSeenIds.has(t.id)) {
+                    tradeSeenIds.add(t.id);
+                    toAdd.push(t);
+                }
+            });
+            if (toAdd.length === 0) return;
+            var container = document.getElementById('trades-scroll');
+            var prevScrollTop = container.scrollTop;
+            var prevScrollHeight = container.scrollHeight;
+            tradeItems = toAdd.concat(tradeItems);
+            renderTrades();
+            var heightDelta = container.scrollHeight - prevScrollHeight;
+            container.scrollTop = prevScrollTop + heightDelta;
+        }
+
+        async function loadMoreTrades() {
+            if (tradeLoading || tradeExhausted) return;
+            tradeLoading = true;
+            var url = '/api/trades?limit=50';
+            if (tradeOldestId !== null) url += '&before=' + tradeOldestId;
+            var items = await fetchEndpoint(url);
+            tradeLoading = false;
+            if (items === null) return;
+            if (items.length === 0) {
+                tradeExhausted = true;
+                return;
+            }
+            items.forEach(function(t) {
+                if (!tradeSeenIds.has(t.id)) {
+                    tradeSeenIds.add(t.id);
+                    tradeItems.push(t);
+                }
+            });
+            tradeOldestId = items[items.length - 1].id;
+            if (items.length < 50) tradeExhausted = true;
+            renderTrades();
         }
 
         function updateCandidates(candidates) {
@@ -1174,7 +1271,7 @@
 
         function changeTradeFilter(value) {
             tradeFilter = value;
-            if (lastTrades) updateTrades(lastTrades);
+            renderTrades();
         }
 
         function cyclePositionFilter() {
@@ -1301,6 +1398,20 @@
         }
 
         // ------------------------------------------------------------------
+        // Infinite scroll observer
+        // ------------------------------------------------------------------
+        function setupScrollObserver(sentinelId, loadMore) {
+            var sentinel = document.getElementById(sentinelId);
+            if (!sentinel) return null;
+            var root = sentinel.closest('.overflow-y-auto');
+            var observer = new IntersectionObserver(function(entries) {
+                if (entries[0].isIntersecting) loadMore();
+            }, { root: root, threshold: 0.1 });
+            observer.observe(sentinel);
+            return observer;
+        }
+
+        // ------------------------------------------------------------------
         // SSE Connection
         // ------------------------------------------------------------------
         function connectSSE() {
@@ -1338,10 +1449,13 @@
         async function fetchEndpoint(url) {
             try {
                 const resp = await fetch(url);
-                if (!resp.ok) return null;
+                if (!resp.ok) {
+                    console.error('Fetch ' + url + ' failed: HTTP ' + resp.status);
+                    return null;
+                }
                 return await resp.json();
             } catch (e) {
-                console.warn('Failed to fetch ' + url + ':', e);
+                console.error('Fetch ' + url + ' error:', e);
                 return null;
             }
         }
@@ -1352,12 +1466,14 @@
                 { url: '/api/positions',  key: 'positions' },
                 { url: '/api/risk',       key: 'risk' },
                 { url: '/api/metrics',    key: 'metrics' },
-                { url: '/api/activity',   key: 'activity' },
-                { url: '/api/trades',     key: 'trades' },
                 { url: '/api/candidates', key: 'candidates' },
                 { url: '/api/config',     key: 'config' },
                 { url: '/api/status',     key: 'status' },
             ];
+
+            // Fetch paginated panels separately
+            var activityPromise = fetchEndpoint('/api/activity?limit=50');
+            var tradesPromise = fetchEndpoint('/api/trades?limit=50');
 
             const results = await Promise.all(
                 endpoints.map(function(ep) {
@@ -1375,6 +1491,30 @@
             if (Object.keys(merged).length > 0) {
                 updateDashboard(merged);
             }
+
+            // Initialize paginated activity
+            var actData = await activityPromise;
+            if (actData && actData.length > 0) {
+                actData.forEach(function(a) {
+                    activitySeenIds.add(a.id);
+                    activityItems.push(a);
+                });
+                activityOldestId = actData[actData.length - 1].id;
+                if (actData.length < 50) activityExhausted = true;
+                renderActivity();
+            }
+
+            // Initialize paginated trades
+            var trData = await tradesPromise;
+            if (trData && trData.length > 0) {
+                trData.forEach(function(t) {
+                    tradeSeenIds.add(t.id);
+                    tradeItems.push(t);
+                });
+                tradeOldestId = trData[trData.length - 1].id;
+                if (trData.length < 50) tradeExhausted = true;
+                renderTrades();
+            }
         }
 
         // ------------------------------------------------------------------
@@ -1384,6 +1524,8 @@
             initChart();
             initialLoad();
             connectSSE();
+            activityObserver = setupScrollObserver('activity-sentinel', loadMoreActivity);
+            tradesObserver = setupScrollObserver('trades-sentinel', loadMoreTrades);
             document.getElementById('detail-modal-backdrop').addEventListener('click', closeModal);
             document.getElementById('detail-modal-close').addEventListener('click', closeModal);
             document.addEventListener('keydown', handleModalKeydown);
