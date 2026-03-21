@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 from gimmes.config import (
+    DEFAULT_SERIES,
     _load_config_from_db,
     config_keys_in_db,
     load_config,
@@ -190,6 +191,32 @@ class TestLoadConfig:
         config = load_config(db_path=db)
         assert config.strategy.gimme_threshold == 80
         assert config.strategy.min_market_price == 0.55  # default
+
+
+class TestDefaultSeries:
+    def test_series_defaults_to_curated_list_when_no_db(self, tmp_path):
+        config = load_config(db_path=tmp_path / "nonexistent.db")
+        assert config.scanner.series == DEFAULT_SERIES
+
+    def test_series_defaults_to_curated_list_with_empty_db(self, tmp_path):
+        db = tmp_path / "test.db"
+        _create_config_db(db)
+        config = load_config(db_path=db)
+        assert config.scanner.series == DEFAULT_SERIES
+
+    def test_explicit_series_overrides_default(self, tmp_path):
+        db = tmp_path / "test.db"
+        _create_config_db(db)
+        save_config_value("scanner.series", ["KXGDP"], db_path=db)
+        config = load_config(db_path=db)
+        assert config.scanner.series == ["KXGDP"]
+
+    def test_explicit_empty_series_overrides_default(self, tmp_path):
+        db = tmp_path / "test.db"
+        _create_config_db(db)
+        save_config_value("scanner.series", [], db_path=db)
+        config = load_config(db_path=db)
+        assert config.scanner.series == []
 
 
 class TestMonitorPriceTrigger:

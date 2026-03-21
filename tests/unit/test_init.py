@@ -12,8 +12,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from gimmes.config import DEFAULT_SERIES
 from gimmes.init import (
-    DEFAULT_SERIES,
     _clear_shell_history,
     _encrypt_private_key,
     _find_downloaded_key,

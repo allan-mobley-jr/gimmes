@@ -25,6 +25,33 @@ load_dotenv(dotenv_path=GIMMES_HOME / ".env")
 PROD_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 PROD_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 
+# Curated series watchlist — used as the Pydantic default for ScannerConfig.series
+# and seeded into the database on first init.
+DEFAULT_SERIES = [
+    # Inflation & CPI
+    "KXCPI", "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
+    "KXECONSTATCPI", "KXECONSTATCPICORE", "KXECONSTATCPIYOY", "KXECONSTATCORECPIYOY",
+    "KXPCECORE",
+    # GDP & Growth
+    "KXGDP", "KXGDPNOM", "KXGDPUSMAX",
+    # Fed & Rates
+    "KXFED", "KXFEDDECISION", "KXFEDCOMBO", "KXRATECUTCOUNT", "KXFEDCHGCOUNT",
+    "KXFEDMEET", "KXEMERCUTS", "KXFEDDISSENT",
+    # Employment
+    "KXJOBLESSCLAIMS", "KXUE", "KXU3", "KXPAYROLLS", "KXADP",
+    # Housing & Mortgage
+    "KXMORTGAGERATE", "KXHOUSINGSTART", "KXEHSALES", "KXNHSALES",
+    # Other Econ
+    "KXISMPMI", "KXRECSSNBER", "KXEFFTARIFF", "KXTARIFFREVENUE",
+    # Financials — S&P, Nasdaq, Treasuries
+    "KXINX", "KXINXU", "KXINXMAXY", "KXINXMINY",
+    "KXNASDAQ100", "KXNASDAQ100U", "KXNASDAQ100Y",
+    "KXUSTYLD", "KXTNOTEW", "KX10Y2Y", "KX10Y3M", "KX3MTBILL",
+    "KXGOLDW", "KXSILVERW", "KXWTI", "KXWTIMAX",
+    # Politics — high-level
+    "CONTROLH", "CONTROLS",
+]
+
 
 class Mode(StrEnum):
     DRIVING_RANGE = "driving_range"
@@ -434,7 +461,7 @@ class ScannerConfig(BaseModel):
         },
     )
     series: list[str] = Field(
-        default_factory=list,
+        default_factory=lambda: list(DEFAULT_SERIES),
         json_schema_extra={
             "display_name": "Series Watchlist",
             "description": (

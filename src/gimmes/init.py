@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from rich.console import Console
 
-from gimmes.config import GIMMES_HOME, config_keys_in_db, save_config_value
+from gimmes.config import DEFAULT_SERIES, GIMMES_HOME, config_keys_in_db, save_config_value
 
 console = Console()
 
@@ -37,32 +37,6 @@ KALSHI_PROD_PRIVATE_KEY_PATH=~/.gimmes/keys/kalshi_private.pem
 # Password for encrypted private key (set automatically by gimmes init)
 # KALSHI_PRIVATE_KEY_PASSWORD=
 """
-
-# Curated series watchlist seeded into the database on first init.
-DEFAULT_SERIES = [
-    # Inflation & CPI
-    "KXCPI", "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
-    "KXECONSTATCPI", "KXECONSTATCPICORE", "KXECONSTATCPIYOY", "KXECONSTATCORECPIYOY",
-    "KXPCECORE",
-    # GDP & Growth
-    "KXGDP", "KXGDPNOM", "KXGDPUSMAX",
-    # Fed & Rates
-    "KXFED", "KXFEDDECISION", "KXFEDCOMBO", "KXRATECUTCOUNT", "KXFEDCHGCOUNT",
-    "KXFEDMEET", "KXEMERCUTS", "KXFEDDISSENT",
-    # Employment
-    "KXJOBLESSCLAIMS", "KXUE", "KXU3", "KXPAYROLLS", "KXADP",
-    # Housing & Mortgage
-    "KXMORTGAGERATE", "KXHOUSINGSTART", "KXEHSALES", "KXNHSALES",
-    # Other Econ
-    "KXISMPMI", "KXRECSSNBER", "KXEFFTARIFF", "KXTARIFFREVENUE",
-    # Financials — S&P, Nasdaq, Treasuries
-    "KXINX", "KXINXU", "KXINXMAXY", "KXINXMINY",
-    "KXNASDAQ100", "KXNASDAQ100U", "KXNASDAQ100Y",
-    "KXUSTYLD", "KXTNOTEW", "KX10Y2Y", "KX10Y3M", "KX3MTBILL",
-    "KXGOLDW", "KXSILVERW", "KXWTI", "KXWTIMAX",
-    # Politics — high-level
-    "CONTROLH", "CONTROLS",
-]
 
 KEYS_DIR = GIMMES_HOME / "keys"
 PEM_FILENAME = "kalshi_private.pem"
