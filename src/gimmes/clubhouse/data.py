@@ -211,17 +211,47 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
     return items
 
 
-async def get_trades(db_path: Path, limit: int = 500) -> list[TradeItem]:
-    """Get trade decisions for the current day."""
+async def get_trades(
+    db_path: Path,
+    *,
+    limit: int = 50,
+    before_id: int | None = None,
+    since_id: int | None = None,
+) -> list[TradeItem]:
+    """Get trade decisions with cursor-based pagination.
+
+    Args:
+        before_id: Fetch older entries (id < before_id). Used for scroll-down.
+        since_id: Fetch newer entries (id > since_id). Used for SSE deltas.
+        limit: Page size (ignored when since_id is set).
+
+    Raises:
+        ValueError: If both before_id and since_id are provided.
+    """
+    if before_id is not None and since_id is not None:
+        raise ValueError("before_id and since_id are mutually exclusive")
+
     items: list[TradeItem] = []
 
     try:
         async with _connect(db_path) as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM trades WHERE date(timestamp) = date('now')"
-                " ORDER BY timestamp DESC LIMIT ?",
-                (limit,),
-            )
+            if since_id is not None:
+                cursor = await conn.execute(
+                    "SELECT * FROM trades WHERE id > ?"
+                    " ORDER BY id DESC",
+                    (since_id,),
+                )
+            elif before_id is not None:
+                cursor = await conn.execute(
+                    "SELECT * FROM trades WHERE id < ?"
+                    " ORDER BY id DESC LIMIT ?",
+                    (before_id, limit),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT * FROM trades ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
             rows = await cursor.fetchall()
             for row in rows:
                 items.append(TradeItem(
@@ -385,8 +415,26 @@ async def get_risk(db_path: Path) -> RiskResponse:
     return resp
 
 
-async def get_activity(db_path: Path) -> list[ActivityItem]:
-    """Get today's activity log entries."""
+async def get_activity(
+    db_path: Path,
+    *,
+    limit: int = 50,
+    before_id: int | None = None,
+    since_id: int | None = None,
+) -> list[ActivityItem]:
+    """Get activity log entries with cursor-based pagination.
+
+    Args:
+        before_id: Fetch older entries (id < before_id). Used for scroll-down.
+        since_id: Fetch newer entries (id > since_id). Used for SSE deltas.
+        limit: Page size (ignored when since_id is set).
+
+    Raises:
+        ValueError: If both before_id and since_id are provided.
+    """
+    if before_id is not None and since_id is not None:
+        raise ValueError("before_id and since_id are mutually exclusive")
+
     items: list[ActivityItem] = []
 
     try:
@@ -395,11 +443,24 @@ async def get_activity(db_path: Path) -> list[ActivityItem]:
             if not exists:
                 return items
 
-            cursor = await conn.execute(
-                "SELECT * FROM activity_log"
-                " WHERE date(timestamp) = date('now')"
-                " ORDER BY id DESC"
-            )
+            if since_id is not None:
+                cursor = await conn.execute(
+                    "SELECT * FROM activity_log WHERE id > ?"
+                    " ORDER BY id DESC",
+                    (since_id,),
+                )
+            elif before_id is not None:
+                cursor = await conn.execute(
+                    "SELECT * FROM activity_log WHERE id < ?"
+                    " ORDER BY id DESC LIMIT ?",
+                    (before_id, limit),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT * FROM activity_log"
+                    " ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
             rows = await cursor.fetchall()
             for row in rows:
                 items.append(ActivityItem(
