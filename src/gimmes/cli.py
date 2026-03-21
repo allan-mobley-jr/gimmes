@@ -2122,12 +2122,16 @@ def config_callback(
         None, "--section", "-s",
         help="Jump to a specific section (paper, strategy, sizing, risk, orders, scanner, scoring)",
     ),
+    new_only: bool = typer.Option(
+        False, "--new-only",
+        help="Only prompt for settings not yet saved in the database",
+    ),
 ) -> None:
     """Interactive configuration wizard — walk through every setting."""
     if ctx.invoked_subcommand is None:
         from gimmes.config_wizard import run_config_wizard
 
-        run_config_wizard(section_filter=section)
+        run_config_wizard(section_filter=section, new_only=new_only)
 
 
 def _require_db() -> Path:

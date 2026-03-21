@@ -362,6 +362,117 @@ class TestRunConfigWizard:
         assert all(k.startswith("paper.") for k in prompted_keys)
         assert len(prompted_keys) == 1
 
+    def test_new_only_skips_existing_settings(self, db_file: Path) -> None:
+        import json
+        import sqlite3
+
+        # Pre-populate paper.starting_balance so it's not "new"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("paper.starting_balance", json.dumps(10000.0)),
+        )
+        conn.commit()
+        conn.close()
+
+        prompted_keys: list[str] = []
+
+        def fake_prompt(setting: Setting, current: object, **kwargs: object) -> object:
+            prompted_keys.append(setting.key)
+            return current
+
+        with (
+            patch("gimmes.config_wizard.DB_PATH", db_file),
+            patch("gimmes.config_wizard._prompt_setting", side_effect=fake_prompt),
+        ):
+            run_config_wizard(new_only=True)
+
+        # paper.starting_balance was in DB, so it should NOT have been prompted
+        assert "paper.starting_balance" not in prompted_keys
+        # But other settings should have been prompted (they are all "new")
+        assert len(prompted_keys) > 0
+
+    def test_new_only_persists_defaults_for_new_settings(self, db_file: Path) -> None:
+        """Keeping the default on a new setting still saves it so it won't reappear."""
+        import json
+        import sqlite3
+
+        def fake_prompt(setting: Setting, current: object, **kwargs: object) -> object:
+            return current  # keep the default
+
+        with (
+            patch("gimmes.config_wizard.DB_PATH", db_file),
+            patch("gimmes.config_wizard._prompt_setting", side_effect=fake_prompt),
+        ):
+            run_config_wizard(section_filter="paper", new_only=True)
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'paper.starting_balance'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0]) == 10000.0  # default was persisted
+
+    def test_new_only_no_new_settings_exits_early(self, db_file: Path) -> None:
+        import json
+        import sqlite3
+
+        # Pre-populate ALL settings so none are "new"
+        all_keys = [
+            s.key
+            for _, _, _, settings in _iter_sections()
+            for s in settings
+        ]
+        conn = sqlite3.connect(str(db_file))
+        for key in all_keys:
+            conn.execute(
+                "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                (key, json.dumps(0)),
+            )
+        conn.commit()
+        conn.close()
+
+        with (
+            patch("gimmes.config_wizard.DB_PATH", db_file),
+            patch("gimmes.config_wizard._prompt_setting") as mock_prompt,
+        ):
+            run_config_wizard(new_only=True)
+
+        mock_prompt.assert_not_called()
+
+    def test_new_only_with_section_filter_exits_when_section_configured(
+        self, db_file: Path,
+    ) -> None:
+        import json
+        import sqlite3
+
+        # Pre-populate only the paper section's settings
+        paper_keys = [
+            s.key
+            for _, _, _, settings in _iter_sections()
+            for s in settings
+            if s.key.startswith("paper.")
+        ]
+        conn = sqlite3.connect(str(db_file))
+        for key in paper_keys:
+            conn.execute(
+                "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                (key, json.dumps(0)),
+            )
+        conn.commit()
+        conn.close()
+
+        with (
+            patch("gimmes.config_wizard.DB_PATH", db_file),
+            patch("gimmes.config_wizard._prompt_setting") as mock_prompt,
+        ):
+            run_config_wizard(section_filter="paper", new_only=True)
+
+        # Paper is fully configured, so nothing should be prompted
+        # even though other sections have new settings
+        mock_prompt.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # resolve_setting
