@@ -192,6 +192,23 @@ class TestFormatCurrent:
         result = _format_current(items, s)
         assert "[10 items]" in result
 
+    def test_format_list_full_shows_all_items(self) -> None:
+        s = Setting(key="a.b", name="", description="", type="list", default=[])
+        items = [f"ITEM{i}" for i in range(10)]
+        result = _format_current(items, s, full=True)
+        for item in items:
+            assert item in result
+        assert "[10 items]" not in result
+
+    def test_format_list_full_one_per_line(self) -> None:
+        s = Setting(key="a.b", name="", description="", type="list", default=[])
+        result = _format_current(["A", "B", "C"], s, full=True)
+        # Every item should be on its own indented line (leading newline)
+        assert result.startswith("\n")
+        assert "A" in result
+        assert "B" in result
+        assert "C" in result
+
     def test_format_int(self) -> None:
         s = Setting(key="a.b", name="", description="", type="int", default=0)
         assert _format_current(75, s) == "75"

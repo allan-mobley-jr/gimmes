@@ -2183,7 +2183,8 @@ def config_get(
             raise typer.Exit(1) from None
 
         current = _get_current_value(overrides, key, setting.default)
-        console.print(f"[cyan]{key}[/cyan]: [bold]{_format_current(current, setting)}[/bold]")
+        formatted = _format_current(current, setting, full=True)
+        console.print(f"[cyan]{key}[/cyan]: [bold]{formatted}[/bold]")
         console.print(f"[dim]Default: {_format_current(setting.default, setting)}[/dim]")
         console.print(f"[dim]{setting.description}[/dim]")
         return
@@ -2204,6 +2205,79 @@ def config_get(
             table.add_row(section_label, setting.key, display, default_display)
 
     console.print(table)
+
+
+def _resolve_list_field(key: str) -> tuple[Path, list]:
+    """Resolve a config key as a list field and return (db_path, current_list).
+
+    Exits with an error if the key is invalid or not a list type.
+    """
+    from gimmes.config import _load_config_from_db
+    from gimmes.config_wizard import _get_current_value, resolve_setting
+
+    db_path = _require_db()
+
+    try:
+        setting = resolve_setting(key)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+    if setting.type != "list":
+        console.print(f"[red]Error: {key} is not a list field. Use 'config set' instead.[/red]")
+        raise typer.Exit(1)
+
+    overrides = _load_config_from_db(db_path)
+    current = _get_current_value(overrides, key, setting.default)
+    if not isinstance(current, list):
+        console.print(
+            f"[red]Error: Stored value for {key!r} is not a list."
+            " The configuration may be corrupted.[/red]"
+        )
+        console.print(
+            f"[yellow]Reset it with 'gimmes config set {key} ...' "
+            "before using add/remove.[/yellow]"
+        )
+        raise typer.Exit(1)
+    return db_path, list(current)
+
+
+@config_app.command(name="add")
+def config_add(
+    key: str = typer.Argument(help="Dotted config key for a list field (e.g. scanner.series)"),
+    value: str = typer.Argument(help="Value to append"),
+) -> None:
+    """Add a value to a list-type configuration field."""
+    from gimmes.config import save_config_value
+
+    db_path, current_list = _resolve_list_field(key)
+
+    if value in current_list:
+        console.print(f"[dim]{value} is already in {key}[/dim]")
+        raise typer.Exit(0)
+
+    new_list = current_list + [value]
+    save_config_value(key, new_list, db_path=db_path)
+    console.print(f"Added [bold]{value}[/bold] to [cyan]{key}[/cyan] ({len(new_list)} items)")
+
+
+@config_app.command(name="remove")
+def config_remove(
+    key: str = typer.Argument(help="Dotted config key for a list field (e.g. scanner.series)"),
+    value: str = typer.Argument(help="Value to remove"),
+) -> None:
+    """Remove a value from a list-type configuration field."""
+    from gimmes.config import save_config_value
+
+    db_path, current_list = _resolve_list_field(key)
+
+    if value not in current_list:
+        console.print(f"[red]Error: {value} not found in {key}[/red]")
+        raise typer.Exit(1)
+
+    new_list = [item for item in current_list if item != value]
+    save_config_value(key, new_list, db_path=db_path)
+    console.print(f"Removed [bold]{value}[/bold] from [cyan]{key}[/cyan] ({len(new_list)} items)")
 
 
 @app.command(rich_help_panel="Setup & Config")
