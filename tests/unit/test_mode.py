@@ -59,3 +59,19 @@ class TestModeInitHint:
 
         assert result.exit_code == 0
         assert "gimmes init" not in result.output
+
+    def test_shows_hint_when_api_key_set_but_no_key_file(self, tmp_path: Path) -> None:
+        """Partial config: api_key set but private_key_path is default Path()."""
+        partial = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            api_key="test-key",
+            db_path=tmp_path / "gimmes.db",
+        )
+        with (
+            patch("gimmes.cli.load_config", return_value=partial),
+            patch("gimmes.store.session.get_active_session", return_value=None),
+        ):
+            result = runner.invoke(app, ["mode"])
+
+        assert result.exit_code == 0
+        assert "gimmes init" in result.output

@@ -175,7 +175,11 @@ def mode() -> None:
 
         connected = False
         balance = None
-        has_credentials = config.api_key and config.private_key_path.exists()
+        has_credentials = (
+            bool(config.api_key)
+            and str(config.private_key_path) != "."
+            and config.private_key_path.exists()
+        )
 
         if has_credentials:
             try:
