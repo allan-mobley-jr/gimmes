@@ -89,7 +89,9 @@ ok "  python: $($PYTHON_CMD --version)"
 # uv (install if missing)
 if ! check_command uv; then
     info "  uv not found — installing..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    if ! curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        warn "uv install script failed"
+    fi
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     if ! check_command uv; then
         err "Failed to install uv. Install manually: https://docs.astral.sh/uv/getting-started/installation/"
@@ -109,6 +111,15 @@ fi
 # ---------------------------------------------------------------------------
 
 mkdir -p "$GIMMES_HOME"
+
+# Recover from interrupted clone (directory exists but isn't a git repo)
+if [ -d "$REPO_DIR" ] && [ ! -d "$REPO_DIR/.git" ]; then
+    warn "Found incomplete installation at $REPO_DIR. Removing..."
+    if ! rm -rf -- "$REPO_DIR"; then
+        err "Could not remove $REPO_DIR. Remove it manually and re-run the installer."
+        exit 1
+    fi
+fi
 
 if [ -d "$REPO_DIR/.git" ]; then
     info "Updating existing installation..."
