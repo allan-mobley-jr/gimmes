@@ -295,6 +295,22 @@ class TestConfigAdd:
         assert result.exit_code == 1
         assert "Database not found" in result.output
 
+    def test_add_corrupted_value_errors(self, db_file: Path) -> None:
+        """If the stored value is not a list, error instead of silently overwriting."""
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps("not-a-list")),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "add", "scanner.series", "KXFED"])
+
+        assert result.exit_code == 1
+        assert "corrupted" in result.output
+
     def test_add_to_default_list(self, db_file: Path) -> None:
         """Adding to an unset field should copy the default list and append."""
         with patch("gimmes.config.GIMMES_HOME", db_file.parent):
@@ -369,6 +385,22 @@ class TestConfigRemove:
 
         assert result.exit_code == 1
         assert "Unknown config key" in result.output
+
+    def test_remove_corrupted_value_errors(self, db_file: Path) -> None:
+        """If the stored value is not a list, error instead of silently proceeding."""
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?, ?)",
+            ("scanner.series", json.dumps("not-a-list")),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(app, ["config", "remove", "scanner.series", "KXFED"])
+
+        assert result.exit_code == 1
+        assert "corrupted" in result.output
 
     def test_remove_last_item_leaves_empty_list(self, db_file: Path) -> None:
         conn = sqlite3.connect(str(db_file))

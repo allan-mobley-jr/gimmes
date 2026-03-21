@@ -2229,8 +2229,17 @@ def _resolve_list_field(key: str) -> tuple[Path, list]:
 
     overrides = _load_config_from_db(db_path)
     current = _get_current_value(overrides, key, setting.default)
-    current_list: list = list(current) if isinstance(current, list) else []
-    return db_path, current_list
+    if not isinstance(current, list):
+        console.print(
+            f"[red]Error: Stored value for {key!r} is not a list."
+            " The configuration may be corrupted.[/red]"
+        )
+        console.print(
+            f"[yellow]Reset it with 'gimmes config set {key} ...' "
+            "before using add/remove.[/yellow]"
+        )
+        raise typer.Exit(1)
+    return db_path, list(current)
 
 
 @config_app.command(name="add")

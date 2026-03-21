@@ -203,7 +203,8 @@ class TestFormatCurrent:
     def test_format_list_full_one_per_line(self) -> None:
         s = Setting(key="a.b", name="", description="", type="list", default=[])
         result = _format_current(["A", "B", "C"], s, full=True)
-        assert "\n" in result
+        # Every item should be on its own indented line (leading newline)
+        assert result.startswith("\n")
         assert "A" in result
         assert "B" in result
         assert "C" in result
