@@ -90,7 +90,7 @@ Explain paper trading mode — MUST mention all of these:
 - Nothing real is at stake — it's practice with live conditions
 - Run `gimmes driving_range` to start the autonomous trading loop in paper mode
 
-Demo: `python -m gimmes scan --top 5`
+Demo: `python -m gimmes scan --limit 5`
 
 This shows what the Scout sees when scanning for candidates. Walk through what the output means.
 
@@ -139,7 +139,7 @@ These are the ONLY `gimmes` commands you are allowed to run. NEVER run any `gimm
 ```
 python -m gimmes mode
 python -m gimmes --help
-python -m gimmes scan [--top N]
+python -m gimmes scan [--limit N]
 python -m gimmes score TICKER
 python -m gimmes market-info TICKER
 python -m gimmes positions

@@ -215,7 +215,7 @@ def mode() -> None:
 
 @app.command(rich_help_panel="Market Research")
 def scan(
-    top_n: int = typer.Option(20, "--top", "-n", help="Number of top candidates to show"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of top candidates to show"),
     series: list[str] = typer.Option(
         None, "--series", "-s",
         help="Override series tickers to scan (e.g. -s KXCPI -s KXGDP)",
@@ -266,7 +266,7 @@ def scan(
                 })
 
             scored.sort(key=lambda r: r["score"], reverse=True)
-            format_scan_results(scored[:top_n])
+            format_scan_results(scored[:limit])
 
     _run(_scan())
 
