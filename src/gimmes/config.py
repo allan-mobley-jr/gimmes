@@ -333,7 +333,7 @@ class RiskConfig(BaseModel):
         },
     )
     bankroll_real: float = Field(
-        default=0.0, ge=0.0,
+        default=0.0, ge=0.0, le=1_000_000.0,
         json_schema_extra={
             "display_name": "Championship Bankroll",
             "description": (
@@ -409,7 +409,7 @@ class ScannerConfig(BaseModel):
     })
 
     min_volume: int = Field(
-        default=100,
+        default=100, ge=0, le=100_000,
         json_schema_extra={
             "display_name": "Min Volume (24h)",
             "description": (
@@ -426,7 +426,7 @@ class ScannerConfig(BaseModel):
         },
     )
     min_open_interest: int = Field(
-        default=50,
+        default=50, ge=0, le=100_000,
         json_schema_extra={
             "display_name": "Min Open Interest",
             "description": (
@@ -443,7 +443,7 @@ class ScannerConfig(BaseModel):
         },
     )
     max_days_to_resolution: float = Field(
-        default=90.0,
+        default=90.0, ge=1.0, le=365.0,
         json_schema_extra={
             "display_name": "Max Days to Resolution",
             "description": (
@@ -459,7 +459,7 @@ class ScannerConfig(BaseModel):
         },
     )
     min_days_to_resolution: float = Field(
-        default=0.5,
+        default=0.5, ge=0.0, le=30.0,
         json_schema_extra={
             "display_name": "Min Days to Resolution",
             "description": (
@@ -498,7 +498,7 @@ class ScannerConfig(BaseModel):
 
 class ScoringWeights(BaseModel):
     edge_size: float = Field(
-        default=0.30,
+        default=0.30, ge=0.0, le=1.0,
         json_schema_extra={
             "display_name": "Weight: Edge Size",
             "description": (
@@ -513,7 +513,7 @@ class ScoringWeights(BaseModel):
         },
     )
     signal_strength: float = Field(
-        default=0.25,
+        default=0.25, ge=0.0, le=1.0,
         json_schema_extra={
             "display_name": "Weight: Signal Strength",
             "description": (
@@ -527,7 +527,7 @@ class ScoringWeights(BaseModel):
         },
     )
     liquidity_depth: float = Field(
-        default=0.15,
+        default=0.15, ge=0.0, le=1.0,
         json_schema_extra={
             "display_name": "Weight: Liquidity Depth",
             "description": (
@@ -542,7 +542,7 @@ class ScoringWeights(BaseModel):
         },
     )
     settlement_clarity: float = Field(
-        default=0.15,
+        default=0.15, ge=0.0, le=1.0,
         json_schema_extra={
             "display_name": "Weight: Settlement Clarity",
             "description": (
@@ -558,7 +558,7 @@ class ScoringWeights(BaseModel):
         },
     )
     time_to_resolution: float = Field(
-        default=0.15,
+        default=0.15, ge=0.0, le=1.0,
         json_schema_extra={
             "display_name": "Weight: Time to Resolution",
             "description": (

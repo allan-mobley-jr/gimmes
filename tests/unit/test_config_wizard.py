@@ -117,13 +117,29 @@ class TestParseInput:
             key="a.b", name="", description="", type="int",
             default=0, min_val=10, max_val=100,
         )
-        with pytest.raises(ValueError, match="at least"):
+        with pytest.raises(ValueError, match="between"):
             _parse_input("5", s)
 
     def test_parse_int_above_max(self) -> None:
         s = Setting(
             key="a.b", name="", description="", type="int",
             default=0, min_val=0, max_val=100,
+        )
+        with pytest.raises(ValueError, match="between"):
+            _parse_input("200", s)
+
+    def test_parse_int_below_min_only(self) -> None:
+        s = Setting(
+            key="a.b", name="", description="", type="int",
+            default=0, min_val=10,
+        )
+        with pytest.raises(ValueError, match="at least"):
+            _parse_input("5", s)
+
+    def test_parse_int_above_max_only(self) -> None:
+        s = Setting(
+            key="a.b", name="", description="", type="int",
+            default=0, max_val=100,
         )
         with pytest.raises(ValueError, match="at most"):
             _parse_input("200", s)
@@ -140,8 +156,32 @@ class TestParseInput:
             key="a.b", name="", description="", type="float",
             default=0.0, min_val=0.01, max_val=1.0,
         )
+        with pytest.raises(ValueError, match="between"):
+            _parse_input("0.001", s)
+
+    def test_parse_float_above_max(self) -> None:
+        s = Setting(
+            key="a.b", name="", description="", type="float",
+            default=0.0, min_val=0.0, max_val=1.0,
+        )
+        with pytest.raises(ValueError, match="between"):
+            _parse_input("1.5", s)
+
+    def test_parse_float_below_min_only(self) -> None:
+        s = Setting(
+            key="a.b", name="", description="", type="float",
+            default=0.0, min_val=0.01,
+        )
         with pytest.raises(ValueError, match="at least"):
             _parse_input("0.001", s)
+
+    def test_parse_float_above_max_only(self) -> None:
+        s = Setting(
+            key="a.b", name="", description="", type="float",
+            default=0.0, max_val=1.0,
+        )
+        with pytest.raises(ValueError, match="at most"):
+            _parse_input("1.5", s)
 
     def test_parse_str_valid_choice(self) -> None:
         s = Setting(key="a.b", name="", description="", type="str", default="a", choices=["a", "b"])
@@ -377,7 +417,7 @@ class TestValidateConfigValue:
         assert parsed == ["KXCPI", "KXGDP"]
 
     def test_rejects_out_of_range(self) -> None:
-        with pytest.raises(ValueError, match="at most"):
+        with pytest.raises(ValueError, match="between"):
             validate_config_value("strategy.gimme_threshold", "200")
 
     def test_rejects_invalid_choice(self) -> None:

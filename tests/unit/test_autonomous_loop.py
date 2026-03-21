@@ -1009,6 +1009,26 @@ class TestChampionshipGate:
         assert "must set a bankroll" in result.output.lower()
 
 
+    def test_bankroll_rejects_over_million(self) -> None:
+        """When bankroll_real is 0, values over $1M are rejected."""
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop"),
+            patch("gimmes.config.save_config_value") as mock_save,
+        ):
+            # "y" confirms, 2M rejected, then "500" accepted
+            result = runner.invoke(
+                app, ["championship", "--cycles", "1"],
+                input="y\n2000000\n500\n",
+            )
+
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("risk.bankroll_real", 500.0)
+        assert "db_path" in kwargs
+        assert "exceed" in result.output.lower()
+
+
 class TestOrderYesFlag:
     def test_order_command_has_yes_option(self) -> None:
         result = runner.invoke(app, ["order", "--help"])
