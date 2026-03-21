@@ -189,7 +189,7 @@ def mode() -> None:
     _run(_check())
 
 
-@app.command()
+@app.command(rich_help_panel="Market Research")
 def scan(
     top_n: int = typer.Option(20, "--top", "-n", help="Number of top candidates to show"),
     series: list[str] = typer.Option(
@@ -247,7 +247,7 @@ def scan(
     _run(_scan())
 
 
-@app.command()
+@app.command(rich_help_panel="Market Research")
 def score(
     ticker: str = typer.Argument(..., help="Market ticker to score"),
 ) -> None:
@@ -277,7 +277,7 @@ def score(
     _run(_score())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def size(
     ticker: str = typer.Argument(..., help="Market ticker"),
     probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
@@ -331,7 +331,7 @@ def size(
     _run(_size())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def validate(
     ticker: str = typer.Argument(..., help="Market ticker"),
     probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
@@ -436,7 +436,7 @@ def validate(
     _run(_validate())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def order(
     ticker: str = typer.Argument(..., help="Market ticker"),
     action: str = typer.Option(
@@ -888,7 +888,7 @@ def order(
     _run(_order())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def cancel(
     order_id: str = typer.Argument(..., help="Order ID to cancel"),
     yes: bool = typer.Option(
@@ -917,7 +917,7 @@ def cancel(
     _run(_cancel())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def trades(
     ticker: str | None = typer.Option(
         None, "--ticker", "-t", help="Filter by ticker",
@@ -973,7 +973,7 @@ def trades(
     _run(_trades())
 
 
-@app.command()
+@app.command(rich_help_panel="Trading")
 def candidates(
     ticker: str | None = typer.Option(
         None, "--ticker", "-t", help="Filter by ticker",
@@ -1032,7 +1032,7 @@ def candidates(
     _run(_candidates())
 
 
-@app.command(name="mark-cap-blocked")
+@app.command(name="mark-cap-blocked", hidden=True)
 def mark_cap_blocked_cmd(
     ticker: str = typer.Argument(..., help="Market ticker"),
 ) -> None:
@@ -1053,7 +1053,7 @@ def mark_cap_blocked_cmd(
     _run(_mark())
 
 
-@app.command()
+@app.command(rich_help_panel="Portfolio")
 def positions() -> None:
     """List open positions."""
     config = load_config()
@@ -1095,7 +1095,7 @@ def positions() -> None:
     _run(_positions())
 
 
-@app.command(name="risk-check")
+@app.command(name="risk-check", rich_help_panel="Portfolio")
 def risk_check() -> None:
     """Check risk limits and daily P&L."""
     config = load_config()
@@ -1174,7 +1174,7 @@ def risk_check() -> None:
     _run(_check())
 
 
-@app.command()
+@app.command(rich_help_panel="Portfolio")
 def reconcile() -> None:
     """Sync local position data with the authoritative source.
 
@@ -1276,7 +1276,7 @@ def reconcile() -> None:
     _run(_reconcile())
 
 
-@app.command()
+@app.command(rich_help_panel="Portfolio")
 def report() -> None:
     """Generate performance scorecard."""
     config = load_config()
@@ -1301,7 +1301,7 @@ def report() -> None:
     _run(_report())
 
 
-@app.command(name="market-info")
+@app.command(name="market-info", rich_help_panel="Market Research")
 def market_info(
     ticker: str = typer.Argument(..., help="Market ticker"),
 ) -> None:
@@ -1343,7 +1343,7 @@ def market_info(
     _run(_info())
 
 
-@app.command(name="log-trade")
+@app.command(name="log-trade", hidden=True)
 def log_trade(
     ticker: str = typer.Argument(..., help="Market ticker"),
     action: str = typer.Option(..., "--action", "-a", help="open/close/skip"),
@@ -1383,7 +1383,7 @@ def log_trade(
     _run(_log())
 
 
-@app.command(name="log-candidate")
+@app.command(name="log-candidate", hidden=True)
 def log_candidate(
     ticker: str = typer.Argument(..., help="Market ticker"),
     title: str = typer.Option("", "--title", "-t", help="Event title"),
@@ -1424,7 +1424,7 @@ def log_candidate(
     _run(_log())
 
 
-@app.command(name="log-outcome")
+@app.command(name="log-outcome", hidden=True)
 def log_outcome(
     ticker: str = typer.Argument(..., help="Market ticker"),
     outcome: str = typer.Option(..., "--outcome", "-o", help="Resolution outcome (yes/no)"),
@@ -1466,7 +1466,7 @@ def _print_note(note: dict) -> None:  # type: ignore[type-arg]
     console.print(note["body"], markup=False)
 
 
-@app.command(name="position-context")
+@app.command(name="position-context", rich_help_panel="Portfolio")
 def position_context(
     ticker: str = typer.Argument(..., help="Market ticker"),
 ) -> None:
@@ -1535,7 +1535,7 @@ def position_context(
     _run(_ctx())
 
 
-@app.command(name="position-note")
+@app.command(name="position-note", hidden=True)
 def position_note(
     ticker: str = typer.Argument(..., help="Market ticker"),
     cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
@@ -1577,7 +1577,7 @@ def position_note(
     _run(_note())
 
 
-@app.command(name="position-notes")
+@app.command(name="position-notes", rich_help_panel="Portfolio")
 def position_notes(
     ticker: str = typer.Argument(..., help="Market ticker"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max notes to return"),
@@ -1610,7 +1610,7 @@ def position_notes(
     _run(_notes())
 
 
-@app.command(name="log-activity")
+@app.command(name="log-activity", hidden=True)
 def log_activity(
     cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
     agent: str = typer.Option("", "--agent", "-a", help="Agent name"),
@@ -1637,7 +1637,7 @@ def log_activity(
     _run(_log())
 
 
-@app.command(name="log-error")
+@app.command(name="log-error", hidden=True)
 def log_error(
     severity: str = typer.Option(
         "error", "--severity", "-s", help="Severity level"
@@ -1680,7 +1680,7 @@ def log_error(
     _run(_log())
 
 
-@app.command(name="errors")
+@app.command(name="errors", rich_help_panel="Diagnostics")
 def errors(
     severity: str | None = typer.Option(None, "--severity", "-s", help="Filter by severity"),
     category: str | None = typer.Option(None, "--category", help="Filter by category"),
@@ -1768,7 +1768,7 @@ def errors(
     _run(_errors())
 
 
-@app.command(name="resolve-error")
+@app.command(name="resolve-error", hidden=True)
 def resolve_error_cmd(
     error_id: int = typer.Argument(..., help="Error ID to mark as resolved"),
     issue_url: str = typer.Option("", "--issue-url", "-u", help="GitHub issue URL"),
@@ -1789,7 +1789,7 @@ def resolve_error_cmd(
     _run(_resolve())
 
 
-@app.command()
+@app.command(rich_help_panel="Strategy")
 def lesson(
     analysis: str | None = typer.Option(
         None, "--analysis", "-a", help="Analysis type to run",
@@ -1890,7 +1890,7 @@ def lesson(
     _run(_lesson())
 
 
-@app.command()
+@app.command(rich_help_panel="Strategy")
 def recommendations(
     status: str | None = typer.Option(
         None, "--status", "-s", help="Filter by status",
@@ -1959,7 +1959,7 @@ def _parse_recommendation_value(raw: str) -> object:
         return raw
 
 
-@app.command()
+@app.command(rich_help_panel="Strategy")
 def tune() -> None:
     """Interactively apply pending strategy recommendations."""
     config = load_config()
@@ -2015,7 +2015,7 @@ def tune() -> None:
     _run(_tune())
 
 
-@app.command()
+@app.command(rich_help_panel="Market Research")
 def discover(
     category: str = typer.Argument(
         ..., help="Category to explore (Economics, Politics, Financials, etc.)",
@@ -2051,7 +2051,7 @@ config_app = typer.Typer(
     help="Configuration — interactive wizard, get/set individual values.",
     invoke_without_command=True,
 )
-app.add_typer(config_app)
+app.add_typer(config_app, rich_help_panel="Setup & Config")
 
 
 @config_app.callback(invoke_without_command=True)
@@ -2182,7 +2182,7 @@ def config_get(
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel="Setup & Config")
 def init(
     headless: bool = typer.Option(
         False,
@@ -2202,7 +2202,7 @@ def init(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(rich_help_panel="Dashboard")
 def clubhouse(
     port: int = typer.Option(1919, "--port", "-p", help="Port number"),
     no_browser: bool = typer.Option(False, "--no-browser", help="Don't auto-open browser"),
@@ -2215,7 +2215,7 @@ def clubhouse(
 
 
 # ---------------------------------------------------------------------------
-# Product tour
+# Claude agent sessions (tour guide, caddie shop)
 # ---------------------------------------------------------------------------
 
 
@@ -2268,7 +2268,7 @@ def _launch_claude_agent(
     console.print(closing_message)
 
 
-@app.command(name="tour_guide")
+@app.command(name="tour_guide", rich_help_panel="Setup & Config")
 def tour_guide() -> None:
     """Launch The Starter — an interactive GIMMES product tour."""
     _launch_claude_agent(
@@ -2282,7 +2282,7 @@ def tour_guide() -> None:
     )
 
 
-@app.command(name="caddie_shop")
+@app.command(name="caddie_shop", rich_help_panel="Setup & Config")
 def caddie_shop() -> None:
     """Launch The Caddie Shop — conversational configuration advisor."""
     _launch_claude_agent(
