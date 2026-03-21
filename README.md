@@ -430,7 +430,7 @@ Strategy parameters are stored in the SQLite database (`~/.gimmes/gimmes.db`) an
 ```bash
 gimmes config                         # Walk through all settings interactively
 gimmes config --section risk          # Jump to a specific section
-gimmes config set risk.bankroll 2000  # Set a single value directly
+gimmes config set risk.bankroll_paper 2000  # Set a single value directly
 gimmes config get                     # Show all current values
 gimmes config get strategy.gimme_threshold  # Show a single value
 gimmes caddie_shop                    # Conversational config advisor (Claude Code)

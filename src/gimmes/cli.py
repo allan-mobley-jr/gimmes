@@ -2225,6 +2225,7 @@ def _launch_claude_agent(
     *,
     opening_message: str,
     closing_message: str,
+    interrupt_message: str,
 ) -> None:
     """Find the 'claude' CLI and launch a named agent session.
 
@@ -2249,7 +2250,7 @@ def _launch_claude_agent(
             check=False,
         )
     except KeyboardInterrupt:
-        console.print(closing_message)
+        console.print(interrupt_message)
         raise typer.Exit(130)
     except OSError as exc:
         console.print(
@@ -2277,6 +2278,7 @@ def tour_guide() -> None:
             "[dim]The Starter will guide you through the system.[/dim]\n"
         ),
         closing_message="\n[yellow]Tour ended. Happy trading![/yellow]",
+        interrupt_message="\n[dim]Tour interrupted.[/dim]",
     )
 
 
@@ -2290,6 +2292,7 @@ def caddie_shop() -> None:
             "[dim]The Caddie Shop attendant will help tune your settings.[/dim]\n"
         ),
         closing_message="\n[yellow]Caddie Shop session ended.[/yellow]",
+        interrupt_message="\n[dim]Caddie Shop closed.[/dim]",
     )
 
 
