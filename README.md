@@ -271,65 +271,79 @@ The dashboard determines if an autonomous loop is active by checking the `sessio
 
 ## CLI commands
 
-### Autonomous trading
-```bash
-gimmes start             # Start loop using current mode from .env
-gimmes driving_range     # Switch to driving_range + start loop
-gimmes championship      # Switch to championship + start loop (real money)
-```
+Run `gimmes help` for the full grouped reference. See [Walking the Course Solo](#walking-the-course-solo) for a workflow walkthrough.
 
-### Mode management
+### Setup & Config
 ```bash
-gimmes switch            # Toggle mode (driving_range ↔ championship)
-gimmes switch driving_range  # Switch to specific mode
-gimmes mode              # Show mode + connection status
-```
-
-### Setup & configuration
-```bash
-gimmes init              # First-time setup wizard
-gimmes config            # Interactive config wizard
-gimmes config set K V    # Set a single config value
+gimmes init              # First-time setup (API credentials, config)
+gimmes config            # Interactive configuration wizard
+gimmes config set K V    # Set a single config value directly
 gimmes config get [K]    # Show config value(s)
-gimmes caddie_shop       # Launch The Caddie Shop — conversational config advisor
+gimmes tour_guide        # Interactive product tour (The Starter)
+gimmes caddie_shop       # Conversational config advisor (The Caddie Shop)
+gimmes update            # Pull latest code and reinstall
+gimmes version           # Show version and check for updates
 ```
 
-### Manual trading
+### Mode & Status
 ```bash
-gimmes scan              # Scan markets for gimme candidates
-gimmes score TICKER      # Score a specific market
-gimmes size TICKER -p P  # Calculate position size
+gimmes mode              # Show current mode and connection status
+gimmes switch [MODE]     # Switch trading mode (omit MODE to toggle)
+```
+
+### Market Research
+```bash
+gimmes discover CAT        # Explore series in a Kalshi category
+gimmes scan                # Scan markets for gimme candidates
+gimmes score TICKER        # Score a specific market
+gimmes market-info TICKER  # Detailed market info + orderbook
+```
+
+### Trading
+```bash
+gimmes size TICKER -p P      # Calculate position size
 gimmes validate TICKER -p P  # Pre-trade validation
-gimmes order TICKER -p P     # Place an order (paper or real)
-gimmes cancel ORDER_ID   # Cancel a resting order
+gimmes order TICKER -p P     # Place an order
+gimmes cancel ORDER_ID       # Cancel a resting order
+gimmes trades                # List trade records (--ticker, --action)
+gimmes candidates            # List scored candidates (--ticker)
+```
+
+### Portfolio
+```bash
+gimmes positions                # List open positions
+gimmes reconcile                # Sync positions with broker/API
+gimmes risk-check               # Check risk limits and daily P&L
+gimmes report                   # Performance scorecard
+gimmes position-context TICKER  # Full thesis + note history for a position
+gimmes position-notes TICKER    # Position journal entries
+```
+
+### Diagnostics
+```bash
+gimmes errors            # View error logs (--severity, --category, --unresolved)
+```
+
+### Strategy
+```bash
+gimmes lesson            # Run strategy analysis and recommendations
+gimmes recommendations   # View past strategy recommendations
+gimmes tune              # Apply pending strategy recommendations
 ```
 
 ### Dashboard
 ```bash
-gimmes clubhouse         # Launch Clubhouse dashboard (see above)
+gimmes clubhouse         # Launch web dashboard (http://127.0.0.1:1919)
 ```
 
-### Tour
+### Autonomous Trading
 ```bash
-gimmes tour_guide        # Launch The Starter — interactive product tour
+gimmes start             # Autonomous loop using current mode from .env
+gimmes driving_range     # Autonomous loop -- paper trading (auto-starts dashboard)
+gimmes championship      # Autonomous loop -- real money (auto-starts dashboard)
 ```
 
-### Monitoring & reporting
-```bash
-gimmes positions         # List open positions (with mark-to-market)
-gimmes risk-check        # Check risk limits and daily P&L
-gimmes report            # Performance scorecard
-gimmes market-info TICKER # Detailed market info
-gimmes log-trade TICKER  # Log a trade decision
-gimmes log-outcome TICKER # Record a market's resolution outcome (--outcome yes/no)
-gimmes discover CATEGORY # Discover series tickers in a category
-gimmes errors            # View error logs (--severity, --category, --unresolved, --summary)
-gimmes log-error         # Log a structured error (used by agents/system)
-gimmes resolve-error ID  # Mark an error as resolved (--issue-url to link GitHub issue)
-gimmes lesson            # Run strategy analysis (--analysis TYPE, --dry-run)
-gimmes recommendations   # View past strategy recommendations (--status, --parameter)
-gimmes tune              # Interactively apply pending strategy recommendations
-```
+All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between cycles, default 60), and `--no-dashboard`.
 
 ---
 
