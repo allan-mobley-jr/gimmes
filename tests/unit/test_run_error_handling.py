@@ -13,9 +13,11 @@ from click.exceptions import Exit as ClickExit
 from gimmes.cli import _run
 
 
-def _make_response(status: int, *, json_data=None, text="") -> httpx.Response:
+def _make_response(
+    status: int, *, json_data=None, text="", url="https://api.example.com/test"
+) -> httpx.Response:
     """Build a fake httpx.Response for testing."""
-    request = httpx.Request("GET", "https://api.example.com/test")
+    request = httpx.Request("GET", url)
     if json_data is not None:
         return httpx.Response(status, json=json_data, request=request)
     return httpx.Response(status, text=text, request=request)
@@ -67,12 +69,35 @@ class TestRunHTTPStatusError:
         output = _run_expecting_exit(exc)
         assert "500" in output
 
+    def test_404_market_ticker_not_found(self) -> None:
+        resp = _make_response(
+            404,
+            json_data={"message": "market not found"},
+            url="https://api.elections.kalshi.com/trade-api/v2/markets/NONEXISTENT",
+        )
+        exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
+        output = _run_expecting_exit(exc)
+        assert "NONEXISTENT" in output
+        assert "not found" in output
+        assert "Check the ticker" in output
+
+    def test_404_non_market_url_shows_generic(self) -> None:
+        resp = _make_response(
+            404,
+            json_data={"message": "not found"},
+            url="https://api.elections.kalshi.com/trade-api/v2/portfolio/positions",
+        )
+        exc = httpx.HTTPStatusError("error", request=resp.request, response=resp)
+        output = _run_expecting_exit(exc)
+        assert "API error (404)" in output
+
 
 class TestRunTimeoutError:
     def test_timeout_exception(self) -> None:
         exc = httpx.ReadTimeout("Connection read timed out")
         output = _run_expecting_exit(exc)
         assert "timed out" in output.lower()
+        assert "try again" in output.lower()
 
 
 class TestRunTransportError:
@@ -80,7 +105,7 @@ class TestRunTransportError:
         exc = httpx.ConnectError("Connection refused")
         output = _run_expecting_exit(exc)
         assert "Connection error" in output
-        assert "Connection refused" in output
+        assert "try again" in output.lower()
 
 
 class TestRunExistingErrors:

@@ -39,6 +39,17 @@ def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
     return str(body.get("message") or body.get("error") or fallback)
 
 
+def _extract_ticker_from_url(exc) -> str | None:  # type: ignore[no-untyped-def]
+    """Try to extract a market ticker from the request URL in a 404 error."""
+    try:
+        parts = str(exc.request.url.path).split("/")
+        idx = parts.index("markets")
+        ticker = parts[idx + 1]
+    except (AttributeError, ValueError, IndexError):
+        return None
+    return ticker or None
+
+
 def _run(coro):  # type: ignore[no-untyped-def]
     """Run an async coroutine from sync CLI context with error handling."""
     import logging
@@ -53,16 +64,32 @@ def _run(coro):  # type: ignore[no-untyped-def]
         raise typer.Exit(130)
     except httpx.HTTPStatusError as e:
         logger.debug("API error", exc_info=True)
+        if e.response.status_code == 404:
+            ticker = _extract_ticker_from_url(e)
+            if ticker:
+                console.print(
+                    f"[red]Market ticker '{ticker}' not found."
+                    " Check the ticker and try again.[/red]"
+                )
+                raise typer.Exit(1)
         detail = _api_error_detail(e)
         console.print(f"[red]API error ({e.response.status_code}): {detail}[/red]")
         raise typer.Exit(1)
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         logger.debug("Timeout error", exc_info=True)
-        console.print(f"[red]Request timed out: {e}[/red]")
+        console.print(
+            "[red]Request timed out.[/red] "
+            "Kalshi may be slow or unreachable. "
+            "Check your connection and try again."
+        )
         raise typer.Exit(1)
-    except httpx.TransportError as e:
+    except httpx.TransportError:
         logger.debug("Transport error", exc_info=True)
-        console.print(f"[red]Connection error: {e}[/red]")
+        console.print(
+            "[red]Connection error.[/red] "
+            "Could not reach Kalshi. "
+            "Check your internet connection and try again."
+        )
         raise typer.Exit(1)
     except sqlite3.Error as e:
         logger.warning("Database error: %s: %s", type(e).__name__, e, exc_info=True)
