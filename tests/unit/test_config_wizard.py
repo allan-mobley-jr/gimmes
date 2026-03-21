@@ -19,7 +19,9 @@ from gimmes.config_wizard import (
     _iter_sections,
     _parse_input,
     _scoring_weights_total,
+    resolve_setting,
     run_config_wizard,
+    validate_config_value,
 )
 
 # ---------------------------------------------------------------------------
@@ -302,3 +304,69 @@ class TestRunConfigWizard:
         # Only paper settings should have been prompted
         assert all(k.startswith("paper.") for k in prompted_keys)
         assert len(prompted_keys) == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_setting
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSetting:
+    def test_resolves_strategy_key(self) -> None:
+        s = resolve_setting("strategy.gimme_threshold")
+        assert s.key == "strategy.gimme_threshold"
+        assert s.type == "int"
+
+    def test_resolves_nested_scoring_weight(self) -> None:
+        s = resolve_setting("scoring.weights.edge_size")
+        assert s.key == "scoring.weights.edge_size"
+        assert s.type == "float"
+
+    def test_resolves_list_key(self) -> None:
+        s = resolve_setting("scanner.series")
+        assert s.key == "scanner.series"
+        assert s.type == "list"
+
+    def test_raises_on_unknown_key(self) -> None:
+        with pytest.raises(ValueError, match="Unknown config key"):
+            resolve_setting("nonexistent.key")
+
+    def test_error_lists_valid_keys(self) -> None:
+        with pytest.raises(ValueError, match="strategy.gimme_threshold"):
+            resolve_setting("bad.key")
+
+
+# ---------------------------------------------------------------------------
+# validate_config_value
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfigValue:
+    def test_validates_int_in_range(self) -> None:
+        setting, parsed = validate_config_value("strategy.gimme_threshold", "80")
+        assert parsed == 80
+        assert setting.type == "int"
+
+    def test_validates_float(self) -> None:
+        setting, parsed = validate_config_value("sizing.kelly_fraction", "0.30")
+        assert parsed == 0.30
+
+    def test_validates_str_choice(self) -> None:
+        setting, parsed = validate_config_value("orders.preferred_order_type", "taker")
+        assert parsed == "taker"
+
+    def test_validates_list(self) -> None:
+        setting, parsed = validate_config_value("scanner.series", "KXCPI,KXGDP")
+        assert parsed == ["KXCPI", "KXGDP"]
+
+    def test_rejects_out_of_range(self) -> None:
+        with pytest.raises(ValueError, match="at most"):
+            validate_config_value("strategy.gimme_threshold", "200")
+
+    def test_rejects_invalid_choice(self) -> None:
+        with pytest.raises(ValueError, match="Must be one of"):
+            validate_config_value("orders.preferred_order_type", "invalid")
+
+    def test_rejects_unknown_key(self) -> None:
+        with pytest.raises(ValueError, match="Unknown config key"):
+            validate_config_value("bad.key", "42")

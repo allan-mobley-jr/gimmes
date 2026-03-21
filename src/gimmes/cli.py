@@ -2046,17 +2046,140 @@ def discover(
     _run(_discover())
 
 
-@app.command()
-def config(
+config_app = typer.Typer(
+    name="config",
+    help="Configuration — interactive wizard, get/set individual values.",
+    invoke_without_command=True,
+)
+app.add_typer(config_app)
+
+
+@config_app.callback(invoke_without_command=True)
+def config_callback(
+    ctx: typer.Context,
     section: str | None = typer.Option(
         None, "--section", "-s",
         help="Jump to a specific section (paper, strategy, sizing, risk, orders, scanner, scoring)",
     ),
 ) -> None:
     """Interactive configuration wizard — walk through every setting."""
-    from gimmes.config_wizard import run_config_wizard
+    if ctx.invoked_subcommand is None:
+        from gimmes.config_wizard import run_config_wizard
 
-    run_config_wizard(section_filter=section)
+        run_config_wizard(section_filter=section)
+
+
+def _require_db() -> Path:
+    """Return the database path, or exit with an error if it doesn't exist."""
+    from gimmes.config import GIMMES_HOME
+
+    db_path = GIMMES_HOME / "gimmes.db"
+    if not db_path.exists():
+        console.print(
+            f"[red]Database not found at {db_path}[/red]\n"
+            "Run [bold]gimmes init[/bold] first to create it."
+        )
+        raise typer.Exit(1)
+    return db_path
+
+
+@config_app.command(name="set")
+def config_set(
+    key: str = typer.Argument(help="Dotted config key (e.g. strategy.gimme_threshold)"),
+    value: str = typer.Argument(help="New value"),
+) -> None:
+    """Set a single configuration value."""
+    from gimmes.config import _load_config_from_db, save_config_value
+    from gimmes.config_wizard import (
+        _format_current,
+        _get_current_value,
+        _scoring_weights_total,
+        validate_config_value,
+    )
+
+    db_path = _require_db()
+
+    try:
+        setting, parsed = validate_config_value(key, value)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from None
+
+    overrides = _load_config_from_db(db_path)
+    current = _get_current_value(overrides, key, setting.default)
+
+    if parsed == current:
+        console.print(f"[dim]{key} is already {_format_current(current, setting)}[/dim]")
+        raise typer.Exit(0)
+
+    save_config_value(key, parsed, db_path=db_path)
+    console.print(
+        f"[cyan]{key}[/cyan]: {_format_current(current, setting)} → "
+        f"[bold]{_format_current(parsed, setting)}[/bold]"
+    )
+
+    # Warn if scoring weights no longer sum to 1.0
+    if key.startswith("scoring.weights."):
+        parts = key.split(".")
+        d: dict = overrides
+        for part in parts[:-1]:
+            d = d.setdefault(part, {})
+        d[parts[-1]] = parsed
+        total = _scoring_weights_total(overrides)
+        if abs(total - 1.0) > 0.01:
+            console.print(
+                f"[yellow]Warning: Scoring weights now sum to {total:.2f} "
+                f"instead of 1.00.[/yellow]"
+            )
+
+
+@config_app.command(name="get")
+def config_get(
+    key: str | None = typer.Argument(None, help="Dotted config key (omit to show all)"),
+) -> None:
+    """Show current configuration value(s)."""
+    from rich.table import Table
+
+    from gimmes.config import _load_config_from_db
+    from gimmes.config_wizard import (
+        _format_current,
+        _get_current_value,
+        _iter_sections,
+        resolve_setting,
+    )
+
+    db_path = _require_db()
+    overrides = _load_config_from_db(db_path)
+
+    if key is not None:
+        try:
+            setting = resolve_setting(key)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1) from None
+
+        current = _get_current_value(overrides, key, setting.default)
+        console.print(f"[cyan]{key}[/cyan]: [bold]{_format_current(current, setting)}[/bold]")
+        console.print(f"[dim]Default: {_format_current(setting.default, setting)}[/dim]")
+        console.print(f"[dim]{setting.description}[/dim]")
+        return
+
+    # Show all settings grouped by section
+    table = Table(title="GIMMES Configuration", show_lines=True)
+    table.add_column("Section", style="bold blue")
+    table.add_column("Key", style="cyan")
+    table.add_column("Value", style="bold")
+    table.add_column("Default", style="dim")
+
+    for _section_key, section_name, _section_desc, settings in _iter_sections():
+        for i, setting in enumerate(settings):
+            current = _get_current_value(overrides, setting.key, setting.default)
+            display = _format_current(current, setting)
+            default_display = _format_current(setting.default, setting)
+            section_label = section_name if i == 0 else ""
+            table.add_row(section_label, setting.key, display, default_display)
+
+    console.print(table)
 
 
 @app.command()
@@ -2096,11 +2219,19 @@ def clubhouse(
 # ---------------------------------------------------------------------------
 
 
-@app.command(name="tour_guide")
-def tour_guide() -> None:
-    """Launch The Starter — an interactive GIMMES product tour."""
+def _launch_claude_agent(
+    agent: str,
+    session_name: str,
+    *,
+    opening_message: str,
+    closing_message: str,
+    interrupt_message: str,
+) -> None:
+    """Find the 'claude' CLI and launch a named agent session.
+
+    Handles missing binary, KeyboardInterrupt, OSError, and non-zero exit.
+    """
     import shutil
-    import subprocess
 
     claude_path = shutil.which("claude")
     if not claude_path:
@@ -2110,24 +2241,16 @@ def tour_guide() -> None:
         raise typer.Exit(1)
 
     project_root = Path(__file__).resolve().parent.parent.parent
-
-    console.print(
-        "\n[bold green]Starting the GIMMES tour...[/bold green]\n"
-        "[dim]The Starter will guide you through the system.[/dim]\n"
-    )
+    console.print(opening_message)
 
     try:
         result = subprocess.run(
-            [
-                claude_path,
-                "--agent", "Starter",
-                "--name", "GIMMES Tour",
-            ],
+            [claude_path, "--agent", agent, "--name", session_name],
             cwd=project_root,
             check=False,
         )
     except KeyboardInterrupt:
-        console.print("\n[dim]Tour interrupted.[/dim]")
+        console.print(interrupt_message)
         raise typer.Exit(130)
     except OSError as exc:
         console.print(
@@ -2138,11 +2261,39 @@ def tour_guide() -> None:
 
     if result.returncode != 0:
         console.print(
-            f"[red]Tour exited with an error (code {result.returncode}).[/red]"
+            f"[red]{session_name} exited with an error (code {result.returncode}).[/red]"
         )
         raise typer.Exit(1)
 
-    console.print("\n[yellow]Tour ended. Happy trading![/yellow]")
+    console.print(closing_message)
+
+
+@app.command(name="tour_guide")
+def tour_guide() -> None:
+    """Launch The Starter — an interactive GIMMES product tour."""
+    _launch_claude_agent(
+        "Starter", "GIMMES Tour",
+        opening_message=(
+            "\n[bold green]Starting the GIMMES tour...[/bold green]\n"
+            "[dim]The Starter will guide you through the system.[/dim]\n"
+        ),
+        closing_message="\n[yellow]Tour ended. Happy trading![/yellow]",
+        interrupt_message="\n[dim]Tour interrupted.[/dim]",
+    )
+
+
+@app.command(name="caddie_shop")
+def caddie_shop() -> None:
+    """Launch The Caddie Shop — conversational configuration advisor."""
+    _launch_claude_agent(
+        "Caddie Shop", "GIMMES Caddie Shop",
+        opening_message=(
+            "\n[bold green]Opening The Caddie Shop...[/bold green]\n"
+            "[dim]The Caddie Shop attendant will help tune your settings.[/dim]\n"
+        ),
+        closing_message="\n[yellow]Caddie Shop session ended.[/yellow]",
+        interrupt_message="\n[dim]Caddie Shop closed.[/dim]",
+    )
 
 
 # ---------------------------------------------------------------------------

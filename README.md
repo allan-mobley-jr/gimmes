@@ -198,6 +198,7 @@ The autonomous loop is orchestrated by the **Caddie Master**, which dispatches t
 | **The Groundskeeper** | Error escalation | Reviews error logs, escalates critical/recurring errors to GitHub issues |
 | **The Pro** | Strategy tuning | Analyzes performance data, recommends parameter changes with evidence |
 | **The Starter** | Product tour guide | Welcomes new users, explains features, answers questions — on-demand via `gimmes tour_guide` |
+| **The Caddie Shop** | Configuration advisor | Conversational config tuning — explains trade-offs, suggests parameter packages, sets values — on-demand via `gimmes caddie_shop` |
 
 Agents communicate through the orchestrator's context — Scout's shortlist flows to Caddie, Caddie's approved candidates flow to Closer. Agents don't call the Kalshi API directly; they use CLI commands exclusively.
 
@@ -288,6 +289,9 @@ gimmes mode              # Show mode + connection status
 ```bash
 gimmes init              # First-time setup wizard
 gimmes config            # Interactive config wizard
+gimmes config set K V    # Set a single config value
+gimmes config get [K]    # Show config value(s)
+gimmes caddie_shop       # Launch The Caddie Shop — conversational config advisor
 ```
 
 ### Manual trading
@@ -421,15 +425,21 @@ Minimum required edge before any trade: **5 percentage points** after fees.
 
 ## Configuration
 
-Strategy parameters are stored in the SQLite database (`~/.gimmes/gimmes.db`) and managed through the interactive wizard:
+Strategy parameters are stored in the SQLite database (`~/.gimmes/gimmes.db`) and managed three ways:
 
 ```bash
-gimmes config              # Walk through all settings interactively
-gimmes config --section risk  # Jump to a specific section
-gimmes tune                # Apply pending strategy recommendations
+gimmes config                         # Walk through all settings interactively
+gimmes config --section risk          # Jump to a specific section
+gimmes config set risk.bankroll_paper 2000  # Set a single value directly
+gimmes config get                     # Show all current values
+gimmes config get strategy.gimme_threshold  # Show a single value
+gimmes caddie_shop                    # Conversational config advisor (Claude Code)
+gimmes tune                           # Apply pending strategy recommendations
 ```
 
-The Pydantic config models in `config.py` are the single source of truth — each field's type, default, constraints, and wizard metadata are defined in one place. Adding a new config parameter automatically makes it appear in the wizard.
+**Direct set** validates the value against the field's constraints (type, min/max, choices) and shows old → new. **The Caddie Shop** is a conversational agent that explains how parameters interact, suggests coherent multi-parameter adjustments based on your goals ("make the system more aggressive"), and sets values on your behalf — all through the CLI.
+
+The Pydantic config models in `config.py` are the single source of truth — each field's type, default, constraints, and wizard metadata are defined in one place. Adding a new config parameter automatically makes it appear in the wizard, `config set`, `config get`, and The Caddie Shop.
 
 ---
 
