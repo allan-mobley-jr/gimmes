@@ -634,8 +634,10 @@
 
         function findRationaleForTicker(ticker) {
             if (!tradeItems.length) return '';
-            const match = tradeItems.find(function(t) { return t.ticker === ticker && t.rationale; });
-            return match ? match.rationale : '';
+            const match = tradeItems.find(function(t) { return t.ticker === ticker && t.action === 'open' && t.rationale; });
+            if (match) return match.rationale;
+            const fallback = tradeItems.find(function(t) { return t.ticker === ticker && t.rationale; });
+            return fallback ? fallback.rationale : '';
         }
 
         function tickerValue(ticker) {
@@ -738,7 +740,7 @@
                 ['Last Updated',    formatTimestamp(p.updated_at)],
                 ['Unrealized P&L',  pnlValue(p.unrealized_pnl)],
                 ['Realized P&L',    pnlValue(p.realized_pnl)],
-            ], rationaleBlock('Thesis (from latest trade)', findRationaleForTicker(p.ticker)));
+            ], rationaleBlock('Thesis (from open trade)', findRationaleForTicker(p.ticker)));
         }
 
         let marketDetailRequestId = 0;
