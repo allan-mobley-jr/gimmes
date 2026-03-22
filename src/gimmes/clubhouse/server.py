@@ -100,8 +100,11 @@ async def api_trades(
 
 
 @app.get("/api/candidates")
-async def api_candidates() -> list[CandidateItem]:
-    return await data.get_candidates(_db_path)
+async def api_candidates(
+    before: int | None = Query(None),
+    limit: int = Query(20, ge=1, le=200),
+) -> list[CandidateItem]:
+    return await data.get_candidates(_db_path, limit=limit, before_id=before)
 
 
 @app.get("/api/metrics")

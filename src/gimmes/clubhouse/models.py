@@ -53,6 +53,7 @@ class TradeItem(BaseModel):
 
 
 class CandidateItem(BaseModel):
+    id: int = 0
     ticker: str = ""
     title: str = ""
     market_price: float = 0.0
