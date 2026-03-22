@@ -892,6 +892,9 @@
             positionsObserver = setupScrollObserver('positions-sentinel', loadMorePositions);
         }
 
+        // SSE always sends the complete position list (server uses limit=200,
+        // positions are bounded by max_open_positions). Pagination only applies
+        // to the initial REST load before SSE connects.
         function updatePositions(positions) {
             if (!positions) positions = [];
             positionItems = positions;
