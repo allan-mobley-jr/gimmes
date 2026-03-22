@@ -47,7 +47,7 @@ class TestTourGuideCommand:
         assert "-p" not in cmd
         # Tools pre-approved so agent runs without permission prompts
         allowed = set(cmd[cmd.index("--allowedTools") + 1].split(","))
-        assert {"Bash", "WebSearch", "WebFetch"} <= allowed
+        assert allowed == {"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"}
         assert mock_run.call_args.kwargs["cwd"] is not None
 
     def test_username_fallback_on_getuser_failure(self) -> None:
