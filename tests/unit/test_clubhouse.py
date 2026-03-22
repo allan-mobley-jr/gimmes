@@ -263,6 +263,56 @@ class TestDataLayer:
         assert len(cap_mkt) == 1
         assert cap_mkt[0].cap_blocked is True
 
+    async def test_get_candidates_returns_id(self, db_path: Path) -> None:
+        """CandidateItem exposes the row id (#355)."""
+        candidates = await get_candidates(db_path)
+        assert len(candidates) >= 1
+        assert candidates[0].id > 0
+
+    async def test_get_candidates_before_id(self, db_path: Path) -> None:
+        """before_id paginates through deduplicated candidates (#355)."""
+        async with Database(db_path) as db:
+            for i in range(4):
+                await db.conn.execute(
+                    f"""INSERT INTO candidates (ticker, title, market_price,
+                       model_probability, edge, gimme_score, research_memo,
+                       scanned_at)
+                       VALUES ('PAGE-{i}', 'Page {i}', 0.50, 0.80, 0.10, 70,
+                       'memo', '2026-01-01 00:0{i + 1}:00')"""
+                )
+            await db.conn.commit()
+        # 5 total unique tickers: CAND-YES + PAGE-0..3
+        page1 = await get_candidates(db_path, limit=3)
+        assert len(page1) == 3
+        page2 = await get_candidates(db_path, limit=3, before_id=page1[-1].id)
+        assert len(page2) == 2  # 5 - 3 = 2 remaining
+        assert page2[0].id < page1[-1].id
+        # No overlap
+        page1_tickers = {c.ticker for c in page1}
+        page2_tickers = {c.ticker for c in page2}
+        assert page1_tickers.isdisjoint(page2_tickers)
+
+    async def test_get_candidates_before_id_with_dedup(self, db_path: Path) -> None:
+        """Cursor pagination still deduplicates by ticker (#355)."""
+        async with Database(db_path) as db:
+            # Insert two rows for the same ticker
+            await db.conn.execute(
+                """INSERT INTO candidates (ticker, title, market_price,
+                   model_probability, edge, gimme_score, research_memo)
+                   VALUES ('DUP-MKT', 'Old', 0.50, 0.80, 0.10, 70, 'old')"""
+            )
+            await db.conn.execute(
+                """INSERT INTO candidates (ticker, title, market_price,
+                   model_probability, edge, gimme_score, research_memo)
+                   VALUES ('DUP-MKT', 'New', 0.55, 0.85, 0.15, 75, 'new')"""
+            )
+            await db.conn.commit()
+        # Should still only have one entry for DUP-MKT across all pages
+        all_items = await get_candidates(db_path, limit=100)
+        dup_items = [c for c in all_items if c.ticker == "DUP-MKT"]
+        assert len(dup_items) == 1
+        assert dup_items[0].title == "New"
+
     async def test_get_metrics(self, db_path: Path) -> None:
         metrics = await get_metrics(db_path)
         assert isinstance(metrics, MetricsResponse)

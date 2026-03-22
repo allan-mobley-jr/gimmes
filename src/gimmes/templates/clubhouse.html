@@ -330,6 +330,7 @@
                     <div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">
                         No candidates in pipeline
                     </div>
+                    <div id="candidates-sentinel" class="h-1"></div>
                 </div>
             </div>
         </div>
@@ -441,6 +442,14 @@
         let tradeLoading = false;
         let tradeExhausted = false;
         let tradesObserver = null;
+
+        // Paginated state for candidates
+        let candidateItems = [];
+        let candidateSeenTickers = new Set();
+        let candidateOldestId = null;
+        let candidateLoading = false;
+        let candidateExhausted = false;
+        let candidatesObserver = null;
 
         // ------------------------------------------------------------------
         // Formatting helpers
@@ -1174,20 +1183,19 @@
             renderTrades();
         }
 
-        function updateCandidates(candidates) {
+        function renderCandidates() {
             const container = document.getElementById('candidates-container');
-            const emptyEl = document.getElementById('candidates-empty');
 
-            if (!candidates || candidates.length === 0) {
-                container.innerHTML = '<div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">No candidates in pipeline</div>';
+            if (candidateItems.length === 0) {
+                container.innerHTML = '<div id="candidates-empty" class="flex items-center justify-center py-8 text-slate-500 text-sm">No candidates in pipeline</div>'
+                    + '<div id="candidates-sentinel" class="h-1"></div>';
                 return;
             }
 
             let html = '';
-            candidates.forEach(function(c, idx) {
+            candidateItems.forEach(function(c, idx) {
                 if (c.title) tickerTitles[c.ticker] = c.title;
                 const edgeClass = parseFloat(c.edge || 0) > 0 ? 'text-emerald-400' : 'text-red-400';
-                const memoId = 'memo-' + idx;
                 html += '<div class="bg-slate-700/30 border border-slate-600/30 rounded-lg p-3">'
                     + '<div class="flex items-center justify-between mb-1">'
                     + '<span class="text-cyan-400 font-mono font-semibold text-sm">' + escapeHtml(c.ticker || '--') + '</span>'
@@ -1208,7 +1216,53 @@
                 }
                 html += '</div>';
             });
+            html += '<div id="candidates-sentinel" class="h-1"></div>';
             container.innerHTML = html;
+            if (candidatesObserver) candidatesObserver.disconnect();
+            candidatesObserver = setupScrollObserver('candidates-sentinel', loadMoreCandidates);
+        }
+
+        function updateCandidates(candidates) {
+            if (!candidates || candidates.length === 0) return;
+            candidates.forEach(function(c) {
+                var existingIdx = candidateItems.findIndex(function(item) {
+                    return item.ticker === c.ticker;
+                });
+                if (existingIdx >= 0) {
+                    candidateItems[existingIdx] = c;
+                } else {
+                    candidateSeenTickers.add(c.ticker);
+                    candidateItems.unshift(c);
+                }
+            });
+            candidateItems.sort(function(a, b) { return b.id - a.id; });
+            if (candidateItems.length > 0) {
+                candidateOldestId = candidateItems[candidateItems.length - 1].id;
+            }
+            renderCandidates();
+        }
+
+        async function loadMoreCandidates() {
+            if (candidateLoading || candidateExhausted) return;
+            candidateLoading = true;
+            var url = '/api/candidates?limit=20';
+            if (candidateOldestId !== null) url += '&before=' + candidateOldestId;
+            var items = await fetchEndpoint(url);
+            candidateLoading = false;
+            if (items === null) return;
+            if (items.length === 0) {
+                candidateExhausted = true;
+                return;
+            }
+            items.forEach(function(c) {
+                if (!candidateSeenTickers.has(c.ticker)) {
+                    candidateSeenTickers.add(c.ticker);
+                    candidateItems.push(c);
+                }
+            });
+            candidateOldestId = items[items.length - 1].id;
+            if (items.length < 20) candidateExhausted = true;
+            renderCandidates();
         }
 
         function updateRecommendations(recs) {
@@ -1481,7 +1535,6 @@
                 { url: '/api/positions',  key: 'positions' },
                 { url: '/api/risk',       key: 'risk' },
                 { url: '/api/metrics',    key: 'metrics' },
-                { url: '/api/candidates', key: 'candidates' },
                 { url: '/api/config',     key: 'config' },
                 { url: '/api/status',     key: 'status' },
             ];
@@ -1489,6 +1542,7 @@
             // Fetch paginated panels separately
             var activityPromise = fetchEndpoint('/api/activity?limit=50');
             var tradesPromise = fetchEndpoint('/api/trades?limit=50');
+            var candidatesPromise = fetchEndpoint('/api/candidates?limit=20');
 
             const results = await Promise.all(
                 endpoints.map(function(ep) {
@@ -1530,6 +1584,18 @@
                 if (trData.length < 50) tradeExhausted = true;
                 renderTrades();
             }
+
+            // Initialize paginated candidates
+            var candData = await candidatesPromise;
+            if (candData && candData.length > 0) {
+                candData.forEach(function(c) {
+                    candidateSeenTickers.add(c.ticker);
+                    candidateItems.push(c);
+                });
+                candidateOldestId = candData[candData.length - 1].id;
+                if (candData.length < 20) candidateExhausted = true;
+                renderCandidates();
+            }
         }
 
         // ------------------------------------------------------------------
@@ -1541,6 +1607,7 @@
             connectSSE();
             activityObserver = setupScrollObserver('activity-sentinel', loadMoreActivity);
             tradesObserver = setupScrollObserver('trades-sentinel', loadMoreTrades);
+            candidatesObserver = setupScrollObserver('candidates-sentinel', loadMoreCandidates);
             document.getElementById('detail-modal-backdrop').addEventListener('click', closeModal);
             document.getElementById('detail-modal-close').addEventListener('click', closeModal);
             document.addEventListener('keydown', handleModalKeydown);
