@@ -758,9 +758,11 @@
                     if (item.ticker) {
                         const reqId = ++marketDetailRequestId;
                         fetchMarketDetail(item.ticker).then(function(md) {
-                            if (reqId !== marketDetailRequestId) return;
                             if (md && md.title) {
                                 tickerTitles[item.ticker] = md.title;
+                            }
+                            if (reqId !== marketDetailRequestId) return;
+                            if (md && md.title) {
                                 const titleEl = document.getElementById('modal-body-title');
                                 if (titleEl && titleEl.classList.contains('hidden')) {
                                     titleEl.textContent = md.title;
