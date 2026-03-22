@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-03-22
+
+### Fixed
+- Fix initial_prompt argument order in `_launch_claude_agent()` so agent sessions auto-start with the greeting prompt
+
 ## [0.1.2] - 2026-03-22
 
 ### Added
@@ -88,6 +93,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.1.3]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.3
 [0.1.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.2
 [0.1.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.1
 [0.1.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.0
