@@ -332,6 +332,8 @@ async def _delete_candidates_by_tickers(
     db: Database, tickers: set[str],
 ) -> int:
     """Delete candidates matching a set of tickers. Returns rows deleted."""
+    if not tickers:
+        return 0
     placeholders = ",".join("?" for _ in tickers)
     cursor = await db.conn.execute(
         f"DELETE FROM candidates WHERE ticker IN ({placeholders})",

@@ -84,7 +84,7 @@ class TestPruneCandidates:
         assert {row["ticker"] for row in rows} == {"FRESH"}
 
     async def test_prune_aged_out_custom_hours(self, db):
-        # 2 hours ago would survive default 72h but not 1h
+        # Fixed far-past timestamp for determinism — exceeds any max_age_hours
         await _insert(db, "RECENT", scanned_at="2020-06-01 00:00:00")
 
         counts = await prune_candidates(db, open_tickers=set(), max_age_hours=1)

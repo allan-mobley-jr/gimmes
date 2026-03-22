@@ -1122,6 +1122,7 @@ def prune_candidates_cmd(
 
     async def _prune() -> None:
         import logging
+        import sqlite3
 
         from gimmes.store.database import Database
         from gimmes.store.queries import get_position_tickers, prune_candidates
@@ -1130,7 +1131,16 @@ def prune_candidates_cmd(
         inactive_tickers: set[str] | None = None
 
         async with Database(config.db_path) as db:
-            open_tickers = await get_position_tickers(db, table=config.position_table)
+            try:
+                open_tickers = await get_position_tickers(
+                    db, table=config.position_table,
+                )
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc):
+                    logger.debug("Position table not found", exc_info=True)
+                    open_tickers = set()
+                else:
+                    raise
 
             if check_markets:
                 from gimmes.kalshi.client import KalshiClient
