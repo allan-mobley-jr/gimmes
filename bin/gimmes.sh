@@ -179,10 +179,14 @@ case "${1:-}" in
         fi
 
         latest_tag=$(latest_remote_tag)
-        update_label=""
 
         if [ -n "$latest_tag" ]; then
-            # Release mode: checkout the latest tag
+            # Release mode: short-circuit if HEAD is already at the latest tag
+            current_tag=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
+            if [ "$current_tag" = "$latest_tag" ]; then
+                echo "Already on latest version $latest_tag"
+                exit 0
+            fi
             if ! git checkout "$latest_tag" --quiet 2>/dev/null; then
                 echo "Error: could not checkout $latest_tag."
                 echo "Try: cd $REPO && git status"
@@ -190,7 +194,21 @@ case "${1:-}" in
             fi
             update_label="$latest_tag"
         else
-            # Dev mode: fast-forward to latest main
+            # Dev mode: short-circuit if HEAD already matches origin/main
+            local_head=$(git rev-parse HEAD 2>/dev/null) || {
+                echo "Error: could not determine current HEAD."
+                echo "Try: cd $REPO && git status"
+                exit 1
+            }
+            remote_head=$(git rev-parse origin/main 2>/dev/null) || {
+                echo "Error: could not determine origin/main."
+                echo "Try: cd $REPO && git fetch origin main"
+                exit 1
+            }
+            if [ "$local_head" = "$remote_head" ]; then
+                echo "Already on latest version (${local_head:0:7})"
+                exit 0
+            fi
             if ! git pull --ff-only origin main; then
                 echo "Error: could not fast-forward to latest main."
                 echo "Try: cd $REPO && git status"

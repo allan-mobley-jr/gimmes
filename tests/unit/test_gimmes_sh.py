@@ -305,3 +305,101 @@ class TestPostUpdateVenvBypass:
         )
         combined = result.stdout + result.stderr
         assert "virtual environment not found" not in combined
+
+
+# -- update short-circuit ----------------------------------------------------
+
+
+def _make_update_repo(
+    tmp_path: Path, *, tag: str | None = None, behind: int = 0
+) -> Path:
+    """Create a gimmes-like repo with an origin remote for update tests.
+
+    Args:
+        tag: If set, creates this tag. When *behind* is 0 the tag is on HEAD.
+        behind: Commits HEAD is behind the tip (tag or origin/main).
+    """
+    home = tmp_path / "gimmes_home"
+    origin = tmp_path / "origin.git"
+    repo = home / "repo"
+
+    run_setup(f'git init --bare "{origin}" --initial-branch=main --quiet')
+    run_setup(
+        f'git clone "{origin}" "{repo}" --quiet'
+        f' && git -C "{repo}" commit --allow-empty -m "init" --quiet'
+        f' && git -C "{repo}" push origin main --quiet'
+    )
+
+    if behind > 0:
+        # Add commits ahead of the current HEAD, push them, then reset back.
+        # Each commit string starts with ' && ', so prefix with a harmless 'true'.
+        commits = "".join(
+            f' && git -C "{repo}" commit --allow-empty -m "ahead{i}" --quiet'
+            for i in range(behind)
+        )
+        tag_cmds = f' && git -C "{repo}" tag {tag}' if tag else ""
+        push_refs = f"main {tag}" if tag else "main"
+        run_setup(
+            f"true{commits}{tag_cmds}"
+            f' && git -C "{repo}" push origin {push_refs} --quiet'
+            f' && git -C "{repo}" reset --hard HEAD~{behind} --quiet'
+        )
+    elif tag:
+        run_setup(
+            f'git -C "{repo}" tag {tag}'
+            f' && git -C "{repo}" push origin {tag} --quiet'
+        )
+
+    # Fake venv so the script passes the venv check
+    (repo / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
+    venv_python = repo / ".venv" / "bin" / "python"
+    venv_python.touch()
+    venv_python.chmod(0o755)
+
+    return home
+
+
+class TestUpdateShortCircuit:
+    """gimmes update should exit early when already on the latest version."""
+
+    def test_release_mode_already_on_latest(self, tmp_path: Path) -> None:
+        """HEAD at latest tag -> short-circuit with 'Already on latest'."""
+        home = _make_update_repo(tmp_path, tag="v0.1.0", behind=0)
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" update 2>&1'
+        )
+        assert result.returncode == 0
+        assert "Already on latest version v0.1.0" in result.stdout
+        assert "Updated to" not in result.stdout
+
+    def test_release_mode_behind_does_full_update(self, tmp_path: Path) -> None:
+        """HEAD behind latest tag -> no short-circuit."""
+        home = _make_update_repo(tmp_path, tag="v0.2.0", behind=1)
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" update 2>&1'
+        )
+        combined = result.stdout + result.stderr
+        assert "Already on latest" not in combined
+
+    def test_dev_mode_already_on_latest(self, tmp_path: Path) -> None:
+        """HEAD matches origin/main, no tags -> short-circuit."""
+        home = _make_update_repo(tmp_path, behind=0)
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" update 2>&1'
+        )
+        assert result.returncode == 0
+        assert "Already on latest version" in result.stdout
+        assert "Updated to" not in result.stdout
+
+    def test_dev_mode_behind_does_full_update(self, tmp_path: Path) -> None:
+        """HEAD behind origin/main, no tags -> no short-circuit."""
+        home = _make_update_repo(tmp_path, behind=2)
+        result = run_bash(
+            f'export GIMMES_HOME="{home}"; '
+            f'bash "{GIMMES_SH}" update 2>&1'
+        )
+        combined = result.stdout + result.stderr
+        assert "Already on latest" not in combined
