@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
 from gimmes.models.portfolio import Position
+from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
 from gimmes.store.queries import (
     get_position_tickers,
     insert_candidate,
+    insert_trade,
     prune_candidates,
     upsert_position,
 )
@@ -45,6 +48,36 @@ def _pos(ticker: str) -> Position:
         ticker=ticker, side="yes", count=10, avg_price=0.5,
         market_price=0.5, cost_basis=5.0,
     )
+
+
+def _trade(ticker: str) -> TradeDecision:
+    return TradeDecision(
+        ticker=ticker, action=TradeDecision.Action.OPEN,
+        side="yes", count=10, price=0.50,
+    )
+
+
+async def _create_paper_position(db: Database, ticker: str, count: int = 5) -> None:
+    """Create the paper_positions table and insert a single row."""
+    await db.conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_positions (
+            ticker TEXT NOT NULL,
+            side TEXT NOT NULL DEFAULT 'yes',
+            count INTEGER NOT NULL DEFAULT 0,
+            avg_price REAL NOT NULL DEFAULT 0,
+            market_price REAL NOT NULL DEFAULT 0,
+            cost_basis REAL NOT NULL DEFAULT 0,
+            market_value REAL NOT NULL DEFAULT 0,
+            unrealized_pnl REAL NOT NULL DEFAULT 0,
+            realized_pnl REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (ticker, side)
+        )"""
+    )
+    await db.conn.execute(
+        "INSERT INTO paper_positions (ticker, count) VALUES (?, ?)",
+        (ticker, count),
+    )
+    await db.conn.commit()
 
 
 class TestPruneCandidates:
@@ -204,25 +237,7 @@ class TestGetPositionTickers:
         assert result == set()
 
     async def test_custom_table(self, db):
-        # Create paper_positions table
-        await db.conn.execute(
-            """CREATE TABLE IF NOT EXISTS paper_positions (
-                ticker TEXT NOT NULL,
-                side TEXT NOT NULL DEFAULT 'yes',
-                count INTEGER NOT NULL DEFAULT 0,
-                avg_price REAL NOT NULL DEFAULT 0,
-                market_price REAL NOT NULL DEFAULT 0,
-                cost_basis REAL NOT NULL DEFAULT 0,
-                market_value REAL NOT NULL DEFAULT 0,
-                unrealized_pnl REAL NOT NULL DEFAULT 0,
-                realized_pnl REAL NOT NULL DEFAULT 0,
-                PRIMARY KEY (ticker, side)
-            )"""
-        )
-        await db.conn.execute(
-            "INSERT INTO paper_positions (ticker, count) VALUES ('PAPER-1', 5)"
-        )
-        await db.conn.commit()
+        await _create_paper_position(db, "PAPER-1")
 
         result = await get_position_tickers(db, table="paper_positions")
         assert result == {"PAPER-1"}
@@ -230,3 +245,43 @@ class TestGetPositionTickers:
     async def test_invalid_table_raises(self, db):
         with pytest.raises(ValueError, match="Invalid position table"):
             await get_position_tickers(db, table="evil_table")
+
+
+class TestGetPositionTickersStalenessWarning:
+    async def test_warns_when_stale(self, db, caplog):
+        """Warning when latest trade is newer than latest position update."""
+        await upsert_position(db, _pos("TICK-1"))
+        await insert_trade(db, _trade("TICK-1"))
+        # Push trade timestamp ahead of position updated_at
+        await db.conn.execute(
+            "UPDATE trades SET timestamp = datetime('now', '+1 minute') "
+            "WHERE ticker = 'TICK-1'"
+        )
+        await db.conn.commit()
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            result = await get_position_tickers(db)
+
+        assert "stale" in caplog.text.lower()
+        assert result == {"TICK-1"}
+
+    async def test_no_warning_when_fresh(self, db, caplog):
+        """No warning when positions are fresher than trades."""
+        await insert_trade(db, _trade("TICK-1"))
+        await upsert_position(db, _pos("TICK-1"))
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            result = await get_position_tickers(db)
+
+        assert "stale" not in caplog.text.lower()
+        assert result == {"TICK-1"}
+
+    async def test_no_warning_for_paper_positions(self, db, caplog):
+        """Staleness check is skipped for paper_positions table."""
+        await _create_paper_position(db, "PAPER-1")
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            result = await get_position_tickers(db, table="paper_positions")
+
+        assert "stale" not in caplog.text.lower()
+        assert result == {"PAPER-1"}
