@@ -585,17 +585,17 @@ class TestTradeRationalePropagation:
 # ---------------------------------------------------------------------------
 
 
+def _position_for_size_up():
+    from gimmes.models.portfolio import Position
+
+    return Position(
+        ticker="TEST-TICKER", side="yes", count=5,
+        avg_price=0.40, cost_basis=2.0,
+    )
+
+
 class TestSizeUpThesisAnchoring:
     """Verify size_up trades source thesis from the open trade, not candidates."""
-
-    @staticmethod
-    def _position_for_size_up():
-        from gimmes.models.portfolio import Position
-
-        return Position(
-            ticker="TEST-TICKER", side="yes", count=5,
-            avg_price=0.40, cost_basis=2.0,
-        )
 
     def _run_with_size_up(
         self,
@@ -607,7 +607,7 @@ class TestSizeUpThesisAnchoring:
         """Run the order CLI with patched thesis sources and capture the trade."""
         broker = _make_mock_broker(
             get_positions_side_effect=AsyncMock(
-                return_value=[self._position_for_size_up()],
+                return_value=[_position_for_size_up()],
             ),
         )
         sync_spy = AsyncMock()
@@ -693,7 +693,7 @@ class TestSizeUpThesisAnchoring:
         """sqlite3.Error during open trade lookup yields empty thesis."""
         broker = _make_mock_broker(
             get_positions_side_effect=AsyncMock(
-                return_value=[self._position_for_size_up()],
+                return_value=[_position_for_size_up()],
             ),
         )
         sync_spy = AsyncMock()
@@ -718,3 +718,75 @@ class TestSizeUpThesisAnchoring:
         assert trade is not None
         assert trade.thesis == ""
         candidate_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Thesis fetch structured error logging tests
+# ---------------------------------------------------------------------------
+
+
+class TestThesisFetchErrorLogging:
+    """Verify thesis fetch failures create structured DATA_INTEGRITY errors."""
+
+    def test_thesis_fetch_db_error_creates_structured_error(self) -> None:
+        """sqlite3.Error during thesis fetch records a DATA_INTEGRITY error."""
+        broker = _make_mock_broker()
+        sync_spy = AsyncMock()
+
+        with patch(
+            "gimmes.store.queries.get_thesis_for_ticker",
+            AsyncMock(side_effect=sqlite3.OperationalError("db locked")),
+        ):
+            result, _, mock_insert = _run_order_cli(
+                broker, sync_side_effect=sync_spy,
+            )
+
+        assert result.exit_code == 0
+        assert mock_insert.call_count >= 1
+        entry = mock_insert.call_args_list[0].args[1]
+        assert entry.severity == ErrorSeverity.WARNING
+        assert entry.category == ErrorCategory.DATA_INTEGRITY
+        assert entry.error_code == "thesis_fetch_failed"
+        assert "TEST-TICKER" in entry.message
+        ctx = json.loads(entry.context)
+        assert ctx == {
+            "ticker": "TEST-TICKER", "side": "yes",
+            "count": 10, "price": 0.4,
+        }
+
+    def test_size_up_thesis_fetch_db_error_creates_structured_error(self) -> None:
+        """sqlite3.Error during size-up thesis fetch records a DATA_INTEGRITY error."""
+        broker = _make_mock_broker(
+            get_positions_side_effect=AsyncMock(
+                return_value=[_position_for_size_up()],
+            ),
+        )
+        sync_spy = AsyncMock()
+
+        with (
+            patch(
+                "gimmes.store.queries.get_open_trade_for_ticker",
+                AsyncMock(side_effect=sqlite3.OperationalError("db locked")),
+            ),
+            patch(
+                "gimmes.store.queries.get_thesis_for_ticker",
+                AsyncMock(return_value="should not reach"),
+            ),
+        ):
+            result, _, mock_insert = _run_order_cli(
+                broker, sync_side_effect=sync_spy,
+                extra_args=["--size-up"],
+            )
+
+        assert result.exit_code == 0
+        assert mock_insert.call_count >= 1
+        entry = mock_insert.call_args_list[0].args[1]
+        assert entry.severity == ErrorSeverity.WARNING
+        assert entry.category == ErrorCategory.DATA_INTEGRITY
+        assert entry.error_code == "thesis_fetch_failed"
+        assert "TEST-TICKER" in entry.message
+        ctx = json.loads(entry.context)
+        assert ctx == {
+            "ticker": "TEST-TICKER", "side": "yes",
+            "count": 10, "price": 0.4,
+        }
