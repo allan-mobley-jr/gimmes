@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Generator
+from collections.abc import Iterator
 
 import pytest
 
@@ -28,7 +28,7 @@ class TestFormatKvTable:
 
 
 @pytest.fixture()
-def _tz_eastern() -> Generator[None]:
+def _tz_eastern() -> Iterator[None]:
     """Pin the local timezone to US/Eastern for deterministic tests."""
     orig = os.environ.get("TZ")
     os.environ["TZ"] = "US/Eastern"
