@@ -43,7 +43,7 @@ class TestCaddieShopCommand:
         assert "--name" in cmd
         assert "GIMMES Caddie Shop" in cmd
         # Initial prompt is a positional arg (not -p which is non-interactive)
-        assert cmd[-1] == "Hi, I am testplayer"
+        assert cmd[1] == "Hi, I am testplayer"
         assert "-p" not in cmd
         # Tools pre-approved so agent runs without permission prompts
         allowed = set(cmd[cmd.index("--allowedTools") + 1].split(","))
@@ -59,7 +59,7 @@ class TestCaddieShopCommand:
             caddie_shop()
 
         cmd = mock_run.call_args.args[0]
-        assert cmd[-1] == "Hi, I am there"
+        assert cmd[1] == "Hi, I am there"
 
     def test_reports_nonzero_exit(self) -> None:
         with (

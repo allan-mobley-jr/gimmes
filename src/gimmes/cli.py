@@ -2542,13 +2542,14 @@ def _launch_claude_agent(
     project_root = Path(__file__).resolve().parent.parent.parent
     console.print(opening_message)
 
-    cmd = [
-        claude_path, "--agent", agent,
-        "--name", session_name,
-        "--allowedTools", ",".join(allowed_tools),
-    ]
+    cmd = [claude_path]
     if initial_prompt is not None:
         cmd.append(initial_prompt)
+    cmd.extend([
+        "--agent", agent,
+        "--name", session_name,
+        "--allowedTools", ",".join(allowed_tools),
+    ])
 
     try:
         result = subprocess.run(

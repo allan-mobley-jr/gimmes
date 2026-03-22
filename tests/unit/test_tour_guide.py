@@ -43,7 +43,7 @@ class TestTourGuideCommand:
         assert "--name" in cmd
         assert "GIMMES Tour" in cmd
         # Initial prompt is a positional arg (not -p which is non-interactive)
-        assert cmd[-1] == "Hi, I am testplayer"
+        assert cmd[1] == "Hi, I am testplayer"
         assert "-p" not in cmd
         # Tools pre-approved so agent runs without permission prompts
         allowed = set(cmd[cmd.index("--allowedTools") + 1].split(","))
@@ -59,7 +59,7 @@ class TestTourGuideCommand:
             tour_guide()
 
         cmd = mock_run.call_args.args[0]
-        assert cmd[-1] == "Hi, I am there"
+        assert cmd[1] == "Hi, I am there"
 
     def test_reports_nonzero_exit(self) -> None:
         with (
@@ -79,7 +79,7 @@ class TestTourGuideCommand:
                 tour_guide()
             assert exc_info.value.exit_code == 130
 
-    def test_os_error_exits_with_message(self, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_os_error_exits_with_message(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run", side_effect=OSError("Permission denied")),
@@ -107,5 +107,3 @@ class TestStarterAgent:
         content = self._agent_path.read_text()
         assert "name: Starter" in content
         assert "tools:" in content
-
-
