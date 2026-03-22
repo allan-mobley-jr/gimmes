@@ -864,6 +864,7 @@ def order(
                 if result.status in ("executed", "resting"):
                     from gimmes.models.trade import TradeDecision
                     from gimmes.store.queries import (
+                        get_open_trade_for_ticker,
                         get_thesis_for_ticker,
                         sync_positions_with_trade,
                     )
@@ -878,7 +879,31 @@ def order(
                         trade_action = TradeDecision.Action.CLOSE
                     if is_buy:
                         try:
-                            thesis = await get_thesis_for_ticker(db, ticker)
+                            thesis = ""
+                            if size_up:
+                                open_trade = await get_open_trade_for_ticker(
+                                    db, ticker,
+                                )
+                                thesis = (
+                                    open_trade.get("thesis", "")
+                                    if open_trade
+                                    else ""
+                                )
+                                if not thesis:
+                                    reason = (
+                                        "open trade has empty thesis"
+                                        if open_trade
+                                        else "no open trade found"
+                                    )
+                                    logger.warning(
+                                        "Size-up thesis fallback for %s "
+                                        "(%s); using candidate thesis",
+                                        ticker, reason,
+                                    )
+                            if not thesis:
+                                thesis = await get_thesis_for_ticker(
+                                    db, ticker,
+                                )
                         except sqlite3.Error:
                             logger.warning(
                                 "Failed to fetch thesis for %s; "

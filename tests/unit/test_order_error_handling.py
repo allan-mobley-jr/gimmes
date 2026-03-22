@@ -578,3 +578,143 @@ class TestTradeRationalePropagation:
         assert result.exit_code == 0
         assert trade is not None
         assert trade.rationale == "closer order"
+
+
+# ---------------------------------------------------------------------------
+# Size-up thesis anchoring tests
+# ---------------------------------------------------------------------------
+
+
+class TestSizeUpThesisAnchoring:
+    """Verify size_up trades source thesis from the open trade, not candidates."""
+
+    @staticmethod
+    def _position_for_size_up():
+        from gimmes.models.portfolio import Position
+
+        return Position(
+            ticker="TEST-TICKER", side="yes", count=5,
+            avg_price=0.40, cost_basis=2.0,
+        )
+
+    def _run_with_size_up(
+        self,
+        *,
+        open_trade_return: dict | None,
+        candidate_thesis: str = "diverged candidate thesis",
+        extra_args: list[str] | None = None,
+    ):
+        """Run the order CLI with patched thesis sources and capture the trade."""
+        broker = _make_mock_broker(
+            get_positions_side_effect=AsyncMock(
+                return_value=[self._position_for_size_up()],
+            ),
+        )
+        sync_spy = AsyncMock()
+
+        with (
+            patch(
+                "gimmes.store.queries.get_open_trade_for_ticker",
+                AsyncMock(return_value=open_trade_return),
+            ) as open_trade_mock,
+            patch(
+                "gimmes.store.queries.get_thesis_for_ticker",
+                AsyncMock(return_value=candidate_thesis),
+            ) as candidate_mock,
+        ):
+            result, _, _ = _run_order_cli(
+                broker, sync_side_effect=sync_spy,
+                extra_args=["--size-up"] + (extra_args or []),
+            )
+
+        trade = sync_spy.call_args.args[2] if sync_spy.call_count else None
+        return result, trade, open_trade_mock, candidate_mock
+
+    def test_size_up_uses_thesis_from_open_trade(self) -> None:
+        """Size-up should carry the original open trade's thesis."""
+        result, trade, _, candidate_mock = self._run_with_size_up(
+            open_trade_return={"thesis": "original open thesis"},
+        )
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.thesis == "original open thesis"
+        assert trade.rationale == "original open thesis"
+        candidate_mock.assert_not_called()
+
+    def test_size_up_falls_back_when_no_open_trade(self) -> None:
+        """When no open trade exists, size-up falls back to candidate thesis."""
+        result, trade, _, _ = self._run_with_size_up(
+            open_trade_return=None,
+            candidate_thesis="candidate thesis",
+        )
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.thesis == "candidate thesis"
+
+    def test_size_up_falls_back_when_open_trade_thesis_empty(self) -> None:
+        """When open trade thesis is empty, size-up falls back to candidates."""
+        result, trade, _, _ = self._run_with_size_up(
+            open_trade_return={"thesis": ""},
+            candidate_thesis="candidate thesis",
+        )
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.thesis == "candidate thesis"
+
+    def test_open_trade_does_not_use_open_trade_lookup(self) -> None:
+        """Normal open trades should NOT call get_open_trade_for_ticker."""
+        broker = _make_mock_broker()
+        sync_spy = AsyncMock()
+
+        with (
+            patch(
+                "gimmes.store.queries.get_open_trade_for_ticker",
+                AsyncMock(return_value=None),
+            ) as open_trade_mock,
+            patch(
+                "gimmes.store.queries.get_thesis_for_ticker",
+                AsyncMock(return_value="candidate thesis"),
+            ),
+        ):
+            result, _, _ = _run_order_cli(
+                broker, sync_side_effect=sync_spy,
+            )
+
+        trade = sync_spy.call_args.args[2] if sync_spy.call_count else None
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.thesis == "candidate thesis"
+        open_trade_mock.assert_not_called()
+
+    def test_size_up_handles_db_error_on_open_trade_lookup(self) -> None:
+        """sqlite3.Error during open trade lookup yields empty thesis."""
+        broker = _make_mock_broker(
+            get_positions_side_effect=AsyncMock(
+                return_value=[self._position_for_size_up()],
+            ),
+        )
+        sync_spy = AsyncMock()
+
+        with (
+            patch(
+                "gimmes.store.queries.get_open_trade_for_ticker",
+                AsyncMock(side_effect=sqlite3.OperationalError("db locked")),
+            ),
+            patch(
+                "gimmes.store.queries.get_thesis_for_ticker",
+                AsyncMock(return_value="should not reach"),
+            ) as candidate_mock,
+        ):
+            result, _, _ = _run_order_cli(
+                broker, sync_side_effect=sync_spy,
+                extra_args=["--size-up"],
+            )
+
+        trade = sync_spy.call_args.args[2] if sync_spy.call_count else None
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.thesis == ""
+        candidate_mock.assert_not_called()
