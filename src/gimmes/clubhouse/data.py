@@ -298,7 +298,7 @@ async def get_candidates(
                 params.append(before_id)
             sql += " ORDER BY c.id DESC LIMIT ?"
             params.append(limit)
-            cursor = await conn.execute(sql, params)
+            cursor = await conn.execute(sql, tuple(params))
             rows = await cursor.fetchall()
             for row in rows:
                 items.append(CandidateItem(
