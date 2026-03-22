@@ -145,6 +145,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    <div id="positions-sentinel" class="h-1"></div>
                 </div>
             </div>
 
@@ -423,7 +424,14 @@
         let activityPhaseFilter = 'all';
         const tradeEmptyMsgs = { all: 'No entries', trades: 'No trades', skips: 'No skips' };
         let positionSideFilter = 'all';
-        let lastPositions = null;
+
+        // Paginated state for positions
+        let positionItems = [];
+        let positionOldestId = null;
+        let positionLoading = false;
+        let positionExhausted = false;
+        let positionVersion = 0;
+        let positionsObserver = null;
         let evtSource = null;
         let modalTriggerEl = null;
         const tickerTitles = {};
@@ -850,17 +858,17 @@
             }
         }
 
-        function updatePositions(positions) {
-            lastPositions = positions;
+        function renderPositions() {
             const tbody = document.getElementById('positions-body');
-            if (!positions) positions = [];
-            positions.forEach(function(p) { if (p.title) tickerTitles[p.ticker] = p.title; });
+            positionItems.forEach(function(p) { if (p.title) tickerTitles[p.ticker] = p.title; });
             const visible = positionSideFilter === 'all'
-                ? positions
-                : positions.filter(function(p) { return (p.side || '').toLowerCase() === positionSideFilter; });
+                ? positionItems
+                : positionItems.filter(function(p) { return (p.side || '').toLowerCase() === positionSideFilter; });
             if (visible.length === 0) {
                 const msg = positionSideFilter === 'all' ? 'No open positions' : 'No ' + positionSideFilter.toUpperCase() + ' positions';
                 tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
+                if (positionsObserver) positionsObserver.disconnect();
+                positionsObserver = setupScrollObserver('positions-sentinel', loadMorePositions);
                 return;
             }
             let html = '';
@@ -880,6 +888,42 @@
             });
             tbody.innerHTML = html;
             attachRowClickHandlers(tbody, 'data-pos-idx', visible, 'Position Detail', buildPositionModalBody);
+            if (positionsObserver) positionsObserver.disconnect();
+            positionsObserver = setupScrollObserver('positions-sentinel', loadMorePositions);
+        }
+
+        // SSE always sends the complete position list (server uses limit=200,
+        // positions are bounded by max_open_positions). Pagination only applies
+        // to the initial REST load before SSE connects.
+        function updatePositions(positions) {
+            if (!positions) positions = [];
+            positionItems = positions;
+            positionExhausted = true;
+            positionVersion++;
+            if (positionItems.length > 0) {
+                positionOldestId = positionItems[positionItems.length - 1].id;
+            }
+            renderPositions();
+        }
+
+        async function loadMorePositions() {
+            if (positionLoading || positionExhausted) return;
+            positionLoading = true;
+            var versionAtStart = positionVersion;
+            var url = '/api/positions?limit=10';
+            if (positionOldestId !== null) url += '&before=' + positionOldestId;
+            var items = await fetchEndpoint(url);
+            positionLoading = false;
+            if (items === null) return;
+            if (versionAtStart !== positionVersion) return;
+            if (items.length === 0) {
+                positionExhausted = true;
+                return;
+            }
+            positionItems.push(...items);
+            positionOldestId = items[items.length - 1].id;
+            if (items.length < 10) positionExhausted = true;
+            renderPositions();
         }
 
         function updateRisk(risk) {
@@ -1349,7 +1393,7 @@
             const labels = { all: 'All sides', yes: 'YES only', no: 'NO only' };
             positionSideFilter = cycle[(cycle.indexOf(positionSideFilter) + 1) % cycle.length];
             document.getElementById('filter-positions-btn').textContent = labels[positionSideFilter];
-            if (lastPositions) updatePositions(lastPositions);
+            renderPositions();
         }
 
         function updateStatus(status) {
@@ -1533,7 +1577,6 @@
         async function initialLoad() {
             const endpoints = [
                 { url: '/api/portfolio',  key: 'portfolio' },
-                { url: '/api/positions',  key: 'positions' },
                 { url: '/api/risk',       key: 'risk' },
                 { url: '/api/metrics',    key: 'metrics' },
                 { url: '/api/config',     key: 'config' },
@@ -1541,6 +1584,7 @@
             ];
 
             // Fetch paginated panels separately
+            var positionsPromise = fetchEndpoint('/api/positions?limit=10');
             var activityPromise = fetchEndpoint('/api/activity?limit=50');
             var tradesPromise = fetchEndpoint('/api/trades?limit=50');
             var candidatesPromise = fetchEndpoint('/api/candidates?limit=20');
@@ -1560,6 +1604,15 @@
 
             if (Object.keys(merged).length > 0) {
                 updateDashboard(merged);
+            }
+
+            // Initialize paginated positions
+            var posData = await positionsPromise;
+            if (posData && posData.length > 0) {
+                positionItems.push(...posData);
+                positionOldestId = posData[posData.length - 1].id;
+                if (posData.length < 10) positionExhausted = true;
+                renderPositions();
             }
 
             // Initialize paginated activity
@@ -1606,6 +1659,7 @@
             initChart();
             initialLoad();
             connectSSE();
+            positionsObserver = setupScrollObserver('positions-sentinel', loadMorePositions);
             activityObserver = setupScrollObserver('activity-sentinel', loadMoreActivity);
             tradesObserver = setupScrollObserver('trades-sentinel', loadMoreTrades);
             candidatesObserver = setupScrollObserver('candidates-sentinel', loadMoreCandidates);

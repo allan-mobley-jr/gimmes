@@ -96,6 +96,11 @@ _INSERT_CANDIDATE_SQL = """INSERT INTO candidates (ticker, title, market_price,
     model_probability, edge, gimme_score, research_memo)
     VALUES (?, ?, ?, ?, ?, ?, ?)"""
 
+_INSERT_POSITION_SQL = """INSERT INTO paper_positions
+    (ticker, side, count, avg_price, cost_basis,
+     market_price, unrealized_pnl, realized_pnl)
+    VALUES (?, 'yes', 5, 0.50, 2.50, 0.55, 0.25, 0.0)"""
+
 
 # ---------------------------------------------------------------------------
 # Model tests
@@ -140,6 +145,47 @@ class TestDataLayer:
         assert positions[0].ticker == "TEST-YES"
         assert positions[0].count == 10
         assert positions[0].market_value == pytest.approx(7.0)  # 10 * 0.70
+
+    async def test_get_positions_returns_id(self, db_path: Path) -> None:
+        """Position items include an id field for pagination."""
+        positions = await get_positions(db_path)
+        assert len(positions) == 1
+        assert positions[0].id > 0
+
+    async def test_get_positions_respects_limit(self, db_path: Path) -> None:
+        """Limit parameter caps the number of returned positions."""
+        async with Database(db_path) as db:
+            for i in range(5):
+                await db.conn.execute(_INSERT_POSITION_SQL, (f"POS-{i}",))
+            await db.conn.commit()
+
+        # 5 new + 1 from fixture = 6 total
+        all_pos = await get_positions(db_path, limit=200)
+        assert len(all_pos) == 6
+
+        page = await get_positions(db_path, limit=3)
+        assert len(page) == 3
+
+    async def test_get_positions_before_id(self, db_path: Path) -> None:
+        """before_id paginates through positions."""
+        async with Database(db_path) as db:
+            for i in range(5):
+                await db.conn.execute(_INSERT_POSITION_SQL, (f"POS-{i}",))
+            await db.conn.commit()
+
+        page1 = await get_positions(db_path, limit=3)
+        assert len(page1) == 3
+
+        page2 = await get_positions(db_path, limit=3, before_id=page1[-1].id)
+        assert len(page2) == 3
+
+        # No overlap
+        page1_ids = {p.id for p in page1}
+        page2_ids = {p.id for p in page2}
+        assert page1_ids.isdisjoint(page2_ids)
+
+        # page2 ids are all smaller than page1's smallest
+        assert all(p2_id < min(page1_ids) for p2_id in page2_ids)
 
     async def test_get_trades(self, db_path: Path) -> None:
         trades = await get_trades(db_path)
