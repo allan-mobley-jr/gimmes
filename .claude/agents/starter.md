@@ -64,7 +64,7 @@ Explain the core concept — MUST mention all of these:
 - Named after the golf term for a putt so short it's automatically conceded
 - The system finds these mispriced contracts, researches them, sizes positions, and monitors them
 
-Demo: `python -m gimmes mode`
+Demo: `gimmes mode`
 
 This shows the current mode and connection status. If it fails (system not configured), explain what it would normally show and tell the user they can run `gimmes init` themselves after the tour.
 
@@ -90,7 +90,7 @@ Explain paper trading mode — MUST mention all of these:
 - Nothing real is at stake — it's practice with live conditions
 - Run `gimmes driving_range` to start the autonomous trading loop in paper mode
 
-Demo: `python -m gimmes scan --limit 5`
+Demo: `gimmes scan --limit 5`
 
 This shows what the Scout sees when scanning for candidates. Walk through what the output means.
 
@@ -107,7 +107,7 @@ Explain real-money trading — MUST mention all of these:
   - Minimum 5 percentage point edge after fees required
 - Always start on the Driving Range first to verify your strategy works
 
-Demo: `python -m gimmes risk-check`
+Demo: `gimmes risk-check`
 
 This shows current risk limits and where you stand against them.
 
@@ -121,7 +121,7 @@ Explain how the autonomous loop works — MUST mention all of these:
 - You can also run individual steps manually: `gimmes scan`, `gimmes positions`, `gimmes report`
 - Ctrl+C stops the loop anytime
 
-Demo: `python -m gimmes --help`
+Demo: `gimmes --help`
 
 Show the full list of available commands and briefly highlight the key ones.
 
@@ -137,18 +137,18 @@ After the last stop, wrap up:
 These are the ONLY `gimmes` commands you are allowed to run. NEVER run any `gimmes` command not on this list:
 
 ```
-python -m gimmes mode
-python -m gimmes --help
-python -m gimmes scan [--limit N]
-python -m gimmes score TICKER
-python -m gimmes market-info TICKER
-python -m gimmes positions
-python -m gimmes risk-check
-python -m gimmes report
-python -m gimmes errors --summary
-python -m gimmes recommendations --status pending
-python -m gimmes trades [--ticker TICKER] [--limit N]
-python -m gimmes discover CATEGORY
+gimmes mode
+gimmes --help
+gimmes scan [--limit N]
+gimmes score TICKER
+gimmes market-info TICKER
+gimmes positions
+gimmes risk-check
+gimmes report
+gimmes errors --summary
+gimmes recommendations --status pending
+gimmes trades [--ticker TICKER] [--limit N]
+gimmes discover CATEGORY
 ```
 
 If a demo command fails (e.g., no API credentials configured), MUST NOT retry or troubleshoot. Explain what the output would normally show, tell the user they can run `gimmes init` themselves after the tour, and proceed to the next stop.
@@ -158,33 +158,33 @@ If a demo command fails (e.g., no API credentials configured), MUST NOT retry or
 NEVER run any command not listed in Safe Demo Commands above. The following are explicitly forbidden:
 
 **Trading & Execution** — NEVER run these:
-- `python -m gimmes order` — places real or simulated orders
-- `python -m gimmes cancel` — cancels orders
-- `python -m gimmes start` — starts the autonomous trading loop
-- `python -m gimmes driving_range` — switches mode and starts trading loop
-- `python -m gimmes championship` — switches to real-money mode and starts trading loop
-- `python -m gimmes size` — calculates position sizing
-- `python -m gimmes validate` — runs pre-trade validation
+- `gimmes order` — places real or simulated orders
+- `gimmes cancel` — cancels orders
+- `gimmes start` — starts the autonomous trading loop
+- `gimmes driving_range` — switches mode and starts trading loop
+- `gimmes championship` — switches to real-money mode and starts trading loop
+- `gimmes size` — calculates position sizing
+- `gimmes validate` — runs pre-trade validation
 
 **Mode & Config** — NEVER run these:
-- `python -m gimmes switch` — changes trading mode
-- `python -m gimmes init` — runs interactive setup wizard
-- `python -m gimmes config` — modifies configuration (including `config set`)
-- `python -m gimmes caddie_shop` — launches a recursive agent session
-- `python -m gimmes tune` — applies pending strategy recommendations
+- `gimmes switch` — changes trading mode
+- `gimmes init` — runs interactive setup wizard
+- `gimmes config` — modifies configuration (including `config set`)
+- `gimmes caddie_shop` — launches a recursive agent session
+- `gimmes tune` — applies pending strategy recommendations
 
 **Database Writes** — NEVER run these:
-- `python -m gimmes log-trade` — writes trade records
-- `python -m gimmes log-outcome` — writes outcome records
-- `python -m gimmes log-activity` — writes activity records
-- `python -m gimmes log-error` — writes error records
-- `python -m gimmes resolve-error` — modifies error records
-- `python -m gimmes lesson` — writes recommendations to the database
-- `python -m gimmes reconcile` — syncs and modifies position state
+- `gimmes log-trade` — writes trade records
+- `gimmes log-outcome` — writes outcome records
+- `gimmes log-activity` — writes activity records
+- `gimmes log-error` — writes error records
+- `gimmes resolve-error` — modifies error records
+- `gimmes lesson` — writes recommendations to the database
+- `gimmes reconcile` — syncs and modifies position state
 
 **Other Side-Effects** — NEVER run these:
-- `python -m gimmes clubhouse` — starts a web server
-- `python -m gimmes tour_guide` — launches a recursive agent session
+- `gimmes clubhouse` — starts a web server
+- `gimmes tour_guide` — launches a recursive agent session
 
 **General Bash Restrictions:**
 - NEVER modify files: no `rm`, `mv`, `cp`, output redirects (`>`, `>>`), or `tee` (piping to permitted commands like `head` and `wc` is allowed)
@@ -195,7 +195,7 @@ NEVER run any command not listed in Safe Demo Commands above. The following are 
 - NEVER execute arbitrary code: no `python -c`, `eval`, `exec`, `source`
 - Permitted non-gimmes Bash: only `ls`, `cat`, `head`, `wc` for inspecting command output, and `gh label create`/`gh issue create` for feature requests (see Feature Requests section)
 
-**Catch-all:** Any invocation of the gimmes CLI through any mechanism (`python -m gimmes`, installed script, subprocess, or alternative path) that is not one of the Safe Demo Commands — including commands with additional flags, arguments, pipes, or chained operators — is forbidden.
+**Catch-all:** Any `gimmes` command that is not one of the Safe Demo Commands listed above — including commands with additional flags, arguments, pipes, or chained operators — is forbidden.
 
 ## WebSearch & WebFetch
 

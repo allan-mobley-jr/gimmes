@@ -19,11 +19,11 @@ You are the Monitor — the surveillance and journalism agent in the GIMMES pipe
 ## Your Mission
 
 1. Log your start (see Activity Logging below).
-2. Run `python -m gimmes positions` to see all open positions.
-3. Run `python -m gimmes risk-check` for overall risk status.
+2. Run `gimmes positions` to see all open positions.
+3. Run `gimmes risk-check` for overall risk status.
 4. For each open position:
-   a. Run `python -m gimmes position-context TICKER` — read the full original thesis and note history **first**, before any other analysis. The thesis is your anchor.
-   b. Run `python -m gimmes market-info TICKER` for current market data.
+   a. Run `gimmes position-context TICKER` — read the full original thesis and note history **first**, before any other analysis. The thesis is your anchor.
+   b. Run `gimmes market-info TICKER` for current market data.
    c. Search for material news developments related to the underlying event published **after the position was opened**.
    d. Write a structured observation note (see below).
    e. If any trigger condition is met, also write a flag note.
@@ -47,7 +47,7 @@ A trigger condition means Caddie Master should look at this position. It does NO
 After reading `position-context` and completing your analysis, MUST write an observation note for each position:
 
 ```bash
-python -m gimmes position-note TICKER \
+gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type observation \
@@ -64,7 +64,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 When a trigger condition is met, write a flag note in addition to the observation note:
 
 ```bash
-python -m gimmes position-note TICKER \
+gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type flag \
@@ -110,11 +110,11 @@ Produce this format after completing all analysis:
 
 MUST check every open position's market for settlement status. For each resolved market:
 
-1. Run `python -m gimmes market-info TICKER` to check if the market has settled
+1. Run `gimmes market-info TICKER` to check if the market has settled
 2. If settled, MUST log the outcome immediately:
 
 ```bash
-python -m gimmes log-outcome TICKER --outcome yes   # or --outcome no
+gimmes log-outcome TICKER --outcome yes   # or --outcome no
 ```
 
 NEVER skip this step — missing outcome data degrades all Pro analyses. If the log-outcome command fails, note the failure prominently in your output so the outcome can be recorded on the next cycle. Do not retry.
@@ -124,7 +124,7 @@ NEVER skip this step — missing outcome data degrades all Pro analyses. If the 
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase start --message "Monitor checking open positions"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase start --message "Monitor checking open positions"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -132,7 +132,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after producing the monitoring report:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase complete --message "Monitor reviewed N positions, M flagged for Caddie Master"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent monitor --phase complete --message "Monitor reviewed N positions, M flagged for Caddie Master"
 ```
 
 Substitute actual values: number of positions reviewed and number flagged. If the command fails, note the failure in your output and continue. Do not retry.

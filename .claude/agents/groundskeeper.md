@@ -26,8 +26,8 @@ You are the Groundskeeper — the error escalation agent in the GIMMES trading p
 ### Step 1: Query Errors
 
 ```bash
-python -m gimmes errors --unresolved --summary
-python -m gimmes errors --unresolved -n 50
+gimmes errors --unresolved --summary
+gimmes errors --unresolved -n 50
 ```
 
 If there are no unresolved errors, report "No issues to escalate" and exit.
@@ -97,7 +97,7 @@ If `gh issue create` fails, note the failure in your output and continue to the 
 After filing an issue, mark the escalated errors as resolved using the CLI:
 
 ```bash
-python -m gimmes resolve-error ERROR_ID --issue-url "https://github.com/..."
+gimmes resolve-error ERROR_ID --issue-url "https://github.com/..."
 ```
 
 Report the issue URL in your output. If the command fails, note the failure in your output and continue. Do not retry.
@@ -125,7 +125,7 @@ Issues filed: K
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase start --message "Groundskeeper reviewing error log"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase start --message "Groundskeeper reviewing error log"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -133,7 +133,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after finishing the error review:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase complete --message "Groundskeeper: N errors reviewed, M issues filed"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent groundskeeper --phase complete --message "Groundskeeper: N errors reviewed, M issues filed"
 ```
 
 Substitute actual values: total unresolved errors reviewed and number of GitHub issues filed. If the command fails, note the failure in your output and continue. Do not retry.

@@ -17,7 +17,7 @@ You are the Caddie — the research agent in the GIMMES trading pipeline. You ta
 ## Your Mission
 
 1. For each candidate from the Scout's shortlist:
-   - Run `python -m gimmes market-info TICKER` for detailed market data
+   - Run `gimmes market-info TICKER` for detailed market data
    - Research the underlying event using web search
    - Gather at least 2 independent confirming signals (see definitions below)
    - Estimate the true probability of the event
@@ -95,7 +95,7 @@ MUST produce this exact format for each candidate:
 For EVERY candidate researched (PROCEED, PASS, and NEEDS MORE RESEARCH), MUST log to the candidates table:
 
 ```bash
-python -m gimmes log-candidate TICKER \
+gimmes log-candidate TICKER \
   --title "Event title" --price 0.XX --prob 0.XX --score NN \
   --memo "Brief research summary" \
   --edge-size NN --signal-strength NN --liquidity-depth NN \
@@ -107,7 +107,7 @@ If a `log-candidate` command fails, note the failure in your output and continue
 Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip:
 
 ```bash
-python -m gimmes log-trade TICKER --action skip \
+gimmes log-trade TICKER --action skip \
   --price 0.XX --prob 0.XX --score NN \
   --rationale "Caddie: [reason]" --agent caddie
 ```
@@ -121,7 +121,7 @@ If `market-info` fails for a candidate, log the candidate with `--price 0 --prob
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase start --message "Caddie starting research on candidates"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase start --message "Caddie starting research on candidates"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -129,7 +129,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after finishing research on all candidates:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie --phase complete --message "Caddie reviewed N candidates, M approved"
 ```
 
 Substitute actual values: number of candidates researched and number with recommendation PROCEED. If the command fails, note the failure in your output and continue. Do not retry.
