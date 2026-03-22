@@ -2499,6 +2499,16 @@ def clubhouse(
 # ---------------------------------------------------------------------------
 
 
+def _get_username() -> str:
+    """Return the OS username, or ``'there'`` as a safe fallback."""
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "there"
+
+
 def _launch_claude_agent(
     agent: str,
     session_name: str,
@@ -2559,13 +2569,6 @@ def _launch_claude_agent(
 @app.command(name="tour_guide", rich_help_panel="Setup & Config")
 def tour_guide() -> None:
     """Launch The Starter — an interactive GIMMES product tour."""
-    import getpass
-
-    try:
-        username = getpass.getuser()
-    except Exception:
-        username = "there"
-
     _launch_claude_agent(
         "Starter", "GIMMES Tour",
         opening_message=(
@@ -2574,7 +2577,7 @@ def tour_guide() -> None:
         ),
         closing_message="\n[yellow]Tour ended. Happy trading![/yellow]",
         interrupt_message="\n[dim]Tour interrupted.[/dim]",
-        initial_prompt=f"Hi, I am {username}",
+        initial_prompt=f"Hi, I am {_get_username()}",
     )
 
 
@@ -2589,6 +2592,7 @@ def caddie_shop() -> None:
         ),
         closing_message="\n[yellow]Caddie Shop session ended.[/yellow]",
         interrupt_message="\n[dim]Caddie Shop closed.[/dim]",
+        initial_prompt=f"Hi, I am {_get_username()}",
     )
 
 
