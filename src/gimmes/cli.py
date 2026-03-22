@@ -954,7 +954,9 @@ def order(
 
                     await sync_positions(db, positions_for_sync)
             except sqlite3.Error as exc:
-                logger.warning("Position sync failed (database): %s", exc)
+                logger.warning(
+                    "Position sync failed (database): %s", exc, exc_info=True,
+                )
                 try:
                     await insert_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.WARNING,
@@ -980,7 +982,9 @@ def order(
                 )
                 console.print(_RECONCILE_HINT)
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-                logger.warning("Position sync failed: %s", exc)
+                logger.warning(
+                    "Position sync failed: %s", exc, exc_info=True,
+                )
                 try:
                     await insert_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.WARNING,
