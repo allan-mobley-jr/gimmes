@@ -2506,8 +2506,12 @@ def _launch_claude_agent(
     opening_message: str,
     closing_message: str,
     interrupt_message: str,
+    initial_prompt: str | None = None,
 ) -> None:
     """Find the 'claude' CLI and launch a named agent session.
+
+    If *initial_prompt* is provided it is passed as a positional argument
+    so the agent session opens in interactive mode with pre-filled input.
 
     Handles missing binary, KeyboardInterrupt, OSError, and non-zero exit.
     """
@@ -2523,9 +2527,13 @@ def _launch_claude_agent(
     project_root = Path(__file__).resolve().parent.parent.parent
     console.print(opening_message)
 
+    cmd = [claude_path, "--agent", agent, "--name", session_name]
+    if initial_prompt is not None:
+        cmd.append(initial_prompt)
+
     try:
         result = subprocess.run(
-            [claude_path, "--agent", agent, "--name", session_name],
+            cmd,
             cwd=project_root,
             check=False,
         )
@@ -2551,6 +2559,13 @@ def _launch_claude_agent(
 @app.command(name="tour_guide", rich_help_panel="Setup & Config")
 def tour_guide() -> None:
     """Launch The Starter — an interactive GIMMES product tour."""
+    import getpass
+
+    try:
+        username = getpass.getuser()
+    except Exception:
+        username = "there"
+
     _launch_claude_agent(
         "Starter", "GIMMES Tour",
         opening_message=(
@@ -2559,6 +2574,7 @@ def tour_guide() -> None:
         ),
         closing_message="\n[yellow]Tour ended. Happy trading![/yellow]",
         interrupt_message="\n[dim]Tour interrupted.[/dim]",
+        initial_prompt=f"Hi, I am {username}",
     )
 
 

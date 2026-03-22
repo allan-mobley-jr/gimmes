@@ -32,6 +32,7 @@ class TestTourGuideCommand:
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("getpass.getuser", return_value="testplayer"),
         ):
             tour_guide()
 
@@ -41,7 +42,21 @@ class TestTourGuideCommand:
         assert "Starter" in cmd
         assert "--name" in cmd
         assert "GIMMES Tour" in cmd
+        # Initial prompt is a positional arg (not -p which is non-interactive)
+        assert cmd[-1] == "Hi, I am testplayer"
+        assert "-p" not in cmd
         assert mock_run.call_args.kwargs["cwd"] is not None
+
+    def test_username_fallback_on_getuser_failure(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("getpass.getuser", side_effect=KeyError("getpwuid")),
+        ):
+            tour_guide()
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[-1] == "Hi, I am there"
 
     def test_reports_nonzero_exit(self) -> None:
         with (
