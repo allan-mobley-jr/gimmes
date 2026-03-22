@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-03-22
+
+### Added
+- Candidate lifecycle management with pruning and position filtering —
+  candidates exit the pipeline when opened as a position, market inactive,
+  aged out, or stale duplicates; new `prune-candidates` CLI command
+- `gimmes uninstall` command
+- Scroll-to-load pagination for Candidate Pipeline and Open Positions
+  dashboard panels
+- Local timezone display with dates for user-facing timestamps
+- Activity logging when Caddie Master skips all candidates
+- Skip-logging for Step 1 risk-limit decision gates
+- Short-circuit `gimmes update` when already on latest version
+- Staleness check for position tickers
+- Caddie thesis carried forward as trade rationale
+
+### Fixed
+- `size_up` trades now source thesis from the open trade record
+- Install script checks out latest release tag instead of staying on main HEAD
+- Trade detail modal title backfilled from market API when not in cache
+- Open Positions panel no longer grows unboundedly, pushing down dashboard layout
+- KalshiClient resource leak in market-checking path
+
+### Changed
+- Agent definitions use `gimmes` CLI instead of `python -m gimmes`
+- Post-placement error handling log levels upgraded
+
 ## [0.1.0] - 2026-03-21
 
 First public release.
@@ -52,4 +79,5 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.1.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.1
 [0.1.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.0
