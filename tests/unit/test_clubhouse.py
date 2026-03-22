@@ -92,6 +92,11 @@ async def db_path(tmp_path: Path) -> Path:
     return path
 
 
+_INSERT_CANDIDATE_SQL = """INSERT INTO candidates (ticker, title, market_price,
+    model_probability, edge, gimme_score, research_memo)
+    VALUES (?, ?, ?, ?, ?, ?, ?)"""
+
+
 # ---------------------------------------------------------------------------
 # Model tests
 # ---------------------------------------------------------------------------
@@ -312,6 +317,62 @@ class TestDataLayer:
         dup_items = [c for c in all_items if c.ticker == "DUP-MKT"]
         assert len(dup_items) == 1
         assert dup_items[0].title == "New"
+
+    async def test_get_candidates_excludes_open_positions(self, db_path: Path) -> None:
+        """Candidates with an open paper position are hidden (#356)."""
+        # TEST-YES already has a paper_position (from fixture). Add it as a candidate.
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                _INSERT_CANDIDATE_SQL,
+                ("TEST-YES", "Positioned", 0.70, 0.95, 0.25, 85, "memo"),
+            )
+            await db.conn.commit()
+        candidates = await get_candidates(db_path)
+        tickers = {c.ticker for c in candidates}
+        assert "TEST-YES" not in tickers  # excluded: has open position
+        assert "CAND-YES" in tickers      # retained: no position
+
+    async def test_get_candidates_includes_settled_position(self, db_path: Path) -> None:
+        """A candidate whose position is settled (count=0) still appears (#356)."""
+        async with Database(db_path) as db:
+            # Insert a settled (count=0) paper position and a candidate for it
+            await db.conn.execute(
+                """INSERT INTO paper_positions (ticker, side, count, avg_price, cost_basis,
+                   market_price, unrealized_pnl, realized_pnl)
+                   VALUES ('SETTLED', 'yes', 0, 0.65, 0.0, 0.0, 0.0, 1.50)"""
+            )
+            await db.conn.execute(
+                _INSERT_CANDIDATE_SQL,
+                ("SETTLED", "Settled market", 0.99, 0.99, 0.01, 50, "memo"),
+            )
+            await db.conn.commit()
+        candidates = await get_candidates(db_path)
+        tickers = {c.ticker for c in candidates}
+        assert "SETTLED" in tickers  # count=0, should NOT be excluded
+
+    async def test_get_candidates_pagination_with_position_filter(
+        self, db_path: Path,
+    ) -> None:
+        """Cursor pagination works correctly when positions are filtered (#356)."""
+        async with Database(db_path) as db:
+            for i in range(3):
+                await db.conn.execute(
+                    _INSERT_CANDIDATE_SQL,
+                    (f"NOPOS-{i}", f"No Pos {i}", 0.50, 0.80, 0.10, 70, "memo"),
+                )
+            # Add a positioned candidate (TEST-YES already has a paper position)
+            await db.conn.execute(
+                _INSERT_CANDIDATE_SQL,
+                ("TEST-YES", "Positioned", 0.70, 0.95, 0.25, 85, "memo"),
+            )
+            await db.conn.commit()
+        # 4 unique candidate tickers (CAND-YES + NOPOS-0..2), TEST-YES excluded
+        page1 = await get_candidates(db_path, limit=2)
+        assert len(page1) == 2
+        page2 = await get_candidates(db_path, limit=10, before_id=page1[-1].id)
+        assert len(page2) == 2  # 4 - 2 = 2
+        all_tickers = {c.ticker for c in page1} | {c.ticker for c in page2}
+        assert "TEST-YES" not in all_tickers
 
     async def test_get_metrics(self, db_path: Path) -> None:
         metrics = await get_metrics(db_path)
