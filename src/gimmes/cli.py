@@ -789,7 +789,7 @@ def order(
                                             "status_code": exc.response.status_code}),
                     ))
                 except Exception:
-                    logger.warning("Failed to log error to DB", exc_info=True)
+                    logger.error("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Order FAILED"
                     f" ({exc.response.status_code}): {detail}[/red bold]"
@@ -809,7 +809,7 @@ def order(
                                             "count": final_count, "price": final_price}),
                     ))
                 except Exception:
-                    logger.warning("Failed to log error to DB", exc_info=True)
+                    logger.error("Failed to log error to DB", exc_info=True)
                 console.print(
                     "[red bold]Order FAILED: request timed out[/red bold]"
                 )
@@ -840,7 +840,7 @@ def order(
                                             "count": final_count, "price": final_price}),
                     ))
                 except Exception:
-                    logger.warning("Failed to log error to DB", exc_info=True)
+                    logger.error("Failed to log error to DB", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
                 raise typer.Exit(1)
 
@@ -875,20 +875,14 @@ def order(
                             if size_up
                             else TradeDecision.Action.OPEN
                         )
-                    else:
-                        trade_action = TradeDecision.Action.CLOSE
-                    if is_buy:
                         try:
                             thesis = ""
                             if size_up:
                                 open_trade = await get_open_trade_for_ticker(
                                     db, ticker,
                                 )
-                                thesis = (
-                                    open_trade.get("thesis", "")
-                                    if open_trade
-                                    else ""
-                                )
+                                if open_trade:
+                                    thesis = open_trade.get("thesis", "")
                                 if not thesis:
                                     reason = (
                                         "open trade has empty thesis"
@@ -904,14 +898,36 @@ def order(
                                 thesis = await get_thesis_for_ticker(
                                     db, ticker,
                                 )
-                        except sqlite3.Error:
-                            logger.warning(
+                        except sqlite3.Error as exc:
+                            logger.error(
                                 "Failed to fetch thesis for %s; "
-                                "recording trade with empty thesis",
-                                ticker, exc_info=True,
+                                "recording trade with empty thesis: %s",
+                                ticker, exc, exc_info=True,
                             )
+                            try:
+                                await insert_error(db, ErrorLogEntry(
+                                    severity=ErrorSeverity.WARNING,
+                                    category=ErrorCategory.DATA_INTEGRITY,
+                                    error_code="thesis_fetch_failed",
+                                    component="cli.order", agent=agent,
+                                    message=(
+                                        f"Thesis fetch failed for {ticker}; "
+                                        f"trade recorded with empty thesis: {exc}"
+                                    ),
+                                    stack_trace=traceback.format_exc(),
+                                    context=json.dumps({
+                                        "ticker": ticker, "side": side,
+                                        "count": final_count,
+                                        "price": final_price,
+                                    }),
+                                ))
+                            except Exception:
+                                logger.error(
+                                    "Failed to log error to DB", exc_info=True,
+                                )
                             thesis = ""
                     else:
+                        trade_action = TradeDecision.Action.CLOSE
                         thesis = ""
                     trade = TradeDecision(
                         ticker=ticker,
@@ -938,7 +954,9 @@ def order(
 
                     await sync_positions(db, positions_for_sync)
             except sqlite3.Error as exc:
-                logger.debug("Position sync failed (database)", exc_info=True)
+                logger.warning(
+                    "Position sync failed (database): %s", exc, exc_info=True,
+                )
                 try:
                     await insert_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.WARNING,
@@ -952,7 +970,7 @@ def order(
                                             "order_id": result.order_id}),
                     ))
                 except Exception:
-                    logger.warning("Failed to log error to DB", exc_info=True)
+                    logger.error("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Warning: Order was placed successfully"
                     f" ({result.order_id}) but position sync"
@@ -964,7 +982,9 @@ def order(
                 )
                 console.print(_RECONCILE_HINT)
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-                logger.debug("Position sync failed", exc_info=True)
+                logger.warning(
+                    "Position sync failed: %s", exc, exc_info=True,
+                )
                 try:
                     await insert_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.WARNING,
@@ -978,7 +998,7 @@ def order(
                                             "order_id": result.order_id}),
                     ))
                 except Exception:
-                    logger.warning("Failed to log error to DB", exc_info=True)
+                    logger.error("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Warning: Order was placed successfully"
                     f" ({result.order_id}) but position sync"
