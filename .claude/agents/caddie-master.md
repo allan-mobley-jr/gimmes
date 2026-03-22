@@ -40,9 +40,21 @@ gimmes positions
 ```
 
 **Decision gates (MUST follow — no exceptions):**
-- If `risk-check` reports daily loss limit breached → MUST skip directly to Step 6 (Scorecard only). NEVER run Steps 2-5.
-- If `positions` shows position count >= `max_open_positions` (default 15) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
-- If `risk-check` reports Bankroll limit breached (deployed capital >= bankroll) → MUST run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
+- If `risk-check` reports daily loss limit breached → MUST log the skip and then skip directly to Step 6 (Scorecard only). NEVER run Steps 2-5.
+  ```bash
+  gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: daily loss limit breached"
+  ```
+  If the command fails, note the failure in your output and continue. Do not retry.
+- If `positions` shows position count >= `max_open_positions` (default 15) → MUST log the skip, run Step 2 (Monitor), then skip to Step 6. NEVER run Steps 3-5.
+  ```bash
+  gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: position count at max (N/N)"
+  ```
+  Substitute the actual position count and max from the `positions` output for the two N values. If the command fails, note the failure in your output and continue. Do not retry.
+- If `risk-check` reports Bankroll limit breached (deployed capital >= bankroll) → MUST log the skip, run Step 2 (Monitor), then skip to Step 6. NEVER run Steps 3-5.
+  ```bash
+  gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: bankroll limit breached"
+  ```
+  If the command fails, note the failure in your output and continue. Do not retry.
 - Otherwise → proceed with full cycle.
 
 ### Step 2: Monitor Review (if positions exist)
@@ -157,7 +169,7 @@ Launch the Scout agent (`scout.md`) to:
 2. Score the top candidates
 3. Return a ranked shortlist
 
-**If Scout returns zero candidates in its shortlist**, MUST log the empty shortlist and skip directly to Step 6. NEVER run Steps 4-5.
+**If Scout returns zero candidates in its shortlist**, MUST log the skip and skip directly to Step 6. NEVER run Steps 4-5.
 
 ```bash
 gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: Scout returned 0 candidates"
@@ -189,11 +201,12 @@ Evaluate the output using these rules:
 4. **Prior score >= 75 with open position** (check `gimmes positions` for the ticker) → skip, already traded
 5. **Prior score >= 75, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
-**If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the outcome before skipping to Step 6:
+**If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the skip and skip directly to Step 6. NEVER run Steps 4b-5.
+
 ```bash
 gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
 ```
-Substitute the actual count of Scout candidates for N. If the command fails, note the failure in your output and continue. Do not retry. Then skip directly to Step 6. NEVER run Steps 4b-5.
+Substitute the actual count of Scout candidates for N. If the command fails, note the failure in your output and continue. Do not retry.
 
 #### 4b. Dispatch Caddie
 
