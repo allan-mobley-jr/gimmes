@@ -703,9 +703,7 @@
 
         function buildModalBody(title, rows, rationale) {
             let html = '';
-            if (title) {
-                html += '<p class="text-sm text-slate-300 leading-relaxed">' + escapeHtml(title) + '</p>';
-            }
+            html += '<p id="modal-body-title" class="text-sm text-slate-300 leading-relaxed' + (title ? '' : ' hidden') + '">' + escapeHtml(title) + '</p>';
             html += '<div class="space-y-0">';
             rows.forEach(function(r) { html += modalRow(r[0], r[1]); });
             html += '</div>';
@@ -761,6 +759,14 @@
                         const reqId = ++marketDetailRequestId;
                         fetchMarketDetail(item.ticker).then(function(md) {
                             if (reqId !== marketDetailRequestId) return;
+                            if (md && md.title) {
+                                tickerTitles[item.ticker] = md.title;
+                                const titleEl = document.getElementById('modal-body-title');
+                                if (titleEl && titleEl.classList.contains('hidden')) {
+                                    titleEl.textContent = md.title;
+                                    titleEl.classList.remove('hidden');
+                                }
+                            }
                             replaceMarketDetailSection(
                                 md ? marketDetailHtml(md) : marketDetailErrorHtml()
                             );
