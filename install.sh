@@ -28,6 +28,19 @@ check_command() {
     return 0
 }
 
+checkout_latest_tag() {
+    local tag
+    tag=$(git tag -l 'v[0-9]*' --sort=-v:refname 2>/dev/null | head -1)
+    if [ -z "$tag" ]; then
+        return 1
+    fi
+    if ! git checkout --quiet "$tag" 2>/dev/null; then
+        warn "Could not check out tag $tag; staying on current branch"
+        return 1
+    fi
+    ok "Checked out $tag"
+}
+
 show_banner() {
     local version
     version=$(git -C "$REPO_DIR" describe --tags 2>/dev/null || git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -124,8 +137,16 @@ fi
 if [ -d "$REPO_DIR/.git" ]; then
     info "Updating existing installation..."
     cd "$REPO_DIR"
-    git pull --ff-only origin main
-    ok "Updated to $(git rev-parse --short HEAD)"
+    if ! git fetch --quiet --tags origin main 2>/dev/null; then
+        err "Could not reach the remote repository."
+        err "Check your network connection and try again."
+        exit 1
+    fi
+    if ! checkout_latest_tag; then
+        git checkout --quiet main 2>/dev/null || true
+        git pull --ff-only origin main
+        ok "Updated to $(git rev-parse --short HEAD)"
+    fi
 else
     info "Cloning gimmes..."
     MAX_RETRIES=3
@@ -145,6 +166,10 @@ else
         fi
     done
     ok "Cloned to $REPO_DIR"
+    cd "$REPO_DIR"
+    if ! checkout_latest_tag; then
+        info "No release tags found; staying on default branch"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
