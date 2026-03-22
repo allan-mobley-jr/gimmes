@@ -281,7 +281,13 @@ async def get_candidates(
     limit: int = 20,
     before_id: int | None = None,
 ) -> list[CandidateItem]:
-    """Get most recent assessment per candidate ticker."""
+    """Get most recent assessment per candidate ticker.
+
+    Excludes candidates whose ticker has an open position, since those
+    have already been acted on and are visible in the positions panel.
+    """
+    config = _config()
+    pos_table = _position_table(config)
     items: list[CandidateItem] = []
 
     try:
@@ -291,10 +297,13 @@ async def get_candidates(
                 " INNER JOIN ("
                 "   SELECT MAX(id) AS max_id FROM candidates GROUP BY ticker"
                 " ) latest ON c.id = latest.max_id"
+                f" LEFT JOIN {pos_table} p"
+                " ON c.ticker = p.ticker AND p.count > 0"
+                " WHERE p.ticker IS NULL"
             )
             params: list[int] = []
             if before_id is not None:
-                sql += " WHERE c.id < ?"
+                sql += " AND c.id < ?"
                 params.append(before_id)
             sql += " ORDER BY c.id DESC LIMIT ?"
             params.append(limit)

@@ -274,7 +274,7 @@ def scan(
         exclude_tickers: set[str] = set()
         try:
             async with Database(config.db_path) as db:
-                exclude_tickers = await get_position_tickers(db)
+                exclude_tickers = await get_position_tickers(db, table=config.position_table)
             if exclude_tickers:
                 console.print(
                     f"Excluding {len(exclude_tickers)} ticker(s) with open positions"
@@ -1108,6 +1108,84 @@ def candidates(
         console.print(table)
 
     _run(_candidates())
+
+
+@app.command(name="prune-candidates", hidden=True)
+def prune_candidates_cmd(
+    max_age: int = typer.Option(72, "--max-age", help="Max age in hours before pruning"),
+    check_markets: bool = typer.Option(
+        False, "--check-markets", help="Check market status via Kalshi API",
+    ),
+) -> None:
+    """Remove candidates that have exited the pipeline."""
+    config = load_config()
+
+    async def _prune() -> None:
+        import logging
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_position_tickers, prune_candidates
+
+        logger = logging.getLogger("gimmes.cli")
+        inactive_tickers: set[str] | None = None
+
+        async with Database(config.db_path) as db:
+            open_tickers = await get_position_tickers(db, table=config.position_table)
+
+            if check_markets:
+                from gimmes.kalshi.client import KalshiClient
+                from gimmes.kalshi.markets import get_market
+                from gimmes.models.market import MarketStatus
+
+                # Collect unique candidate tickers still in the table
+                cursor = await db.conn.execute(
+                    "SELECT DISTINCT ticker FROM candidates"
+                )
+                rows = await cursor.fetchall()
+                candidate_tickers = {
+                    row["ticker"] for row in rows
+                } - open_tickers  # no need to check tickers already being pruned
+
+                inactive_tickers = set()
+                inactive_statuses = {
+                    MarketStatus.CLOSED,
+                    MarketStatus.DETERMINED,
+                    MarketStatus.FINALIZED,
+                }
+                skipped = 0
+                async with KalshiClient(config) as client:
+                    for t in candidate_tickers:
+                        try:
+                            market = await get_market(client, t)
+                            if market.status in inactive_statuses:
+                                inactive_tickers.add(t)
+                        except Exception:
+                            logger.debug("Could not check market %s", t, exc_info=True)
+                            skipped += 1
+                if skipped:
+                    console.print(
+                        f"[yellow]Could not check {skipped} ticker(s)"
+                        " via API — they will be pruned by age only[/yellow]"
+                    )
+
+            counts = await prune_candidates(
+                db,
+                open_tickers=open_tickers,
+                inactive_tickers=inactive_tickers,
+                max_age_hours=max_age,
+            )
+
+        total = sum(counts.values())
+        if total:
+            console.print(
+                f"[green]Pruned {total} candidates[/green]"
+                f" ({counts['opened']} opened, {counts['inactive']} inactive,"
+                f" {counts['aged_out']} aged out, {counts['duplicates']} duplicates)"
+            )
+        else:
+            console.print("[dim]No candidates to prune[/dim]")
+
+    _run(_prune())
 
 
 @app.command(name="mark-cap-blocked", hidden=True)

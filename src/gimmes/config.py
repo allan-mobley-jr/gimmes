@@ -652,6 +652,11 @@ class GimmesConfig(BaseModel):
         return self.mode == Mode.CHAMPIONSHIP
 
     @property
+    def position_table(self) -> str:
+        """Return the position table name for the current mode."""
+        return "positions" if self.is_championship else "paper_positions"
+
+    @property
     def bankroll(self) -> float:
         """Return the mode-appropriate bankroll."""
         if self.is_championship:

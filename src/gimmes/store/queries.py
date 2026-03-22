@@ -231,9 +231,18 @@ async def get_positions(db: Database) -> list[Position]:
     ]
 
 
-async def get_position_tickers(db: Database) -> set[str]:
+_ALLOWED_POSITION_TABLES = frozenset({"positions", "paper_positions"})
+
+
+async def get_position_tickers(
+    db: Database, *, table: str = "positions"
+) -> set[str]:
     """Return tickers of all open positions (count > 0)."""
-    cursor = await db.conn.execute("SELECT ticker FROM positions WHERE count > 0")
+    if table not in _ALLOWED_POSITION_TABLES:
+        raise ValueError(f"Invalid position table: {table}")
+    cursor = await db.conn.execute(
+        f"SELECT ticker FROM {table} WHERE count > 0"  # noqa: S608
+    )
     rows = await cursor.fetchall()
     return {row["ticker"] for row in rows}
 
@@ -317,6 +326,66 @@ async def insert_candidate(
     )
     await db.conn.commit()
     return cursor.lastrowid or 0
+
+
+async def _delete_candidates_by_tickers(
+    db: Database, tickers: set[str],
+) -> int:
+    """Delete candidates matching a set of tickers. Returns rows deleted."""
+    placeholders = ",".join("?" for _ in tickers)
+    cursor = await db.conn.execute(
+        f"DELETE FROM candidates WHERE ticker IN ({placeholders})",
+        tuple(tickers),
+    )
+    return cursor.rowcount
+
+
+async def prune_candidates(
+    db: Database,
+    *,
+    open_tickers: set[str],
+    inactive_tickers: set[str] | None = None,
+    max_age_hours: int = 72,
+) -> dict[str, int]:
+    """Remove candidates that have exited the pipeline.
+
+    Pruning rules (applied in order within a single transaction):
+    1. Opened as a position — ticker has an open position.
+    2. Market inactive — ticker's market is determined, finalized, or closed.
+    3. Aged out — scanned_at older than max_age_hours.
+    4. Stale duplicates — keep only the most recent row per ticker.
+
+    Returns counts per pruning reason.
+    """
+    if max_age_hours < 1:
+        raise ValueError(f"max_age_hours must be >= 1, got {max_age_hours}")
+
+    counts: dict[str, int] = {"opened": 0, "inactive": 0, "aged_out": 0, "duplicates": 0}
+
+    async with db.transaction():
+        # 1. Opened as a position
+        if open_tickers:
+            counts["opened"] = await _delete_candidates_by_tickers(db, open_tickers)
+
+        # 2. Market inactive
+        if inactive_tickers:
+            counts["inactive"] = await _delete_candidates_by_tickers(db, inactive_tickers)
+
+        # 3. Aged out
+        cursor = await db.conn.execute(
+            "DELETE FROM candidates WHERE scanned_at < datetime('now', ?)",
+            (f"-{max_age_hours} hours",),
+        )
+        counts["aged_out"] = cursor.rowcount
+
+        # 4. Stale duplicates — keep only the newest row per ticker
+        cursor = await db.conn.execute(
+            "DELETE FROM candidates WHERE id NOT IN"
+            " (SELECT MAX(id) FROM candidates GROUP BY ticker)"
+        )
+        counts["duplicates"] = cursor.rowcount
+
+    return counts
 
 
 async def mark_cap_blocked(db: Database, ticker: str) -> bool:
