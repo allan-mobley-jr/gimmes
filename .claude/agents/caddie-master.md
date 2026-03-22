@@ -160,7 +160,7 @@ Launch the Scout agent (`scout.md`) to:
 **If Scout returns zero candidates in its shortlist**, MUST log the empty shortlist and skip directly to Step 6. NEVER run Steps 4-5.
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase complete --message "Caddie skipped: Scout returned 0 candidates"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: Scout returned 0 candidates"
 ```
 If the command fails, note the failure in your output and continue. Do not retry.
 
@@ -191,7 +191,7 @@ Evaluate the output using these rules:
 
 **If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the outcome before skipping to Step 6:
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase complete --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
 ```
 Substitute the actual count of Scout candidates for N. If the command fails, note the failure in your output and continue. Do not retry. Then skip directly to Step 6. NEVER run Steps 4b-5.
 

@@ -1767,7 +1767,7 @@ def position_notes(
 def log_activity(
     cycle: int = typer.Option(0, "--cycle", "-c", help="Cycle number"),
     agent: str = typer.Option("", "--agent", "-a", help="Agent name"),
-    phase: str = typer.Option("", "--phase", help="Phase (start/complete/error)"),
+    phase: str = typer.Option("", "--phase", help="Phase (start/complete/info/error)"),
     message: str = typer.Option("", "--message", "-m", help="Activity message"),
     details: str = typer.Option("", "--details", "-d", help="Additional details"),
     session_id: int = typer.Option(0, "--session-id", help="Session ID"),
