@@ -430,6 +430,7 @@
         let positionOldestId = null;
         let positionLoading = false;
         let positionExhausted = false;
+        let positionVersion = 0;
         let positionsObserver = null;
         let evtSource = null;
         let modalTriggerEl = null;
@@ -895,6 +896,7 @@
             if (!positions) positions = [];
             positionItems = positions;
             positionExhausted = true;
+            positionVersion++;
             if (positionItems.length > 0) {
                 positionOldestId = positionItems[positionItems.length - 1].id;
             }
@@ -904,11 +906,13 @@
         async function loadMorePositions() {
             if (positionLoading || positionExhausted) return;
             positionLoading = true;
+            var versionAtStart = positionVersion;
             var url = '/api/positions?limit=10';
             if (positionOldestId !== null) url += '&before=' + positionOldestId;
             var items = await fetchEndpoint(url);
             positionLoading = false;
             if (items === null) return;
+            if (versionAtStart !== positionVersion) return;
             if (items.length === 0) {
                 positionExhausted = true;
                 return;
