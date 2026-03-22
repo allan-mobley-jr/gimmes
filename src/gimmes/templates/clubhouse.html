@@ -135,12 +135,13 @@
                                 <th class="text-right pb-2 pr-3">Avg Price</th>
                                 <th class="text-right pb-2 pr-3">Mkt Price</th>
                                 <th class="text-right pb-2 pr-3">Unreal. P&amp;L</th>
-                                <th class="text-right pb-2">Cost Basis</th>
+                                <th class="text-right pb-2 pr-3">Cost Basis</th>
+                                <th class="text-right pb-2">Updated</th>
                             </tr>
                         </thead>
                         <tbody id="positions-body" class="font-mono">
                             <tr>
-                                <td colspan="7" class="text-center text-slate-500 py-8">No open positions</td>
+                                <td colspan="8" class="text-center text-slate-500 py-8">No open positions</td>
                             </tr>
                         </tbody>
                     </table>
@@ -302,7 +303,7 @@
                     <table class="w-full text-sm">
                         <thead>
                             <tr class="text-xs uppercase tracking-wider text-slate-500 border-b border-slate-700/50">
-                                <th class="text-left pb-2 pr-2">Time</th>
+                                <th class="text-left pb-2 pr-2">Date/Time</th>
                                 <th class="text-left pb-2 pr-2">Ticker</th>
                                 <th class="text-left pb-2 pr-2">Action</th>
                                 <th class="text-left pb-2 pr-2">Side</th>
@@ -505,7 +506,8 @@
             const iso = ts.replace(' ', 'T');
             const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(iso);
             const d = new Date(hasTimezone ? iso : iso + 'Z');
-            return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            if (isNaN(d.getTime())) return '--';
+            return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
         }
 
         function escapeHtml(str) {
@@ -722,7 +724,7 @@
                 ['Edge',        t.edge != null ? formatPercent(t.edge) : '--'],
                 ['Model Prob.', t.model_probability != null ? formatPercent(t.model_probability) : '--'],
                 ['Agent',       agentBadge(t.agent)],
-                ['Time',        formatTimestamp(t.timestamp)],
+                ['Date/Time',   formatTimestamp(t.timestamp)],
             ], rationaleBlock('Rationale', t.rationale));
         }
 
@@ -735,6 +737,7 @@
                 ['Market Price',    formatPrice(p.market_price)],
                 ['Cost Basis',      formatCurrencyPlain(p.cost_basis)],
                 ['Market Value',    formatCurrencyPlain(p.market_value)],
+                ['Last Updated',    formatTimestamp(p.updated_at)],
                 ['Unrealized P&L',  pnlValue(p.unrealized_pnl)],
                 ['Realized P&L',    pnlValue(p.realized_pnl)],
             ], rationaleBlock('Thesis (from latest trade)', findRationaleForTicker(p.ticker)));
@@ -837,7 +840,7 @@
                 : positions.filter(function(p) { return (p.side || '').toLowerCase() === positionSideFilter; });
             if (visible.length === 0) {
                 const msg = positionSideFilter === 'all' ? 'No open positions' : 'No ' + positionSideFilter.toUpperCase() + ' positions';
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-500 py-8">' + msg + '</td></tr>';
                 return;
             }
             let html = '';
@@ -851,7 +854,8 @@
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.avg_price) + '</td>'
                     + '<td class="py-2 pr-3 text-right text-slate-200">' + formatPrice(p.market_price) + '</td>'
                     + '<td class="py-2 pr-3 text-right ' + pnlClass + '">' + formatCurrency(pnl) + '</td>'
-                    + '<td class="py-2 text-right text-slate-200">' + formatCurrencyPlain(p.cost_basis) + '</td>'
+                    + '<td class="py-2 pr-3 text-right text-slate-200">' + formatCurrencyPlain(p.cost_basis) + '</td>'
+                    + '<td class="py-2 text-right text-xs text-slate-500">' + formatTimestamp(p.updated_at) + '</td>'
                     + '</tr>';
             });
             tbody.innerHTML = html;
@@ -979,7 +983,7 @@
             let html = '';
             visible.forEach(function(entry) {
                 html += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-slate-700/20 transition-colors text-sm">'
-                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[65px]">' + formatTimestamp(entry.timestamp) + '</span>'
+                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[120px]">' + formatTimestamp(entry.timestamp) + '</span>'
                     + agentBadge(entry.agent)
                     + (entry.phase ? ' ' + phaseBadge(entry.phase) : '')
                     + '<span class="text-slate-300 break-words">' + escapeHtml(entry.message || '') + '</span>'
@@ -1064,7 +1068,7 @@
                     ? '<span class="text-emerald-400 text-xs" title="Resolved">&#10003;</span>'
                     : '<span class="text-red-400 text-xs" title="Unresolved">&#9679;</span>';
                 html += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-slate-700/20 transition-colors text-sm">'
-                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[65px]">' + formatTimestamp(e.timestamp) + '</span>'
+                    + '<span class="text-xs font-mono text-slate-500 shrink-0 mt-0.5 min-w-[120px]">' + formatTimestamp(e.timestamp) + '</span>'
                     + resolvedIcon
                     + '<span class="px-1.5 py-0.5 rounded border text-xs font-medium shrink-0 ' + cls + '">' + escapeHtml(e.severity) + '</span>'
                     + '<span class="text-slate-500 text-xs shrink-0">' + escapeHtml(e.category) + '</span>'
@@ -1184,7 +1188,8 @@
                     + '<span class="' + edgeClass + '">Edge: ' + (c.edge != null ? formatPercent(c.edge) : '--') + '</span>'
                     + '</div>'
                     + '</div>'
-                    + '<p class="text-xs text-slate-400 truncate">' + escapeHtml(c.title || '') + '</p>';
+                    + '<p class="text-xs text-slate-400 truncate">' + escapeHtml(c.title || '') + '</p>'
+                    + '<p class="text-xs text-slate-500 mt-0.5">Scanned: ' + formatTimestamp(c.scanned_at) + '</p>';
                 if (c.research_memo) {
                     html += '<details class="mt-2">'
                         + '<summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors">Research memo</summary>'

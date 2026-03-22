@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -136,6 +138,31 @@ def format_kv_table(title: str, rows: list[tuple[str, str]]) -> Table:
     for key, value in rows:
         table.add_row(key, value)
     return table
+
+
+def format_local_timestamp(raw: str, *, date_only: bool = False) -> str:
+    """Convert a UTC database timestamp to a local-timezone display string.
+
+    Handles both ``YYYY-MM-DD HH:MM:SS`` (SQLite ``datetime('now')``) and ISO
+    8601 strings with a ``+00:00`` suffix.  Returns ``--`` for falsy input and
+    falls back to a raw truncation on parse errors.
+    """
+    if not raw:
+        return "--"
+    try:
+        s = str(raw).strip()
+        if "T" in s or "+" in s[10:]:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        else:
+            dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        local_dt = dt.astimezone()
+        if date_only:
+            return local_dt.strftime("%Y-%m-%d")
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, OverflowError):
+        return str(raw)[:19] if raw else "--"
 
 
 def pnl_to_markdown(summary: PnLSummary) -> str:

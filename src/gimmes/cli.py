@@ -991,6 +991,7 @@ def trades(
     async def _trades() -> None:
         from rich.table import Table
 
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_trades
 
@@ -1022,7 +1023,7 @@ def trades(
                 f"${t.get('price', 0):.2f}",
                 f"{t.get('edge', 0):.1%}",
                 f"{t.get('gimme_score', 0):.0f}",
-                str(t.get("timestamp", ""))[:19],
+                format_local_timestamp(str(t.get("timestamp", ""))),
             )
 
         console.print(table)
@@ -1044,6 +1045,7 @@ def candidates(
     async def _candidates() -> None:
         from rich.table import Table
 
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import (
             get_candidate_for_ticker,
@@ -1081,7 +1083,7 @@ def candidates(
                 f"{c.get('model_probability', 0):.1%}",
                 f"{c.get('edge', 0):+.1%}",
                 status,
-                str(c.get("scanned_at", ""))[:19],
+                format_local_timestamp(str(c.get("scanned_at", ""))),
             )
 
         console.print(table)
@@ -1535,6 +1537,7 @@ def position_context(
     config = load_config()
 
     async def _ctx() -> None:
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import (
             get_open_trade_for_ticker,
@@ -1553,7 +1556,7 @@ def position_context(
 
         console.print(f"\n[bold]Position Context: {ticker}[/bold]\n")
         console.print("[bold]--- OPEN TRADE ---[/bold]")
-        console.print(f"Opened:           {str(trade['timestamp'])[:19]}")
+        console.print(f"Opened:           {format_local_timestamp(str(trade['timestamp']))}")
         console.print(
             f"Side:             {trade['side'].upper()}"
             f"  Count: {trade['count']}  Entry: ${trade['price']:.2f}"
@@ -1737,6 +1740,7 @@ def errors(
     async def _errors() -> None:
         from rich.table import Table
 
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_error_summary, get_errors
 
@@ -1799,7 +1803,7 @@ def errors(
                     resolved = "[green]Yes[/green]" if row["resolved"] else "[red]No[/red]"
                     table.add_row(
                         str(row["id"]),
-                        str(row["timestamp"])[:19],
+                        format_local_timestamp(str(row["timestamp"])),
                         f"[{sev_color}]{sev}[/{sev_color}]",
                         row["category"],
                         row.get("error_code", ""),
@@ -1847,6 +1851,7 @@ def lesson(
     async def _lesson() -> None:
         from rich.table import Table
 
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_recommendations, get_trades, insert_recommendation
         from gimmes.strategy.advisor import run_all_analyses
@@ -1926,7 +1931,7 @@ def lesson(
                         row["parameter_path"],
                         f"{row['current_value']} → {row['recommended_value']}",
                         row["confidence"],
-                        row["timestamp"][:10],
+                        format_local_timestamp(row["timestamp"], date_only=True),
                     )
                 console.print(table)
 
@@ -1949,6 +1954,7 @@ def recommendations(
     async def _recs() -> None:
         from rich.table import Table
 
+        from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_recommendations
 
@@ -1977,7 +1983,7 @@ def recommendations(
                 }.get(row["status"], "white")
                 table.add_row(
                     str(row["id"]),
-                    row["timestamp"][:10],
+                    format_local_timestamp(row["timestamp"], date_only=True),
                     row["parameter_path"],
                     row["current_value"],
                     row["recommended_value"],
