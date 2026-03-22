@@ -72,3 +72,29 @@ class TestFilterMarkets:
 
     def test_empty_list(self, config: GimmesConfig) -> None:
         assert filter_markets([], config) == []
+
+    def test_exclude_tickers_filtered(self, config: GimmesConfig) -> None:
+        markets = [
+            _make_market(ticker="A"),
+            _make_market(ticker="B"),
+            _make_market(ticker="C"),
+        ]
+        result = filter_markets(markets, config, exclude_tickers={"A", "C"})
+        assert len(result) == 1
+        assert result[0].ticker == "B"
+
+    def test_exclude_tickers_none_passes_all(self, config: GimmesConfig) -> None:
+        markets = [
+            _make_market(ticker="A"),
+            _make_market(ticker="B"),
+        ]
+        result = filter_markets(markets, config, exclude_tickers=None)
+        assert len(result) == 2
+
+    def test_exclude_tickers_empty_set_passes_all(self, config: GimmesConfig) -> None:
+        markets = [
+            _make_market(ticker="A"),
+            _make_market(ticker="B"),
+        ]
+        result = filter_markets(markets, config, exclude_tickers=set())
+        assert len(result) == 2
