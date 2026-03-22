@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-03-22
+
+### Added
+- Auto-start greeting and exit hint for Caddie Shop agent sessions
+- Agent sessions (Starter, Caddie Shop) now run without tool-permission prompts via `--allowedTools` enforcement
+
+### Fixed
+- Starter agent tour UX: auto-start greeting, complete team roster, curated help output, and exit hint
+
 ## [0.1.1] - 2026-03-22
 
 ### Added
@@ -79,5 +88,6 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.1.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.2
 [0.1.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.1
 [0.1.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.0
