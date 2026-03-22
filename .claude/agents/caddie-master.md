@@ -157,7 +157,12 @@ Launch the Scout agent (`scout.md`) to:
 2. Score the top candidates
 3. Return a ranked shortlist
 
-**If Scout returns zero candidates in its shortlist**, MUST skip directly to Step 6. NEVER run Steps 4-5.
+**If Scout returns zero candidates in its shortlist**, MUST log the empty shortlist and skip directly to Step 6. NEVER run Steps 4-5.
+
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: Scout returned 0 candidates"
+```
+If the command fails, note the failure in your output and continue. Do not retry.
 
 ### Step 4: Caddie (with Research Cooldown)
 
@@ -183,6 +188,12 @@ Evaluate the output using these rules:
 3. **Prior score 60-74** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
 4. **Prior score >= 75 with open position** (check `python -m gimmes positions` for the ticker) → skip, already traded
 5. **Prior score >= 75, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
+
+**If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the outcome before skipping to Step 6:
+```bash
+python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
+```
+Substitute the actual count of Scout candidates for N. If the command fails, note the failure in your output and continue. Do not retry. Then skip directly to Step 6. NEVER run Steps 4b-5.
 
 #### 4b. Dispatch Caddie
 
