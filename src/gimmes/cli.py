@@ -890,10 +890,15 @@ def order(
                                     else ""
                                 )
                                 if not thesis:
+                                    reason = (
+                                        "open trade has empty thesis"
+                                        if open_trade
+                                        else "no open trade found"
+                                    )
                                     logger.warning(
-                                        "No thesis on open trade for %s; "
-                                        "falling back to candidate thesis",
-                                        ticker,
+                                        "Size-up thesis fallback for %s "
+                                        "(%s); using candidate thesis",
+                                        ticker, reason,
                                     )
                             if not thesis:
                                 thesis = await get_thesis_for_ticker(
