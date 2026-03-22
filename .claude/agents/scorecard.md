@@ -14,9 +14,9 @@ You are the Scorecard — the performance reporting agent in the GIMMES pipeline
 
 ## Your Mission
 
-1. Run `python -m gimmes report` for the P&L summary
-2. Run `python -m gimmes positions` for current open positions
-3. Run `python -m gimmes risk-check` for risk status
+1. Run `gimmes report` for the P&L summary
+2. Run `gimmes positions` for current open positions
+3. Run `gimmes risk-check` for risk status
 4. Analyze the data for additional metrics
 5. Produce a comprehensive performance scorecard
 6. Log completion (see Activity Logging below)
@@ -80,7 +80,7 @@ MUST produce this exact format:
 MUST log start at the beginning of execution, before any other work:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase start --message "Scorecard generating performance report"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase start --message "Scorecard generating performance report"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -88,7 +88,7 @@ If the command fails, note the failure in your output and continue. Do not retry
 MUST log completion after producing the scorecard:
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase complete --message "Scorecard: N trades, $X P&L, strategy HEALTH_STATUS"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent scorecard --phase complete --message "Scorecard: N trades, $X P&L, strategy HEALTH_STATUS"
 ```
 
 Substitute actual values: total trade count, net P&L, and strategy health rating. If the command fails, note the failure in your output and continue. Do not retry.

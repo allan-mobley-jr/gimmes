@@ -24,7 +24,7 @@ Run one complete autonomous trading cycle. Each invocation is one cycle — the 
 ### Step 0: Log Cycle Start
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase start --message "Cycle $GIMMES_CYCLE started"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
@@ -34,9 +34,9 @@ If the command fails, note the failure in your output and continue. Do not retry
 Reconcile local position data with the authoritative source to recover from any prior crash, then assess the current state:
 
 ```bash
-python -m gimmes reconcile
-python -m gimmes risk-check
-python -m gimmes positions
+gimmes reconcile
+gimmes risk-check
+gimmes positions
 ```
 
 **Decision gates (MUST follow — no exceptions):**
@@ -54,17 +54,17 @@ python -m gimmes positions
 Before dispatching Monitor, check for any orphaned close decisions from prior cycles — Caddie Master `decision` notes that were written but whose Closer dispatch may not have completed:
 
 ```bash
-python -m gimmes positions
+gimmes positions
 ```
 
 For each open position, check its note history:
 ```bash
-python -m gimmes position-notes TICKER --limit 10
+gimmes position-notes TICKER --limit 10
 ```
 
 If any position has a `decision` note (type=decision, agent=caddie-master) with no subsequent matching trade, the dispatch was lost to a crash:
-- **CLOSE decisions**: no subsequent close trade in `python -m gimmes trades --ticker TICKER --action close` → re-dispatch Closer to close.
-- **SIZE UP decisions**: no subsequent size_up trade after the decision timestamp in `python -m gimmes trades --ticker TICKER --action size_up` → re-dispatch Closer with `--size-up`.
+- **CLOSE decisions**: no subsequent close trade in `gimmes trades --ticker TICKER --action close` → re-dispatch Closer to close.
+- **SIZE UP decisions**: no subsequent size_up trade after the decision timestamp in `gimmes trades --ticker TICKER --action size_up` → re-dispatch Closer with `--size-up`.
 
 Resolve any orphaned decisions before proceeding with the regular Monitor cycle.
 
@@ -84,8 +84,8 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 1. Read the full position context and note history yourself:
    ```bash
-   python -m gimmes position-context TICKER
-   python -m gimmes position-notes TICKER
+   gimmes position-context TICKER
+   gimmes position-notes TICKER
    ```
 
 2. Review Monitor's flag note. Understand specifically: what changed, and whether it was already in the original thesis.
@@ -103,7 +103,7 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
    ```bash
-   python -m gimmes position-note TICKER \
+   gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
@@ -114,7 +114,7 @@ After Monitor returns, review its report. For each position Monitor flagged:
    If this command fails, do not proceed with a close — log the failure and move on.
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
-   - Cancel any resting orders first: `python -m gimmes cancel ORDER_ID`
+   - Cancel any resting orders first: `gimmes cancel ORDER_ID`
    - Then dispatch the Closer agent to execute the sell.
 
 7. **If the decision is HOLD**, no further action for this position this cycle.
@@ -133,7 +133,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 
 1. **Log decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
    ```bash
-   python -m gimmes position-note TICKER \
+   gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
@@ -144,23 +144,23 @@ If Monitor flags a position where the current edge has *increased* since entry (
    If this command fails, do not proceed with the size up — log the failure and move on.
 
 2. **Dispatch Closer** to execute the buy with `--size-up`:
-   - Closer runs `python -m gimmes validate TICKER --prob P --size-up`
-   - If validation passes, `python -m gimmes size TICKER --prob P`
-   - Place order: `python -m gimmes order TICKER --prob P --size-up --yes`
+   - Closer runs `gimmes validate TICKER --prob P --size-up`
+   - If validation passes, `gimmes size TICKER --prob P`
+   - Place order: `gimmes order TICKER --prob P --size-up --yes`
 
 ### Step 3: Scout
 
 Dispatch the **Scout** agent to scan for new gimme candidates.
 
 Launch the Scout agent (`scout.md`) to:
-1. Run `python -m gimmes scan` to fetch and filter markets
+1. Run `gimmes scan` to fetch and filter markets
 2. Score the top candidates
 3. Return a ranked shortlist
 
 **If Scout returns zero candidates in its shortlist**, MUST log the empty shortlist and skip directly to Step 6. NEVER run Steps 4-5.
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: Scout returned 0 candidates"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: Scout returned 0 candidates"
 ```
 If the command fails, note the failure in your output and continue. Do not retry.
 
@@ -173,7 +173,7 @@ Before dispatching the Caddie, check each Scout candidate for recent prior resea
 For each candidate ticker from the Scout's shortlist, run:
 
 ```bash
-python -m gimmes candidates --ticker TICKER --limit 1
+gimmes candidates --ticker TICKER --limit 1
 ```
 
 Evaluate the output using these rules:
@@ -181,17 +181,17 @@ Evaluate the output using these rules:
 1. **No prior research** (no records found) → send to Caddie
 2. **Prior score < 60** (clear PASS) → skip re-research, log the skip:
    ```bash
-   python -m gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+   gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
      --rationale "Cooldown: prior score SCORE (<60), skipping re-research" \
      --agent caddie-master
    ```
 3. **Prior score 60-74** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
-4. **Prior score >= 75 with open position** (check `python -m gimmes positions` for the ticker) → skip, already traded
+4. **Prior score >= 75 with open position** (check `gimmes positions` for the ticker) → skip, already traded
 5. **Prior score >= 75, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
 **If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the outcome before skipping to Step 6:
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Caddie skipped: N candidates evaluated, 0 passed cooldown/filtering (N skipped)"
 ```
 Substitute the actual count of Scout candidates for N. If the command fails, note the failure in your output and continue. Do not retry. Then skip directly to Step 6. NEVER run Steps 4b-5.
 
@@ -212,7 +212,7 @@ Launch the Caddie agent (`caddie.md`) to:
 
 **Verification:** After the Caddie returns (or fails entirely — treat a crash/timeout as zero candidates completed), verify completeness by checking that every ticker from the Scout's shortlist has a "Logged candidate" confirmation in the Caddie's output. If any tickers are missing, re-dispatch the Caddie for the missing tickers only (maximum 1 re-dispatch). If still missing after the retry, log a skip for each remaining ticker so the decision is auditable:
 ```bash
-python -m gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
   --rationale "Caddie failed to research after retry" --agent caddie-master
 ```
 If a fallback `log-trade` command fails, note the failure in your output and continue. Do not retry failed log commands.
@@ -227,12 +227,12 @@ For each PROCEED candidate:
 
 1. **Read the research independently** — form your own view before conferring:
    ```bash
-   python -m gimmes candidates --ticker TICKER --limit 1
-   python -m gimmes market-info TICKER
+   gimmes candidates --ticker TICKER --limit 1
+   gimmes market-info TICKER
    ```
    If the candidate would add to an existing position, also read the position context:
    ```bash
-   python -m gimmes position-context TICKER
+   gimmes position-context TICKER
    ```
    If any of these commands fail, REJECT the candidate — you cannot review without the data.
 
@@ -251,7 +251,7 @@ For each PROCEED candidate:
 
 4. **Log the decision BEFORE dispatching Closer** (audit trail):
    ```bash
-   python -m gimmes position-note TICKER \
+   gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
@@ -263,7 +263,7 @@ For each PROCEED candidate:
    ```
    For REJECT decisions:
    ```bash
-   python -m gimmes position-note TICKER \
+   gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
@@ -275,7 +275,7 @@ For each PROCEED candidate:
 
 5. **Log rejected candidates as skips** so the decision is auditable:
    ```bash
-   python -m gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
+   gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
      --rationale "Caddie Master review: REJECT — [brief reason]" --agent caddie-master
    ```
    If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
@@ -287,9 +287,9 @@ For each PROCEED candidate:
 For each APPROVED candidate from Step 4c, dispatch the **Closer** agent.
 
 Launch the Closer agent (`closer.md`) to:
-1. Run `python -m gimmes validate TICKER --prob P` for each candidate
-2. If validation passes, run `python -m gimmes size TICKER --prob P`
-3. Place the order: `python -m gimmes order TICKER --prob P --yes`
+1. Run `gimmes validate TICKER --prob P` for each candidate
+2. If validation passes, run `gimmes size TICKER --prob P`
+3. Place the order: `gimmes order TICKER --prob P --yes`
    (The order command logs the trade and syncs positions atomically — no separate log-trade needed.)
 
 **Safety**: The Closer MUST pass all validation checks before any trade. NEVER override risk limits.
@@ -329,7 +329,7 @@ Launch the Pro agent (`pro.md`) to:
 MUST run this step unconditionally — regardless of which earlier steps were skipped or whether Step 7 ran.
 
 ```bash
-python -m gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase complete --message "Cycle $GIMMES_CYCLE complete"
 ```
 
 If the command fails, note the failure in your output and continue. Do not retry.
