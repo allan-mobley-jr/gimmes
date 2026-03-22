@@ -45,12 +45,12 @@ gimmes positions
   gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: daily loss limit breached"
   ```
   If the command fails, note the failure in your output and continue. Do not retry.
-- If `positions` shows position count >= `max_open_positions` (default 15) → MUST log the skip and then run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
+- If `positions` shows position count >= `max_open_positions` (default 15) → MUST log the skip, run Step 2 (Monitor), then skip to Step 6. NEVER run Steps 3-5.
   ```bash
   gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: position count at max (N/N)"
   ```
   Substitute the actual position count and max from the `positions` output for the two N values. If the command fails, note the failure in your output and continue. Do not retry.
-- If `risk-check` reports Bankroll limit breached (deployed capital >= bankroll) → MUST log the skip and then run Step 2 (Monitor) then skip to Step 6. NEVER run Steps 3-5.
+- If `risk-check` reports Bankroll limit breached (deployed capital >= bankroll) → MUST log the skip, run Step 2 (Monitor), then skip to Step 6. NEVER run Steps 3-5.
   ```bash
   gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Pipeline skipped: bankroll limit breached"
   ```
