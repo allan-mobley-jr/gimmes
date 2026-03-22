@@ -255,13 +255,32 @@ def scan(
     config = load_config()
 
     async def _scan() -> None:
+        import logging
+        import sqlite3
+
         from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import list_all_markets
         from gimmes.reporting.formatter import format_scan_results
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_position_tickers
         from gimmes.strategy.scanner import filter_markets
         from gimmes.strategy.scorer import quick_score
 
+        logger = logging.getLogger("gimmes.cli")
+
         series_tickers = series or config.scanner.series
+
+        # Exclude tickers with open positions
+        exclude_tickers: set[str] = set()
+        try:
+            async with Database(config.db_path) as db:
+                exclude_tickers = await get_position_tickers(db)
+            if exclude_tickers:
+                console.print(
+                    f"Excluding {len(exclude_tickers)} ticker(s) with open positions"
+                )
+        except sqlite3.OperationalError:
+            logger.debug("Could not load position tickers", exc_info=True)
 
         async with KalshiClient(config) as client:
             console.print("[cyan]Scanning markets...[/cyan]")
@@ -277,7 +296,7 @@ def scan(
                 markets = await list_all_markets(client)
                 console.print(f"Fetched {len(markets)} markets (all)")
 
-            candidates = filter_markets(markets, config)
+            candidates = filter_markets(markets, config, exclude_tickers=exclude_tickers)
             console.print(f"Filtered to {len(candidates)} candidates")
 
             scored = []

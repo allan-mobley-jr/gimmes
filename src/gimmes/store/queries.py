@@ -231,6 +231,13 @@ async def get_positions(db: Database) -> list[Position]:
     ]
 
 
+async def get_position_tickers(db: Database) -> set[str]:
+    """Return tickers of all open positions (count > 0)."""
+    cursor = await db.conn.execute("SELECT ticker FROM positions WHERE count > 0")
+    rows = await cursor.fetchall()
+    return {row["ticker"] for row in rows}
+
+
 async def delete_position(db: Database, ticker: str) -> None:
     """Remove a position (e.g., after settlement)."""
     await db.conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))

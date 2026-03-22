@@ -19,10 +19,16 @@ def days_until(dt: datetime | None) -> float | None:
     return delta.total_seconds() / 86400
 
 
-def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
+def filter_markets(
+    markets: list[Market],
+    config: GimmesConfig,
+    *,
+    exclude_tickers: set[str] | None = None,
+) -> list[Market]:
     """Filter markets by gimme scanning criteria.
 
     Filters by:
+    - Excluded tickers (e.g. open positions)
     - Price range (min_market_price to max_market_price)
     - Minimum volume / open interest
     - Market status (active only)
@@ -36,6 +42,10 @@ def filter_markets(markets: list[Market], config: GimmesConfig) -> list[Market]:
     candidates: list[Market] = []
 
     for m in markets:
+        # Skip tickers with open positions
+        if exclude_tickers and m.ticker in exclude_tickers:
+            continue
+
         # Must be active
         if m.status != MarketStatus.ACTIVE:
             continue
