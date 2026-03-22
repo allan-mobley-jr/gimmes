@@ -523,3 +523,58 @@ class TestNarrowedExceptionTypes:
 
         assert result.exit_code == 1
         assert isinstance(result.exception, TypeError)
+
+
+# ---------------------------------------------------------------------------
+# Trade rationale propagation tests
+# ---------------------------------------------------------------------------
+
+
+class TestTradeRationalePropagation:
+    """Verify the trade rationale carries the Caddie thesis, not a placeholder."""
+
+    def _run_with_thesis(
+        self, thesis_text: str, *, extra_args: list[str] | None = None,
+    ):
+        """Run the order CLI with a patched thesis and capture the TradeDecision."""
+        broker = _make_mock_broker()
+        sync_spy = AsyncMock()
+
+        with patch(
+            "gimmes.store.queries.get_thesis_for_ticker",
+            AsyncMock(return_value=thesis_text),
+        ):
+            result, _, _ = _run_order_cli(
+                broker, sync_side_effect=sync_spy, extra_args=extra_args,
+            )
+
+        trade = sync_spy.call_args.args[2] if sync_spy.call_count else None
+        return result, trade
+
+    def test_rationale_uses_thesis_when_available(self) -> None:
+        """When a Caddie thesis exists, it becomes the trade rationale."""
+        thesis = "Threshold extremely low; weekly claims signal stable labor market"
+        result, trade = self._run_with_thesis(thesis)
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.rationale == thesis
+        assert trade.thesis == thesis
+
+    def test_rationale_falls_back_when_thesis_empty(self) -> None:
+        """When no thesis exists, rationale defaults to '{agent} order'."""
+        result, trade = self._run_with_thesis("")
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.rationale == "cli order"
+
+    def test_rationale_falls_back_with_custom_agent(self) -> None:
+        """The fallback rationale uses the --agent flag value."""
+        result, trade = self._run_with_thesis(
+            "", extra_args=["--agent", "closer"],
+        )
+
+        assert result.exit_code == 0
+        assert trade is not None
+        assert trade.rationale == "closer order"

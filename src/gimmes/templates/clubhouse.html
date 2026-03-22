@@ -634,8 +634,10 @@
 
         function findRationaleForTicker(ticker) {
             if (!tradeItems.length) return '';
-            const match = tradeItems.find(function(t) { return t.ticker === ticker && t.rationale; });
-            return match ? match.rationale : '';
+            const match = tradeItems.find(function(t) { return t.ticker === ticker && t.action === 'open' && t.rationale; });
+            if (match) return match.rationale;
+            const fallback = tradeItems.find(function(t) { return t.ticker === ticker && t.rationale; });
+            return fallback ? fallback.rationale : '';
         }
 
         function tickerValue(ticker) {

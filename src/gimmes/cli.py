@@ -881,7 +881,7 @@ def order(
                             if probability is not None
                             else 0.0
                         ),
-                        rationale=f"{agent} order",
+                        rationale=thesis or f"{agent} order",
                         thesis=thesis,
                         agent=agent,
                         order_id=result.order_id,
