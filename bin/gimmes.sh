@@ -149,13 +149,13 @@ BANNER
 }
 
 # Verify installation
-if [ ! -d "$REPO" ]; then
+if [ ! -d "$REPO" ] && [ "${1:-}" != "uninstall" ]; then
     echo "Error: gimmes is not installed. Run the install script first:"
     echo "  curl -fsSL https://raw.githubusercontent.com/allan-mobley-jr/gimmes/main/install.sh | bash"
     exit 1
 fi
 
-if [ ! -f "$PYTHON" ] && [ "${1:-}" != "_post-update" ]; then
+if [ ! -f "$PYTHON" ] && [ "${1:-}" != "_post-update" ] && [ "${1:-}" != "uninstall" ]; then
     echo "Error: Python virtual environment not found at $REPO/.venv"
     echo "Try running: gimmes update"
     exit 1
@@ -244,6 +244,7 @@ Setup & Config:
   gimmes tour_guide        Interactive product tour (The Starter)
   gimmes caddie_shop       Conversational config advisor (The Caddie Shop)
   gimmes update            Pull latest code and reinstall
+  gimmes uninstall         Remove gimmes (--keep-data to preserve config/db)
   gimmes version           Show version and check for updates
 
 Mode & Status:
@@ -290,6 +291,84 @@ Autonomous Trading:
 
 https://github.com/allan-mobley-jr/gimmes
 HELP
+        ;;
+    uninstall)
+        KEEP_DATA=0
+        for arg in "${@:2}"; do
+            case "$arg" in
+                --keep-data) KEEP_DATA=1 ;;
+                *) echo "Unknown option: $arg"; exit 1 ;;
+            esac
+        done
+
+        # Guard against dangerous GIMMES_HOME values
+        if [ -z "$GIMMES_HOME" ] || [ "$GIMMES_HOME" = "/" ] || [ "$GIMMES_HOME" = "$HOME" ]; then
+            echo "Error: GIMMES_HOME has an unsafe value: '$GIMMES_HOME'"
+            exit 1
+        fi
+
+        echo ""
+        echo "This will remove gimmes from your system."
+        if [ "$KEEP_DATA" -eq 1 ]; then
+            echo "  Removing: $GIMMES_HOME/repo, $GIMMES_HOME/bin"
+            echo "  Keeping:  gimmes.db, .env, keys/, logs/"
+        else
+            echo "  Removing: $GIMMES_HOME (everything)"
+        fi
+        echo ""
+        printf 'Type UNINSTALL to confirm: '
+        read -r confirm
+        if [ "$confirm" != "UNINSTALL" ]; then
+            echo "Aborted."
+            exit 1
+        fi
+
+        # Remove gimmes PATH entries from shell config files.
+        # Uses cat to write back into the original inode, preserving permissions.
+        clean_shell_config() {
+            local rc_file="$1"
+            if [ ! -f "$rc_file" ]; then
+                return
+            fi
+            if ! grep -q '\.gimmes/bin\|^# gimmes$' "$rc_file" 2>/dev/null; then
+                return
+            fi
+            local tmp_file
+            tmp_file=$(mktemp) || return
+            sed '/^# gimmes$/d; /^export PATH=.*\.gimmes\/bin/d' "$rc_file" > "$tmp_file"
+            cat "$tmp_file" > "$rc_file"
+            rm -f "$tmp_file"
+        }
+
+        # Clean all shell configs (user may have changed shells since install)
+        clean_shell_config "$HOME/.zshrc"
+        clean_shell_config "$HOME/.bashrc"
+        clean_shell_config "$HOME/.bash_profile"
+        rm -f "$HOME/.config/fish/conf.d/gimmes.fish"
+
+        if [ "$KEEP_DATA" -eq 1 ]; then
+            if ! rm -rf -- "$GIMMES_HOME/repo"; then
+                echo "Error: could not remove $GIMMES_HOME/repo"
+                exit 1
+            fi
+            if ! rm -rf -- "$GIMMES_HOME/bin"; then
+                echo "Error: could not remove $GIMMES_HOME/bin"
+                exit 1
+            fi
+        else
+            if ! rm -rf -- "$GIMMES_HOME"; then
+                echo "Error: could not remove $GIMMES_HOME"
+                exit 1
+            fi
+        fi
+
+        echo ""
+        echo "gimmes has been uninstalled."
+        if [ "$KEEP_DATA" -eq 1 ]; then
+            echo "Your data files remain in $GIMMES_HOME"
+        fi
+        echo "Restart your terminal to update your PATH."
+        exit 0
         ;;
     init)
         show_banner

@@ -403,3 +403,142 @@ class TestUpdateShortCircuit:
         )
         combined = result.stdout + result.stderr
         assert "Already on latest" not in combined
+
+
+# -- uninstall ---------------------------------------------------------------
+
+
+def _make_uninstall_home(tmp_path: Path) -> Path:
+    """Create a mock gimmes installation for uninstall tests."""
+    home = tmp_path / "gimmes_home"
+    repo = home / "repo"
+    bin_dir = home / "bin"
+
+    repo.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    (home / "keys").mkdir()
+    (home / "logs").mkdir()
+    (home / ".env").write_text("GIMMES_MODE=driving_range\n")
+    (home / "gimmes.db").write_text("")
+
+    # Fake venv so script passes venv check
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    venv_python = repo / ".venv" / "bin" / "python"
+    venv_python.touch()
+    venv_python.chmod(0o755)
+
+    # Fake git repo so script passes repo check
+    init_repo(repo)
+
+    return home
+
+
+def _write_shell_config(path: Path) -> None:
+    """Write a shell config file with gimmes PATH entry."""
+    path.write_text(
+        "# existing config\n"
+        "export FOO=bar\n"
+        "\n"
+        "# gimmes\n"
+        'export PATH="$HOME/.gimmes/bin:$PATH"\n'
+    )
+
+
+class TestUninstall:
+    """gimmes uninstall removes installation and cleans shell config."""
+
+    def test_abort_on_wrong_confirmation(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        result = run_bash(
+            f'echo "no" | GIMMES_HOME="{home}" bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 1
+        assert "Aborted" in result.stdout
+        assert (home / "repo").is_dir()
+
+    def test_full_uninstall_removes_everything(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        result = run_bash(
+            f'echo "UNINSTALL" | GIMMES_HOME="{home}" '
+            f'HOME="{tmp_path}" bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 0
+        assert "gimmes has been uninstalled" in result.stdout
+        assert not home.exists()
+
+    def test_keep_data_preserves_db_and_env(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        result = run_bash(
+            f'echo "UNINSTALL" | GIMMES_HOME="{home}" '
+            f'HOME="{tmp_path}" bash "{GIMMES_SH}" uninstall --keep-data'
+        )
+        assert result.returncode == 0
+        assert "gimmes has been uninstalled" in result.stdout
+        assert "data files remain" in result.stdout
+        assert not (home / "repo").exists()
+        assert not (home / "bin").exists()
+        assert (home / "gimmes.db").exists()
+        assert (home / ".env").exists()
+        assert (home / "keys").is_dir()
+        assert (home / "logs").is_dir()
+
+    @pytest.mark.parametrize("rc_file", [".zshrc", ".bashrc", ".bash_profile"])
+    def test_cleans_shell_config(self, tmp_path: Path, rc_file: str) -> None:
+        home = _make_uninstall_home(tmp_path)
+        config = tmp_path / rc_file
+        _write_shell_config(config)
+        result = run_bash(
+            f'echo "UNINSTALL" | HOME="{tmp_path}" GIMMES_HOME="{home}" '
+            f'bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 0
+        content = config.read_text()
+        assert "# gimmes" not in content
+        assert ".gimmes/bin" not in content
+        assert "export FOO=bar" in content
+
+    def test_removes_fish_config(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        fish_dir = tmp_path / ".config" / "fish" / "conf.d"
+        fish_dir.mkdir(parents=True)
+        fish_config = fish_dir / "gimmes.fish"
+        fish_config.write_text("fish_add_path $HOME/.gimmes/bin\n")
+        result = run_bash(
+            f'echo "UNINSTALL" | HOME="{tmp_path}" GIMMES_HOME="{home}" '
+            f'bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 0
+        assert not fish_config.exists()
+
+    def test_config_without_gimmes_lines_unchanged(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        zshrc = tmp_path / ".zshrc"
+        original = "# my config\nexport FOO=bar\nalias ll='ls -la'\n"
+        zshrc.write_text(original)
+        result = run_bash(
+            f'echo "UNINSTALL" | HOME="{tmp_path}" GIMMES_HOME="{home}" '
+            f'bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 0
+        assert zshrc.read_text() == original
+
+    @pytest.mark.parametrize("bad_value", ["", "/", "HOME"])
+    def test_unsafe_gimmes_home_rejected(
+        self, tmp_path: Path, bad_value: str
+    ) -> None:
+        resolved = str(tmp_path) if bad_value == "HOME" else bad_value
+        result = run_bash(
+            f'GIMMES_HOME="{resolved}" HOME="{tmp_path}" '
+            f'bash "{GIMMES_SH}" uninstall'
+        )
+        assert result.returncode == 1
+        assert "unsafe" in result.stdout.lower() or "not installed" in result.stdout.lower()
+
+    def test_unknown_option_rejected(self, tmp_path: Path) -> None:
+        home = _make_uninstall_home(tmp_path)
+        result = run_bash(
+            f'GIMMES_HOME="{home}" bash "{GIMMES_SH}" uninstall --bad-flag'
+        )
+        assert result.returncode == 1
+        assert "Unknown option" in result.stdout
+        assert (home / "repo").is_dir()

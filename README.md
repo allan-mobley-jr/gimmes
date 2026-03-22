@@ -107,6 +107,13 @@ Championship mode requires explicit confirmation at startup since it trades with
 gimmes update
 ```
 
+### Uninstall
+
+```bash
+gimmes uninstall              # Remove everything (~/.gimmes)
+gimmes uninstall --keep-data  # Remove code but keep config, database, keys, logs
+```
+
 ### Help
 
 ```bash
@@ -282,6 +289,7 @@ gimmes config get [K]    # Show config value(s)
 gimmes tour_guide        # Interactive product tour (The Starter)
 gimmes caddie_shop       # Conversational config advisor (The Caddie Shop)
 gimmes update            # Pull latest code and reinstall
+gimmes uninstall         # Remove gimmes (--keep-data to preserve config/db)
 gimmes version           # Show version and check for updates
 ```
 
