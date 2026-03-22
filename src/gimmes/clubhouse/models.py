@@ -24,6 +24,7 @@ class PortfolioResponse(BaseModel):
 
 
 class PositionItem(BaseModel):
+    id: int = 0
     ticker: str = ""
     title: str = ""
     side: str = "yes"

@@ -176,16 +176,37 @@ def _row_get(row: aiosqlite.Row, key: str, default: object = None) -> object:
         return default
 
 
-async def get_positions(db_path: Path) -> list[PositionItem]:
-    """Get open positions."""
+async def get_positions(
+    db_path: Path,
+    *,
+    limit: int = 10,
+    before_id: int | None = None,
+) -> list[PositionItem]:
+    """Get open positions with cursor-based pagination.
+
+    Args:
+        limit: Page size.
+        before_id: Fetch older entries (id < before_id). Used for scroll-down.
+    """
     config = _config()
     table = _position_table(config)
+    # paper_positions has no id column; use rowid instead.
+    id_col = "rowid" if table != "positions" else "id"
+    select = f"SELECT {id_col} AS id, * FROM {table}" if id_col == "rowid" else f"SELECT * FROM {table}"  # noqa: S608, E501
     items: list[PositionItem] = []
 
     try:
         async with _connect(db_path) as conn:
+            clauses = ["count > 0"]
+            params: list[int] = []
+            if before_id is not None:
+                clauses.append(f"{id_col} < ?")
+                params.append(before_id)
+            params.append(limit)
+            where = " AND ".join(clauses)
             cursor = await conn.execute(
-                f"SELECT * FROM {table} WHERE count > 0 ORDER BY ticker"
+                f"{select} WHERE {where} ORDER BY {id_col} DESC LIMIT ?",
+                tuple(params),
             )
             rows = await cursor.fetchall()
             for row in rows:
@@ -194,6 +215,7 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
                 market_value = stored_mv if stored_mv else row["count"] * row["market_price"]
 
                 items.append(PositionItem(
+                    id=row["id"],
                     ticker=row["ticker"],
                     title=str(_row_get(row, "title", "") or ""),
                     side=row["side"],

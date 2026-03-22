@@ -87,8 +87,11 @@ async def api_portfolio() -> PortfolioResponse:
 
 
 @app.get("/api/positions")
-async def api_positions() -> list[PositionItem]:
-    return await data.get_positions(_db_path)
+async def api_positions(
+    before: int | None = Query(None),
+    limit: int = Query(10, ge=1, le=200),
+) -> list[PositionItem]:
+    return await data.get_positions(_db_path, limit=limit, before_id=before)
 
 
 @app.get("/api/trades")
@@ -215,7 +218,7 @@ async def api_stream() -> StreamingResponse:
                     # Gather all data for the update
                     status = await data.get_status(_db_path, _pause_seconds)
                     portfolio = await data.get_portfolio(_db_path)
-                    positions = await data.get_positions(_db_path)
+                    positions = await data.get_positions(_db_path, limit=200)
                     risk = await data.get_risk(_db_path)
                     candidates = await data.get_candidates(_db_path, limit=10)
                     errors = await data.get_errors_data(_db_path, limit=10)
