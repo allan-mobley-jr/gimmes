@@ -204,6 +204,7 @@ async def get_positions(db_path: Path) -> list[PositionItem]:
                     market_value=market_value,
                     unrealized_pnl=row["unrealized_pnl"],
                     realized_pnl=row["realized_pnl"],
+                    updated_at=str(_row_get(row, "updated_at", "") or ""),
                 ))
     except Exception:
         logger.warning("get_positions failed", exc_info=True)
