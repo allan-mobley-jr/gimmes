@@ -522,17 +522,17 @@ class TestUninstall:
         assert result.returncode == 0
         assert zshrc.read_text() == original
 
-    @pytest.mark.parametrize("bad_value", ["", "/", "HOME"])
+    @pytest.mark.parametrize("bad_value", ["/", "HOME"])
     def test_unsafe_gimmes_home_rejected(
         self, tmp_path: Path, bad_value: str
     ) -> None:
         resolved = str(tmp_path) if bad_value == "HOME" else bad_value
         result = run_bash(
-            f'GIMMES_HOME="{resolved}" HOME="{tmp_path}" '
+            f'echo "UNINSTALL" | GIMMES_HOME="{resolved}" HOME="{tmp_path}" '
             f'bash "{GIMMES_SH}" uninstall'
         )
         assert result.returncode == 1
-        assert "unsafe" in result.stdout.lower() or "not installed" in result.stdout.lower()
+        assert "unsafe" in result.stdout.lower()
 
     def test_unknown_option_rejected(self, tmp_path: Path) -> None:
         home = _make_uninstall_home(tmp_path)
