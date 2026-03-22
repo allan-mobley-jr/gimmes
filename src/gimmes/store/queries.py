@@ -184,18 +184,17 @@ async def sync_positions_with_trade(
         return await _insert_trade_row(db, trade)
 
 
-async def get_positions(db: Database) -> list[Position]:
-    """Get all stored positions.
+async def _check_position_staleness(db: Database, table: str) -> None:
+    """Log a warning if position data may be stale.
 
-    Logs a warning if positions are stale (updated_at older than the most
-    recent trade timestamp), which can happen after a crash between trade
-    insertion and position sync.
+    Only applies to the ``positions`` table — paper_positions are updated
+    inline by the paper broker and cannot become stale in this way.
     """
+    if table != "positions":
+        return
     logger = logging.getLogger(__name__)
-
-    # Check for staleness: latest trade newer than latest position update.
-    # Normalize timestamps with datetime() since trades use ISO format (T separator)
-    # while positions use SQLite datetime() format (space separator).
+    # Normalize timestamps with datetime() since trades use ISO format
+    # (T separator) while positions use SQLite datetime() format (space).
     stale_cursor = await db.conn.execute(
         """SELECT
             datetime((SELECT MAX(timestamp) FROM trades)) AS latest_trade,
@@ -211,6 +210,16 @@ async def get_positions(db: Database) -> list[Position]:
                 stale_row["latest_trade"],
                 stale_row["latest_pos"],
             )
+
+
+async def get_positions(db: Database) -> list[Position]:
+    """Get all stored positions.
+
+    Logs a warning if positions are stale (updated_at older than the most
+    recent trade timestamp), which can happen after a crash between trade
+    insertion and position sync.
+    """
+    await _check_position_staleness(db, "positions")
 
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
     rows = await cursor.fetchall()
@@ -240,6 +249,7 @@ async def get_position_tickers(
     """Return tickers of all open positions (count > 0)."""
     if table not in _ALLOWED_POSITION_TABLES:
         raise ValueError(f"Invalid position table: {table}")
+    await _check_position_staleness(db, table)
     cursor = await db.conn.execute(
         f"SELECT ticker FROM {table} WHERE count > 0"  # noqa: S608
     )

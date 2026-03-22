@@ -11,6 +11,7 @@ import httpx
 
 from gimmes.models.error import ErrorCategory, ErrorSeverity
 from gimmes.models.order import Order, OrderAction, OrderSide
+from gimmes.models.portfolio import Position
 
 _ORDER_CLI_ARGS = [
     "order", "TEST-TICKER",
@@ -585,9 +586,7 @@ class TestTradeRationalePropagation:
 # ---------------------------------------------------------------------------
 
 
-def _position_for_size_up():
-    from gimmes.models.portfolio import Position
-
+def _position_for_size_up() -> Position:
     return Position(
         ticker="TEST-TICKER", side="yes", count=5,
         avg_price=0.40, cost_basis=2.0,
@@ -725,6 +724,20 @@ class TestSizeUpThesisAnchoring:
 # ---------------------------------------------------------------------------
 
 
+def _assert_thesis_fetch_error(mock_insert) -> None:
+    """Verify the first logged error is a thesis_fetch_failed DATA_INTEGRITY entry."""
+    entry = _error_entry(mock_insert)
+    assert entry.severity == ErrorSeverity.WARNING
+    assert entry.category == ErrorCategory.DATA_INTEGRITY
+    assert entry.error_code == "thesis_fetch_failed"
+    assert "TEST-TICKER" in entry.message
+    ctx = json.loads(entry.context)
+    assert ctx == {
+        "ticker": "TEST-TICKER", "side": "yes",
+        "count": 10, "price": 0.4,
+    }
+
+
 class TestThesisFetchErrorLogging:
     """Verify thesis fetch failures create structured DATA_INTEGRITY errors."""
 
@@ -742,17 +755,7 @@ class TestThesisFetchErrorLogging:
             )
 
         assert result.exit_code == 0
-        assert mock_insert.call_count >= 1
-        entry = mock_insert.call_args_list[0].args[1]
-        assert entry.severity == ErrorSeverity.WARNING
-        assert entry.category == ErrorCategory.DATA_INTEGRITY
-        assert entry.error_code == "thesis_fetch_failed"
-        assert "TEST-TICKER" in entry.message
-        ctx = json.loads(entry.context)
-        assert ctx == {
-            "ticker": "TEST-TICKER", "side": "yes",
-            "count": 10, "price": 0.4,
-        }
+        _assert_thesis_fetch_error(mock_insert)
 
     def test_size_up_thesis_fetch_db_error_creates_structured_error(self) -> None:
         """sqlite3.Error during size-up thesis fetch records a DATA_INTEGRITY error."""
@@ -779,14 +782,4 @@ class TestThesisFetchErrorLogging:
             )
 
         assert result.exit_code == 0
-        assert mock_insert.call_count >= 1
-        entry = mock_insert.call_args_list[0].args[1]
-        assert entry.severity == ErrorSeverity.WARNING
-        assert entry.category == ErrorCategory.DATA_INTEGRITY
-        assert entry.error_code == "thesis_fetch_failed"
-        assert "TEST-TICKER" in entry.message
-        ctx = json.loads(entry.context)
-        assert ctx == {
-            "ticker": "TEST-TICKER", "side": "yes",
-            "count": 10, "price": 0.4,
-        }
+        _assert_thesis_fetch_error(mock_insert)
