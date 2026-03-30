@@ -198,11 +198,17 @@ ok "Created command: $BIN_DIR/gimmes"
 # Add to PATH
 # ---------------------------------------------------------------------------
 
+if [[ "$BIN_DIR" == "$HOME/"* ]]; then
+    PORTABLE_BIN="\$HOME${BIN_DIR#"$HOME"}"
+else
+    PORTABLE_BIN="$BIN_DIR"
+fi
+
 add_to_path() {
     local rc_file="$1"
-    local path_line="export PATH=\"$BIN_DIR:\$PATH\""
+    local path_line="export PATH=\"$PORTABLE_BIN:\$PATH\""
 
-    if [ -f "$rc_file" ] && grep -qF "$BIN_DIR" "$rc_file" 2>/dev/null; then
+    if [ -f "$rc_file" ] && { grep -qF "$BIN_DIR" "$rc_file" 2>/dev/null || grep -qF "$PORTABLE_BIN" "$rc_file" 2>/dev/null; }; then
         return 0  # Already present
     fi
 
@@ -234,14 +240,14 @@ case "$SHELL_NAME" in
         FISH_CONFIG="$HOME/.config/fish/conf.d/gimmes.fish"
         mkdir -p "$(dirname "$FISH_CONFIG")"
         if [ ! -f "$FISH_CONFIG" ]; then
-            echo "fish_add_path $BIN_DIR" > "$FISH_CONFIG"
+            echo "fish_add_path $PORTABLE_BIN" > "$FISH_CONFIG"
             ok "Added to PATH in $FISH_CONFIG"
         fi
         RC_FILE="$FISH_CONFIG"
         ;;
     *)
         warn "Could not detect shell. Add this to your shell config manually:"
-        warn "  export PATH=\"$BIN_DIR:\$PATH\""
+        warn "  export PATH=\"$PORTABLE_BIN:\$PATH\""
         ;;
 esac
 
