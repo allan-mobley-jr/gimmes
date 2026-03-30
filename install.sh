@@ -198,13 +198,17 @@ ok "Created command: $BIN_DIR/gimmes"
 # Add to PATH
 # ---------------------------------------------------------------------------
 
-PORTABLE_BIN="${BIN_DIR/#$HOME/\$HOME}"
+if [[ "$BIN_DIR" == "$HOME/"* ]]; then
+    PORTABLE_BIN="\$HOME${BIN_DIR#"$HOME"}"
+else
+    PORTABLE_BIN="$BIN_DIR"
+fi
 
 add_to_path() {
     local rc_file="$1"
     local path_line="export PATH=\"$PORTABLE_BIN:\$PATH\""
 
-    if [ -f "$rc_file" ] && grep -qF ".gimmes/bin" "$rc_file" 2>/dev/null; then
+    if [ -f "$rc_file" ] && { grep -qF "$BIN_DIR" "$rc_file" 2>/dev/null || grep -qF "$PORTABLE_BIN" "$rc_file" 2>/dev/null; }; then
         return 0  # Already present
     fi
 
