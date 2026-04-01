@@ -144,7 +144,11 @@ class StrategyConfig(BaseModel):
                 "\n"
                 "When set to 'no', the scanner and scorer flip their perspective:\n"
                 "the price range, sweet spots, and edge calculations all operate\n"
-                "from the NO buyer's viewpoint."
+                "from the NO buyer's viewpoint.\n"
+                "\n"
+                "Probability inputs (--prob, min_true_probability) are always\n"
+                "interpreted from the configured side's perspective. When side='no',\n"
+                "provide your confidence that NO wins (not YES)."
             ),
             "choices": ["yes", "no"],
         },

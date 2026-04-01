@@ -353,7 +353,9 @@ def score(
 @app.command(rich_help_panel="Trading")
 def size(
     ticker: str = typer.Argument(..., help="Market ticker"),
-    probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
+    probability: float = typer.Option(
+        ..., "--prob", "-p", help="True probability for configured side",
+    ),
 ) -> None:
     """Calculate position size for a market."""
     config = load_config()
@@ -530,7 +532,8 @@ def order(
         0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
     ),
     probability: float | None = typer.Option(
-        None, "--prob", "-p", help="True probability (buy only: auto-sizing and edge check)",
+        None, "--prob", "-p",
+        help="True probability for configured side (buy only: sizing/edge)",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
