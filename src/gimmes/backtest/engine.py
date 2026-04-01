@@ -305,7 +305,7 @@ async def run_backtest(
 
     # --- 4. Iterate markets, fetch candles, simulate ---
     traded_count = 0
-    for _adapted_m, orig_m, score in scored:
+    for _, orig_m, _score in scored:
         # Fetch daily candlesticks
         close_ts = int(orig_m.close_time.timestamp()) if orig_m.close_time else 0
         if close_ts == 0:
@@ -363,14 +363,16 @@ async def run_backtest(
         if fill_result.total_filled <= 0:
             continue
 
-        # Record the fill
+        # Record the fill using realized VWAP, not candle close
+        filled = fill_result.total_filled
+        vwap = fill_result.total_notional / filled
         entry_time = datetime.fromtimestamp(entry_candle.end_period_ts, tz=UTC)
         bought = ledger.buy(
             ticker=orig_m.ticker,
             title=orig_m.title,
             side="yes",
-            count=fill_result.total_filled,
-            price=entry_price,
+            count=filled,
+            price=vwap,
             fees=fill_result.total_fees,
             entry_time=entry_time,
         )

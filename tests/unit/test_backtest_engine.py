@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from gimmes.backtest.engine import (
-    BacktestConfig,
     BacktestLedger,
-    BacktestResult,
     pick_entry_candle,
     synthesize_orderbook,
 )
 from gimmes.kalshi.historical import Candle
-from gimmes.models.market import OrderbookLevel
 
 
 def _make_candle(

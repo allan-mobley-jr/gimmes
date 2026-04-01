@@ -18,7 +18,7 @@ class _Summary:
     losses: int
     total: int
     win_rate: float
-    gross_pnl: float
+    net_pnl: float
     total_fees: float
     roi: float
     max_dd: float
@@ -32,10 +32,10 @@ def _compute_summary(result: BacktestResult) -> _Summary:
     total = len(result.trades)
     losses = total - wins
     win_rate = wins / total if total > 0 else 0.0
-    gross_pnl = sum(t.pnl for t in result.trades)
+    net_pnl = sum(t.pnl for t in result.trades)
     total_fees = sum(t.fees for t in result.trades)
     starting = result.config.starting_balance
-    roi = gross_pnl / starting if starting > 0 else 0.0
+    roi = net_pnl / starting if starting > 0 else 0.0
 
     equity_values = [starting] + [e for _, e in result.equity_curve]
     max_dd, max_dd_pct = calculate_max_drawdown(equity_values)
@@ -50,7 +50,7 @@ def _compute_summary(result: BacktestResult) -> _Summary:
 
     return _Summary(
         wins=wins, losses=losses, total=total, win_rate=win_rate,
-        gross_pnl=gross_pnl, total_fees=total_fees, roi=roi,
+        net_pnl=net_pnl, total_fees=total_fees, roi=roi,
         max_dd=max_dd, max_dd_pct=max_dd_pct, sharpe=sharpe,
     )
 
@@ -129,8 +129,8 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     summary.add_row("Win Rate", f"{s.win_rate:.1%}")
     summary.add_row("Total Fees", f"${s.total_fees:,.2f}")
 
-    pnl_c = _pnl_color(s.gross_pnl)
-    summary.add_row("Net P&L", f"[{pnl_c}]${s.gross_pnl:+,.2f}[/{pnl_c}]")
+    pnl_c = _pnl_color(s.net_pnl)
+    summary.add_row("Net P&L", f"[{pnl_c}]${s.net_pnl:+,.2f}[/{pnl_c}]")
     roi_c = _pnl_color(s.roi)
     summary.add_row("ROI", f"[{roi_c}]{s.roi:+.1%}[/{roi_c}]")
     summary.add_row(
@@ -189,7 +189,7 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "losses": s.losses,
             "win_rate": round(s.win_rate, 4),
             "total_fees": round(s.total_fees, 2),
-            "net_pnl": round(s.gross_pnl, 2),
+            "net_pnl": round(s.net_pnl, 2),
             "roi": round(s.roi, 4),
             "final_balance": round(result.final_balance, 2),
             "max_drawdown": round(s.max_dd, 2),

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, UTC
-
-import pytest
+from datetime import UTC, date, datetime
 
 from gimmes.backtest.engine import BacktestConfig, BacktestResult, BacktestTrade
 from gimmes.backtest.report import backtest_result_to_json, format_backtest_report
