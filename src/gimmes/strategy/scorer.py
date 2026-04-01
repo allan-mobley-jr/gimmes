@@ -6,7 +6,7 @@ from gimmes.config import GimmesConfig
 from gimmes.models.gimme import GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, Orderbook
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
-from gimmes.strategy.scanner import days_until
+from gimmes.strategy.scanner import days_until, effective_price
 
 
 def quick_score(market: Market, config: GimmesConfig) -> float:
@@ -18,7 +18,8 @@ def quick_score(market: Market, config: GimmesConfig) -> float:
     - Price position in target range (closer to center = better)
     """
     score = 0.0
-    price = market.midpoint if market.midpoint > 0 else market.last_price
+    raw = market.midpoint if market.midpoint > 0 else market.last_price
+    price = effective_price(raw, config.strategy.side)
 
     # Volume score (0-30): higher volume = better
     vol = market.volume_24h if market.volume_24h > 0 else market.volume
@@ -120,7 +121,7 @@ def full_score(
     # Liquidity depth score (0-100)
     liq_score = 50.0  # Default neutral
     if orderbook:
-        depth = orderbook.depth_at_price(candidate.market_price, "yes")
+        depth = orderbook.depth_at_price(candidate.market_price, config.strategy.side)
         if depth >= 500:
             liq_score = 100.0
         elif depth >= 200:

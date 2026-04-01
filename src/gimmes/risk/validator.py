@@ -14,6 +14,7 @@ from gimmes.risk.limits import (
 )
 from gimmes.risk.settlement import scan_settlement_rules
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
+from gimmes.strategy.scanner import effective_price
 
 
 @dataclass
@@ -130,7 +131,8 @@ def validate_trade(
 
     # 6. Edge after fees (skipped when probability is unknown)
     if true_probability is not None:
-        price = market.midpoint if market.midpoint > 0 else market.last_price
+        raw_price = market.midpoint if market.midpoint > 0 else market.last_price
+        price = effective_price(raw_price, config.strategy.side)
         edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
         min_edge = config.strategy.min_edge_after_fees
         if edge >= min_edge:

@@ -8,6 +8,17 @@ from gimmes.config import GimmesConfig
 from gimmes.models.market import Market, MarketStatus
 
 
+def effective_price(yes_price: float, side: str) -> float:
+    """Return the buy price for the given side.
+
+    YES side: returns the YES price as-is.
+    NO side: returns 1 - YES price (the NO price).
+    """
+    if side == "no":
+        return round(1.0 - yes_price, 4)
+    return yes_price
+
+
 def days_until(dt: datetime | None) -> float | None:
     """Calculate days from now until a datetime."""
     if dt is None:
@@ -50,8 +61,9 @@ def filter_markets(
         if m.status != MarketStatus.ACTIVE:
             continue
 
-        # Price range check (use midpoint or last_price)
-        price = m.midpoint if m.midpoint > 0 else m.last_price
+        # Price range check (from the configured side's perspective)
+        raw_price = m.midpoint if m.midpoint > 0 else m.last_price
+        price = effective_price(raw_price, st.side)
         if price < st.min_market_price or price > st.max_market_price:
             continue
 
