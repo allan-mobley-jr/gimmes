@@ -1279,6 +1279,42 @@ def mark_cap_blocked_cmd(
     _run(_mark())
 
 
+@app.command(name="reset-cooldown", rich_help_panel="Trading")
+def reset_cooldown(
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip confirmation prompt",
+    ),
+) -> None:
+    """Clear all cached candidate scores to reset the cooldown system.
+
+    Use this after changing strategy parameters (side, price range, etc.)
+    so the system re-evaluates all markets with the new strategy.
+    """
+
+    async def _reset() -> None:
+        from gimmes.store.database import Database
+        from gimmes.store.queries import clear_all_candidates
+
+        if not force:
+            typer.confirm(
+                "Clear all cached candidates? This resets cooldown for every market.",
+                abort=True,
+            )
+
+        async with Database() as db:
+            count = await clear_all_candidates(db)
+
+        if count > 0:
+            console.print(
+                f"[green]Cleared {count} cached candidate(s)"
+                f" — cooldown reset[/green]"
+            )
+        else:
+            console.print("[dim]No cached candidates to clear[/dim]")
+
+    _run(_reset())
+
+
 @app.command(rich_help_panel="Portfolio")
 def positions() -> None:
     """List open positions."""
@@ -2399,6 +2435,24 @@ def config_set(
         f"[cyan]{key}[/cyan]: {_format_current(current, setting)} → "
         f"[bold]{_format_current(parsed, setting)}[/bold]"
     )
+
+    # Auto-clear cached candidates when strategy params change
+    if key.startswith("strategy."):
+        import asyncio
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import clear_all_candidates
+
+        async def _auto_clear() -> int:
+            async with Database(db_path) as db:
+                return await clear_all_candidates(db)
+
+        cleared = asyncio.run(_auto_clear())
+        if cleared:
+            console.print(
+                f"[yellow]Cleared {cleared} cached candidate(s)"
+                f" — scores from prior strategy no longer apply[/yellow]"
+            )
 
     # Warn if scoring weights no longer sum to 1.0
     if key.startswith("scoring.weights."):
