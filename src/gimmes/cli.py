@@ -2216,6 +2216,68 @@ def tune() -> None:
     _run(_tune())
 
 
+@app.command(rich_help_panel="Strategy")
+def backtest(
+    from_date: str = typer.Option(
+        ..., "--from", help="Start date (YYYY-MM-DD)",
+    ),
+    to_date: str = typer.Option(
+        ..., "--to", help="End date (YYYY-MM-DD)",
+    ),
+    balance: float = typer.Option(
+        10_000, "--balance", "-b", help="Starting balance in dollars",
+    ),
+    edge: float = typer.Option(
+        0.10, "--edge", "-e", help="Assumed edge over market price for Kelly sizing",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output results as JSON",
+    ),
+) -> None:
+    """Backtest the gimme strategy on historical settled markets."""
+    config = load_config()
+
+    async def _backtest() -> None:
+        import json
+        from datetime import date
+
+        from gimmes.backtest.engine import BacktestConfig, run_backtest
+        from gimmes.backtest.report import backtest_result_to_json, format_backtest_report
+        from gimmes.kalshi.client import KalshiClient
+
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+        if start >= end:
+            console.print("[red]--from must be before --to[/red]")
+            raise typer.Exit(1)
+        if balance <= 0:
+            console.print("[red]--balance must be positive[/red]")
+            raise typer.Exit(1)
+        if edge <= 0:
+            console.print("[red]--edge must be positive[/red]")
+            raise typer.Exit(1)
+        bt_config = BacktestConfig(
+            start_date=start,
+            end_date=end,
+            starting_balance=balance,
+            gimmes_config=config,
+            assumed_edge=edge,
+        )
+        console.print(
+            f"[dim]Running backtest: {start} to {end}, "
+            f"${balance:,.0f} starting balance...[/dim]"
+        )
+        async with KalshiClient(config) as client:
+            result = await run_backtest(client, bt_config)
+
+        if json_output:
+            console.print_json(json.dumps(backtest_result_to_json(result)))
+        else:
+            format_backtest_report(result, console)
+
+    _run(_backtest())
+
+
 @app.command(rich_help_panel="Market Research")
 def discover(
     category: str = typer.Argument(

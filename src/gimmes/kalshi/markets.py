@@ -24,7 +24,7 @@ def _fp_field(data: dict, key: str) -> int:
     return int(data.get(key, 0))
 
 
-def _parse_market(data: dict) -> Market:  # type: ignore[type-arg]
+def parse_market(data: dict) -> Market:  # type: ignore[type-arg]
     """Parse a market from Kalshi API response."""
     return Market(
         ticker=data.get("ticker", ""),
@@ -90,7 +90,7 @@ async def list_markets(
         params["series_ticker"] = series_ticker
 
     data = await client.get("/markets", params=params)
-    markets = [_parse_market(m) for m in data.get("markets", [])]
+    markets = [parse_market(m) for m in data.get("markets", [])]
     next_cursor = data.get("cursor")
     return markets, next_cursor
 
@@ -131,7 +131,7 @@ async def list_all_markets(
 async def get_market(client: KalshiClient, ticker: str) -> Market:
     """Get a single market by ticker."""
     data = await client.get(f"/markets/{ticker}")
-    return _parse_market(data.get("market", data))
+    return parse_market(data.get("market", data))
 
 
 async def list_series(
