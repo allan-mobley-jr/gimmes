@@ -14,7 +14,7 @@ from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
 from gimmes.paper.fill_simulator import simulate_fill
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers
 from gimmes.strategy.kelly import position_size
-from gimmes.strategy.scanner import filter_markets
+from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
 
 logger = logging.getLogger(__name__)
@@ -326,20 +326,27 @@ async def run_backtest(
         if not candles:
             continue
 
-        # Pick entry candle
-        entry_candle = pick_entry_candle(
-            candles, gc.strategy.min_market_price, gc.strategy.max_market_price,
-        )
+        # Pick entry candle (candle prices are YES-denominated)
+        side = gc.strategy.side
+        if side == "no":
+            # For BUY NO: want YES prices in [1-max, 1-min] range
+            min_cp = round(1 - gc.strategy.max_market_price, 4)
+            max_cp = round(1 - gc.strategy.min_market_price, 4)
+        else:
+            min_cp = gc.strategy.min_market_price
+            max_cp = gc.strategy.max_market_price
+        entry_candle = pick_entry_candle(candles, min_cp, max_cp)
         if entry_candle is None:
             continue
 
-        entry_price = entry_candle.price_close
+        entry_price = entry_candle.price_close  # YES-denominated
+        eff_price = effective_price(entry_price, side)
 
         # Size the position
-        true_prob = min(entry_price + config.assumed_edge, 0.99)
+        true_prob = min(eff_price + config.assumed_edge, 0.99)
         count = position_size(
             ledger.balance,
-            entry_price,
+            eff_price,
             true_prob,
             fraction=gc.sizing.kelly_fraction,
             max_position_pct=gc.sizing.max_position_pct,
@@ -350,12 +357,14 @@ async def run_backtest(
 
         # Synthesize orderbook and simulate fill
         orderbook = synthesize_orderbook(orig_m.ticker, entry_candle)
+        order_side = OrderSide.NO if side == "no" else OrderSide.YES
         order_params = CreateOrderParams(
             ticker=orig_m.ticker,
             action=OrderAction.BUY,
-            side=OrderSide.YES,
+            side=order_side,
             count=count,
-            yes_price=entry_price,
+            yes_price=entry_price if side != "no" else None,
+            no_price=eff_price if side == "no" else None,
             post_only=False,  # Taker for backtest (conservative fee assumption)
         )
         fill_result = simulate_fill(order_params, orderbook, fees=fees)
@@ -370,7 +379,7 @@ async def run_backtest(
         bought = ledger.buy(
             ticker=orig_m.ticker,
             title=orig_m.title,
-            side="yes",
+            side=side,
             count=filled,
             price=vwap,
             fees=fill_result.total_fees,

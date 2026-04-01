@@ -8,6 +8,7 @@ import os
 import sqlite3
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -129,6 +130,27 @@ class StrategyConfig(BaseModel):
             ),
             "min_val": 0,
             "max_val": 100,
+        },
+    )
+    side: Literal["yes", "no"] = Field(
+        default="yes",
+        json_schema_extra={
+            "display_name": "Trading Side",
+            "description": (
+                "Which side of the contract to buy.\n"
+                "\n"
+                "  'yes' (default): Buy YES contracts — profit when the event happens.\n"
+                "  'no' (contrarian): Buy NO contracts — profit when the event does NOT happen.\n"
+                "\n"
+                "When set to 'no', the scanner and scorer flip their perspective:\n"
+                "the price range, sweet spots, and edge calculations all operate\n"
+                "from the NO buyer's viewpoint.\n"
+                "\n"
+                "Probability inputs (--prob, min_true_probability) are always\n"
+                "interpreted from the configured side's perspective. When side='no',\n"
+                "provide your confidence that NO wins (not YES)."
+            ),
+            "choices": ["yes", "no"],
         },
     )
     min_market_price: float = Field(

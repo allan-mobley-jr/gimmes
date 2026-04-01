@@ -353,7 +353,9 @@ def score(
 @app.command(rich_help_panel="Trading")
 def size(
     ticker: str = typer.Argument(..., help="Market ticker"),
-    probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
+    probability: float = typer.Option(
+        ..., "--prob", "-p", help="True probability for configured side",
+    ),
 ) -> None:
     """Calculate position size for a market."""
     config = load_config()
@@ -374,7 +376,10 @@ def size(
                 from gimmes.kalshi.portfolio import get_balance
                 balance = await get_balance(client)
 
-            price = market.midpoint or market.last_price
+            from gimmes.strategy.scanner import effective_price
+
+            raw_price = market.midpoint or market.last_price
+            price = effective_price(raw_price, config.strategy.side)
             fees = get_multipliers(market.series_ticker)
 
             bankroll = config.bankroll
@@ -423,16 +428,18 @@ def validate(
         from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.kelly import position_size
+        from gimmes.strategy.scanner import effective_price
 
         async with trading_context(config) as (client, broker, db):
             market = await get_market(client, ticker)
 
-            price = market.midpoint or market.last_price
+            raw_price = market.midpoint or market.last_price
+            price = effective_price(raw_price, config.strategy.side)
             bankroll = config.bankroll
 
             if broker:
                 positions = await _mark_positions_to_market(
-                    broker, client, known_prices={ticker: price},
+                    broker, client, known_prices={ticker: raw_price},
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -519,13 +526,14 @@ def order(
         "buy", "--action", "-a", help="Order action (buy/sell)",
         click_type=click.Choice(["buy", "sell"], case_sensitive=False),
     ),
-    side: str = typer.Option("yes", "--side", "-s", help="Order side (yes/no)"),
+    side: str = typer.Option("", "--side", "-s", help="Order side (yes/no, default from config)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(
         0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
     ),
     probability: float | None = typer.Option(
-        None, "--prob", "-p", help="True probability (buy only: auto-sizing and edge check)",
+        None, "--prob", "-p",
+        help="True probability for configured side (buy only: sizing/edge)",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
@@ -544,6 +552,10 @@ def order(
     config = load_config()
 
     async def _order() -> None:
+        nonlocal side
+        if not side:
+            side = config.strategy.side
+
         import json
         import logging
         import sqlite3
@@ -563,14 +575,17 @@ def order(
         logger = logging.getLogger("gimmes.cli")
 
         async with trading_context(config) as (client, broker, db):
+            from gimmes.strategy.scanner import effective_price
+
             market = await get_market(client, ticker)
-            mkt_price = market.midpoint or market.last_price
+            raw_price = market.midpoint or market.last_price
+            eff_price = effective_price(raw_price, side)
             fees = get_multipliers(market.series_ticker)
 
             # Get positions for validation
             if broker:
                 positions = await _mark_positions_to_market(
-                    broker, client, known_prices={ticker: mkt_price},
+                    broker, client, known_prices={ticker: raw_price},
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -585,7 +600,7 @@ def order(
             bankroll = config.bankroll
             if is_buy and count <= 0 and probability is not None:
                 final_count = position_size(
-                    bankroll, mkt_price, probability,
+                    bankroll, eff_price, probability,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                 )
@@ -600,7 +615,7 @@ def order(
                 console.print(f"[red]No contracts to order (count=0).{hint}[/red]")
                 return
 
-            final_price = price / 100.0 if price > 0 else mkt_price
+            final_price = price / 100.0 if price > 0 else eff_price
             trade_dollars = final_count * final_price
 
             # --- Sell validation: check position exists and count ---
