@@ -170,3 +170,47 @@ class TestPickEntryCandle:
         result = pick_entry_candle(candles, 0.55, 0.85)
         assert result is not None
         assert result.price_close == 0.70
+
+
+class TestConcurrentPositions:
+    def test_capital_locked_between_entry_and_settle(self) -> None:
+        """Two overlapping positions should lock capital concurrently."""
+        ledger = BacktestLedger(100.0)
+
+        # Position 1: buy at t=1, costs 50 + 1 fee = 51
+        ledger.buy("T1", "Market 1", "yes", 50, 1.0, 1.0)
+        assert ledger.balance == pytest.approx(100.0 - 51.0)  # 49 left
+
+        # Position 2: buy at t=2 — only 49 available, can't afford 60
+        bought = ledger.buy("T2", "Market 2", "yes", 60, 1.0, 1.0)
+        assert bought is False  # Capital locked in T1
+        assert "T2" not in ledger.positions
+
+        # Settle T1 at t=3 — frees capital
+        ledger.settle("T1", "yes")
+        assert ledger.balance == pytest.approx(49.0 + 50.0)  # Payout
+
+        # Now T2 can be bought with freed capital
+        bought = ledger.buy("T2", "Market 2", "yes", 60, 1.0, 1.0)
+        assert bought is True
+
+    def test_multiple_concurrent_positions(self) -> None:
+        """Multiple positions can be open simultaneously."""
+        ledger = BacktestLedger(1000.0)
+
+        ledger.buy("T1", "A", "yes", 10, 0.50, 0.10)
+        ledger.buy("T2", "B", "yes", 10, 0.60, 0.10)
+        ledger.buy("T3", "C", "yes", 10, 0.70, 0.10)
+
+        assert len(ledger.positions) == 3
+        assert ledger.balance == pytest.approx(
+            1000.0 - (10 * 0.50 + 0.10) - (10 * 0.60 + 0.10) - (10 * 0.70 + 0.10)
+        )
+
+        # Settle in different order
+        ledger.settle("T2", "yes")
+        assert len(ledger.positions) == 2
+        ledger.settle("T1", "no")
+        assert len(ledger.positions) == 1
+        ledger.settle("T3", "yes")
+        assert len(ledger.positions) == 0
