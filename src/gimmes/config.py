@@ -405,6 +405,23 @@ class RiskConfig(BaseModel):
             "max_val": 50,
         },
     )
+    position_stop_loss_pct: float = Field(
+        default=0.15, gt=0.0, le=0.50,
+        json_schema_extra={
+            "display_name": "Position Stop-Loss",
+            "description": (
+                "Flag a position for Caddie Master review when its unrealized loss\n"
+                "exceeds this percentage of cost basis. This is a per-position trigger\n"
+                "— it does not auto-close, but ensures losing positions get reviewed.\n"
+                "\n"
+                "  • 0.15 (default): Flag when a position loses 15% of its cost\n"
+                "  • Lower (e.g. 0.10): More aggressive — flag at 10% loss\n"
+                "  • Higher (e.g. 0.25): More patient — flag at 25% loss"
+            ),
+            "min_val": 0.05,
+            "max_val": 0.50,
+        },
+    )
 
 
 class OrdersConfig(BaseModel):

@@ -35,6 +35,35 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 
 All safety checks except the duplicate position check and position count check are still enforced (SIZE UP adds to an existing position, not a new one).
 
+## CLOSE Execution
+
+When Caddie Master dispatches you for a CLOSE (exiting a losing or flagged position), execute this sequence:
+
+1. **Order**: `gimmes order TICKER --prob P --action sell --yes --agent closer` — sells the position at the current market price. The `--prob P` should use the probability provided by Caddie Master in the dispatch.
+2. **Log success**: The order command logs the trade as a CLOSE action atomically — no separate log-trade needed.
+3. **Log failure** (if the order fails): `gimmes log-trade TICKER --action skip --prob P --score 0 --rationale "CLOSE failed: [error from CLI output]" --agent closer`. If the log-trade command fails, note the failure in your output and continue. Do not retry.
+
+No validate or size step is needed for closes — you are exiting a position, not entering one.
+
+### CLOSE Output Format
+
+```
+### Close: TICKER
+- Action: SELL @ XX¢
+- Contracts: N
+- Proceeds: $X.XX (- $X.XX fee)
+- Order ID: [id]
+- Status: [filled/resting/failed]
+- Reason: [Caddie Master's close rationale summary]
+```
+
+For failed closes:
+```
+### Close Failed: TICKER
+- Reason: [specific error from order command]
+- Logged as skip
+```
+
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
 
 - [ ] Validation passed (all checks green) — REQUIRED
