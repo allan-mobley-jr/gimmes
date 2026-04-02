@@ -96,6 +96,42 @@ class TestConfigSet:
         assert row is not None
         assert json.loads(row[0]) == ["KXCPI", "KXGDP", "KXFED"]
 
+    def test_set_list_json_array(self, db_file: Path) -> None:
+        """JSON array input should be parsed correctly (not double-encoded)."""
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "scanner.series", '["KXCPI", "KXCPICORE"]'],
+            )
+
+        assert result.exit_code == 0
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0]) == ["KXCPI", "KXCPICORE"]
+
+    def test_set_list_malformed_json_falls_back(self, db_file: Path) -> None:
+        """Malformed JSON starting with [ should fall back to comma-split."""
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "scanner.series", "[KXCPI, KXCPICORE"],
+            )
+
+        assert result.exit_code == 0
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.series'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        saved = json.loads(row[0])
+        assert isinstance(saved, list)
+        assert len(saved) == 2
+
     def test_set_str_choice_value(self, db_file: Path) -> None:
         with patch("gimmes.config.GIMMES_HOME", db_file.parent):
             result = runner.invoke(app, ["config", "set", "orders.preferred_order_type", "taker"])
