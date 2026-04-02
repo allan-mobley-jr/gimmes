@@ -164,13 +164,13 @@ class TestLedgerNoSide:
 
 
 class TestStrategyConfigSide:
-    def test_default_side_is_yes(self) -> None:
+    def test_default_side_is_no(self) -> None:
         config = GimmesConfig(mode=Mode.DRIVING_RANGE)
-        assert config.strategy.side == "yes"
+        assert config.strategy.side == "no"
 
-    def test_side_no(self) -> None:
+    def test_side_yes(self) -> None:
         config = GimmesConfig(
             mode=Mode.DRIVING_RANGE,
-            strategy=StrategyConfig(side="no"),
+            strategy=StrategyConfig(side="yes"),
         )
-        assert config.strategy.side == "no"
+        assert config.strategy.side == "yes"
