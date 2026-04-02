@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import get_origin
@@ -218,6 +219,14 @@ def _parse_input(raw: str, setting: Setting) -> int | float | str | list[str]:
         return raw
 
     if setting.type == "list":
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                pass  # Fall through to comma-split
         return [item.strip() for item in raw.split(",") if item.strip()]
 
     return raw
