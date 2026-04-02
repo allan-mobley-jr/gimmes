@@ -11,9 +11,7 @@ from gimmes.kalshi.client import KalshiClient
 from gimmes.kalshi.historical import Candle
 from gimmes.kalshi.markets import list_all_markets
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
-from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
-from gimmes.paper.fill_simulator import simulate_fill
-from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers
+from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 from gimmes.strategy.kelly import position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
@@ -362,31 +360,9 @@ async def run_backtest(
         if count <= 0:
             continue
 
-        # Build orderbook from market bid/ask data
-        orderbook = Orderbook(
-            ticker=orig_m.ticker,
-            yes_bids=([OrderbookLevel(price=orig_m.yes_bid, quantity=100)]
-                      if orig_m.yes_bid > 0 else []),
-            no_bids=([OrderbookLevel(price=orig_m.no_bid, quantity=100)]
-                     if orig_m.no_bid > 0 else []),
-        )
-        order_side = OrderSide.NO if side == "no" else OrderSide.YES
-        order_params = CreateOrderParams(
-            ticker=orig_m.ticker,
-            action=OrderAction.BUY,
-            side=order_side,
-            count=count,
-            yes_price=raw_price if side != "no" else None,
-            no_price=eff_price if side == "no" else None,
-            post_only=False,
-        )
-        fill_result = simulate_fill(order_params, orderbook, fees=fees)
+        # Assume fill at market price (settled markets have no active book)
+        trade_fees = fee_for_order(count, eff_price, is_taker=False, fees=fees)
 
-        if fill_result.total_filled <= 0:
-            continue
-
-        filled = fill_result.total_filled
-        vwap = fill_result.total_notional / filled
         # Entry time: approximate as 1 day before close
         entry_time = orig_m.close_time - timedelta(days=1)
         settle_time = orig_m.close_time
@@ -395,9 +371,9 @@ async def run_backtest(
             ticker=orig_m.ticker,
             title=orig_m.title,
             side=side,
-            count=filled,
-            vwap=vwap,
-            fees=fill_result.total_fees,
+            count=count,
+            vwap=eff_price,
+            fees=trade_fees,
             entry_time=entry_time,
             settle_time=settle_time,
             result=orig_m.result,
