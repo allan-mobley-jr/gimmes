@@ -1419,6 +1419,7 @@ def risk_check() -> None:
                 ("Unrealized P&L", f"${unrealized_pnl:,.2f}"),
                 ("Total Daily P&L", f"${total_daily_pnl:,.2f}"),
                 ("Price Trigger", f"{config.risk.monitor_price_trigger_pp}pp"),
+                ("Position Stop-Loss", f"{config.risk.position_stop_loss_pct:.0%}"),
             ])
             console.print(table)
 
