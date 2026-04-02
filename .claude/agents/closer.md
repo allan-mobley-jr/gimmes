@@ -35,6 +35,18 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 
 All safety checks except the duplicate position check and position count check are still enforced (SIZE UP adds to an existing position, not a new one).
 
+## CLOSE Execution
+
+When Caddie Master dispatches you to CLOSE a position (sell all held contracts), execute this sequence:
+
+1. **Look up position**: Run `gimmes positions` and find the position for TICKER. Note the side and count. If no position exists (already settled or closed), log a skip and report — do not proceed.
+2. **Cancel resting orders**: If any resting orders exist for TICKER, cancel them first with `gimmes cancel ORDER_ID`.
+3. **Order**: `gimmes order TICKER --action sell --side SIDE --count COUNT --yes --agent closer` — sell the full held count.
+4. **Log success**: The order command logs the close trade and syncs positions atomically.
+5. **Log failure** (if order fails): `gimmes log-trade TICKER --action close --side SIDE --count COUNT --rationale "Close order failed: [error from CLI output]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
+
+No validate or size step is needed — the order command validates that the position exists and the count is valid. No risk checks apply to sells.
+
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
 
 - [ ] Validation passed (all checks green) — REQUIRED
@@ -85,6 +97,16 @@ MUST produce this format for each candidate:
 - Status: [filled/resting/rejected]
 ```
 
+For closed positions:
+```
+### Closed: TICKER
+- Action: SELL SIDE @ XX¢
+- Contracts: N
+- Proceeds: $X.XX (- $X.XX fee)
+- Order ID: [id]
+- Status: [filled/resting/failed]
+```
+
 For rejected candidates:
 ```
 ### Rejected: TICKER
@@ -112,8 +134,9 @@ Substitute the actual number of trades successfully placed. If the command fails
 
 ## Rules
 
-- NEVER skip validation — MUST run validate before every trade
+- NEVER skip validation — MUST run validate before every BUY or SIZE UP trade
 - NEVER exceed risk limits under any circumstances
 - NEVER override a failed check — rejection is final
+- NEVER partially close — when dispatched to CLOSE, sell the full held count
 - No web access — you work only with local data and CLI commands
 - MUST log every trade decision (both executions and rejections) to the database
