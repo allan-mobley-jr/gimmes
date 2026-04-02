@@ -1,6 +1,6 @@
 """Unit tests for gimme scorer."""
 
-from gimmes.config import GimmesConfig
+from gimmes.config import GimmesConfig, Mode, StrategyConfig
 from gimmes.models.gimme import ConfidenceSignal, GimmeCandidate
 from gimmes.models.market import Market, Orderbook, OrderbookLevel
 from gimmes.strategy.scorer import full_score, quick_score
@@ -72,3 +72,32 @@ class TestFullScore:
         score = full_score(candidate, None, config)
         # Settlement penalty should lower the score
         assert score.settlement_clarity_score <= 30
+
+    def test_no_side_uses_effective_price(self) -> None:
+        """full_score should convert YES-denominated market_price for NO side."""
+        no_config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        # YES price 0.30 → NO price 0.70; model_probability from NO perspective
+        candidate = GimmeCandidate(
+            ticker="X",
+            market_price=0.30,
+            model_probability=0.92,
+            signals=[
+                ConfidenceSignal(source="data", description="Signal", strength=0.9),
+            ],
+            research_memo="Clear rules.",
+        )
+        # YES bids at 0.30 → implied NO ask = 1 - 0.30 = 0.70
+        orderbook = Orderbook(
+            ticker="X",
+            yes_bids=[OrderbookLevel(price=0.30, quantity=200)],
+        )
+        score = full_score(candidate, orderbook, no_config)
+        # Edge: 0.92 - 0.71 (0.70 + maker fees) ≈ 0.21 → edge_score = 80.0 bucket
+        assert score.edge_size_score == 80.0
+        # Depth at NO price 0.70: YES bids at 0.30, implied ask = 0.70
+        # depth_at_price(0.70, "no") checks YES bids where 1 - bid <= 0.70
+        # → 1 - 0.30 = 0.70 <= 0.70 ✓ → depth = 200 → liq_score = 80.0
+        assert score.liquidity_depth_score == 80.0

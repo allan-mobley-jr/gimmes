@@ -86,8 +86,11 @@ def full_score(
     weights = config.scoring.weights
     max_per = 100.0  # Each component scored 0-100, then weighted
 
+    # candidate.market_price is always YES-denominated regardless of strategy.side
+    side_price = effective_price(candidate.market_price, config.strategy.side)
+
     # Edge size score (0-100)
-    edge = edge_after_fees(candidate.market_price, candidate.model_probability, fees=fees)
+    edge = edge_after_fees(side_price, candidate.model_probability, fees=fees)
     if edge >= 0.25:
         edge_score = 100.0
     elif edge >= 0.15:
@@ -121,7 +124,7 @@ def full_score(
     # Liquidity depth score (0-100)
     liq_score = 50.0  # Default neutral
     if orderbook:
-        depth = orderbook.depth_at_price(candidate.market_price, config.strategy.side)
+        depth = orderbook.depth_at_price(side_price, config.strategy.side)
         if depth >= 500:
             liq_score = 100.0
         elif depth >= 200:
