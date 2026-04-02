@@ -46,6 +46,62 @@ Identify independent signals and rate their strength (0-1). "Independent" means 
 
 MUST gather at least 2 signals from different categories. MUST cite at least one source URL per signal.
 
+## Domain Playbooks
+
+When researching a candidate, find its category below and check these sources BEFORE running generic web searches.
+
+### Inflation & CPI (KXCPI, KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXECONSTATCPI, KXECONSTATCPICORE, KXECONSTATCPIYOY, KXECONSTATCORECPIYOY, KXPCECORE)
+- **Primary**: BLS CPI release (bls.gov/cpi), BEA PCE price index
+- **Nowcast**: Cleveland Fed Inflation Nowcast, NY Fed inflation expectations
+- **Cross-check**: TIPS breakeven rates, University of Michigan inflation expectations
+- **Timing**: CPI mid-month (10th-14th) 8:30 AM ET; PCE ~30 days after month end
+- **Settlement**: CPI uses seasonally adjusted figures; core excludes food & energy
+
+### GDP & Growth (KXGDP, KXGDPNOM, KXGDPUSMAX)
+- **Primary**: BEA advance GDP estimate (bea.gov/data/gdp)
+- **Nowcast**: Atlanta Fed GDPNow, NY Fed Staff Nowcast
+- **Cross-check**: ISM PMI, retail sales, industrial production
+- **Timing**: ~30 days after quarter end (advance), then second and third estimates
+- **Settlement**: Check which estimate (advance/second/third) the contract references
+
+### Fed & Rates (KXFED, KXFEDDECISION, KXFEDCOMBO, KXRATECUTCOUNT, KXFEDCHGCOUNT, KXFEDMEET, KXEMERCUTS, KXFEDDISSENT)
+- **Primary**: CME FedWatch tool (implied probabilities from futures)
+- **Cross-check**: OIS swap rates, Treasury futures, Fed funds futures
+- **Key sources**: FOMC dot plot, meeting minutes, Fed governor speeches
+- **Timing**: 8 meetings/year; statement at 2:00 PM ET, minutes 3 weeks later
+- **Settlement**: Distinguish rate decision vs. cumulative cut count vs. emergency action
+
+### Employment (KXJOBLESSCLAIMS, KXUE, KXU3, KXPAYROLLS, KXADP)
+- **Primary**: BLS Employment Situation report (bls.gov/news.release/empsit.toc.htm)
+- **Leading**: ADP National Employment Report (Wednesday before NFP), weekly claims trend
+- **Cross-check**: JOLTS openings/quits, ISM employment sub-index
+- **Timing**: NFP first Friday of month 8:30 AM ET; claims every Thursday
+- **Settlement**: NFP subject to revisions; contracts typically settle on initial release
+
+### Housing & Mortgage (KXMORTGAGERATE, KXHOUSINGSTART, KXEHSALES, KXNHSALES)
+- **Primary**: Freddie Mac PMMS (weekly mortgage rates), Census Bureau (starts/new sales), NAR (existing sales)
+- **Cross-check**: MBA purchase applications, builder sentiment (NAHB), Case-Shiller
+- **Timing**: Mortgage rates Thursday; starts/sales monthly with ~1 month lag
+- **Settlement**: Verify whether contract references seasonally adjusted or raw figures
+
+### Financials (KXINX, KXINXU, KXINXMAXY, KXINXMINY, KXNASDAQ100, KXNASDAQ100U, KXNASDAQ100Y, KXUSTYLD, KXTNOTEW, KX10Y2Y, KX10Y3M, KX3MTBILL, KXGOLDW, KXSILVERW, KXWTI, KXWTIMAX)
+- **Primary**: Live prices from major exchanges; settle on specific close
+- **Cross-check**: Options-implied distributions, VIX/volatility context, futures curves
+- **Timing**: Intraday — check contract settlement date/time and reference index
+- **Settlement**: Index contracts often settle on a specific day's closing price; commodities may reference weekly averages
+
+### Other Econ (KXISMPMI, KXRECSSNBER, KXEFFTARIFF, KXTARIFFREVENUE)
+- **Primary**: ISM Report on Business (ismworld.org), NBER business cycle committee, USITC/CBP tariff data
+- **Cross-check**: S&P Global PMI (flash estimate), Treasury monthly receipts, trade balance data
+- **Timing**: ISM PMI first business day of month; NBER recession calls lag by 6-12 months; tariff data monthly
+- **Settlement**: NBER recession dating is retrospective — check contract's definition carefully
+
+### Politics (CONTROLH, CONTROLS)
+- **Primary**: Election polls (538, RCP, Cook Political Report), legislative calendars
+- **Cross-check**: Prediction market consensus (Polymarket, Metaculus, Kalshi cross-markets)
+- **Key sources**: Vote counts, whip estimates, CBO scores for key legislation
+- **Timing**: Election cycles; track special elections, redistricting, retirement announcements
+
 ## GimmeScore Calculation
 
 The GimmeScore is a weighted composite (0-100) computed from five components:
