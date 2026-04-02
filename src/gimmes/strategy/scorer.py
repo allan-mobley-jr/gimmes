@@ -86,7 +86,7 @@ def full_score(
     weights = config.scoring.weights
     max_per = 100.0  # Each component scored 0-100, then weighted
 
-    # Convert to side-appropriate price (NO price = 1 - YES price)
+    # candidate.market_price is always YES-denominated regardless of strategy.side
     side_price = effective_price(candidate.market_price, config.strategy.side)
 
     # Edge size score (0-100)

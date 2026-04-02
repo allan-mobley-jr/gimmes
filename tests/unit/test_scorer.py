@@ -84,7 +84,6 @@ class TestFullScore:
             ticker="X",
             market_price=0.30,
             model_probability=0.92,
-            edge=0.22,
             signals=[
                 ConfidenceSignal(source="data", description="Signal", strength=0.9),
             ],
@@ -96,7 +95,7 @@ class TestFullScore:
             yes_bids=[OrderbookLevel(price=0.30, quantity=200)],
         )
         score = full_score(candidate, orderbook, no_config)
-        # Edge: 0.92 - (0.70 + fees) ≈ 0.19 → edge_score = 80.0 bucket
+        # Edge: 0.92 - 0.71 (0.70 + maker fees) ≈ 0.21 → edge_score = 80.0 bucket
         assert score.edge_size_score == 80.0
         # Depth at NO price 0.70: YES bids at 0.30, implied ask = 0.70
         # depth_at_price(0.70, "no") checks YES bids where 1 - bid <= 0.70
