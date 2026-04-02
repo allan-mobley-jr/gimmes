@@ -109,9 +109,10 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
    You may go back and forth as many times as needed. Wait for each Monitor response before asking the next question. When you have enough information to make a judgment call, proceed to step 4.
 
-4. Make your own deliberate decision — **HOLD** or **CLOSE**:
-   - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact.
+4. Make your own deliberate decision — **HOLD**, **CLOSE**, or **SIZE UP**:
+   - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding.
    - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, or risk limits require action.
+   - **SIZE UP**: Price moved adversely while the original thesis remains fully intact, resulting in a larger edge than at entry. Proceed to Step 2d.
 
 5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
    ```bash
@@ -123,13 +124,15 @@ After Monitor returns, review its report. For each position Monitor flagged:
    Reasoning: [your specific reasoning referencing the original thesis and what Monitor reported].
    Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?]"
    ```
-   If this command fails, do not proceed with a close — log the failure and move on.
+   If this command fails, do not proceed with a close — log the failure and move on. For SIZE UP decisions, skip this step — Step 2d has its own decision logging.
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
    - Cancel any resting orders first: `gimmes cancel ORDER_ID`
    - Then dispatch the Closer agent to execute the sell.
 
 7. **If the decision is HOLD**, no further action for this position this cycle.
+
+8. **If the decision is SIZE UP**, proceed to Step 2d.
 
 #### 2d. SIZE UP
 
@@ -138,7 +141,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 **Decision criteria** — SIZE UP only when ALL hold:
 - The original thesis is fully intact (no degradation)
 - Current edge after fees is *larger* than at entry
-- Monitor's flag indicates a favorable price move, not adverse news
+- Monitor's flag indicates an adverse price move with thesis intact, not adverse news that degrades the thesis
 - Daily loss limit is not breached
 
 **Execution flow** (mirrors the CLOSE pattern):
