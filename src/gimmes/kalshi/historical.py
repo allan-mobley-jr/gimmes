@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from gimmes.kalshi.client import KalshiClient
 from gimmes.kalshi.markets import parse_market
@@ -86,18 +87,58 @@ async def list_all_historical_markets(
     *,
     event_ticker: str | None = None,
     max_pages: int = 100,
+    series_tickers: set[str] | None = None,
+    min_close_time: datetime | None = None,
+    max_close_time: datetime | None = None,
 ) -> list[Market]:
-    """Fetch all settled historical markets, handling pagination automatically."""
+    """Fetch settled historical markets with optional per-page filtering.
+
+    Filters are applied per-page to reduce memory usage. Markets that
+    don't match are discarded immediately rather than accumulated.
+
+    Args:
+        series_tickers: Keep only markets in these series (by series_ticker).
+        min_close_time: Keep only markets with close_time >= this value.
+        max_close_time: Keep only markets with close_time <= this value.
+    """
+    def _in_window(m: Market) -> bool:
+        ct = m.close_time
+        if ct is None:
+            return False
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=UTC)
+        if min_close_time and ct < min_close_time:
+            return False
+        if max_close_time and ct > max_close_time:
+            return False
+        return True
+
     all_markets: list[Market] = []
     cursor: str | None = None
+    has_date_filter = min_close_time is not None or max_close_time is not None
 
-    for _ in range(max_pages):
+    for page in range(max_pages):
         markets, cursor = await list_historical_markets(
             client,
             cursor=cursor,
             event_ticker=event_ticker,
         )
-        all_markets.extend(markets)
+
+        # Per-page filtering to reduce memory
+        filtered = markets
+        if series_tickers is not None:
+            filtered = [m for m in filtered if m.series_ticker in series_tickers]
+        if has_date_filter:
+            filtered = [m for m in filtered if _in_window(m)]
+
+        all_markets.extend(filtered)
+
+        if page % 10 == 9:
+            logger.info(
+                "Historical fetch: page %d, %d markets matched so far",
+                page + 1, len(all_markets),
+            )
+
         if not cursor or not markets:
             break
     else:

@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gimmes.kalshi.historical import Candle, get_candlesticks, list_historical_markets
+from gimmes.kalshi.historical import (
+    Candle,
+    get_candlesticks,
+    list_all_historical_markets,
+    list_historical_markets,
+)
 
 
 @pytest.fixture
@@ -132,3 +137,80 @@ class TestGetCandlesticks:
         )
 
         assert candles == []
+
+
+class TestListAllHistoricalMarketsFiltering:
+    @pytest.mark.asyncio
+    async def test_filters_by_series_tickers(self, mock_client: AsyncMock) -> None:
+        mock_client.get.return_value = {
+            "markets": [
+                {
+                    "ticker": "KXCPI-26MAR-T3.0",
+                    "series_ticker": "KXCPI",
+                    "status": "finalized",
+                    "result": "yes",
+                },
+                {
+                    "ticker": "KXFED-26MAR-T5.0",
+                    "series_ticker": "KXFED",
+                    "status": "finalized",
+                    "result": "no",
+                },
+            ],
+            "cursor": None,
+        }
+
+        markets = await list_all_historical_markets(
+            mock_client, series_tickers={"KXCPI"},
+        )
+
+        assert len(markets) == 1
+        assert markets[0].ticker == "KXCPI-26MAR-T3.0"
+
+    @pytest.mark.asyncio
+    async def test_filters_by_date_range(self, mock_client: AsyncMock) -> None:
+        from datetime import UTC, datetime
+
+        mock_client.get.return_value = {
+            "markets": [
+                {
+                    "ticker": "EARLY",
+                    "status": "finalized",
+                    "close_time": "2024-01-15T00:00:00Z",
+                },
+                {
+                    "ticker": "INRANGE",
+                    "status": "finalized",
+                    "close_time": "2025-06-15T00:00:00Z",
+                },
+                {
+                    "ticker": "LATE",
+                    "status": "finalized",
+                    "close_time": "2026-12-15T00:00:00Z",
+                },
+            ],
+            "cursor": None,
+        }
+
+        markets = await list_all_historical_markets(
+            mock_client,
+            min_close_time=datetime(2025, 1, 1, tzinfo=UTC),
+            max_close_time=datetime(2025, 12, 31, 23, 59, 59, tzinfo=UTC),
+        )
+
+        assert len(markets) == 1
+        assert markets[0].ticker == "INRANGE"
+
+    @pytest.mark.asyncio
+    async def test_no_filters_returns_all(self, mock_client: AsyncMock) -> None:
+        mock_client.get.return_value = {
+            "markets": [
+                {"ticker": "A", "status": "finalized"},
+                {"ticker": "B", "status": "finalized"},
+            ],
+            "cursor": None,
+        }
+
+        markets = await list_all_historical_markets(mock_client)
+
+        assert len(markets) == 2

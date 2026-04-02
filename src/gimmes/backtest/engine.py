@@ -272,11 +272,7 @@ async def run_backtest(
     threshold = gc.strategy.gimme_threshold
     ledger = BacktestLedger(config.starting_balance)
 
-    # --- 1. Fetch historical markets ---
-    logger.info("Fetching historical markets...")
-    all_markets = await list_all_historical_markets(client)
-
-    # Keep only markets with a known result within the date range
+    # --- 1. Fetch historical markets with per-page filtering ---
     start_dt = datetime(
         config.start_date.year, config.start_date.month,
         config.start_date.day, tzinfo=UTC,
@@ -285,15 +281,21 @@ async def run_backtest(
         config.end_date.year, config.end_date.month,
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
+    series_set = set(gc.scanner.series) if gc.scanner.series else None
+    logger.info(
+        "Fetching historical markets (series filter: %s)...",
+        f"{len(series_set)} tickers" if series_set else "none",
+    )
+    all_markets = await list_all_historical_markets(
+        client,
+        series_tickers=series_set,
+        min_close_time=start_dt,
+        max_close_time=end_dt,
+    )
 
-    def _in_range(m: Market) -> bool:
-        if m.result not in ("yes", "no") or m.close_time is None:
-            return False
-        ct = m.close_time if m.close_time.tzinfo else m.close_time.replace(tzinfo=UTC)
-        return start_dt <= ct <= end_dt
-
-    settled = [m for m in all_markets if _in_range(m)]
-    logger.info("Fetched %d markets, %d settled in date range", len(all_markets), len(settled))
+    # Keep only markets with a known result (date/series already filtered)
+    settled = [m for m in all_markets if m.result in ("yes", "no")]
+    logger.info("Fetched %d markets, %d settled", len(all_markets), len(settled))
 
     # --- 2. Filter ---
     adapted = _adapt_for_filter(settled)
