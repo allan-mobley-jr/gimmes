@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 
 
@@ -55,6 +57,40 @@ def kelly_fraction(
     return fraction * full_kelly
 
 
+def ev_fraction(
+    market_price: float,
+    true_probability: float,
+    *,
+    is_taker: bool = False,
+    fraction: float = 0.25,
+    fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+) -> float:
+    """EV-based sizing fraction for variance plays.
+
+    Sizes proportionally to the edge-to-cost ratio, scaled by fraction.
+    Better than Kelly for moderate-probability variance plays (30-60%)
+    where expected value is positive but Kelly produces tiny sizes.
+
+    Returns:
+        Fraction of bankroll to bet (>= 0). Returns 0 if EV is non-positive.
+    """
+    if not (0 < market_price < 1) or not (0 < true_probability <= 1):
+        return 0.0
+
+    fee = fee_for_order(1, market_price, is_taker=is_taker, fees=fees)
+    cost_per_contract = market_price + fee
+
+    if cost_per_contract >= 1.0:
+        return 0.0
+
+    edge_dollars = true_probability - cost_per_contract
+    if edge_dollars <= 0:
+        return 0.0
+
+    ratio = edge_dollars / cost_per_contract
+    return fraction * ratio
+
+
 def position_size(
     bankroll: float,
     market_price: float,
@@ -65,10 +101,14 @@ def position_size(
     max_position_pct: float = 0.05,
     max_position_dollars: float | None = None,
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+    mode: Literal["kelly", "ev"] = "kelly",
 ) -> int:
     """Calculate number of contracts to buy.
 
-    Applies Kelly sizing clamped by risk limits.
+    Applies Kelly or EV sizing clamped by risk limits.
+
+    Args:
+        mode: "kelly" for Kelly Criterion, "ev" for expected-value sizing.
 
     Returns:
         Number of contracts (integer, minimum 0).
@@ -76,21 +116,30 @@ def position_size(
     if bankroll <= 0:
         return 0
 
-    kelly = kelly_fraction(
-        market_price, true_probability,
-        is_taker=is_taker, fraction=fraction, fees=fees,
-    )
-    if kelly <= 0:
+    if mode == "ev":
+        frac = ev_fraction(
+            market_price, true_probability,
+            is_taker=is_taker, fraction=fraction, fees=fees,
+        )
+    elif mode == "kelly":
+        frac = kelly_fraction(
+            market_price, true_probability,
+            is_taker=is_taker, fraction=fraction, fees=fees,
+        )
+    else:
+        msg = f"Unknown sizing mode: {mode!r}. Expected 'kelly' or 'ev'."
+        raise ValueError(msg)
+    if frac <= 0:
         return 0
 
-    # Dollar amount from Kelly
-    kelly_dollars = kelly * bankroll
+    # Dollar amount from sizing formula
+    sized_dollars = frac * bankroll
 
     # Clamp by max position percent
     max_from_pct = max_position_pct * bankroll
 
     # Clamp by absolute dollar limit
-    max_dollars = min(kelly_dollars, max_from_pct)
+    max_dollars = min(sized_dollars, max_from_pct)
     if max_position_dollars is not None:
         max_dollars = min(max_dollars, max_position_dollars)
 

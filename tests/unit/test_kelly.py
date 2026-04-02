@@ -1,7 +1,7 @@
 """Unit tests for Kelly criterion sizing."""
 
 from gimmes.strategy.fees import FeeMultipliers, fee_for_order
-from gimmes.strategy.kelly import kelly_fraction, position_size
+from gimmes.strategy.kelly import ev_fraction, kelly_fraction, position_size
 
 
 class TestKellyFraction:
@@ -80,3 +80,53 @@ class TestPositionSize:
             10000, 0.65, 0.90, fees=FeeMultipliers(maker=0.10),
         )
         assert high_fee_contracts <= default_contracts
+
+
+class TestEvFraction:
+    def test_positive_ev(self) -> None:
+        # Price 0.40, prob 0.55 => edge ~0.15 minus fees > 0
+        ef = ev_fraction(0.40, 0.55, fraction=0.25)
+        assert ef > 0
+
+    def test_no_ev(self) -> None:
+        # Price 0.50, prob 0.50 => zero edge after fees
+        ef = ev_fraction(0.50, 0.50)
+        assert ef == 0.0
+
+    def test_negative_ev(self) -> None:
+        ef = ev_fraction(0.60, 0.55)
+        assert ef == 0.0
+
+    def test_fraction_scales_linearly(self) -> None:
+        full = ev_fraction(0.40, 0.60, fraction=1.0)
+        quarter = ev_fraction(0.40, 0.60, fraction=0.25)
+        assert abs(quarter - full * 0.25) < 1e-10
+
+    def test_invalid_inputs(self) -> None:
+        assert ev_fraction(0, 0.50) == 0.0
+        assert ev_fraction(1.0, 0.50) == 0.0
+
+    def test_variance_play_ev_larger_than_kelly(self) -> None:
+        """At moderate prob, EV produces larger sizes than Kelly."""
+        kelly = kelly_fraction(0.25, 0.35, fraction=0.25)
+        ev = ev_fraction(0.25, 0.35, fraction=0.25)
+        assert ev > kelly  # EV sizes more aggressively for variance plays
+
+
+class TestPositionSizeEV:
+    def test_ev_mode_produces_contracts(self) -> None:
+        contracts = position_size(10000, 0.40, 0.55, mode="ev")
+        assert contracts > 0
+
+    def test_ev_mode_respects_max_pct(self) -> None:
+        contracts = position_size(
+            10000, 0.40, 0.60, mode="ev", max_position_pct=0.05,
+        )
+        fee = fee_for_order(1, 0.40)
+        max_contracts = int(0.05 * 10000 / (0.40 + fee))
+        assert contracts <= max_contracts
+
+    def test_kelly_mode_default(self) -> None:
+        c1 = position_size(10000, 0.65, 0.90)
+        c2 = position_size(10000, 0.65, 0.90, mode="kelly")
+        assert c1 == c2
