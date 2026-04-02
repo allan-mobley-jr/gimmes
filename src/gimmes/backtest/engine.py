@@ -351,6 +351,7 @@ async def run_backtest(
             fraction=gc.sizing.kelly_fraction,
             max_position_pct=gc.sizing.max_position_pct,
             fees=fees,
+            mode=gc.sizing.mode,
         )
         if count <= 0:
             continue

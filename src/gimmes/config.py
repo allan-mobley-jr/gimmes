@@ -256,12 +256,30 @@ class SizingConfig(BaseModel):
     model_config = ConfigDict(json_schema_extra={
         "section_name": "Position Sizing",
         "section_description": (
-            "How much money to put into each trade. Uses the Kelly Criterion —\n"
-            "a mathematical formula for optimal bet sizing — with conservative adjustments."
+            "How much money to put into each trade. Supports Kelly Criterion\n"
+            "(optimal for high-conviction plays) and expected-value sizing\n"
+            "(better for variance plays with moderate probability)."
         ),
         "section_order": 3,
     })
 
+    mode: Literal["kelly", "ev"] = Field(
+        default="kelly",
+        json_schema_extra={
+            "display_name": "Sizing Mode",
+            "description": (
+                "Which formula to use for calculating position sizes.\n"
+                "\n"
+                "  'kelly' (default): Kelly Criterion — optimal for high-conviction\n"
+                "  plays where your estimated probability is 90%+.\n"
+                "\n"
+                "  'ev': Expected-Value sizing — better for variance plays where\n"
+                "  probability is moderate (30-60%) but expected value is positive.\n"
+                "  Sizes scale linearly with edge-to-cost ratio."
+            ),
+            "choices": ["kelly", "ev"],
+        },
+    )
     kelly_fraction: float = Field(
         default=0.25, gt=0.0, le=1.0,
         json_schema_extra={

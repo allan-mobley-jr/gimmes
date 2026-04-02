@@ -391,6 +391,7 @@ def size(
                 bankroll, price, probability,
                 fraction=config.sizing.kelly_fraction,
                 max_position_pct=config.sizing.max_position_pct, fees=fees,
+                mode=config.sizing.mode,
             )
             fee = fee_for_order(contracts, price, is_taker=False, fees=fees)
             edge = edge_after_fees(price, probability, fees=fees)
@@ -453,6 +454,7 @@ def validate(
                     bankroll, price, probability,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
+                    mode=config.sizing.mode,
                 )
                 trade_dollars = contracts * price
             else:
@@ -603,6 +605,7 @@ def order(
                     bankroll, eff_price, probability,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
+                    mode=config.sizing.mode,
                 )
             else:
                 final_count = count
