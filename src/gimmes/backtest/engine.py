@@ -68,6 +68,21 @@ class BacktestResult:
     markets_traded: int
 
 
+@dataclass
+class _PendingTrade:
+    """A trade identified in Pass 1, to be executed chronologically in Pass 2."""
+
+    ticker: str
+    title: str
+    side: str
+    count: int
+    vwap: float
+    fees: float
+    entry_time: datetime
+    settle_time: datetime
+    result: str
+
+
 # ---------------------------------------------------------------------------
 # Backtest ledger — in-memory position/balance tracker
 # ---------------------------------------------------------------------------
@@ -303,15 +318,21 @@ async def run_backtest(
         len(passed), len(scored), threshold,
     )
 
-    # --- 4. Iterate markets, fetch candles, simulate ---
-    traded_count = 0
+    # --- 4. Pass 1: identify qualifying trades (no balance changes) ---
+    pending: list[_PendingTrade] = []
+    side = gc.strategy.side
+    if side == "no":
+        min_cp = round(1 - gc.strategy.max_market_price, 4)
+        max_cp = round(1 - gc.strategy.min_market_price, 4)
+    else:
+        min_cp = gc.strategy.min_market_price
+        max_cp = gc.strategy.max_market_price
+
     for _, orig_m, _score in scored:
-        # Fetch daily candlesticks
         close_ts = int(orig_m.close_time.timestamp()) if orig_m.close_time else 0
         if close_ts == 0:
             continue
 
-        # Look back 90 days for entry opportunities
         start_ts = close_ts - (90 * 86400)
         try:
             candles = await get_candlesticks(
@@ -326,26 +347,15 @@ async def run_backtest(
         if not candles:
             continue
 
-        # Pick entry candle (candle prices are YES-denominated)
-        side = gc.strategy.side
-        if side == "no":
-            # For BUY NO: want YES prices in [1-max, 1-min] range
-            min_cp = round(1 - gc.strategy.max_market_price, 4)
-            max_cp = round(1 - gc.strategy.min_market_price, 4)
-        else:
-            min_cp = gc.strategy.min_market_price
-            max_cp = gc.strategy.max_market_price
         entry_candle = pick_entry_candle(candles, min_cp, max_cp)
         if entry_candle is None:
             continue
 
-        entry_price = entry_candle.price_close  # YES-denominated
+        entry_price = entry_candle.price_close
         eff_price = effective_price(entry_price, side)
-
-        # Size the position
         true_prob = min(eff_price + config.assumed_edge, 0.99)
         count = position_size(
-            ledger.balance,
+            config.starting_balance,
             eff_price,
             true_prob,
             fraction=gc.sizing.kelly_fraction,
@@ -356,7 +366,6 @@ async def run_backtest(
         if count <= 0:
             continue
 
-        # Synthesize orderbook and simulate fill
         orderbook = synthesize_orderbook(orig_m.ticker, entry_candle)
         order_side = OrderSide.NO if side == "no" else OrderSide.YES
         order_params = CreateOrderParams(
@@ -366,36 +375,62 @@ async def run_backtest(
             count=count,
             yes_price=entry_price if side != "no" else None,
             no_price=eff_price if side == "no" else None,
-            post_only=False,  # Taker for backtest (conservative fee assumption)
+            post_only=False,
         )
         fill_result = simulate_fill(order_params, orderbook, fees=fees)
 
         if fill_result.total_filled <= 0:
             continue
 
-        # Record the fill using realized VWAP, not candle close
         filled = fill_result.total_filled
         vwap = fill_result.total_notional / filled
         entry_time = datetime.fromtimestamp(entry_candle.end_period_ts, tz=UTC)
-        bought = ledger.buy(
+        settle_time = orig_m.close_time or entry_time
+
+        pending.append(_PendingTrade(
             ticker=orig_m.ticker,
             title=orig_m.title,
             side=side,
             count=filled,
-            price=vwap,
+            vwap=vwap,
             fees=fill_result.total_fees,
             entry_time=entry_time,
-        )
-        if not bought:
-            continue
+            settle_time=settle_time,
+            result=orig_m.result,
+        ))
 
-        # Settle immediately (we know the outcome)
-        settle_time = orig_m.close_time
-        ledger.settle(orig_m.ticker, orig_m.result, settle_time=settle_time)
-        ledger.snapshot(
-            settle_time.isoformat() if settle_time else entry_time.isoformat(),
-        )
-        traded_count += 1
+    # --- 5. Pass 2: process events chronologically ---
+    events: list[tuple[str, datetime, _PendingTrade]] = []
+    for trade in pending:
+        events.append(("entry", trade.entry_time, trade))
+        events.append(("settle", trade.settle_time, trade))
+    # Sort by time. For events at the same timestamp, process entries
+    # before settlements so a trade's own entry always precedes its
+    # settlement. This means capital freed by settlements is available
+    # starting the next timestamp, not the same one.
+    events.sort(key=lambda e: (e[1], 0 if e[0] == "entry" else 1))
+
+    traded_count = 0
+    for event_type, timestamp, trade in events:
+        if event_type == "entry":
+            bought = ledger.buy(
+                ticker=trade.ticker,
+                title=trade.title,
+                side=trade.side,
+                count=trade.count,
+                price=trade.vwap,
+                fees=trade.fees,
+                entry_time=trade.entry_time,
+            )
+            if bought:
+                traded_count += 1
+        elif event_type == "settle":
+            if trade.ticker in ledger.positions:
+                ledger.settle(
+                    trade.ticker, trade.result,
+                    settle_time=trade.settle_time,
+                )
+                ledger.snapshot(timestamp.isoformat())
 
     return BacktestResult(
         config=config,
