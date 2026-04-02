@@ -144,6 +144,8 @@ If Monitor flags a position where the current edge has *increased* since entry (
 - Monitor's flag indicates an adverse price move with thesis intact, not adverse news that degrades the thesis
 - Daily loss limit is not breached
 
+**SIZE UP bias rule** — When ALL of the above criteria hold AND deployed capital is under 50% of bankroll (from Step 1 `risk-check` output), SIZE UP is the *presumptive* action, not HOLD. To decline SIZE UP in this scenario, you MUST provide a specific, articulable reason grounded in the current position or market state. "Waiting for more data" is NOT a valid reason — in a variance strategy, the existing data IS the thesis. The only valid reasons to decline are: a known directional catalyst resolving before the next cycle, or a specific change in the underlying data that the thesis depends on.
+
 **Execution flow** (mirrors the CLOSE pattern):
 
 1. **Log decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
