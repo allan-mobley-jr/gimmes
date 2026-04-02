@@ -414,6 +414,13 @@ async def mark_cap_blocked(db: Database, ticker: str) -> bool:
     return cursor.rowcount > 0
 
 
+async def clear_all_candidates(db: Database) -> int:
+    """Delete all cached candidates. Returns the number of rows deleted."""
+    cursor = await db.conn.execute("DELETE FROM candidates")
+    await db.conn.commit()
+    return cursor.rowcount
+
+
 # ---------------------------------------------------------------------------
 # P&L queries
 # ---------------------------------------------------------------------------
