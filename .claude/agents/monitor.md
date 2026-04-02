@@ -39,7 +39,7 @@ Flag a position for Caddie Master review — by writing a `flag` note — when A
 - **New information**: You find news or data published AFTER the position was opened that materially affects the probability estimate — and that information was NOT already accounted for in the original thesis.
 - **Time decay**: Resolution is < 24 hours away AND position is not yet profitable.
 - **Risk approaching**: Daily P&L loss >= 10% of bankroll.
-- **Stop-loss breach**: Unrealized loss on a position >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by the position's cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized loss >= $15.
+- **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15.
 
 A trigger condition means Caddie Master should look at this position. It does NOT mean the position should be closed. Caddie Master decides what to do.
 
