@@ -90,6 +90,7 @@ class TestModelMetadata:
         settings = _iter_section_settings("risk", RiskConfig)
         keys = [s.key for s in settings]
         assert "risk.monitor_price_trigger_pp" in keys
+        assert "risk.position_stop_loss_pct" in keys
 
     def test_cycle_timeout_is_in_strategy_section(self) -> None:
         """Regression: cycle_timeout was missing from the wizard."""

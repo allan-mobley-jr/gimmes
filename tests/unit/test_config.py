@@ -247,6 +247,20 @@ class TestMonitorPriceTrigger:
         assert config.risk.monitor_price_trigger_pp == 15
 
 
+class TestPositionStopLoss:
+    def test_default_is_015(self, tmp_path):
+        config = load_config(db_path=tmp_path / "nonexistent.db")
+        assert config.risk.position_stop_loss_pct == 0.15
+
+    def test_loads_from_db(self, tmp_path):
+        db = tmp_path / "test.db"
+        _create_config_db(db)
+        save_config_value("risk.position_stop_loss_pct", 0.25, db_path=db)
+
+        config = load_config(db_path=db)
+        assert config.risk.position_stop_loss_pct == 0.25
+
+
 class TestPrivateKeyPasswordConfig:
     def test_reads_password_from_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KALSHI_PRIVATE_KEY_PASSWORD", "my-secret")
