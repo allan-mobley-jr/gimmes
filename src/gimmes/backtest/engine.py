@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from gimmes.config import GimmesConfig
 from gimmes.kalshi.client import KalshiClient
-from gimmes.kalshi.historical import Candle, get_candlesticks, list_all_historical_markets
+from gimmes.kalshi.historical import Candle, get_candlesticks
+from gimmes.kalshi.markets import list_all_markets
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
 from gimmes.paper.fill_simulator import simulate_fill
@@ -230,14 +231,17 @@ def pick_entry_candle(
 # ---------------------------------------------------------------------------
 
 
-def _adapt_for_filter(markets: list[Market]) -> list[Market]:
-    """Adapt historical markets so they pass through filter_markets().
+def _adapt_for_filter(
+    markets: list[Market],
+    max_days: float = 90.0,
+) -> list[Market]:
+    """Adapt settled markets so they pass through filter_markets().
 
-    Historical markets have status=finalized and close_time in the past.
-    We set status to ACTIVE and push close_time into the future so the
-    time-to-resolution filter passes. The price/volume/OI filters remain.
+    Sets status to ACTIVE and close_time to a synthetic future value
+    within the configured max_days_to_resolution window.
     """
-    future = datetime(2099, 1, 1, tzinfo=UTC)
+    days = max(1.0, min(max_days - 1, 30.0))
+    future = datetime.now(UTC) + timedelta(days=days)
     adapted = []
     for m in markets:
         adapted.append(m.model_copy(update={
@@ -272,7 +276,7 @@ async def run_backtest(
     threshold = gc.strategy.gimme_threshold
     ledger = BacktestLedger(config.starting_balance)
 
-    # --- 1. Fetch historical markets with per-page filtering ---
+    # --- 1. Fetch settled markets per series via live API ---
     start_dt = datetime(
         config.start_date.year, config.start_date.month,
         config.start_date.day, tzinfo=UTC,
@@ -281,24 +285,36 @@ async def run_backtest(
         config.end_date.year, config.end_date.month,
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
-    series_set = set(gc.scanner.series) if gc.scanner.series else None
+    series_list = gc.scanner.series or []
     logger.info(
-        "Fetching historical markets (series filter: %s)...",
-        f"{len(series_set)} tickers" if series_set else "none",
+        "Fetching settled markets for %d series via live API...",
+        len(series_list),
     )
-    all_markets = await list_all_historical_markets(
-        client,
-        series_tickers=series_set,
-        min_close_time=start_dt,
-        max_close_time=end_dt,
-    )
+    all_markets: list[Market] = []
+    for series in series_list:
+        try:
+            markets = await list_all_markets(
+                client, status="settled", series_ticker=series,
+            )
+            all_markets.extend(markets)
+        except Exception:
+            logger.warning("Failed to fetch series %s", series, exc_info=True)
 
-    # Keep only markets with a known result (date/series already filtered)
-    settled = [m for m in all_markets if m.result in ("yes", "no")]
-    logger.info("Fetched %d markets, %d settled", len(all_markets), len(settled))
+    # Filter to date range and known result
+    def _in_range(m: Market) -> bool:
+        if m.result not in ("yes", "no") or m.close_time is None:
+            return False
+        ct = m.close_time if m.close_time.tzinfo else m.close_time.replace(tzinfo=UTC)
+        return start_dt <= ct <= end_dt
+
+    settled = [m for m in all_markets if _in_range(m)]
+    logger.info(
+        "Fetched %d markets, %d settled in date range",
+        len(all_markets), len(settled),
+    )
 
     # --- 2. Filter ---
-    adapted = _adapt_for_filter(settled)
+    adapted = _adapt_for_filter(settled, max_days=gc.scanner.max_days_to_resolution)
     passed = filter_markets(adapted, gc)
 
     # Build a lookup from adapted ticker back to original market (with result)
