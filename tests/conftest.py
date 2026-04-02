@@ -15,7 +15,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 @pytest.fixture
 def config() -> GimmesConfig:
-    """Default test config (driving range, no real credentials)."""
+    """Default test config (driving range, side=yes pinned for test stability)."""
     return GimmesConfig(
         mode=Mode.DRIVING_RANGE,
         strategy=StrategyConfig(side="yes"),
