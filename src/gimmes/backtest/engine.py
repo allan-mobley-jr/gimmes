@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from gimmes.config import GimmesConfig
 from gimmes.kalshi.client import KalshiClient
-from gimmes.kalshi.historical import Candle, get_candlesticks
+from gimmes.kalshi.historical import Candle
 from gimmes.kalshi.markets import list_all_markets
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
@@ -339,38 +339,16 @@ async def run_backtest(
     # --- 4. Pass 1: identify qualifying trades (no balance changes) ---
     pending: list[_PendingTrade] = []
     side = gc.strategy.side
-    if side == "no":
-        min_cp = round(1 - gc.strategy.max_market_price, 4)
-        max_cp = round(1 - gc.strategy.min_market_price, 4)
-    else:
-        min_cp = gc.strategy.min_market_price
-        max_cp = gc.strategy.max_market_price
 
     for _, orig_m, _score in scored:
-        close_ts = int(orig_m.close_time.timestamp()) if orig_m.close_time else 0
-        if close_ts == 0:
+        if orig_m.close_time is None:
             continue
 
-        start_ts = close_ts - (90 * 86400)
-        try:
-            candles = await get_candlesticks(
-                client, orig_m.ticker,
-                start_ts=start_ts, end_ts=close_ts,
-                period_interval=1440,
-            )
-        except Exception:
-            logger.debug("Failed to fetch candles for %s", orig_m.ticker, exc_info=True)
+        # Use market-level price data directly (live API provides full data)
+        raw_price = orig_m.midpoint if orig_m.midpoint > 0 else orig_m.last_price
+        if raw_price <= 0:
             continue
-
-        if not candles:
-            continue
-
-        entry_candle = pick_entry_candle(candles, min_cp, max_cp)
-        if entry_candle is None:
-            continue
-
-        entry_price = entry_candle.price_close
-        eff_price = effective_price(entry_price, side)
+        eff_price = effective_price(raw_price, side)
         true_prob = min(eff_price + config.assumed_edge, 0.99)
         count = position_size(
             config.starting_balance,
@@ -384,14 +362,21 @@ async def run_backtest(
         if count <= 0:
             continue
 
-        orderbook = synthesize_orderbook(orig_m.ticker, entry_candle)
+        # Build orderbook from market bid/ask data
+        orderbook = Orderbook(
+            ticker=orig_m.ticker,
+            yes_bids=([OrderbookLevel(price=orig_m.yes_bid, quantity=100)]
+                      if orig_m.yes_bid > 0 else []),
+            no_bids=([OrderbookLevel(price=orig_m.no_bid, quantity=100)]
+                     if orig_m.no_bid > 0 else []),
+        )
         order_side = OrderSide.NO if side == "no" else OrderSide.YES
         order_params = CreateOrderParams(
             ticker=orig_m.ticker,
             action=OrderAction.BUY,
             side=order_side,
             count=count,
-            yes_price=entry_price if side != "no" else None,
+            yes_price=raw_price if side != "no" else None,
             no_price=eff_price if side == "no" else None,
             post_only=False,
         )
@@ -402,8 +387,9 @@ async def run_backtest(
 
         filled = fill_result.total_filled
         vwap = fill_result.total_notional / filled
-        entry_time = datetime.fromtimestamp(entry_candle.end_period_ts, tz=UTC)
-        settle_time = orig_m.close_time or entry_time
+        # Entry time: approximate as 1 day before close
+        entry_time = orig_m.close_time - timedelta(days=1)
+        settle_time = orig_m.close_time
 
         pending.append(_PendingTrade(
             ticker=orig_m.ticker,
