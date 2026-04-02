@@ -35,10 +35,12 @@ from gimmes.store.migrations import run_migrations
 
 
 @pytest.fixture(autouse=True)
-def _reset_config_cache(monkeypatch):
-    """Reset the clubhouse data module's config cache and ensure driving_range mode."""
+def _reset_config_cache(monkeypatch, tmp_path):
+    """Reset the clubhouse data module's config cache and use isolated config."""
     import gimmes.clubhouse.data as data_mod
+    import gimmes.config as config_mod
     monkeypatch.setenv("GIMMES_MODE", "driving_range")
+    monkeypatch.setattr(config_mod, "GIMMES_HOME", tmp_path)
     data_mod._cached_config = None
     data_mod._kalshi_client = None
     yield
