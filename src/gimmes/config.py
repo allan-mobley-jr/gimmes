@@ -133,14 +133,14 @@ class StrategyConfig(BaseModel):
         },
     )
     side: Literal["yes", "no"] = Field(
-        default="yes",
+        default="no",
         json_schema_extra={
             "display_name": "Trading Side",
             "description": (
                 "Which side of the contract to buy.\n"
                 "\n"
-                "  'yes' (default): Buy YES contracts — profit when the event happens.\n"
-                "  'no' (contrarian): Buy NO contracts — profit when the event does NOT happen.\n"
+                "  'yes': Buy YES contracts — profit when the event happens.\n"
+                "  'no' (default): Buy NO contracts — profit when the event does NOT happen.\n"
                 "\n"
                 "When set to 'no', the scanner and scorer flip their perspective:\n"
                 "the price range, sweet spots, and edge calculations all operate\n"
@@ -158,15 +158,15 @@ class StrategyConfig(BaseModel):
         json_schema_extra={
             "display_name": "Min Market Price",
             "description": (
-                "The lowest contract price (in dollars) the system will look at.\n"
-                "Kalshi contracts trade between $0.00 and $1.00, where the price\n"
-                "roughly reflects the market's estimated probability of the event.\n"
+                "The lowest buy price (in dollars) the system will consider,\n"
+                "from the configured side's perspective. Kalshi contracts trade\n"
+                "between $0.00 and $1.00.\n"
                 "\n"
-                "A contract at $0.55 means the market thinks there's about a 55% chance.\n"
-                "We only look at contracts above this floor because very cheap contracts\n"
-                "(e.g. $0.10) are long shots, not gimmes.\n"
+                "When side='no', a $0.55 min means the system only considers NO\n"
+                "contracts priced at 55 cents or above (YES contracts at 45 cents\n"
+                "or below). Very cheap contracts are long shots, not gimmes.\n"
                 "\n"
-                "  • 0.55 (default): Focus on clear favorites\n"
+                "  • 0.55 (default): Focus on contracts with clear conviction\n"
                 "  • Lower (e.g. 0.40): Include less certain markets"
             ),
             "min_val": 0.01,
@@ -178,9 +178,9 @@ class StrategyConfig(BaseModel):
         json_schema_extra={
             "display_name": "Max Market Price",
             "description": (
-                "The highest contract price (in dollars) the system will look at.\n"
-                "Contracts near $1.00 are already priced as near-certainties, so there's\n"
-                "very little profit left even if you're right.\n"
+                "The highest buy price (in dollars) the system will consider,\n"
+                "from the configured side's perspective. Contracts near $1.00\n"
+                "are near-certainties with very little profit margin.\n"
                 "\n"
                 "  • 0.85 (default): Skip contracts above 85 cents\n"
                 "  • Higher (e.g. 0.92): Include pricier contracts with thinner margins\n"

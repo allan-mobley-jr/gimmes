@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gimmes.config import GimmesConfig, Mode, RiskConfig
+from gimmes.config import GimmesConfig, Mode, RiskConfig, StrategyConfig
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -18,6 +18,7 @@ def config() -> GimmesConfig:
     """Default test config (driving range, no real credentials)."""
     return GimmesConfig(
         mode=Mode.DRIVING_RANGE,
+        strategy=StrategyConfig(side="yes"),
         risk=RiskConfig(bankroll_paper=500.0, bankroll_real=500.0),
     )
 
