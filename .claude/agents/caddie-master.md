@@ -126,8 +126,8 @@ After Monitor returns, review its report. For each position Monitor flagged:
    If this command fails, do not proceed with a close — log the failure and move on.
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
-   - Cancel any resting orders first: `gimmes cancel ORDER_ID`
-   - Then dispatch the Closer agent to execute the sell.
+   - Cancel any resting orders first: `gimmes cancel ORDER_ID` (check `gimmes positions` for resting order IDs)
+   - Then dispatch the Closer agent to execute the sell. Include the ticker and current probability in the dispatch prompt so Closer can run: `gimmes order TICKER --prob P --action sell --yes --agent closer`
 
 7. **If the decision is HOLD**, no further action for this position this cycle.
 
