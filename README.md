@@ -6,15 +6,15 @@
 
 > *We only play the gimmes.*
 
-An autonomous Claude Code agent team that trades Kalshi prediction markets by identifying **100 Percenters** — contracts priced well below their true probability of winning. Named after the golf term for a putt so close it's automatically conceded.
+An autonomous Claude Code agent team that trades Kalshi prediction markets by finding **gimmes** — mispriced contracts where the math is on your side. The default strategy buys NO on threshold variance plays where the market overprices continuation near consensus estimates. Named after the golf term for a putt so close it's automatically conceded.
 
 ---
 
 ## What it does
 
-GIMMES hunts for mispriced certainty. When a contract is trading at 70¢ but research, context, and converging signals say it should be 95¢+, that's a gimme. The system finds them, sizes them, watches them, and decides when to close or let ride.
+GIMMES hunts for mispriced contracts. The default BUY NO strategy targets threshold variance plays — "Will X be above Y?" contracts where the market overprices YES near consensus estimates. When the data says 2.0% but the market prices "above 2.5%" at 60¢ YES, the NO side at 40¢ is the gimme.
 
-**The core thesis:** Prediction markets systematically underprice near-certain outcomes. Human bettors anchor to headline odds without doing the underlying work. GIMMES does the work.
+**The core thesis:** Economic data has natural variance around consensus. Markets systematically overprice continuation at nearby thresholds, creating a persistent edge on the NO side. GIMMES finds these mispricings, sizes them, watches them, and decides when to close or add.
 
 ---
 
@@ -197,10 +197,10 @@ The autonomous loop is orchestrated by the **Caddie Master**, which dispatches t
 | Agent | Role | Responsibilities |
 |---|---|---|
 | **The Caddie Master** | Orchestration | Dispatches agents, manages cycle flow, handles errors |
-| **The Scout** | Opportunity discovery | Scans Kalshi for markets above 55¢, scores each for gimme potential |
+| **The Scout** | Opportunity discovery | Scans Kalshi for markets in the configured price range, scores each for gimme potential |
 | **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns |
-| **The Closer** | Trade execution | Sizes positions using fractional Kelly, places maker limit orders |
-| **The Monitor** | Position watching | Monitors open contracts, flags early-close opportunities |
+| **The Closer** | Trade execution | Sizes positions (Kelly or EV mode), places orders, executes closes |
+| **The Monitor** | Position watching | Monitors open contracts, flags price moves, stop-loss breaches, and SIZE UP opportunities |
 | **The Scorecard** | Reporting | Tracks P&L, win rate, edge accuracy, and strategy performance |
 | **The Groundskeeper** | Error escalation | Reviews error logs, escalates critical/recurring errors to GitHub issues |
 | **The Pro** | Strategy tuning | Analyzes performance data, recommends parameter changes with evidence |
@@ -317,6 +317,7 @@ gimmes order TICKER -p P     # Place an order
 gimmes cancel ORDER_ID       # Cancel a resting order
 gimmes trades                # List trade records (--ticker, --action)
 gimmes candidates            # List scored candidates (--ticker)
+gimmes reset-cooldown        # Clear cached candidate scores (--force)
 ```
 
 ### Portfolio
@@ -336,9 +337,10 @@ gimmes errors            # View error logs (--severity, --category, --unresolved
 
 ### Strategy
 ```bash
-gimmes lesson            # Run strategy analysis and recommendations
-gimmes recommendations   # View past strategy recommendations
-gimmes tune              # Apply pending strategy recommendations
+gimmes backtest --from D --to D  # Backtest strategy on historical markets (--balance, --edge, --json)
+gimmes lesson                    # Run strategy analysis and recommendations
+gimmes recommendations           # View past strategy recommendations
+gimmes tune                      # Apply pending strategy recommendations
 ```
 
 ### Dashboard
@@ -361,8 +363,8 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between cycl
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Market price:** 55¢–85¢ (strong favorite, not yet near certainty)
-- **Model probability:** ≥90% (genuine edge of ≥15 percentage points)
+- **Buy price:** 55¢–85¢ from the configured side's perspective (default: NO side)
+- **Model probability:** ≥90% for the configured side (genuine edge)
 - **Confidence sources:** ≥2 independent confirming signals
 - **Liquidity:** Sufficient depth to absorb the position without moving the market
 - **Time horizon:** Contract resolves within a meaningful window (not years out)
@@ -374,7 +376,7 @@ A market qualifies as a gimme when it clears all of the following:
 
 ### Phase 1 — Scan
 
-The Scout polls the Kalshi API for all active markets, filters to the 55¢–85¢ price range, and scores each on:
+The Scout polls the Kalshi API for active markets in the configured series watchlist, filters to the 55¢–85¢ buy price range (from the configured side's perspective), and scores each on:
 
 - Volume and liquidity depth
 - Time to resolution
@@ -406,19 +408,21 @@ The Closer reviews any market with a Gimme Score above threshold and:
 
 The Monitor watches all open positions and triggers a review when:
 
-- Market price moves significantly toward 100¢ (early close candidate)
+- Market price moves significantly from entry (configurable price trigger, default 10pp)
 - New material information emerges that changes the thesis
-- Time to resolution drops below a configurable threshold
+- Time to resolution drops below 24 hours and position isn't profitable
 - Position approaches the daily loss limit
+- Per-position stop-loss threshold is breached (default 15% of cost basis)
 
-The Monitor recommends: **Hold**, **Close now**, or **Size up** (if additional edge confirmed).
+The Caddie Master reviews each flag and decides: **Hold**, **Close** (dispatches Closer to sell), or **Size up** (if edge has improved on an intact thesis). A SIZE UP bias rule defaults to adding when the thesis is intact and bankroll is underutilized.
 
 ---
 
 ## Position sizing
 
-Uses fractional Kelly criterion with fees baked in:
+Two sizing modes (`sizing.mode` config):
 
+**Kelly mode** (default) — fractional Kelly criterion with fees:
 ```
 effective_cost   = price + fee
 effective_odds_b = (1 - price - fee) / (price + fee)
@@ -426,7 +430,14 @@ full_kelly       = (b × p_true - q) / b
 position_size    = 0.25 × full_kelly × bankroll
 ```
 
-Hard limits applied regardless of Kelly output:
+**EV mode** — expected-value sizing for variance plays with moderate probability (30-60%):
+```
+edge_dollars     = (true_probability × $1.00) - price - fees
+ratio            = edge_dollars / cost_per_contract
+position_size    = 0.25 × ratio × bankroll
+```
+
+Hard limits applied regardless of sizing mode:
 - Max 5% of bankroll per position
 - Max 15 open positions simultaneously
 - 15% daily loss limit → full stop
@@ -483,7 +494,8 @@ The Pydantic config models in `config.py` are the single source of truth — eac
     │   ├── templates/           # Jinja2 HTML template (Tailwind + Chart.js)
     │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
     │   ├── paper/               # Paper trading engine (fill simulator, broker)
-    │   ├── strategy/            # Scanner, scorer, Kelly sizing, fee calculator
+    │   ├── backtest/            # Backtest engine, report formatter
+    │   ├── strategy/            # Scanner, scorer, Kelly/EV sizing, fee calculator
     │   ├── risk/                # Limits, validator, settlement risk scanner
     │   ├── store/               # SQLite persistence (trades, positions, snapshots)
     │   ├── models/              # Pydantic models (market, order, portfolio, trade)

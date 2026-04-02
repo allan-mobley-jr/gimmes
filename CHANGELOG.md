@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-04-02
+
+**Breaking:** Default `strategy.side` changed from `"yes"` to `"no"`. Existing users who prefer BUY YES must run `gimmes config set strategy.side yes`.
+
+### Added
+- Backtest mode: `gimmes backtest --from --to --balance [--edge] [--json]` validates strategies against historical settled Kalshi markets with win rate, P&L, ROI, max drawdown, and Sharpe ratio
+- BUY NO (contrarian) strategy support via `strategy.side` config — scanner, scorer, validator, sizer, backtest, and CLI all evaluate from the configured side's perspective
+- Expected-value position sizing mode (`sizing.mode = "ev"`) for variance plays where probability is moderate but expected value is positive
+- Per-position stop-loss trigger for Monitor (`risk.position_stop_loss_pct`, default 15%)
+- CLOSE execution procedure for the Closer agent — positions can now be exited autonomously
+- SIZE UP opportunity flagging: Monitor notes thesis intactness on adverse price moves; Caddie Master gains SIZE UP as a third decision option alongside HOLD and CLOSE
+- SIZE UP bias rule: when thesis is intact and bankroll is under 50% deployed, SIZE UP is the presumptive action
+- Domain playbooks for Caddie with category-specific research sources across 8 market categories
+- `gimmes reset-cooldown` command to clear cached candidate scores
+- Auto-clear candidates when strategy config changes via `gimmes config set`
+- Concurrent position tracking in backtest with chronological entry/settlement events
+- Per-page series and date filtering for historical market fetch to reduce memory
+
+### Changed
+- Default strategy pivoted from BUY YES (55-85¢) to BUY NO — backtesting showed BUY YES had -54% ROI while BUY NO is consistently profitable
+- Price range descriptions updated to be side-agnostic
+
+### Fixed
+- `config set scanner.series` no longer double-encodes JSON array values
+- Cooldown system no longer blocks all candidates after a strategy change
+- `full_score` now uses side-appropriate price for NO-side edge and depth calculations
+- `test_get_risk` no longer reads user config — uses isolated test defaults
+- `install.sh` uses `$HOME` instead of hardcoded path in shell RC export
+
 ## [0.1.3] - 2026-03-22
 
 ### Fixed
@@ -93,6 +122,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.2.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.2.0
 [0.1.3]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.3
 [0.1.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.2
 [0.1.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.1
