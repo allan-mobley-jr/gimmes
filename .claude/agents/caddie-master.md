@@ -120,11 +120,11 @@ After Monitor returns, review its report. For each position Monitor flagged:
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
-     --body "Decision: [HOLD, CLOSE, or SIZE UP].
+     --body "Decision: [HOLD or CLOSE].
    Reasoning: [your specific reasoning referencing the original thesis and what Monitor reported].
    Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?]"
    ```
-   If this command fails, do not proceed with a close — log the failure and move on. For SIZE UP decisions, skip this step and proceed directly to Step 2d (which has its own decision logging).
+   If this command fails, do not proceed with a close — log the failure and move on. For SIZE UP decisions, skip this step — Step 2d has its own decision logging.
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
    - Cancel any resting orders first: `gimmes cancel ORDER_ID`
