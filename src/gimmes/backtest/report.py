@@ -90,6 +90,13 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     funnel.add_row("Scored above threshold", str(result.markets_scored))
     funnel.add_row("Traded", str(result.markets_traded))
     console.print(funnel)
+    if result.truncated_chunks:
+        console.print(
+            f"[yellow]Warning: pagination limit reached for "
+            f"{len(result.truncated_chunks)} chunk(s): "
+            f"{', '.join(result.truncated_chunks)}. "
+            f"Results may be incomplete.[/yellow]"
+        )
     console.print()
 
     # --- Trade log ---
@@ -182,6 +189,7 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "markets_passed_filter": result.markets_passed_filter,
             "markets_scored": result.markets_scored,
             "markets_traded": result.markets_traded,
+            "truncated_chunks": result.truncated_chunks,
         },
         "summary": {
             "total_trades": s.total,

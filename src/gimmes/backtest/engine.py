@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from gimmes.config import GimmesConfig
@@ -65,6 +66,7 @@ class BacktestResult:
     markets_passed_filter: int
     markets_scored: int
     markets_traded: int
+    truncated_chunks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -251,6 +253,34 @@ def _adapt_for_filter(
 
 
 # ---------------------------------------------------------------------------
+# Date chunking
+# ---------------------------------------------------------------------------
+
+
+def monthly_chunks(start: date, end: date) -> list[tuple[int, int]]:
+    """Split a date range into per-month ``(min_ts, max_ts)`` pairs.
+
+    Each chunk covers midnight UTC on the first day through 23:59:59 UTC
+    on the last day of the month (or *end*, whichever comes first).
+    """
+    if start > end:
+        return []
+    chunks: list[tuple[int, int]] = []
+    current = start
+    while current <= end:
+        last_day = calendar.monthrange(current.year, current.month)[1]
+        chunk_end = min(date(current.year, current.month, last_day), end)
+        min_ts = int(datetime(current.year, current.month, current.day,
+                              tzinfo=UTC).timestamp())
+        max_ts = int(datetime(chunk_end.year, chunk_end.month, chunk_end.day,
+                              23, 59, 59, tzinfo=UTC).timestamp())
+        chunks.append((min_ts, max_ts))
+        # Advance to the 1st of the next month
+        current = chunk_end + timedelta(days=1)
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -284,24 +314,47 @@ async def run_backtest(
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
     series_list = gc.scanner.series or []
-    min_close_ts = int(start_dt.timestamp())
-    max_close_ts = int(end_dt.timestamp())
+    chunks = monthly_chunks(config.start_date, config.end_date)
     logger.info(
-        "Fetching settled markets for %d series via live API...",
-        len(series_list),
+        "Fetching settled markets for %d series × %d monthly chunks via live API...",
+        len(series_list), len(chunks),
     )
+    max_pages = 200
+    page_size = 200  # Kalshi default per-page limit
+    pagination_cap = max_pages * page_size
+
     all_markets: list[Market] = []
+    truncated_chunks: list[str] = []
     for series in series_list:
-        try:
-            markets = await list_all_markets(
-                client, status="settled", series_ticker=series,
-                max_pages=200,
-                min_close_ts=min_close_ts,
-                max_close_ts=max_close_ts,
-            )
-            all_markets.extend(markets)
-        except Exception:
-            logger.warning("Failed to fetch series %s", series, exc_info=True)
+        for min_ts, max_ts in chunks:
+            try:
+                markets = await list_all_markets(
+                    client, status="settled", series_ticker=series,
+                    max_pages=max_pages,
+                    min_close_ts=min_ts,
+                    max_close_ts=max_ts,
+                )
+                if len(markets) >= pagination_cap:
+                    label = datetime.fromtimestamp(min_ts, tz=UTC).strftime("%Y-%m")
+                    truncated_chunks.append(f"{series} ({label})")
+                    logger.warning(
+                        "Pagination limit hit for %s in %s (%d markets)",
+                        series, label, len(markets),
+                    )
+                all_markets.extend(markets)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch series %s chunk", series, exc_info=True,
+                )
+
+    # Deduplicate markets that may appear in adjacent chunks
+    seen_tickers: set[str] = set()
+    deduped: list[Market] = []
+    for m in all_markets:
+        if m.ticker not in seen_tickers:
+            seen_tickers.add(m.ticker)
+            deduped.append(m)
+    all_markets = deduped
 
     # Safety-net date filter (server-side filtering handles most cases)
     def _in_range(m: Market) -> bool:
@@ -426,4 +479,5 @@ async def run_backtest(
         markets_passed_filter=len(passed),
         markets_scored=len(scored),
         markets_traded=traded_count,
+        truncated_chunks=truncated_chunks,
     )
