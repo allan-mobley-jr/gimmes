@@ -89,6 +89,16 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     funnel.add_row("Passed scanner filters", str(result.markets_passed_filter))
     funnel.add_row("Scored above threshold", str(result.markets_scored))
     funnel.add_row("Traded", str(result.markets_traded))
+    if result.skipped_concentration > 0:
+        funnel.add_row(
+            "Skipped (concentration)",
+            str(result.skipped_concentration),
+        )
+    if result.skipped_balance > 0:
+        funnel.add_row(
+            "Skipped (balance)",
+            str(result.skipped_balance),
+        )
     console.print(funnel)
     if result.truncated_chunks:
         console.print(

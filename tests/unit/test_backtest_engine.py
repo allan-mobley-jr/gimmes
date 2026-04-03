@@ -305,3 +305,97 @@ class TestWeeklyChunks:
         chunks = weekly_chunks(ts, ts)
         assert len(chunks) == 1
         assert chunks[0] == (ts, ts)
+
+
+class TestConcentrationLimits:
+    def test_event_exposure_blocks_second_trade(self) -> None:
+        """Second trade in the same event is blocked by concentration."""
+        ledger = BacktestLedger(1000.0)
+        # First trade: event KXGDP-26APR30, cost = 10 * 0.50 + 0.10 = $5.10
+        ledger.buy(
+            "KXGDP-26APR30-T2.5", "GDP 2.5%", "no", 10, 0.50, 0.10,
+            event_ticker="KXGDP-26APR30",
+            series_ticker="KXGDP",
+        )
+        # Check: existing event exposure should be ~$5.10
+        from gimmes.risk.limits import compute_exposure_for_group
+        positions = list(ledger.positions.values())
+        exp = compute_exposure_for_group(positions, "KXGDP-26APR30")
+        assert exp == pytest.approx(5.10)
+
+    def test_series_exposure_tracked(self) -> None:
+        """Series exposure sums across different events."""
+        ledger = BacktestLedger(1000.0)
+        ledger.buy(
+            "KXGDP-26APR30-T2.5", "GDP 2.5%", "no", 10, 0.50, 0.10,
+            event_ticker="KXGDP-26APR30",
+            series_ticker="KXGDP",
+        )
+        ledger.buy(
+            "KXGDP-26JUL30-T3.0", "GDP 3.0%", "no", 10, 0.60, 0.10,
+            event_ticker="KXGDP-26JUL30",
+            series_ticker="KXGDP",
+        )
+        from gimmes.risk.limits import compute_exposure_for_group
+        positions = list(ledger.positions.values())
+        # Series exposure covers both events
+        series_exp = compute_exposure_for_group(positions, "KXGDP")
+        assert series_exp == pytest.approx(5.10 + 6.10)
+
+    def test_different_event_not_blocked(self) -> None:
+        """Trades in different events don't affect each other."""
+        ledger = BacktestLedger(1000.0)
+        ledger.buy(
+            "KXGDP-26APR30-T2.5", "GDP", "no", 10, 0.50, 0.10,
+            event_ticker="KXGDP-26APR30",
+            series_ticker="KXGDP",
+        )
+        from gimmes.risk.limits import compute_exposure_for_group
+        positions = list(ledger.positions.values())
+        # CPI event exposure should be zero
+        cpi_exp = compute_exposure_for_group(positions, "KXCPI-26APR")
+        assert cpi_exp == 0.0
+
+    def test_event_limit_blocks_when_exceeded(self) -> None:
+        """check_event_exposure rejects when limit exceeded."""
+        from gimmes.config import GimmesConfig, Mode, RiskConfig
+        from gimmes.risk.limits import (
+            check_event_exposure,
+            compute_exposure_for_group,
+        )
+
+        gc = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            risk=RiskConfig(
+                max_event_exposure_pct=0.10,
+                bankroll_paper=1000.0,
+            ),
+        )
+        ledger = BacktestLedger(1000.0)
+        # First trade costs $80 — within 10% of $1000 ($100 limit)
+        ledger.buy(
+            "KXGDP-26APR30-T2.5", "GDP", "no", 100, 0.75, 5.0,
+            event_ticker="KXGDP-26APR30",
+        )
+        positions = list(ledger.positions.values())
+        evt_exp = compute_exposure_for_group(positions, "KXGDP-26APR30")
+        # Second trade would cost $55 — total $135 > $100 limit
+        chk = check_event_exposure(evt_exp, 55.0, 1000.0, gc)
+        assert not chk.passed
+
+    def test_settlement_frees_event_capacity(self) -> None:
+        """After settling, event exposure decreases."""
+        ledger = BacktestLedger(1000.0)
+        ledger.buy(
+            "KXGDP-26APR30-T2.5", "GDP", "no", 10, 0.50, 0.10,
+            event_ticker="KXGDP-26APR30",
+            series_ticker="KXGDP",
+        )
+        from gimmes.risk.limits import compute_exposure_for_group
+        assert compute_exposure_for_group(
+            list(ledger.positions.values()), "KXGDP-26APR30",
+        ) > 0
+        ledger.settle("KXGDP-26APR30-T2.5", "no")
+        assert compute_exposure_for_group(
+            list(ledger.positions.values()), "KXGDP-26APR30",
+        ) == 0.0
