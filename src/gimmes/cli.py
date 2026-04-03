@@ -3170,6 +3170,7 @@ def _autonomous_loop(
     *,
     max_cycles: int = 0,
     pause_seconds: int = 60,
+    monitor_interval: int = 3600,
     no_dashboard: bool = False,
     max_consecutive_failures: int = 5,
 ) -> None:
@@ -3260,7 +3261,8 @@ def _autonomous_loop(
 
     mode_label = "DRIVING RANGE" if mode == "driving_range" else "CHAMPIONSHIP"
     console.print(f"\n[bold]{mode_label}[/bold] — autonomous trading loop started")
-    console.print(f"Pause between cycles: {pause_seconds}s")
+    console.print(f"Pause between cycles (in trade window): {pause_seconds}s")
+    console.print(f"Monitor interval (outside windows): {monitor_interval}s")
     if max_cycles > 0:
         console.print(f"Max cycles: {max_cycles}")
     console.print("Press Ctrl+C to stop\n")
@@ -3293,21 +3295,55 @@ def _autonomous_loop(
     proc = None
     old_handler = signal.signal(signal.SIGINT, _sigint_handler)
     try:
+        from gimmes.strategy.calendar import (
+            is_in_trade_window,
+            next_trade_window,
+            seconds_until_next_window,
+        )
+
         while max_cycles == 0 or cycles_run < max_cycles:
             cycle += 1
             cycles_run += 1
-            console.print(f"[cyan]--- Cycle {cycle} ---[/cyan]")
+
+            # Determine cycle type based on trade window calendar
+            in_window, release_name, _secs_to_close = is_in_trade_window()
+            if in_window:
+                cycle_type = "full"
+                cycle_prompt = "Run one trading cycle."
+                post_sleep = pause_seconds
+                console.print(
+                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                    f" [green bold][TRADE WINDOW: {release_name}][/green bold]"
+                )
+            else:
+                cycle_type = "monitor"
+                next_start, next_name = next_trade_window()
+                secs_to_next = seconds_until_next_window()
+                post_sleep = min(secs_to_next, monitor_interval)
+                h, remainder = divmod(secs_to_next, 3600)
+                m, _ = divmod(remainder, 60)
+                console.print(
+                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                    f" [yellow][MONITOR ONLY — next window:"
+                    f" {next_name} in {h}h {m:02d}m][/yellow]"
+                )
+                cycle_prompt = (
+                    "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
+                    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
+                    " and Pro."
+                )
 
             update_session_cycle(config.db_path, session_id, cycle)
 
             env["GIMMES_CYCLE"] = str(cycle)
+            env["GIMMES_CYCLE_TYPE"] = cycle_type
             log_path = logs_dir / f"cycle-{cycle:03d}.json"
             try:
                 proc = subprocess.Popen(
                     [
                         claude_path,
                         "--agent", "Caddie Master",
-                        "-p", "Run one trading cycle.",
+                        "-p", cycle_prompt,
                         "--verbose",
                         "--output-format", "stream-json",
                         "--allowedTools",
@@ -3386,8 +3422,8 @@ def _autonomous_loop(
             if max_cycles > 0 and cycles_run >= max_cycles:
                 break
 
-            console.print(f"[dim]Next cycle in {pause_seconds}s...[/dim]")
-            time.sleep(pause_seconds)
+            console.print(f"[dim]Next cycle in {post_sleep}s...[/dim]")
+            time.sleep(post_sleep)
     except KeyboardInterrupt:
         if proc is not None and proc.poll() is None:
             _kill_process_group(proc)
@@ -3407,6 +3443,10 @@ def driving_range(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
+    monitor_interval: int = typer.Option(
+        3600, "--monitor-interval", min=60,
+        help="Seconds between monitor-only cycles outside trade windows (default 3600)",
+    ),
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
@@ -3414,7 +3454,7 @@ def driving_range(
     """Switch to Driving Range mode and start autonomous trading loop (paper trading)."""
     _set_mode("driving_range")
     _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause,
-                     no_dashboard=no_dashboard)
+                     monitor_interval=monitor_interval, no_dashboard=no_dashboard)
 
 
 @app.command(name="championship", rich_help_panel="Autonomous Trading")
@@ -3423,6 +3463,10 @@ def championship(
         0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
+    monitor_interval: int = typer.Option(
+        3600, "--monitor-interval", min=60,
+        help="Seconds between monitor-only cycles outside trade windows (default 3600)",
+    ),
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
@@ -3432,7 +3476,7 @@ def championship(
     _championship_gate(config)
     _set_mode("championship")
     _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause,
-                     no_dashboard=no_dashboard)
+                     monitor_interval=monitor_interval, no_dashboard=no_dashboard)
 
 
 if __name__ == "__main__":
