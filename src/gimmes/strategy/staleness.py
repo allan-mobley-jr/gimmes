@@ -95,10 +95,13 @@ def check_staleness(
 
     # Prune entries older than 48h
     cutoff = datetime.now(UTC) - timedelta(hours=48)
-    to_remove = [
-        t for t, e in staleness_data.items()
-        if datetime.fromisoformat(e["last_cycle"]) < cutoff
-    ]
+    to_remove = []
+    for t, e in staleness_data.items():
+        try:
+            if datetime.fromisoformat(e["last_cycle"]) < cutoff:
+                to_remove.append(t)
+        except (ValueError, KeyError):
+            to_remove.append(t)
     for t in to_remove:
         del staleness_data[t]
 
