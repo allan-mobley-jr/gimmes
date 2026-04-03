@@ -118,8 +118,10 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 4. Make your own deliberate decision — **HOLD**, **CLOSE**, or **SIZE UP**:
    - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding. When choosing HOLD, you MUST specify a re-evaluation condition so Monitor knows when to re-flag (prevents the flag-HOLD-re-flag-HOLD loop).
-   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, or risk limits require action.
+   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, risk limits require action, or a profit-taking flag indicates the position has captured most of its available edge.
    - **SIZE UP**: Price moved adversely while the original thesis remains fully intact, resulting in a larger edge than at entry. Proceed to Step 2d.
+
+   When reviewing a **profit-taking flag**: the position has captured a large share of its maximum possible profit. The default action is CLOSE to lock in gains, UNLESS resolution is imminent (< 24h) and remaining upside is nearly risk-free.
 
 5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
    ```bash

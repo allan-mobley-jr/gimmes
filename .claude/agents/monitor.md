@@ -41,6 +41,7 @@ Flag a position for Caddie Master review — by writing a `flag` note — when A
 - **Time decay**: Resolution is < 24 hours away AND position is not yet profitable.
 - **Risk approaching**: Daily P&L loss approaching the configured daily loss limit (from the "Daily Loss Limit" line in `risk-check` output).
 - **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15.
+- **Profit-taking threshold**: The position's unrealized gain >= the "Position Take-Profit" percentage (from `risk-check` output) multiplied by maximum possible profit. Max profit for a YES position = (1.00 - entry_price) x contracts; for NO = entry_price x contracts. For example, at 80% take-profit, entry $0.40, and 10 contracts, max profit = $6.00 and the flag triggers when unrealized P&L >= $4.80.
 
 A trigger condition means Caddie Master should look at this position. It does NOT mean the position should be closed. Caddie Master decides what to do.
 
