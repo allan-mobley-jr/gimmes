@@ -174,9 +174,10 @@ case "${1:-}" in
             exit 1
         fi
 
-        if ! git checkout . --quiet 2>/dev/null; then
-            echo "Warning: could not clean local changes; update may fail."
-        fi
+        # Restore tracked files and remove untracked files that would
+        # block checkout of a new tag (e.g. new files added in the release).
+        git checkout . --quiet 2>/dev/null || true
+        git clean -fd --quiet 2>/dev/null || true
 
         latest_tag=$(latest_remote_tag)
 
@@ -187,7 +188,7 @@ case "${1:-}" in
                 echo "Already on latest version $latest_tag"
                 exit 0
             fi
-            if ! git checkout "$latest_tag" --quiet 2>/dev/null; then
+            if ! git checkout "$latest_tag" --quiet; then
                 echo "Error: could not checkout $latest_tag."
                 echo "Try: cd $REPO && git status"
                 exit 1
