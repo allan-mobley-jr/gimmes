@@ -343,8 +343,10 @@ async def run_backtest(
                     )
                 all_markets.extend(markets)
             except Exception:
+                label = datetime.fromtimestamp(min_ts, tz=UTC).strftime("%Y-%m")
                 logger.warning(
-                    "Failed to fetch series %s chunk", series, exc_info=True,
+                    "Failed to fetch series %s in %s", series, label,
+                    exc_info=True,
                 )
 
     # Deduplicate markets that may appear in adjacent chunks
