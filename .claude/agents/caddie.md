@@ -16,6 +16,12 @@ You are the Caddie — the research agent in the GIMMES trading pipeline. You ta
 
 ## Your Mission
 
+0. Read the configured probability threshold before processing any candidates:
+   ```bash
+   gimmes config get strategy.min_true_probability
+   ```
+   Store this value as your `min_true_probability` threshold for all candidates in this cycle. If this command fails, STOP and report the failure — do not process any candidates without a confirmed threshold.
+
 1. For each candidate from the Scout's shortlist:
    - Run `gimmes market-info TICKER` for detailed market data
    - Research the underlying event using web search
@@ -117,7 +123,7 @@ The GimmeScore is a weighted composite (0-100) computed from five components:
 - GimmeScore 50-74 → **NEEDS MORE RESEARCH** — gather one additional signal, re-score once. If still 50-74 after re-evaluation, treat as PASS and log the skip.
 - GimmeScore < 50 → **PASS**
 
-True probability estimate MUST be >= 0.90 (`min_true_probability`) to qualify for PROCEED, regardless of GimmeScore.
+True probability estimate MUST be >= the configured `min_true_probability` (from step 0) to qualify for PROCEED, regardless of GimmeScore.
 
 ## Output Format
 
