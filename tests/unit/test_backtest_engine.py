@@ -308,16 +308,15 @@ class TestWeeklyChunks:
 
 
 class TestConcentrationLimits:
-    def test_event_exposure_blocks_second_trade(self) -> None:
-        """Second trade in the same event is blocked by concentration."""
+    def test_event_exposure_tracked_for_single_trade(self) -> None:
+        """Single-trade event exposure is computed correctly."""
         ledger = BacktestLedger(1000.0)
-        # First trade: event KXGDP-26APR30, cost = 10 * 0.50 + 0.10 = $5.10
+        # Cost = 10 * 0.50 + 0.10 = $5.10
         ledger.buy(
             "KXGDP-26APR30-T2.5", "GDP 2.5%", "no", 10, 0.50, 0.10,
             event_ticker="KXGDP-26APR30",
             series_ticker="KXGDP",
         )
-        # Check: existing event exposure should be ~$5.10
         from gimmes.risk.limits import compute_exposure_for_group
         positions = list(ledger.positions.values())
         exp = compute_exposure_for_group(positions, "KXGDP-26APR30")
