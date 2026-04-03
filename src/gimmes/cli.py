@@ -519,12 +519,18 @@ def validate(
                 if match:
                     existing_cost_basis = match.cost_basis
 
+            from gimmes.risk.limits import compute_exposure_for_group
+
             existing_tickers = [p.ticker for p in positions]
+            event_exp = compute_exposure_for_group(positions, market.event_ticker)
+            series_exp = compute_exposure_for_group(positions, market.series_ticker)
             result = validate_trade(
                 market, trade_dollars, probability, bankroll,
                 total_daily_pnl, len(positions), existing_tickers, config,
                 fees=fees, deployed_cost_basis=deployed, size_up=size_up,
                 existing_cost_basis=existing_cost_basis,
+                event_exposure=event_exp,
+                series_exposure=series_exp,
             )
 
             console.print(f"\n[bold]Validation: {ticker}[/bold]")
@@ -733,13 +739,19 @@ def order(
                         return
                     existing_cost_basis = match.cost_basis
 
+                from gimmes.risk.limits import compute_exposure_for_group
+
                 existing_tickers = [p.ticker for p in positions]
+                evt_exp = compute_exposure_for_group(positions, market.event_ticker)
+                ser_exp = compute_exposure_for_group(positions, market.series_ticker)
                 validation = validate_trade(
                     market, trade_dollars, true_prob, bankroll,
                     total_daily_pnl, len(positions), existing_tickers,
                     config, is_taker=is_taker, fees=fees,
                     deployed_cost_basis=deployed, size_up=size_up,
                     existing_cost_basis=existing_cost_basis,
+                    event_exposure=evt_exp,
+                    series_exposure=ser_exp,
                 )
 
                 if not validation.approved:
