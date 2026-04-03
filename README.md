@@ -144,11 +144,11 @@ gimmes driving_range    # Paper money
 gimmes championship     # Real money (requires confirmation)
 ```
 
-The **Caddie Master** dispatches agents each cycle: Monitor reviews positions, Scout scans, Caddie researches, Closer executes, Scorecard reports. See [How it works](#how-it-works) for the full cycle breakdown.
+The **Caddie Master** dispatches agents each cycle. During trade windows (around data releases), the full pipeline runs: Monitor → Scout → Caddie → Closer → Scorecard. Outside trade windows, only Monitor runs — the system sleeps until the next window. See [How it works](#how-it-works) for the full cycle breakdown.
 
 The [Clubhouse](#the-clubhouse) dashboard auto-launches at `http://127.0.0.1:1919` (or the next available port) — check the printed URL and open your browser to watch live.
 
-Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` to run a fixed number of cycles, `--pause N` to adjust seconds between cycles.
+Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` to run a fixed number of cycles, `--pause N` to adjust seconds between full cycles, `--monitor-interval N` for seconds between monitor-only checks.
 
 ---
 
@@ -213,7 +213,32 @@ Agents communicate through the orchestrator's context — Scout's shortlist flow
 
 ## How it works
 
-Each `start`, `driving_range`, or `championship` invocation runs a continuous loop of trading cycles. Each cycle:
+Each `start`, `driving_range`, or `championship` invocation runs a **calendar-aware trading loop** that schedules cycles around data release windows instead of cycling continuously.
+
+### Trade windows
+
+The loop checks a built-in calendar of 9 trade windows — every source of historical mispricing from backtesting:
+
+| Window | Schedule | Frequency |
+|--------|----------|-----------|
+| Equity index close (S&P 500, Nasdaq) | 2:00–4:00 PM ET | Every weekday |
+| Treasury notes | Tue 11 PM – Wed 1 PM ET | Weekly |
+| Jobless claims | Wed 6:30 PM – Thu 8:30 AM ET | Weekly |
+| ADP private payrolls | Tue before NFP 6:15 PM – Wed 8:15 AM ET | Monthly |
+| ISM Manufacturing PMI | Night before 1st biz day 8 PM – 10 AM ET | Monthly |
+| Non-Farm Payrolls | Thu 6:30 PM – 1st Fri 8:30 AM ET | Monthly |
+| CPI | Night before ~12th 6:30 PM – 8:30 AM ET | Monthly |
+| Core PCE | Night before last Fri 6:30 PM – 8:30 AM ET | Monthly |
+| GDP Advance Estimate | Night before ~28th 6:30 PM – 8:30 AM ET | Quarterly |
+
+### Cycle types
+
+- **Full cycle** (inside a trade window): runs the complete pipeline — Monitor → Scout → Caddie → Closer → Scorecard. Pauses `--pause` seconds (default 60) between cycles.
+- **Monitor-only cycle** (outside a trade window): runs only Monitor and Groundskeeper, then sleeps until the next trade window or `--monitor-interval` (default 1 hour).
+
+This reduces token usage ~80-90% compared to continuous cycling while being *more* responsive during data releases.
+
+### Full cycle pipeline
 
 1. **State check** — reads positions, daily P&L, and risk limits from SQLite
 2. **Monitor** — reviews existing positions, recommends hold/close/size-up
@@ -224,13 +249,14 @@ Each `start`, `driving_range`, or `championship` invocation runs a continuous lo
 7. **Groundskeeper** — reviews error logs, escalates critical or recurring errors to GitHub issues
 8. **The Pro** (every 10th cycle) — analyzes performance, recommends parameter changes with data
 
-The loop pauses between cycles (default 60s, configurable with `--pause`) and can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state.
+The loop can be stopped with Ctrl+C. If a cycle crashes, the loop re-invokes and the orchestrator picks up where it left off by reading database state. Rate limit errors are detected automatically and pause the loop until reset.
 
 ```bash
-gimmes start                        # Use current mode from .env
-gimmes driving_range                # Switch to driving_range + start
-gimmes driving_range --cycles 5     # Run exactly 5 cycles
-gimmes driving_range --pause 60     # 60s between cycles
+gimmes start                              # Use current mode from .env
+gimmes driving_range                      # Switch to driving_range + start
+gimmes driving_range --cycles 5           # Run exactly 5 cycles
+gimmes driving_range --pause 60           # 60s between cycles (in trade window)
+gimmes driving_range --monitor-interval 1800  # Check positions every 30 min outside windows
 ```
 
 ---
@@ -355,7 +381,7 @@ gimmes driving_range     # Autonomous loop -- paper trading (auto-starts dashboa
 gimmes championship      # Autonomous loop -- real money (auto-starts dashboard)
 ```
 
-All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between cycles, default 60), and `--no-dashboard`.
+All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full cycles, default 60), `--monitor-interval N` (seconds between monitor-only cycles outside trade windows, default 3600), and `--no-dashboard`.
 
 ---
 
@@ -363,11 +389,12 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between cycl
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Buy price:** 55¢–85¢ from the configured side's perspective (default: NO side)
-- **Model probability:** ≥90% for the configured side (genuine edge)
-- **Confidence sources:** ≥2 independent confirming signals
+- **Buy price:** configurable range from the strategy side's perspective (default NO side: 40¢–75¢)
+- **Model probability:** ≥50% for the configured side (configurable via `min_true_probability`)
+- **GimmeScore:** ≥65 (configurable via `gimme_threshold`) — composite of edge size, signal strength, liquidity, and time value
 - **Liquidity:** Sufficient depth to absorb the position without moving the market
-- **Time horizon:** Contract resolves within a meaningful window (not years out)
+- **Time horizon:** Contract resolves within 0.5–90 days (configurable)
+- **Concentration limits:** Max 15% per event, 30% per series — prevents over-exposure
 - **Settlement clarity:** Unambiguous resolution criteria — no subjective carve-outs
 
 ---
@@ -376,12 +403,12 @@ A market qualifies as a gimme when it clears all of the following:
 
 ### Phase 1 — Scan
 
-The Scout polls the Kalshi API for active markets in the configured series watchlist, filters to the 55¢–85¢ buy price range (from the configured side's perspective), and scores each on:
+The Scout polls the Kalshi API for active markets in the configured series watchlist (17 macro/financial series by default), filters by price range, volume, open interest, and time to resolution, then scores each on:
 
 - Volume and liquidity depth
 - Time to resolution
-- Category (economics, politics, sports, weather, crypto)
-- Historical accuracy of similar markets
+- Spread tightness and price position
+- Market staleness (skips truly dead markets with no volume, OI, or price changes)
 
 ### Phase 2 — Research
 
@@ -438,9 +465,12 @@ position_size    = 0.25 × ratio × bankroll
 ```
 
 Hard limits applied regardless of sizing mode:
-- Max 5% of bankroll per position
-- Max 15 open positions simultaneously
+- Max 10% of bankroll per position (configurable)
+- Max 50 open positions simultaneously (configurable)
 - 15% daily loss limit → full stop
+- 15% per-position stop-loss trigger
+- 80% per-position take-profit trigger
+- 15% max exposure per event, 30% max per series
 - No positions in markets with ambiguous settlement language
 
 ---
@@ -495,7 +525,7 @@ The Pydantic config models in `config.py` are the single source of truth — eac
     │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
     │   ├── paper/               # Paper trading engine (fill simulator, broker)
     │   ├── backtest/            # Backtest engine, report formatter
-    │   ├── strategy/            # Scanner, scorer, Kelly/EV sizing, fee calculator
+    │   ├── strategy/            # Scanner, scorer, Kelly/EV sizing, fee calculator, trade window calendar
     │   ├── risk/                # Limits, validator, settlement risk scanner
     │   ├── store/               # SQLite persistence (trades, positions, snapshots)
     │   ├── models/              # Pydantic models (market, order, portfolio, trade)
