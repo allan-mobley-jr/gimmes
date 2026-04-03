@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess as _subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,10 @@ from gimmes.cli import (
 from gimmes.config import GimmesConfig, Mode, RiskConfig
 
 runner = CliRunner()
+
+
+def _make_future_dt() -> datetime:
+    return datetime.now(UTC) + timedelta(hours=1)
 
 
 def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
@@ -101,6 +106,18 @@ class TestAutonomousLoop:
             patch("gimmes.store.session.mark_stale_sessions", return_value=0),
             patch("gimmes.store.session.update_session_cycle"),
             patch("asyncio.run", side_effect=lambda coro: coro.close()),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(True, "Index contracts", 3600),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
         ):
             yield
 
@@ -597,6 +614,70 @@ class TestAutonomousLoop:
         for i in range(1, 4):
             assert (tmp_path / "logs" / f"cycle-{i:03d}.json").exists()
 
+    def test_monitor_only_prompt_outside_window(self) -> None:
+        """Outside a trade window, prompt should be MONITOR-ONLY."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(False, None, None),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Jobless claims"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=7200,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        cmd = mock_popen.call_args.args[0]
+        prompt_idx = cmd.index("-p")
+        assert "MONITOR-ONLY" in cmd[prompt_idx + 1]
+
+    def test_cycle_type_env_set_full(self) -> None:
+        """In a trade window, GIMMES_CYCLE_TYPE should be 'full'."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "full"
+
+    def test_cycle_type_env_set_monitor(self) -> None:
+        """Outside a trade window, GIMMES_CYCLE_TYPE should be 'monitor'."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(False, None, None),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "CPI"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=1800,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "monitor"
+
 
 # ---------------------------------------------------------------------------
 # _communicate_interruptible
@@ -803,7 +884,7 @@ class TestDrivingRangeCommand:
 
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=1, pause_seconds=60,
-            no_dashboard=False,
+            monitor_interval=3600, no_dashboard=False,
         )
 
 
@@ -831,7 +912,7 @@ class TestChampionshipCommand:
 
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=60,
-            no_dashboard=False,
+            monitor_interval=3600, no_dashboard=False,
         )
 
 
