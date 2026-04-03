@@ -11,7 +11,7 @@ import click
 import typer
 from rich.console import Console
 
-from gimmes.config import GimmesConfig, load_config
+from gimmes.config import GIMMES_HOME, GimmesConfig, load_config
 
 app = typer.Typer(
     name="gimmes",
@@ -297,6 +297,29 @@ def scan(
                 console.print(f"Fetched {len(markets)} markets (all)")
 
             candidates = filter_markets(markets, config, exclude_tickers=exclude_tickers)
+
+            # Staleness filtering — skip markets with no price change
+            staleness_threshold = config.scanner.staleness_cycles
+            if staleness_threshold > 0:
+                from gimmes.strategy.staleness import (
+                    check_staleness,
+                    load_staleness,
+                    save_staleness,
+                )
+
+                staleness_path = GIMMES_HOME / "scan_staleness.json"
+                staleness_data = load_staleness(staleness_path)
+                candidates, stale_skipped, staleness_data = check_staleness(
+                    candidates, staleness_data,
+                    threshold=staleness_threshold,
+                )
+                save_staleness(staleness_data, staleness_path)
+                if stale_skipped:
+                    console.print(
+                        f"[dim]Skipped {len(stale_skipped)} stale"
+                        f" market(s)[/dim]"
+                    )
+
             console.print(f"Filtered to {len(candidates)} candidates")
 
             scored = []

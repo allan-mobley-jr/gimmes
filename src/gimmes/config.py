@@ -568,6 +568,22 @@ class ScannerConfig(BaseModel):
             ),
         },
     )
+    staleness_cycles: int = Field(
+        default=5, ge=0, le=50,
+        json_schema_extra={
+            "display_name": "Staleness Cycles",
+            "description": (
+                "Skip markets whose price hasn't changed for this many consecutive\n"
+                "scan cycles. Set to 0 to disable staleness filtering.\n"
+                "\n"
+                "  • 5 (default): Skip after 5 unchanged scans\n"
+                "  • 0: Never skip for staleness\n"
+                "  • Higher (e.g. 10): More tolerant of quiet markets"
+            ),
+            "min_val": 0,
+            "max_val": 50,
+        },
+    )
 
 
 class ScoringWeights(BaseModel):
