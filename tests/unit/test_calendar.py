@@ -164,8 +164,8 @@ class TestADP:
     def test_tuesday_before_nfp(self) -> None:
         # April 2026: NFP Friday is April 3, ADP Wednesday is April 1
         # ADP Tuesday is March 31 — opens 6:15 PM
-        # Since March 31 is in March, April's _adp returns nothing
-        # March's _adp should produce this window
+        # The ADP window for that April release opens on March 31;
+        # _adp(2026, 4) returns a window whose start falls in the prior month
         dt = datetime(2026, 3, 31, 18, 30, tzinfo=ET)
         in_w, name, _ = is_in_trade_window(dt)
         assert in_w is True
@@ -197,6 +197,13 @@ class TestSecondsUntilNextWindow:
         dt = datetime(2026, 4, 5, 12, 0, tzinfo=ET)
         secs = seconds_until_next_window(dt)
         assert secs == 26 * 3600  # 26 hours
+
+    def test_minimum_one_second(self) -> None:
+        # Even when next window is imminent, returns at least 1
+        # Monday April 6 at 1:59:59.9 PM → Index at 2:00 PM = ~0.1s → ceil to 1
+        dt = datetime(2026, 4, 6, 13, 59, 59, 900000, tzinfo=ET)
+        secs = seconds_until_next_window(dt)
+        assert secs >= 1
 
 
 class TestDST:

@@ -3176,9 +3176,14 @@ def _autonomous_loop(
 ) -> None:
     """Run the Caddie Master orchestrator agent via claude --agent in a loop.
 
-    Each cycle invokes one complete trading pipeline (Monitor → Scout →
-    Caddie → Closer → Scorecard). On exit or crash, the loop re-invokes
-    and the orchestrator picks up where it left off by reading SQLite state.
+    Each cycle checks a trade window calendar to determine cycle type:
+
+    - **Full cycle** (in trade window): runs the complete pipeline
+      (Monitor → Scout → Caddie → Closer → Scorecard), sleeps
+      ``pause_seconds`` after.
+    - **Monitor-only cycle** (outside trade window): runs only Monitor
+      and Groundskeeper, sleeps until the next trade window or
+      ``monitor_interval``, whichever is sooner.
 
     A circuit breaker halts the loop after ``max_consecutive_failures``
     successive non-zero exits to prevent runaway retries when the system
@@ -3317,7 +3322,7 @@ def _autonomous_loop(
                 )
             else:
                 cycle_type = "monitor"
-                next_start, next_name = next_trade_window()
+                _, next_name = next_trade_window()
                 secs_to_next = seconds_until_next_window()
                 post_sleep = min(secs_to_next, monitor_interval)
                 h, remainder = divmod(secs_to_next, 3600)

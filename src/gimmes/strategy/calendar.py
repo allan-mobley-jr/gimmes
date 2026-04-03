@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import calendar as _cal
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -176,7 +178,7 @@ def _gdp_advance(year: int, month: int) -> list[tuple[datetime, datetime]]:
 @dataclass(frozen=True, slots=True)
 class TradeWindow:
     name: str
-    compute: object  # Callable[[int, int], list[tuple[datetime, datetime]]]
+    compute: Callable[[int, int], list[tuple[datetime, datetime]]]
 
 
 WINDOWS: tuple[TradeWindow, ...] = (
@@ -200,7 +202,8 @@ def _generate_windows(dt: datetime) -> list[tuple[datetime, datetime, str]]:
     """Generate all trade windows across a 3-month span around *dt*."""
     seen: set[tuple[str, str]] = set()
     results: list[tuple[datetime, datetime, str]] = []
-    y, m = dt.year, dt.month
+    dt_et = dt.astimezone(ET)
+    y, m = dt_et.year, dt_et.month
     for delta in (-1, 0, 1):
         ym = _month_add(y, m, delta)
         for w in WINDOWS:
@@ -272,8 +275,8 @@ def next_trade_window(
 
 
 def seconds_until_next_window(dt: datetime | None = None) -> int:
-    """Seconds from *dt* until the next trade window opens."""
+    """Seconds from *dt* until the next trade window opens (minimum 1)."""
     if dt is None:
         dt = datetime.now(ET)
     start, _name = next_trade_window(dt)
-    return max(0, int((start - dt).total_seconds()))
+    return max(1, math.ceil((start - dt).total_seconds()))
