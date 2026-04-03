@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import pytest
 
 from gimmes.backtest.engine import (
     BacktestLedger,
+    monthly_chunks,
     pick_entry_candle,
     synthesize_orderbook,
 )
@@ -214,3 +217,59 @@ class TestConcurrentPositions:
         assert len(ledger.positions) == 1
         ledger.settle("T3", "yes")
         assert len(ledger.positions) == 0
+
+
+def _ts(d: date) -> int:
+    """Convert a date to midnight UTC timestamp."""
+    return int(datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp())
+
+
+def _ts_end(d: date) -> int:
+    """Convert a date to 23:59:59 UTC timestamp."""
+    return int(datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=UTC).timestamp())
+
+
+class TestMonthlyChunks:
+    def test_single_month(self) -> None:
+        chunks = monthly_chunks(date(2025, 1, 10), date(2025, 1, 20))
+        assert len(chunks) == 1
+        assert chunks[0] == (_ts(date(2025, 1, 10)), _ts_end(date(2025, 1, 20)))
+
+    def test_multi_month(self) -> None:
+        chunks = monthly_chunks(date(2025, 1, 15), date(2025, 3, 10))
+        assert len(chunks) == 3
+        assert chunks[0] == (_ts(date(2025, 1, 15)), _ts_end(date(2025, 1, 31)))
+        assert chunks[1] == (_ts(date(2025, 2, 1)), _ts_end(date(2025, 2, 28)))
+        assert chunks[2] == (_ts(date(2025, 3, 1)), _ts_end(date(2025, 3, 10)))
+
+    def test_single_day(self) -> None:
+        chunks = monthly_chunks(date(2025, 6, 15), date(2025, 6, 15))
+        assert len(chunks) == 1
+        assert chunks[0] == (_ts(date(2025, 6, 15)), _ts_end(date(2025, 6, 15)))
+
+    def test_full_month(self) -> None:
+        chunks = monthly_chunks(date(2025, 2, 1), date(2025, 2, 28))
+        assert len(chunks) == 1
+        assert chunks[0] == (_ts(date(2025, 2, 1)), _ts_end(date(2025, 2, 28)))
+
+    def test_cross_year_boundary(self) -> None:
+        chunks = monthly_chunks(date(2025, 11, 15), date(2026, 2, 10))
+        assert len(chunks) == 4
+        assert chunks[0] == (_ts(date(2025, 11, 15)), _ts_end(date(2025, 11, 30)))
+        assert chunks[1] == (_ts(date(2025, 12, 1)), _ts_end(date(2025, 12, 31)))
+        assert chunks[2] == (_ts(date(2026, 1, 1)), _ts_end(date(2026, 1, 31)))
+        assert chunks[3] == (_ts(date(2026, 2, 1)), _ts_end(date(2026, 2, 10)))
+
+    def test_leap_year(self) -> None:
+        chunks = monthly_chunks(date(2024, 2, 1), date(2024, 2, 29))
+        assert len(chunks) == 1
+        assert chunks[0] == (_ts(date(2024, 2, 1)), _ts_end(date(2024, 2, 29)))
+
+    def test_start_last_day_of_month(self) -> None:
+        chunks = monthly_chunks(date(2025, 1, 31), date(2025, 2, 15))
+        assert len(chunks) == 2
+        assert chunks[0] == (_ts(date(2025, 1, 31)), _ts_end(date(2025, 1, 31)))
+        assert chunks[1] == (_ts(date(2025, 2, 1)), _ts_end(date(2025, 2, 15)))
+
+    def test_empty_range(self) -> None:
+        assert monthly_chunks(date(2025, 3, 1), date(2025, 2, 1)) == []

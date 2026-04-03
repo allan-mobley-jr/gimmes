@@ -131,3 +131,42 @@ class TestFormatBacktestReport:
         format_backtest_report(result, test_console)
         output = buf.getvalue()
         assert "Performance Summary" in output
+
+    def test_truncation_warning_displayed(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=True, width=120)
+        result = _make_result()
+        result.truncated_chunks = ["KXINX (2025-01)", "KXNASDAQ100 (2025-02)"]
+        format_backtest_report(result, test_console)
+        output = buf.getvalue()
+        assert "pagination limit reached" in output.lower()
+        assert "KXINX" in output
+
+    def test_no_truncation_warning_when_empty(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=True, width=120)
+        result = _make_result()
+        format_backtest_report(result, test_console)
+        output = buf.getvalue()
+        assert "pagination limit" not in output.lower()
+
+
+class TestTruncationInJson:
+    def test_truncated_chunks_in_json(self) -> None:
+        result = _make_result()
+        result.truncated_chunks = ["KXINX (2025-03)"]
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["truncated_chunks"] == ["KXINX (2025-03)"]
+
+    def test_empty_truncated_chunks_in_json(self) -> None:
+        result = _make_result()
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["truncated_chunks"] == []
