@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-04-03
+
+### Added
+- Event-driven scheduling with trade window calendar — the autonomous loop now sleeps between data release windows instead of cycling every 60s, reducing token usage ~80-90% with zero missed opportunities. Nine windows cover all profitable settlement times: equity index close (daily), jobless claims and treasury notes (weekly), CPI/NFP/ADP/ISM/PCE (monthly), GDP advance (quarterly). New `--monitor-interval` flag controls monitor-only cycle frequency outside windows (#474)
+- Concentration limits enforced in backtest engine for more realistic historical simulations (#466)
+
+### Fixed
+- Config overrides no longer silently revert to code defaults — `config set` now always persists values to the database, and the wizard pins all visited settings (#476)
+- Rate limit errors now pause the autonomous loop until the advertised reset time (30-minute fallback) instead of burning cycles retrying every 60 seconds (#475)
+- Staleness filter no longer removes actively-traded markets with stable prices — now uses volume activity and open interest changes instead of price-only, preventing 77 of 83 eligible markets from being incorrectly filtered (#468)
+
 ## [0.3.0] - 2026-04-03
 
 > **Note:** The backtest subsystem received 4 fixes in this release. Results from v0.2.0 backtests should be re-run for accuracy.
@@ -144,6 +155,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.4.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.2.0
 [0.1.3]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.3
