@@ -280,6 +280,18 @@ def monthly_chunks(start: date, end: date) -> list[tuple[int, int]]:
     return chunks
 
 
+def weekly_chunks(min_ts: int, max_ts: int) -> list[tuple[int, int]]:
+    """Split a timestamp range into ~7-day ``(min_ts, max_ts)`` pairs."""
+    chunks: list[tuple[int, int]] = []
+    current = min_ts
+    week = 7 * 24 * 60 * 60  # 7 days in seconds
+    while current <= max_ts:
+        chunk_end = min(current + week - 1, max_ts)
+        chunks.append((current, chunk_end))
+        current = chunk_end + 1
+    return chunks
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -335,12 +347,31 @@ async def run_backtest(
                     max_close_ts=max_ts,
                 )
                 if len(markets) >= pagination_cap:
+                    # Monthly chunk too large — re-fetch in weekly slices
                     label = datetime.fromtimestamp(min_ts, tz=UTC).strftime("%Y-%m")
-                    truncated_chunks.append(f"{series} ({label})")
-                    logger.warning(
-                        "Pagination limit hit for %s in %s (%d markets)",
+                    logger.info(
+                        "Re-fetching %s %s in weekly chunks (monthly hit %d cap)",
                         series, label, len(markets),
                     )
+                    markets = []
+                    still_truncated = False
+                    for wk_min, wk_max in weekly_chunks(min_ts, max_ts):
+                        wk_markets = await list_all_markets(
+                            client, status="settled", series_ticker=series,
+                            max_pages=max_pages,
+                            min_close_ts=wk_min,
+                            max_close_ts=wk_max,
+                        )
+                        if len(wk_markets) >= pagination_cap:
+                            still_truncated = True
+                        markets.extend(wk_markets)
+                    if still_truncated:
+                        truncated_chunks.append(f"{series} ({label})")
+                        logger.warning(
+                            "Pagination limit hit for %s in %s"
+                            " even with weekly chunks (%d markets)",
+                            series, label, len(markets),
+                        )
                 all_markets.extend(markets)
             except Exception:
                 label = datetime.fromtimestamp(min_ts, tz=UTC).strftime("%Y-%m")
