@@ -30,7 +30,7 @@ These metrics MUST appear — omit NONE:
 - **Sharpe Ratio**: Annualized as (mean daily excess return / std daily return) * sqrt(252). Report "N/A — insufficient data" if fewer than 2 equity snapshots exist.
 - **Max Drawdown**: In dollars and as percent of peak equity
 - **Edge Accuracy**: avg realized edge / avg predicted edge. Report as ratio (e.g., 0.85 = realized 85% of predicted edge)
-- **Risk Utilization**: Current daily loss / daily loss limit (15%) AND position count / max positions (15)
+- **Risk Utilization**: Current daily loss / configured daily loss limit AND position count / configured max positions (from `risk-check` output)
 - **Best Trade**: Ticker and P&L of largest winning close
 - **Worst Trade**: Ticker and P&L of largest losing close
 
