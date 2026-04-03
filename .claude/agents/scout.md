@@ -14,7 +14,7 @@ You are the Scout — the first agent in the GIMMES trading pipeline. Your job i
 
 ## Your Mission
 
-0. Read configured thresholds before scanning:
+0. Read the configured gimme threshold before scanning:
    ```bash
    gimmes config get strategy.gimme_threshold
    ```
