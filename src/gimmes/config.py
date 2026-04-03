@@ -904,6 +904,19 @@ def load_config(db_path: Path | None = None) -> GimmesConfig:
     resolved_db = db_path or GIMMES_HOME / "gimmes.db"
     overrides = _load_config_from_db(resolved_db)
 
+    # Warn when strategy-critical fields fall back to code defaults.
+    # These fields directly affect trade direction and filtering, so silent
+    # drift from a code-default change can cause unintended trades.
+    strategy_critical = ("side", "min_market_price", "max_market_price")
+    strategy_overrides = overrides.get("strategy", {})
+    missing = [f for f in strategy_critical if f not in strategy_overrides]
+    if missing:
+        logger.warning(
+            "Strategy fields not pinned in database (using code defaults): %s. "
+            "Run 'gimmes config set' for each to persist your intended values.",
+            ", ".join(f"strategy.{f}" for f in missing),
+        )
+
     return GimmesConfig(
         mode=mode,
         api_key=api_key,

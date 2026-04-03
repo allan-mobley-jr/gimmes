@@ -399,20 +399,21 @@ def run_config_wizard(
 
             new_value = _prompt_setting(setting, current, is_new=is_new)
             value_changed = new_value != current
-            # In --new-only mode, persist defaults so the setting is
-            # marked as configured and won't reappear on the next run.
-            if value_changed or (new_only and is_new):
-                save_config_value(setting.key, new_value, db_path=DB_PATH)
-                # Update in-memory overrides for scoring validation
-                parts = setting.key.split(".")
-                d = overrides
-                for part in parts[:-1]:
-                    d = d.setdefault(part, {})
-                d[parts[-1]] = new_value
-                if value_changed:
-                    changed = True
-                    display = _format_current(new_value, setting)
-                    console.print(f"  [green]Updated to: {display}[/green]")
+            # Always persist the value so it is pinned in the database and
+            # won't silently revert if a future release changes code defaults.
+            # This also marks new settings as configured so they won't
+            # reappear on the next --new-only run.
+            save_config_value(setting.key, new_value, db_path=DB_PATH)
+            # Update in-memory overrides for scoring validation
+            parts = setting.key.split(".")
+            d = overrides
+            for part in parts[:-1]:
+                d = d.setdefault(part, {})
+            d[parts[-1]] = new_value
+            if value_changed:
+                changed = True
+                display = _format_current(new_value, setting)
+                console.print(f"  [green]Updated to: {display}[/green]")
 
     # Validate scoring weights if any were touched
     scoring_touched = section_filter is None or section_filter == "scoring"
