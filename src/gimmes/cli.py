@@ -298,7 +298,7 @@ def scan(
 
             candidates = filter_markets(markets, config, exclude_tickers=exclude_tickers)
 
-            # Staleness filtering — skip markets with no price change
+            # Staleness filtering — skip markets with no trading activity
             staleness_threshold = config.scanner.staleness_cycles
             if staleness_threshold > 0:
                 from gimmes.strategy.staleness import (

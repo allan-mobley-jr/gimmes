@@ -1,4 +1,4 @@
-"""Market staleness tracking — skip markets that haven't moved in N cycles."""
+"""Market staleness tracking — skip markets with no trading activity."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class StalenessEntry(TypedDict):
     price: float
     volume: int
+    open_interest: int
     count: int
     last_cycle: str
 
@@ -47,9 +48,14 @@ def check_staleness(
     *,
     threshold: int = 5,
     price_tolerance: float = 0.01,
-    volume_spike_ratio: float = 2.0,
+    volume_floor: int = 10,
 ) -> tuple[list[Market], list[str], dict[str, StalenessEntry]]:
     """Filter out stale markets and update staleness tracking.
+
+    A market is considered stale when it has no trading activity: price
+    unchanged, volume below the floor, and open interest frozen.  Markets
+    with stable prices but active volume are NOT stale — for a NO variance
+    strategy, a persistent mispricing with ongoing volume is the opportunity.
 
     Returns:
         (kept_candidates, skipped_tickers, updated_staleness_data)
@@ -64,26 +70,26 @@ def check_staleness(
     for m in candidates:
         price = m.midpoint if m.midpoint > 0 else m.last_price
         volume = m.volume_24h if m.volume_24h > 0 else m.volume
+        oi = m.open_interest
         ticker = m.ticker
 
         entry = staleness_data.get(ticker)
         if entry is not None:
-            price_unchanged = abs(price - entry["price"]) <= price_tolerance
-            volume_spiked = (
-                entry["volume"] > 0
-                and volume >= entry["volume"] * volume_spike_ratio
-            )
+            price_changed = abs(price - entry["price"]) > price_tolerance
+            has_volume = volume >= volume_floor
+            oi_changed = oi != entry.get("open_interest", 0)
 
-            if price_unchanged and not volume_spiked:
-                new_count = entry["count"] + 1
-            else:
+            if price_changed or has_volume or oi_changed:
                 new_count = 0
+            else:
+                new_count = entry["count"] + 1
         else:
             new_count = 0
 
         staleness_data[ticker] = StalenessEntry(
             price=price,
             volume=volume,
+            open_interest=oi,
             count=new_count,
             last_cycle=now,
         )
