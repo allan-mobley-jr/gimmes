@@ -51,7 +51,7 @@ No validate or size step is needed — the order command validates that the posi
 
 - [ ] Validation passed (all checks green) — REQUIRED
 - [ ] Edge after fees >= 5pp (`min_edge_after_fees`) — REQUIRED
-- [ ] True probability >= configured `min_true_probability` — REQUIRED
+- [ ] True probability >= configured `strategy.min_true_probability` — REQUIRED
 - [ ] Position size <= 5% of bankroll (`max_position_pct`) — REQUIRED
 - [ ] Not a duplicate position — REQUIRED (waived for SIZE UP via `--size-up`)
 - [ ] Settlement rules are clear (no red flags from Caddie) — REQUIRED

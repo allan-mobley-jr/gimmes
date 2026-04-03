@@ -123,7 +123,7 @@ The GimmeScore is a weighted composite (0-100) computed from five components:
 - GimmeScore 50-74 → **NEEDS MORE RESEARCH** — gather one additional signal, re-score once. If still 50-74 after re-evaluation, treat as PASS and log the skip.
 - GimmeScore < 50 → **PASS**
 
-True probability estimate MUST be >= the configured `min_true_probability` (from step 0) to qualify for PROCEED, regardless of GimmeScore.
+Additionally, true probability MUST be >= the configured `min_true_probability` (from step 0). Even if GimmeScore >= 75, PASS the candidate if true probability is below this threshold.
 
 ## Output Format
 
