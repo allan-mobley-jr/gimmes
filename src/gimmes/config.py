@@ -441,6 +441,23 @@ class RiskConfig(BaseModel):
             "max_val": 0.50,
         },
     )
+    position_take_profit_pct: float = Field(
+        default=0.80, ge=0.50, le=0.95,
+        json_schema_extra={
+            "display_name": "Position Take-Profit",
+            "description": (
+                "Flag a position when its unrealized gain reaches this percentage\n"
+                "of its maximum possible profit. This triggers a Monitor flag so\n"
+                "Caddie Master can review — it does NOT automatically sell.\n"
+                "\n"
+                "  • 0.80 (default, 80%): Flag when gain hits 80% of max profit\n"
+                "  • Lower (e.g. 0.60): Flag earlier to lock in gains sooner\n"
+                "  • Higher (e.g. 0.95): Only flag when nearly at max profit"
+            ),
+            "min_val": 0.50,
+            "max_val": 0.95,
+        },
+    )
 
 
 class OrdersConfig(BaseModel):
