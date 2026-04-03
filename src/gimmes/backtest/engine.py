@@ -12,6 +12,11 @@ from gimmes.kalshi.client import KalshiClient
 from gimmes.kalshi.historical import Candle
 from gimmes.kalshi.markets import list_all_markets
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
+from gimmes.risk.limits import (
+    check_event_exposure,
+    check_series_exposure,
+    compute_exposure_for_group,
+)
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
 from gimmes.strategy.kelly import position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
@@ -66,6 +71,8 @@ class BacktestResult:
     markets_passed_filter: int
     markets_scored: int
     markets_traded: int
+    skipped_concentration: int = 0
+    skipped_balance: int = 0
     truncated_chunks: list[str] = field(default_factory=list)
 
 
@@ -82,6 +89,8 @@ class _PendingTrade:
     entry_time: datetime
     settle_time: datetime
     result: str
+    event_ticker: str = ""
+    series_ticker: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +108,8 @@ class _OpenPosition:
     cost_basis: float
     fees: float
     entry_time: datetime | None = None
+    event_ticker: str = ""
+    series_ticker: str = ""
 
 
 class BacktestLedger:
@@ -120,6 +131,8 @@ class BacktestLedger:
         price: float,
         fees: float,
         entry_time: datetime | None = None,
+        event_ticker: str = "",
+        series_ticker: str = "",
     ) -> bool:
         """Open a position. Returns False if insufficient balance."""
         cost = count * price + fees
@@ -135,6 +148,8 @@ class BacktestLedger:
             cost_basis=cost,
             fees=fees,
             entry_time=entry_time,
+            event_ticker=event_ticker,
+            series_ticker=series_ticker,
         )
         return True
 
@@ -468,6 +483,8 @@ async def run_backtest(
             entry_time=entry_time,
             settle_time=settle_time,
             result=orig_m.result,
+            event_ticker=orig_m.event_ticker,
+            series_ticker=orig_m.series_ticker,
         ))
 
     # --- 5. Pass 2: process events chronologically ---
@@ -482,8 +499,42 @@ async def run_backtest(
     events.sort(key=lambda e: (e[1], 0 if e[0] == "entry" else 1))
 
     traded_count = 0
+    skipped_concentration = 0
+    skipped_balance = 0
     for event_type, timestamp, trade in events:
         if event_type == "entry":
+            trade_dollars = trade.count * trade.vwap + trade.fees
+            positions = list(ledger.positions.values())
+
+            # Event concentration check
+            skip = False
+            if trade.event_ticker:
+                evt_exp = compute_exposure_for_group(
+                    positions, trade.event_ticker,
+                )
+                evt_chk = check_event_exposure(
+                    evt_exp, trade_dollars,
+                    config.starting_balance, gc,
+                )
+                if not evt_chk.passed:
+                    skip = True
+
+            # Series concentration check
+            if not skip and trade.series_ticker:
+                ser_exp = compute_exposure_for_group(
+                    positions, trade.series_ticker,
+                )
+                ser_chk = check_series_exposure(
+                    ser_exp, trade_dollars,
+                    config.starting_balance, gc,
+                )
+                if not ser_chk.passed:
+                    skip = True
+
+            if skip:
+                skipped_concentration += 1
+                continue
+
             bought = ledger.buy(
                 ticker=trade.ticker,
                 title=trade.title,
@@ -492,9 +543,13 @@ async def run_backtest(
                 price=trade.vwap,
                 fees=trade.fees,
                 entry_time=trade.entry_time,
+                event_ticker=trade.event_ticker,
+                series_ticker=trade.series_ticker,
             )
             if bought:
                 traded_count += 1
+            else:
+                skipped_balance += 1
         elif event_type == "settle":
             if trade.ticker in ledger.positions:
                 ledger.settle(
@@ -512,5 +567,7 @@ async def run_backtest(
         markets_passed_filter=len(passed),
         markets_scored=len(scored),
         markets_traded=traded_count,
+        skipped_concentration=skipped_concentration,
+        skipped_balance=skipped_balance,
         truncated_chunks=truncated_chunks,
     )
