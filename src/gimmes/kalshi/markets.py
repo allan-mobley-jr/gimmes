@@ -75,6 +75,8 @@ async def list_markets(
     cursor: str | None = None,
     event_ticker: str | None = None,
     series_ticker: str | None = None,
+    min_close_ts: int | None = None,
+    max_close_ts: int | None = None,
 ) -> tuple[list[Market], str | None]:
     """List markets with pagination.
 
@@ -88,6 +90,10 @@ async def list_markets(
         params["event_ticker"] = event_ticker
     if series_ticker:
         params["series_ticker"] = series_ticker
+    if min_close_ts is not None:
+        params["min_close_ts"] = min_close_ts
+    if max_close_ts is not None:
+        params["max_close_ts"] = max_close_ts
 
     data = await client.get("/markets", params=params)
     markets = [parse_market(m) for m in data.get("markets", [])]
@@ -101,11 +107,13 @@ async def list_all_markets(
     status: str = "open",
     event_ticker: str | None = None,
     series_ticker: str | None = None,
+    max_pages: int = 50,
+    min_close_ts: int | None = None,
+    max_close_ts: int | None = None,
 ) -> list[Market]:
     """Fetch all markets, handling pagination automatically."""
     all_markets: list[Market] = []
     cursor: str | None = None
-    max_pages = 50
 
     for _ in range(max_pages):
         markets, cursor = await list_markets(
@@ -114,6 +122,8 @@ async def list_all_markets(
             cursor=cursor,
             event_ticker=event_ticker,
             series_ticker=series_ticker,
+            min_close_ts=min_close_ts,
+            max_close_ts=max_close_ts,
         )
         all_markets.extend(markets)
         if not cursor or not markets:

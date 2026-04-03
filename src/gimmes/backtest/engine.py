@@ -284,6 +284,8 @@ async def run_backtest(
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
     series_list = gc.scanner.series or []
+    min_close_ts = int(start_dt.timestamp())
+    max_close_ts = int(end_dt.timestamp())
     logger.info(
         "Fetching settled markets for %d series via live API...",
         len(series_list),
@@ -293,12 +295,15 @@ async def run_backtest(
         try:
             markets = await list_all_markets(
                 client, status="settled", series_ticker=series,
+                max_pages=200,
+                min_close_ts=min_close_ts,
+                max_close_ts=max_close_ts,
             )
             all_markets.extend(markets)
         except Exception:
             logger.warning("Failed to fetch series %s", series, exc_info=True)
 
-    # Filter to date range and known result
+    # Safety-net date filter (server-side filtering handles most cases)
     def _in_range(m: Market) -> bool:
         if m.result not in ("yes", "no") or m.close_time is None:
             return False
