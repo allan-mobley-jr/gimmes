@@ -9,8 +9,10 @@ from gimmes.models.market import Market
 from gimmes.risk.limits import (
     check_bankroll,
     check_daily_loss,
+    check_event_exposure,
     check_position_count,
     check_position_size,
+    check_series_exposure,
 )
 from gimmes.risk.settlement import scan_settlement_rules
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
@@ -47,6 +49,8 @@ def validate_trade(
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
     size_up: bool = False,
     existing_cost_basis: float = 0.0,
+    event_exposure: float = 0.0,
+    series_exposure: float = 0.0,
 ) -> ValidationResult:
     """Run all pre-trade validation checks.
 
@@ -116,6 +120,34 @@ def validate_trade(
         checks.append(f"Bankroll OK (${deployed_cost_basis + trade_dollars:.2f}/${bankroll:.2f})")
     else:
         failures.append(bankroll_check.reason)
+
+    # 4c. Event concentration limit
+    if market.event_ticker:
+        evt_check = check_event_exposure(
+            event_exposure, trade_dollars, bankroll, config,
+        )
+        if evt_check.passed:
+            checks.append(
+                f"Event exposure OK "
+                f"(${event_exposure + trade_dollars:.2f}"
+                f"/${config.risk.max_event_exposure_pct * bankroll:.2f})"
+            )
+        else:
+            failures.append(evt_check.reason)
+
+    # 4d. Series concentration limit
+    if market.series_ticker:
+        ser_check = check_series_exposure(
+            series_exposure, trade_dollars, bankroll, config,
+        )
+        if ser_check.passed:
+            checks.append(
+                f"Series exposure OK "
+                f"(${series_exposure + trade_dollars:.2f}"
+                f"/${config.risk.max_series_exposure_pct * bankroll:.2f})"
+            )
+        else:
+            failures.append(ser_check.reason)
 
     # 5. Minimum true probability gate (skipped when probability is unknown)
     if true_probability is not None:

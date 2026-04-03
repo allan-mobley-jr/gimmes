@@ -458,6 +458,40 @@ class RiskConfig(BaseModel):
             "max_val": 0.95,
         },
     )
+    max_event_exposure_pct: float = Field(
+        default=0.15, gt=0.0, le=1.0,
+        json_schema_extra={
+            "display_name": "Max Event Exposure",
+            "description": (
+                "Maximum percentage of bankroll deployed in a single event.\n"
+                "An event groups related markets (e.g. all CPI brackets for March).\n"
+                "Prevents over-concentration in correlated outcomes.\n"
+                "\n"
+                "  • 0.15 (default, 15%): Max $1,500 per event on $10K bankroll\n"
+                "  • Lower (e.g. 0.10): Stricter diversification\n"
+                "  • Higher (e.g. 0.25): Allow more concentrated event bets"
+            ),
+            "min_val": 0.01,
+            "max_val": 1.0,
+        },
+    )
+    max_series_exposure_pct: float = Field(
+        default=0.30, gt=0.0, le=1.0,
+        json_schema_extra={
+            "display_name": "Max Series Exposure",
+            "description": (
+                "Maximum percentage of bankroll deployed in a single series.\n"
+                "A series groups all events of a kind (e.g. all CPI across months).\n"
+                "Prevents over-concentration in a single economic indicator.\n"
+                "\n"
+                "  • 0.30 (default, 30%): Max $3,000 per series on $10K bankroll\n"
+                "  • Lower (e.g. 0.15): Stricter series diversification\n"
+                "  • Higher (e.g. 0.50): Allow more concentrated series bets"
+            ),
+            "min_val": 0.01,
+            "max_val": 1.0,
+        },
+    )
 
 
 class OrdersConfig(BaseModel):
