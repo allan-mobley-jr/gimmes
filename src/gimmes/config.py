@@ -624,10 +624,12 @@ class ScannerConfig(BaseModel):
         json_schema_extra={
             "display_name": "Staleness Cycles",
             "description": (
-                "Skip markets whose price hasn't changed for this many consecutive\n"
-                "scan cycles. Set to 0 to disable staleness filtering.\n"
+                "Skip markets with no trading activity (no volume, no OI change,\n"
+                "no price change) for this many consecutive scan cycles. Markets\n"
+                "with stable prices but active volume are NOT considered stale.\n"
+                "Set to 0 to disable staleness filtering.\n"
                 "\n"
-                "  • 5 (default): Skip after 5 unchanged scans\n"
+                "  • 5 (default): Skip after 5 inactive scans\n"
                 "  • 0: Never skip for staleness\n"
                 "  • Higher (e.g. 10): More tolerant of quiet markets"
             ),
