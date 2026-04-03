@@ -53,7 +53,7 @@ gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type observation \
-  --body "Delta since cycle [N]:
+  --body "Delta since cycle [N from prior observation note]:
 Price: $X.XX (was $X.XX, moved +/-Npp since last observation).
 News delta: [new developments since last observation, or 'No new developments'].
 Thesis delta: [any change in thesis assessment, or 'Unchanged'].
@@ -72,7 +72,7 @@ gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type context \
-  --body "Thesis evolution: [strengthened/unchanged/weakened] since cycle [N].
+  --body "Thesis evolution: [strengthened/weakened] since cycle [N].
 What changed: [specific data point or development].
 Current thesis confidence: [high/medium/low]."
 ```
