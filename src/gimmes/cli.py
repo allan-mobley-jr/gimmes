@@ -2459,7 +2459,11 @@ def config_set(
     value: str = typer.Argument(help="New value"),
 ) -> None:
     """Set a single configuration value."""
-    from gimmes.config import _load_config_from_db, save_config_value
+    from gimmes.config import (
+        _load_config_from_db,
+        config_keys_in_db,
+        save_config_value,
+    )
     from gimmes.config_wizard import (
         _format_current,
         _get_current_value,
@@ -2477,16 +2481,28 @@ def config_set(
 
     overrides = _load_config_from_db(db_path)
     current = _get_current_value(overrides, key, setting.default)
+    already_in_db = key in config_keys_in_db(db_path)
 
-    if parsed == current:
+    # Always persist to DB so the override is pinned and won't revert
+    # to a code default if defaults change in a future release.
+    save_config_value(key, parsed, db_path=db_path)
+
+    if parsed == current and already_in_db:
         console.print(f"[dim]{key} is already {_format_current(current, setting)}[/dim]")
         raise typer.Exit(0)
 
-    save_config_value(key, parsed, db_path=db_path)
-    console.print(
-        f"[cyan]{key}[/cyan]: {_format_current(current, setting)} → "
-        f"[bold]{_format_current(parsed, setting)}[/bold]"
-    )
+    if parsed == current:
+        # Value matches but was not pinned in DB — now it is.
+        console.print(
+            f"[cyan]{key}[/cyan]: pinned at "
+            f"[bold]{_format_current(parsed, setting)}[/bold]"
+            f" [dim](was using code default)[/dim]"
+        )
+    else:
+        console.print(
+            f"[cyan]{key}[/cyan]: {_format_current(current, setting)} → "
+            f"[bold]{_format_current(parsed, setting)}[/bold]"
+        )
 
     # Auto-clear cached candidates when strategy params change
     if key.startswith("strategy."):

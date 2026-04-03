@@ -342,7 +342,9 @@ class TestRunConfigWizard:
             with pytest.raises(ClickExit):
                 run_config_wizard(section_filter="nonexistent")
 
-    def test_no_changes_when_all_defaults_kept(self, db_file: Path) -> None:
+    def test_defaults_pinned_when_all_defaults_kept(self, db_file: Path) -> None:
+        """Even when the user keeps all defaults, the wizard persists them so
+        they are pinned in the database and won't revert if code defaults change."""
         with (
             patch("gimmes.config_wizard.DB_PATH", db_file),
             patch("gimmes.config_wizard._prompt_setting", return_value=10000.0),
@@ -350,7 +352,7 @@ class TestRunConfigWizard:
         ):
             run_config_wizard(section_filter="paper")
 
-        mock_save.assert_not_called()
+        mock_save.assert_called_once()
 
     def test_saves_changed_value(self, db_file: Path) -> None:
         with (
