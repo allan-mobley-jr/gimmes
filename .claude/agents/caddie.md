@@ -162,7 +162,8 @@ gimmes log-candidate TICKER \
   --title "Event title" --price 0.XX --prob 0.XX --score NN \
   --memo "Brief research summary" \
   --edge-size NN --signal-strength NN --liquidity-depth NN \
-  --settlement-clarity NN --time-to-resolution NN
+  --settlement-clarity NN --time-to-resolution NN \
+  --recommendation "proceed|pass|needs_more_research"
 ```
 
 If a `log-candidate` command fails, note the failure in your output and continue. Do not retry.
