@@ -1154,10 +1154,12 @@ def candidates(
         table.add_column("Prob", justify="right")
         table.add_column("Edge", justify="right")
         table.add_column("Status")
+        table.add_column("Rec")
         table.add_column("Scanned")
 
         for c in records:
             status = "[yellow]CAP BLOCKED[/yellow]" if c.get("cap_blocked") else ""
+            rec = str(c.get("recommendation", ""))
             table.add_row(
                 str(c.get("ticker", "")),
                 f"{c.get('gimme_score', 0):.0f}",
@@ -1165,6 +1167,7 @@ def candidates(
                 f"{c.get('model_probability', 0):.1%}",
                 f"{c.get('edge', 0):+.1%}",
                 status,
+                rec,
                 format_local_timestamp(str(c.get("scanned_at", ""))),
             )
 
@@ -1670,6 +1673,9 @@ def log_candidate(
     time_to_resolution: float = typer.Option(
         0, "--time-to-resolution", help="Time to resolution score",
     ),
+    recommendation: str = typer.Option(
+        "", "--recommendation", help="Caddie recommendation (proceed/pass/needs_more_research)",
+    ),
 ) -> None:
     """Log a scanned candidate to the candidates table."""
     config = load_config()
@@ -1688,6 +1694,7 @@ def log_candidate(
                 liquidity_depth_score=liquidity_depth,
                 settlement_clarity_score=settlement_clarity,
                 time_to_resolution_score=time_to_resolution,
+                recommendation=recommendation,
             )
             console.print(f"[green]Logged candidate #{row_id}: {ticker}[/green]")
 

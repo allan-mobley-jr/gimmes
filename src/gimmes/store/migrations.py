@@ -285,4 +285,16 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 14
 
+    if current < 15:
+        _v15 = [
+            "ALTER TABLE candidates ADD COLUMN recommendation"
+            " TEXT NOT NULL DEFAULT ''",
+        ]
+        await _run_alter_columns(db, _v15)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (15,)
+        )
+        await db.conn.commit()
+        current = 15
+
     return current
