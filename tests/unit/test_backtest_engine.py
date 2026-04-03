@@ -11,6 +11,7 @@ from gimmes.backtest.engine import (
     monthly_chunks,
     pick_entry_candle,
     synthesize_orderbook,
+    weekly_chunks,
 )
 from gimmes.kalshi.historical import Candle
 
@@ -273,3 +274,34 @@ class TestMonthlyChunks:
 
     def test_empty_range(self) -> None:
         assert monthly_chunks(date(2025, 3, 1), date(2025, 2, 1)) == []
+
+
+class TestWeeklyChunks:
+    def test_single_week(self) -> None:
+        start = _ts(date(2025, 1, 1))
+        end = _ts_end(date(2025, 1, 5))
+        chunks = weekly_chunks(start, end)
+        assert len(chunks) == 1
+        assert chunks[0] == (start, end)
+
+    def test_two_weeks(self) -> None:
+        start = _ts(date(2025, 1, 1))
+        end = _ts_end(date(2025, 1, 14))
+        chunks = weekly_chunks(start, end)
+        assert len(chunks) == 2
+        # First chunk: Jan 1 00:00:00 to Jan 7 23:59:59
+        assert chunks[0][0] == start
+        # Second chunk starts right after first ends
+        assert chunks[1][1] == end
+
+    def test_full_month_produces_about_5_chunks(self) -> None:
+        start = _ts(date(2025, 1, 1))
+        end = _ts_end(date(2025, 1, 31))
+        chunks = weekly_chunks(start, end)
+        assert 4 <= len(chunks) <= 5
+
+    def test_single_day(self) -> None:
+        ts = _ts(date(2025, 6, 15))
+        chunks = weekly_chunks(ts, ts)
+        assert len(chunks) == 1
+        assert chunks[0] == (ts, ts)
