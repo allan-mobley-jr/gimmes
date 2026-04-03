@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from gimmes.cli import (
     _autonomous_loop,
     _communicate_interruptible,
+    _detect_rate_limit,
     _extract_terminal_text,
     _set_mode,
     _wrap_stream_json,
@@ -1128,6 +1129,47 @@ _CADDIE_MASTER_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / ".claude" / "agents" / "caddie-master.md"
 )
+
+
+class TestDetectRateLimit:
+    """Tests for _detect_rate_limit helper."""
+
+    def test_no_rate_limit_in_normal_output(self) -> None:
+        output = b"Cycle completed successfully. All steps passed."
+        is_limited, pause = _detect_rate_limit(output)
+        assert is_limited is False
+        assert pause == 0
+
+    def test_detects_rate_limit_message(self) -> None:
+        output = b"You've hit your limit \xc2\xb7 resets 5pm (America/New_York)"
+        is_limited, pause = _detect_rate_limit(output)
+        assert is_limited is True
+        assert pause > 0
+
+    def test_detects_rate_limit_without_reset_time(self) -> None:
+        output = b"You've hit your limit"
+        is_limited, pause = _detect_rate_limit(output)
+        assert is_limited is True
+        assert pause == 1800  # 30 min fallback
+
+    def test_detects_429_rate_limit(self) -> None:
+        output = b"Error: 429 Too Many Requests - rate limit exceeded"
+        is_limited, pause = _detect_rate_limit(output)
+        assert is_limited is True
+        assert pause == 1800  # 30 min fallback
+
+    def test_empty_output(self) -> None:
+        is_limited, pause = _detect_rate_limit(b"")
+        assert is_limited is False
+        assert pause == 0
+
+    def test_rate_limit_embedded_in_json(self) -> None:
+        output = (
+            b'{"type":"result","result":"You\'ve hit your limit'
+            b' \\xc2\\xb7 resets 5pm (America/New_York)"}'
+        )
+        is_limited, pause = _detect_rate_limit(output)
+        assert is_limited is True
 
 
 class TestCaddieMasterAgent:

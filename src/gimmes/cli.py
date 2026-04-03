@@ -3092,6 +3092,71 @@ def _result_dict_to_text(data: dict[str, object]) -> bytes:
     return b""
 
 
+def _detect_rate_limit(output: bytes) -> tuple[bool, int]:
+    """Check cycle output for rate limit errors and parse reset time.
+
+    Returns ``(is_rate_limited, pause_seconds)`` where *pause_seconds* is
+    the number of seconds to wait until the reset time, or a fallback of
+    30 minutes if the reset time cannot be parsed.
+    """
+    import re
+    from datetime import datetime
+
+    try:
+        text = output.decode("utf-8", errors="replace")
+    except Exception:
+        return False, 0
+
+    # Match messages like "You've hit your limit · resets 5pm (America/New_York)"
+    # or "you've hit your limit" anywhere in the output
+    pattern = re.compile(
+        r"you'?ve hit your limit(?:.*?resets?\s+(\d{1,2}(?::\d{2})?\s*[ap]m)"
+        r"(?:\s*\(([^)]+)\))?)?",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if not match:
+        # Also detect HTTP 429 messages from the CLI
+        if re.search(r"\b429\b.*(?:rate.limit|too.many.requests)", text, re.IGNORECASE):
+            return True, 1800  # 30 min fallback
+        return False, 0
+
+    reset_time_str = match.group(1)
+    tz_name = match.group(2)
+
+    if not reset_time_str:
+        return True, 1800  # 30 min fallback
+
+    # Parse the reset time
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("America/New_York")
+        now = datetime.now(tz)
+
+        # Parse "5pm" or "5:00pm" style times
+        reset_time_str = reset_time_str.strip()
+        for fmt in ("%I:%M%p", "%I%p"):
+            try:
+                parsed = datetime.strptime(reset_time_str.upper(), fmt)
+                reset_dt = now.replace(
+                    hour=parsed.hour, minute=parsed.minute,
+                    second=0, microsecond=0,
+                )
+                if reset_dt <= now:
+                    # Reset time is tomorrow
+                    from datetime import timedelta
+                    reset_dt += timedelta(days=1)
+                pause = int((reset_dt - now).total_seconds()) + 60  # 1 min buffer
+                return True, max(pause, 60)
+            except ValueError:
+                continue
+    except Exception:
+        pass
+
+    return True, 1800  # 30 min fallback
+
+
 def _extract_terminal_text(json_bytes: bytes) -> bytes:
     """Extract human-readable assistant text from Claude JSON output.
 
@@ -3384,6 +3449,24 @@ def _autonomous_loop(
                 sys.stdout.buffer.write(terminal_text)
                 sys.stdout.buffer.flush()
                 returncode = proc.returncode
+
+                # --- Rate limit detection ---
+                is_rate_limited, rl_pause = _detect_rate_limit(
+                    stdout_bytes,
+                )
+                if is_rate_limited:
+                    h, remainder = divmod(rl_pause, 3600)
+                    m, _ = divmod(remainder, 60)
+                    console.print(
+                        f"[red bold]Rate limit detected on cycle"
+                        f" {cycle}. Pausing for"
+                        f" {h}h {m:02d}m until reset."
+                        f"[/red bold]"
+                    )
+                    time.sleep(rl_pause)
+                    consecutive_failures = 0
+                    continue
+
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
                 consecutive_failures += 1
