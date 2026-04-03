@@ -68,6 +68,37 @@ def _month_add(year: int, month: int, delta: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
+# Actual release date lookup tables
+# Update annually from BLS (bls.gov/schedule/news_release/cpi.htm) and
+# BEA (bea.gov/news/schedule) schedules.
+# ---------------------------------------------------------------------------
+
+# CPI release dates: (year, month) -> day-of-month when CPI is released.
+# Note: CPI for month M is released in month M+1, but this table is keyed
+# by the month the release *falls in* (i.e., the calendar month to generate
+# a window for).
+_CPI_DATES: dict[tuple[int, int], int] = {
+    # 2025
+    (2025, 1): 15, (2025, 2): 12, (2025, 3): 12, (2025, 4): 10,
+    (2025, 5): 13, (2025, 6): 11, (2025, 7): 15, (2025, 8): 12,
+    (2025, 9): 10, (2025, 10): 14, (2025, 11): 12, (2025, 12): 10,
+    # 2026
+    (2026, 1): 13, (2026, 2): 11, (2026, 3): 11, (2026, 4): 10,
+    (2026, 5): 12, (2026, 6): 10, (2026, 7): 14, (2026, 8): 12,
+    (2026, 9): 16, (2026, 10): 13, (2026, 11): 10, (2026, 12): 9,
+}
+
+# GDP Advance Estimate dates: (year, month) -> day-of-month.
+# Only Jan/Apr/Jul/Oct have GDP releases.
+_GDP_ADVANCE_DATES: dict[tuple[int, int], int] = {
+    # 2025
+    (2025, 1): 30, (2025, 4): 30, (2025, 7): 30, (2025, 10): 29,
+    # 2026
+    (2026, 1): 29, (2026, 4): 30, (2026, 7): 30, (2026, 10): 28,
+}
+
+
+# ---------------------------------------------------------------------------
 # Window compute functions — each returns [(open_dt, close_dt), ...] for a
 # given (year, month).  All datetimes are timezone-aware in US/Eastern.
 # ---------------------------------------------------------------------------
@@ -150,9 +181,14 @@ def _nfp(year: int, month: int) -> list[tuple[datetime, datetime]]:
 
 
 def _cpi(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: night before ~12th 6:30 PM → ~12th 8:30 AM ET."""
-    target = datetime(year, month, 12, tzinfo=ET)
-    release = _nearest_business_day(target)
+    """Monthly: night before CPI release 6:30 PM → release day 8:30 AM ET."""
+    day = _CPI_DATES.get((year, month))
+    if day is None:
+        # Fallback: ~12th snapped to nearest business day
+        target = datetime(year, month, 12, tzinfo=ET)
+        release = _nearest_business_day(target)
+    else:
+        release = datetime(year, month, day, tzinfo=ET)
     return [_overnight_window(release, time(18, 30), time(8, 30))]
 
 
@@ -163,11 +199,16 @@ def _core_pce(year: int, month: int) -> list[tuple[datetime, datetime]]:
 
 
 def _gdp_advance(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Quarterly (Jan/Apr/Jul/Oct): night before ~28th 6:30 PM → ~28th 8:30 AM."""
+    """Quarterly (Jan/Apr/Jul/Oct): night before GDP release 6:30 PM → release day 8:30 AM."""
     if month not in (1, 4, 7, 10):
         return []
-    target = datetime(year, month, 28, tzinfo=ET)
-    release = _nearest_business_day(target)
+    day = _GDP_ADVANCE_DATES.get((year, month))
+    if day is None:
+        # Fallback: ~28th snapped to nearest business day
+        target = datetime(year, month, 28, tzinfo=ET)
+        release = _nearest_business_day(target)
+    else:
+        release = datetime(year, month, day, tzinfo=ET)
     return [_overnight_window(release, time(18, 30), time(8, 30))]
 
 
@@ -280,3 +321,18 @@ def seconds_until_next_window(dt: datetime | None = None) -> int:
         dt = datetime.now(ET)
     start, _name = next_trade_window(dt)
     return max(1, math.ceil((start - dt).total_seconds()))
+
+
+def position_window(
+    close_time: datetime,
+    hours_before: float = 18.0,
+) -> tuple[datetime, datetime]:
+    """Build an ad-hoc trade window ending at *close_time*.
+
+    Opens *hours_before* hours prior to close_time.  Used for
+    position-aware windows when settlement doesn't fall within
+    any scheduled release window.
+    """
+    close_et = close_time.astimezone(ET)
+    open_et = close_et - timedelta(hours=hours_before)
+    return open_et, close_et
