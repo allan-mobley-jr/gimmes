@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-04-03
+
+> **Note:** The backtest subsystem received 4 fixes in this release. Results from v0.2.0 backtests should be re-run for accuracy.
+
+### Added
+- Event-level and series-level concentration limits to prevent over-exposure (#458)
+- Profit-taking trigger for Monitor to lock in gains on winning positions (#457)
+- Scout market staleness tracking to reduce redundant scanning (#451)
+- Skip reason tracking via recommendation column in candidates table (#449)
+- Cross-cycle agent memory with delta observations and decision expiry (#448)
+- Configurable max_pages and date filtering for market API (#443)
+
+### Fixed
+- Edge calculation and side defaulting for BUY NO strategy — NO-side candidates were showing negative edge and getting skipped (#455)
+- Hardcoded 90% probability gate in Caddie and Closer that blocked all variance play trades (#442)
+- Backtest accuracy: switched from historical API to live API per-series (#436), use market-level prices instead of candlesticks (#438)
+- Backtest fill simulation removed in favor of direct market price (#439)
+
+### Changed
+- All agent definitions now read configured values instead of hardcoding defaults (#445)
+- Backtest fetches chunked by month to avoid 40K pagination truncation (#461)
+
 ## [0.2.0] - 2026-04-02
 
 **Breaking:** Default `strategy.side` changed from `"yes"` to `"no"`. Existing users who prefer BUY YES must run `gimmes config set strategy.side yes`.
@@ -122,6 +144,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.3.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.2.0
 [0.1.3]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.3
 [0.1.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.1.2
