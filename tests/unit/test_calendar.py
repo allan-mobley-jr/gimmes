@@ -6,8 +6,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from gimmes.strategy.calendar import (
+    _cpi,
+    _gdp_advance,
     is_in_trade_window,
     next_trade_window,
+    position_window,
     seconds_until_next_window,
 )
 
@@ -107,20 +110,33 @@ class TestNFP:
 
 
 class TestCPI:
-    def test_night_before_12th(self) -> None:
-        # April 2026: 12th is a Sunday → nearest biz day is Monday 13th
-        # So window opens Sunday 12th 6:30 PM, closes Monday 13th 8:30 AM
-        dt = datetime(2026, 4, 12, 19, 0, tzinfo=ET)
+    def test_april_2026_actual_date(self) -> None:
+        # April 2026 CPI releases on April 10 (Friday)
+        # Window: Thursday April 9 6:30 PM → Friday April 10 8:30 AM
+        dt = datetime(2026, 4, 9, 19, 0, tzinfo=ET)
         in_w, name, _ = is_in_trade_window(dt)
         assert in_w is True
         assert name == "CPI"
 
-    def test_release_morning(self) -> None:
-        # Monday April 13 at 8:00 AM
-        dt = datetime(2026, 4, 13, 8, 0, tzinfo=ET)
+    def test_april_2026_release_morning(self) -> None:
+        # Friday April 10 at 8:00 AM
+        dt = datetime(2026, 4, 10, 8, 0, tzinfo=ET)
         in_w, name, _ = is_in_trade_window(dt)
         assert in_w is True
         assert name == "CPI"
+
+    def test_old_12th_not_cpi_for_april_2026(self) -> None:
+        # The old hardcoded 12th should NOT be a CPI window for April 2026
+        dt = datetime(2026, 4, 12, 19, 0, tzinfo=ET)
+        in_w, name, _ = is_in_trade_window(dt)
+        assert not in_w or name != "CPI"
+
+    def test_fallback_for_unknown_year(self) -> None:
+        # 2028 is not in lookup table — falls back to ~12th heuristic
+        windows = _cpi(2028, 3)
+        assert len(windows) == 1
+        open_dt, close_dt = windows[0]
+        assert 10 <= open_dt.day <= 14  # near 12th
 
 
 class TestCorePCE:
@@ -134,20 +150,33 @@ class TestCorePCE:
 
 
 class TestGDPAdvance:
-    def test_january_has_window(self) -> None:
-        # January 2026: ~28th, nearest biz day is Wed Jan 28
-        # Window opens Tue Jan 27 6:30 PM
-        dt = datetime(2026, 1, 27, 19, 0, tzinfo=ET)
+    def test_january_2026_actual_date(self) -> None:
+        # January 2026 GDP releases on Jan 29 (Thursday)
+        # Window: Wed Jan 28 6:30 PM → Thu Jan 29 8:30 AM
+        dt = datetime(2026, 1, 28, 19, 0, tzinfo=ET)
+        in_w, name, _ = is_in_trade_window(dt)
+        assert in_w is True
+        assert name == "GDP Advance"
+
+    def test_april_2026_actual_date(self) -> None:
+        # April 2026 GDP releases on Apr 30 (Thursday)
+        # Window: Wed Apr 29 6:30 PM → Thu Apr 30 8:30 AM
+        dt = datetime(2026, 4, 29, 19, 0, tzinfo=ET)
         in_w, name, _ = is_in_trade_window(dt)
         assert in_w is True
         assert name == "GDP Advance"
 
     def test_february_has_no_window(self) -> None:
-        # Feb is not a GDP month — check ~28th area
         dt = datetime(2026, 2, 27, 19, 0, tzinfo=ET)
         in_w, name, _ = is_in_trade_window(dt)
-        # Should not be GDP Advance
         assert not in_w or name != "GDP Advance"
+
+    def test_fallback_for_unknown_year(self) -> None:
+        # 2028 is not in lookup table — falls back to ~28th
+        windows = _gdp_advance(2028, 4)
+        assert len(windows) == 1
+        open_dt, close_dt = windows[0]
+        assert 26 <= open_dt.day <= 29  # near 28th
 
 
 class TestISMPMI:
@@ -223,3 +252,20 @@ class TestDST:
         in_w, name, _ = is_in_trade_window(dt)
         assert in_w is True
         assert name == "Jobless claims"
+
+
+class TestPositionWindow:
+    def test_basic_window(self) -> None:
+        from datetime import timedelta
+
+        close = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
+        open_dt, close_dt = position_window(close)
+        assert close_dt == close.astimezone(ET)
+        assert open_dt == close.astimezone(ET) - timedelta(hours=18)
+
+    def test_custom_hours(self) -> None:
+        from datetime import timedelta
+
+        close = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
+        open_dt, _ = position_window(close, hours_before=6.0)
+        assert open_dt == close.astimezone(ET) - timedelta(hours=6)
