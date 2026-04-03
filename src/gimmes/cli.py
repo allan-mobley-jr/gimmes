@@ -1643,7 +1643,7 @@ def market_info(
 def log_trade(
     ticker: str = typer.Argument(..., help="Market ticker"),
     action: str = typer.Option(..., "--action", "-a", help="open/close/skip"),
-    side: str = typer.Option("yes", "--side", "-s"),
+    side: str = typer.Option("", "--side", "-s"),
     count: int = typer.Option(0, "--count", "-c"),
     price_val: float = typer.Option(0, "--price"),
     prob: float | None = typer.Option(None, "--prob", "-p"),
@@ -1658,16 +1658,19 @@ def log_trade(
         from gimmes.models.trade import TradeDecision
         from gimmes.store.database import Database
         from gimmes.store.queries import insert_trade
+        from gimmes.strategy.scanner import effective_price
 
+        resolved_side = side if side else config.strategy.side
+        eff = effective_price(price_val, resolved_side)
         trade = TradeDecision(
             ticker=ticker,
             action=TradeDecision.Action(action),
-            side=side,
+            side=resolved_side,
             count=count,
             price=price_val,
             model_probability=0.0 if prob is None else prob,
             gimme_score=score_val,
-            edge=prob - price_val if prob is not None else 0.0,
+            edge=(prob - eff) if prob is not None else 0.0,
             rationale=rationale,
             agent=agent,
         )
@@ -1706,8 +1709,10 @@ def log_candidate(
     async def _log() -> None:
         from gimmes.store.database import Database
         from gimmes.store.queries import insert_candidate as _insert
+        from gimmes.strategy.scanner import effective_price
 
-        edge = prob - price_val
+        eff = effective_price(price_val, config.strategy.side)
+        edge = prob - eff
 
         async with Database(config.db_path) as db:
             row_id = await _insert(
