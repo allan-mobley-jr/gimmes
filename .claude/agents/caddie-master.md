@@ -29,6 +29,13 @@ gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agen
 
 If the command fails, note the failure in your output and continue. Do not retry.
 
+### Step 0.5: Read Config
+
+```bash
+gimmes config get strategy.gimme_threshold
+```
+Store this as the `gimme_threshold` for this cycle. If this command fails, STOP and report the failure — do not proceed without a confirmed threshold.
+
 ### Step 1: Reconcile & State Check
 
 Reconcile local position data with the authoritative source to recover from any prior crash, then assess the current state:
@@ -193,18 +200,18 @@ For each candidate ticker from the Scout's shortlist, run:
 gimmes candidates --ticker TICKER --limit 1
 ```
 
-Evaluate the output using these rules:
+Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5, and `cooldown_cutoff` = max(0, gimme_threshold - 15)):
 
 1. **No prior research** (no records found) → send to Caddie
-2. **Prior score < 60** (clear PASS) → skip re-research, log the skip:
+2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip:
    ```bash
    gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
-     --rationale "Cooldown: prior score SCORE (<60), skipping re-research" \
+     --rationale "Cooldown: prior score SCORE (below cutoff), skipping re-research" \
      --agent caddie-master
    ```
-3. **Prior score 60-74** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
-4. **Prior score >= 75 with open position** (check `gimmes positions` for the ticker) → skip, already traded
-5. **Prior score >= 75, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
+3. **Prior score between cooldown_cutoff and (gimme_threshold - 1)** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
+4. **Prior score >= gimme_threshold with open position** (check `gimmes positions` for the ticker) → skip, already traded
+5. **Prior score >= gimme_threshold, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
 **If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the skip and skip directly to Step 6. NEVER run Steps 4b-5.
 
@@ -235,11 +242,11 @@ gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
 ```
 If a fallback `log-trade` command fails, note the failure in your output and continue. Do not retry failed log commands.
 
-**If no candidates receive a GimmeScore >= 75 with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Steps 4c-5.
+**If no candidates receive a GimmeScore >= the configured gimme_threshold with recommendation = PROCEED**, MUST skip directly to Step 6. NEVER run Steps 4c-5.
 
 #### 4c. Review & Approve
 
-For each candidate with GimmeScore >= 75 and recommendation = PROCEED, the Caddie Master MUST independently review the research before dispatching Closer. NEVER dispatch Closer without completing this review.
+For each candidate with GimmeScore >= the configured gimme_threshold and recommendation = PROCEED, the Caddie Master MUST independently review the research before dispatching Closer. NEVER dispatch Closer without completing this review.
 
 For each PROCEED candidate:
 
