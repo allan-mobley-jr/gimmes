@@ -513,7 +513,7 @@ class PaperBroker:
                     from datetime import datetime as _dt
 
                     close_time_val = _dt.fromisoformat(ct_raw)
-            except (IndexError, KeyError):
+            except (IndexError, KeyError, ValueError):
                 pass
             positions.append(
                 Position(
@@ -535,7 +535,7 @@ class PaperBroker:
         ticker: str,
         current_price: float,
         *,
-        close_time: object = None,
+        close_time: datetime.datetime | None = None,
     ) -> None:
         """Update unrealized P&L for a position based on current market price.
 
@@ -554,11 +554,7 @@ class PaperBroker:
 
         close_time_str: str | None = None
         if close_time is not None:
-            close_time_str = (
-                close_time.isoformat()
-                if hasattr(close_time, "isoformat")
-                else str(close_time)
-            )
+            close_time_str = close_time.isoformat()
 
         async with self._db.transaction():
             for row in rows:

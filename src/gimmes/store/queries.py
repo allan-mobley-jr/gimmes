@@ -235,7 +235,10 @@ async def get_positions(db: Database) -> list[Position]:
         if close_time_val:
             from datetime import datetime as _dt
 
-            close_time_dt = _dt.fromisoformat(close_time_val)
+            try:
+                close_time_dt = _dt.fromisoformat(close_time_val)
+            except ValueError:
+                pass
         positions.append(
             Position(
                 ticker=row["ticker"],
