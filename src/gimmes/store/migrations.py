@@ -95,6 +95,16 @@ _V12_COLUMNS: list[str] = [
     "ALTER TABLE candidates ADD COLUMN cap_blocked INTEGER NOT NULL DEFAULT 0",
 ]
 
+# ALTER TABLE ADD COLUMN statements for v16: close_time on positions.
+_V16_COLUMNS: list[str] = [
+    "ALTER TABLE positions ADD COLUMN close_time TEXT DEFAULT NULL",
+]
+
+# ALTER TABLE ADD COLUMN statements for v17: close_time on paper_positions.
+_V17_COLUMNS: list[str] = [
+    "ALTER TABLE paper_positions ADD COLUMN close_time TEXT DEFAULT NULL",
+]
+
 
 async def get_schema_version(db: Database) -> int:
     """Get the current schema version."""
@@ -296,5 +306,29 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 15
+
+    # Version 16: close_time column on positions for position-aware windows
+    if current < 16:
+        await _run_alter_columns(db, _V16_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (16,)
+        )
+        await db.conn.commit()
+        current = 16
+
+    # Version 17: close_time column on paper_positions for dashboard display
+    if current < 17:
+        # paper_positions is created by PaperBroker, not the main schema,
+        # so it may not exist yet. Only alter if present.
+        cursor = await db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_positions'"
+        )
+        if await cursor.fetchone():
+            await _run_alter_columns(db, _V17_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (17,)
+        )
+        await db.conn.commit()
+        current = 17
 
     return current

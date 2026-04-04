@@ -3382,10 +3382,69 @@ def _autonomous_loop(
     old_handler = signal.signal(signal.SIGINT, _sigint_handler)
     try:
         from gimmes.strategy.calendar import (
+            ET,
             is_in_trade_window,
             next_trade_window,
+            position_window,
             seconds_until_next_window,
         )
+
+        async def _check_position_windows() -> tuple[bool, str | None]:
+            """Check if any open position is within a settlement window.
+
+            Returns (in_position_window, ticker) if now falls within an
+            ad-hoc position window for any held position with a known
+            close_time.  When positions lack a cached close_time, a
+            short-lived API client fetches and caches it.
+            """
+            from datetime import datetime as _dt
+
+            from gimmes.store.database import Database
+            from gimmes.store.queries import (
+                get_position_close_times,
+                get_position_tickers,
+            )
+
+            now = _dt.now(ET)
+            async with Database(config.db_path) as db:
+                close_times = await get_position_close_times(db)
+                cached_tickers = {t for t, _ in close_times}
+                all_tickers = await get_position_tickers(db)
+                missing = all_tickers - cached_tickers
+
+            # Backfill close_times for positions that lack them
+            if missing:
+                try:
+                    from gimmes.kalshi.client import KalshiClient
+                    from gimmes.kalshi.markets import get_market
+
+                    async with KalshiClient(config) as client:
+                        async with Database(config.db_path) as db:
+                            for ticker in missing:
+                                try:
+                                    mkt = await get_market(client, ticker)
+                                    if mkt.close_time:
+                                        await db.conn.execute(
+                                            "UPDATE positions"
+                                            " SET close_time = ?"
+                                            " WHERE ticker = ?",
+                                            (mkt.close_time.isoformat(),
+                                             ticker),
+                                        )
+                                        close_times.append(
+                                            (ticker, mkt.close_time)
+                                        )
+                                except Exception:
+                                    continue
+                            await db.conn.commit()
+                except Exception:
+                    pass  # Best-effort; proceed with whatever we have
+
+            for ticker, ct in close_times:
+                pw_open, pw_close = position_window(ct)
+                if pw_open <= now < pw_close:
+                    return True, ticker
+            return False, None
 
         while max_cycles == 0 or cycles_run < max_cycles:
             cycle += 1
@@ -3402,22 +3461,37 @@ def _autonomous_loop(
                     f" [green bold][TRADE WINDOW: {release_name}][/green bold]"
                 )
             else:
-                cycle_type = "monitor"
-                _, next_name = next_trade_window()
-                secs_to_next = seconds_until_next_window()
-                post_sleep = min(secs_to_next, monitor_interval)
-                h, remainder = divmod(secs_to_next, 3600)
-                m, _ = divmod(remainder, 60)
-                console.print(
-                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
-                    f" [yellow][MONITOR ONLY — next window:"
-                    f" {next_name} in {h}h {m:02d}m][/yellow]"
+                # Check if any held position is near settlement
+                _pw_result = asyncio.run(
+                    _check_position_windows()
                 )
-                cycle_prompt = (
-                    "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
-                    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
-                    " and Pro."
-                )
+                in_pos_window, pos_ticker = _pw_result or (False, None)
+                if in_pos_window:
+                    cycle_type = "full"
+                    cycle_prompt = "Run one trading cycle."
+                    post_sleep = pause_seconds
+                    console.print(
+                        f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                        f" [magenta bold][POSITION WINDOW:"
+                        f" {pos_ticker}][/magenta bold]"
+                    )
+                else:
+                    cycle_type = "monitor"
+                    _, next_name = next_trade_window()
+                    secs_to_next = seconds_until_next_window()
+                    post_sleep = min(secs_to_next, monitor_interval)
+                    h, remainder = divmod(secs_to_next, 3600)
+                    m, _ = divmod(remainder, 60)
+                    console.print(
+                        f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                        f" [yellow][MONITOR ONLY — next window:"
+                        f" {next_name} in {h}h {m:02d}m][/yellow]"
+                    )
+                    cycle_prompt = (
+                        "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
+                        " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
+                        " and Pro."
+                    )
 
             update_session_cycle(config.db_path, session_id, cycle)
 

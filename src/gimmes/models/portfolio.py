@@ -29,6 +29,7 @@ class Position(BaseModel):
     market_value: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
+    close_time: datetime | None = None  # Market close/settlement time
 
     @property
     def total_pnl(self) -> float:
