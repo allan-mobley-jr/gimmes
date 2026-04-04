@@ -3397,6 +3397,7 @@ def _autonomous_loop(
             close_time.  When positions lack a cached close_time, a
             short-lived API client fetches and caches it.
             """
+            import logging
             from datetime import datetime as _dt
 
             from gimmes.store.database import Database
@@ -3405,11 +3406,18 @@ def _autonomous_loop(
                 get_position_tickers,
             )
 
+            _log = logging.getLogger("gimmes.position_window")
+            pos_table = config.position_table
+
             now = _dt.now(ET)
             async with Database(config.db_path) as db:
-                close_times = await get_position_close_times(db)
+                close_times = await get_position_close_times(
+                    db, table=pos_table,
+                )
                 cached_tickers = {t for t, _ in close_times}
-                all_tickers = await get_position_tickers(db)
+                all_tickers = await get_position_tickers(
+                    db, table=pos_table,
+                )
                 missing = all_tickers - cached_tickers
 
             # Backfill close_times for positions that lack them
@@ -3425,7 +3433,7 @@ def _autonomous_loop(
                                     mkt = await get_market(client, ticker)
                                     if mkt.close_time:
                                         await db.conn.execute(
-                                            "UPDATE positions"
+                                            f"UPDATE {pos_table}"  # noqa: S608
                                             " SET close_time = ?"
                                             " WHERE ticker = ?",
                                             (mkt.close_time.isoformat(),
@@ -3435,10 +3443,18 @@ def _autonomous_loop(
                                             (ticker, mkt.close_time)
                                         )
                                 except Exception:
+                                    _log.warning(
+                                        "Failed to backfill close_time"
+                                        " for %s",
+                                        ticker, exc_info=True,
+                                    )
                                     continue
                             await db.conn.commit()
                 except Exception:
-                    pass  # Best-effort; proceed with whatever we have
+                    _log.warning(
+                        "Position window backfill failed",
+                        exc_info=True,
+                    )
 
             for ticker, ct in close_times:
                 pw_open, pw_close = position_window(ct)

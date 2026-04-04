@@ -100,10 +100,6 @@ _V16_COLUMNS: list[str] = [
     "ALTER TABLE positions ADD COLUMN close_time TEXT DEFAULT NULL",
 ]
 
-# ALTER TABLE ADD COLUMN statements for v17: close_time on paper_positions.
-_V17_COLUMNS: list[str] = [
-    "ALTER TABLE paper_positions ADD COLUMN close_time TEXT DEFAULT NULL",
-]
 
 
 async def get_schema_version(db: Database) -> int:
@@ -315,20 +311,5 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 16
-
-    # Version 17: close_time column on paper_positions for dashboard display
-    if current < 17:
-        # paper_positions is created by PaperBroker, not the main schema,
-        # so it may not exist yet. Only alter if present.
-        cursor = await db.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_positions'"
-        )
-        if await cursor.fetchone():
-            await _run_alter_columns(db, _V17_COLUMNS)
-        await db.conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", (17,)
-        )
-        await db.conn.commit()
-        current = 17
 
     return current
