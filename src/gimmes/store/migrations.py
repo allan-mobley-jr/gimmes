@@ -303,9 +303,20 @@ async def run_migrations(db: Database) -> int:
         await db.conn.commit()
         current = 15
 
-    # Version 16: close_time column on positions for position-aware windows
+    # Version 16: close_time column on positions and paper_positions
     if current < 16:
         await _run_alter_columns(db, _V16_COLUMNS)
+        # paper_positions is created by PaperBroker, not the main schema,
+        # so it may not exist yet. Only alter if present.
+        cursor = await db.conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='table' AND name='paper_positions'"
+        )
+        if await cursor.fetchone():
+            await _run_alter_columns(db, [
+                "ALTER TABLE paper_positions ADD COLUMN close_time"
+                " TEXT DEFAULT NULL",
+            ])
         await db.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (16,)
         )

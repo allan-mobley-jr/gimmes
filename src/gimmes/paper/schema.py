@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     market_price REAL NOT NULL DEFAULT 0,
     unrealized_pnl REAL NOT NULL DEFAULT 0,
     realized_pnl REAL NOT NULL DEFAULT 0,
+    close_time TEXT DEFAULT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticker, side)
 );

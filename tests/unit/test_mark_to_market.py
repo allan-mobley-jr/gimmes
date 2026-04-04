@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -34,8 +34,8 @@ class TestMarkPositionsToMarket:
             await _mark_positions_to_market(broker, client)
 
         assert broker.mark_to_market.call_count == 2
-        broker.mark_to_market.assert_any_call("A", 0.70)
-        broker.mark_to_market.assert_any_call("B", 0.70)
+        broker.mark_to_market.assert_any_call("A", 0.70, close_time=ANY)
+        broker.mark_to_market.assert_any_call("B", 0.70, close_time=ANY)
 
     async def test_known_prices_skip_api_call(self) -> None:
         broker = AsyncMock()
@@ -52,8 +52,8 @@ class TestMarkPositionsToMarket:
             )
 
         # A uses known price, B fetches from API
-        broker.mark_to_market.assert_any_call("A", 0.65)
-        broker.mark_to_market.assert_any_call("B", 0.80)
+        broker.mark_to_market.assert_any_call("A", 0.65, close_time=ANY)
+        broker.mark_to_market.assert_any_call("B", 0.80, close_time=ANY)
         # get_market called only for B
         assert mock_get_market.call_count == 1
 
@@ -79,8 +79,8 @@ class TestMarkPositionsToMarket:
 
         # A and C were marked, BAD was skipped
         assert broker.mark_to_market.call_count == 2
-        broker.mark_to_market.assert_any_call("A", 0.70)
-        broker.mark_to_market.assert_any_call("C", 0.70)
+        broker.mark_to_market.assert_any_call("A", 0.70, close_time=ANY)
+        broker.mark_to_market.assert_any_call("C", 0.70, close_time=ANY)
         # Warning printed for BAD
         warning_text = str(mock_console.print.call_args_list)
         assert "BAD" in warning_text

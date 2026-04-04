@@ -101,11 +101,16 @@ class PaperBroker:
                 market_price REAL NOT NULL DEFAULT 0,
                 unrealized_pnl REAL NOT NULL DEFAULT 0,
                 realized_pnl REAL NOT NULL DEFAULT 0,
+                close_time TEXT DEFAULT NULL,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (ticker, side)
             );
             INSERT INTO paper_positions
-                SELECT * FROM _paper_positions_old;
+                (ticker, side, count, avg_price, cost_basis, market_price,
+                 unrealized_pnl, realized_pnl, updated_at)
+                SELECT ticker, side, count, avg_price, cost_basis, market_price,
+                       unrealized_pnl, realized_pnl, updated_at
+                FROM _paper_positions_old;
             DROP TABLE _paper_positions_old;
         """)
         await self._conn.commit()
@@ -499,22 +504,46 @@ class PaperBroker:
             "SELECT * FROM paper_positions WHERE count > 0"
         )
         rows = await cursor.fetchall()
-        return [
-            Position(
-                ticker=row["ticker"],
-                side=row["side"],
-                count=int(row["count"]),
-                avg_price=float(row["avg_price"]),
-                cost_basis=float(row["cost_basis"]),
-                market_price=float(row["market_price"]),
-                unrealized_pnl=float(row["unrealized_pnl"]),
-                realized_pnl=float(row["realized_pnl"]),
-            )
-            for row in rows
-        ]
+        positions: list[Position] = []
+        for row in rows:
+            close_time_val = None
+            try:
+                ct_raw = row["close_time"]
+                if ct_raw:
+                    from datetime import datetime as _dt
 
-    async def mark_to_market(self, ticker: str, current_price: float) -> None:
-        """Update unrealized P&L for a position based on current market price."""
+                    close_time_val = _dt.fromisoformat(ct_raw)
+            except (IndexError, KeyError, ValueError):
+                pass
+            positions.append(
+                Position(
+                    ticker=row["ticker"],
+                    side=row["side"],
+                    count=int(row["count"]),
+                    avg_price=float(row["avg_price"]),
+                    cost_basis=float(row["cost_basis"]),
+                    market_price=float(row["market_price"]),
+                    unrealized_pnl=float(row["unrealized_pnl"]),
+                    realized_pnl=float(row["realized_pnl"]),
+                    close_time=close_time_val,
+                )
+            )
+        return positions
+
+    async def mark_to_market(
+        self,
+        ticker: str,
+        current_price: float,
+        *,
+        close_time: datetime.datetime | None = None,
+    ) -> None:
+        """Update unrealized P&L for a position based on current market price.
+
+        Args:
+            ticker: Market ticker.
+            current_price: Current YES price in dollars.
+            close_time: Optional datetime for the market's close/settlement time.
+        """
         cursor = await self._conn.execute(
             "SELECT * FROM paper_positions WHERE ticker = ? AND count > 0",
             (ticker,),
@@ -522,6 +551,10 @@ class PaperBroker:
         rows = await cursor.fetchall()
         if not rows:
             return
+
+        close_time_str: str | None = None
+        if close_time is not None:
+            close_time_str = close_time.isoformat()
 
         async with self._db.transaction():
             for row in rows:
@@ -531,13 +564,23 @@ class PaperBroker:
 
                 stored_price = current_price if side == "yes" else 1 - current_price
                 unrealized = (stored_price - avg_price) * count
-                await self._conn.execute(
-                    """UPDATE paper_positions
-                       SET market_price = ?, unrealized_pnl = ?,
-                           updated_at = datetime('now')
-                       WHERE ticker = ? AND side = ?""",
-                    (stored_price, unrealized, ticker, side),
-                )
+                if close_time_str is not None:
+                    await self._conn.execute(
+                        """UPDATE paper_positions
+                           SET market_price = ?, unrealized_pnl = ?,
+                               close_time = COALESCE(?, close_time),
+                               updated_at = datetime('now')
+                           WHERE ticker = ? AND side = ?""",
+                        (stored_price, unrealized, close_time_str, ticker, side),
+                    )
+                else:
+                    await self._conn.execute(
+                        """UPDATE paper_positions
+                           SET market_price = ?, unrealized_pnl = ?,
+                               updated_at = datetime('now')
+                           WHERE ticker = ? AND side = ?""",
+                        (stored_price, unrealized, ticker, side),
+                    )
 
     async def settle(self, ticker: str, result: str) -> None:
         """Settle a resolved market. result is 'yes' or 'no'.

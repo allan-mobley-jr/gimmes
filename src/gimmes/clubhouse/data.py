@@ -226,6 +226,7 @@ async def get_positions(
                     market_value=market_value,
                     unrealized_pnl=row["unrealized_pnl"],
                     realized_pnl=row["realized_pnl"],
+                    close_time=str(_row_get(row, "close_time", "") or "") or None,
                     updated_at=str(_row_get(row, "updated_at", "") or ""),
                 ))
     except Exception:
