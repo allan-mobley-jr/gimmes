@@ -122,21 +122,26 @@ async def update_trade_outcome(db: Database, ticker: str, outcome: str) -> int:
 
 _UPSERT_POSITION_SQL = """INSERT INTO positions
     (ticker, title, side, count, avg_price, market_price,
-     cost_basis, market_value, unrealized_pnl, realized_pnl)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     cost_basis, market_value, unrealized_pnl, realized_pnl, close_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ticker) DO UPDATE SET
      title=excluded.title, side=excluded.side, count=excluded.count,
      avg_price=excluded.avg_price, market_price=excluded.market_price,
      cost_basis=excluded.cost_basis, market_value=excluded.market_value,
      unrealized_pnl=excluded.unrealized_pnl, realized_pnl=excluded.realized_pnl,
+     close_time=COALESCE(excluded.close_time, close_time),
      updated_at=datetime('now')"""
 
 
 def _position_params(pos: Position) -> tuple:
+    close_time_str = (
+        pos.close_time.isoformat() if pos.close_time is not None else None
+    )
     return (
         pos.ticker, pos.title, pos.side, pos.count,
         pos.avg_price, pos.market_price, pos.cost_basis,
         pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
+        close_time_str,
     )
 
 
@@ -223,21 +228,30 @@ async def get_positions(db: Database) -> list[Position]:
 
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
     rows = await cursor.fetchall()
-    return [
-        Position(
-            ticker=row["ticker"],
-            title=row["title"],
-            side=row["side"],
-            count=row["count"],
-            avg_price=row["avg_price"],
-            market_price=row["market_price"],
-            cost_basis=row["cost_basis"],
-            market_value=row["market_value"],
-            unrealized_pnl=row["unrealized_pnl"],
-            realized_pnl=row["realized_pnl"],
+    positions: list[Position] = []
+    for row in rows:
+        close_time_val = row["close_time"] if "close_time" in row.keys() else None
+        close_time_dt = None
+        if close_time_val:
+            from datetime import datetime as _dt
+
+            close_time_dt = _dt.fromisoformat(close_time_val)
+        positions.append(
+            Position(
+                ticker=row["ticker"],
+                title=row["title"],
+                side=row["side"],
+                count=row["count"],
+                avg_price=row["avg_price"],
+                market_price=row["market_price"],
+                cost_basis=row["cost_basis"],
+                market_value=row["market_value"],
+                unrealized_pnl=row["unrealized_pnl"],
+                realized_pnl=row["realized_pnl"],
+                close_time=close_time_dt,
+            )
         )
-        for row in rows
-    ]
+    return positions
 
 
 _ALLOWED_POSITION_TABLES = frozenset({"positions", "paper_positions"})

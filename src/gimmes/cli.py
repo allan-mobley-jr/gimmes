@@ -142,12 +142,18 @@ async def _mark_positions_to_market(
     positions = await broker.get_positions()
     prices = dict(known_prices or {})
 
+    markets: dict = {}
     for pos in positions:
         try:
             if pos.ticker not in prices:
                 market = await get_market(client, pos.ticker)
                 prices[pos.ticker] = market.midpoint or market.last_price
-            await broker.mark_to_market(pos.ticker, prices[pos.ticker])
+                markets[pos.ticker] = market
+            await broker.mark_to_market(
+                pos.ticker,
+                prices[pos.ticker],
+                close_time=getattr(markets.get(pos.ticker), "close_time", None),
+            )
         except Exception as exc:
             console.print(
                 f"[yellow]Warning: could not mark {pos.ticker}"

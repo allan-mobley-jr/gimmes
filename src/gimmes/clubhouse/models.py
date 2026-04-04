@@ -35,6 +35,7 @@ class PositionItem(BaseModel):
     market_value: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
+    close_time: str | None = None
     updated_at: str = ""
 
 
