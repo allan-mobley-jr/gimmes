@@ -95,10 +95,11 @@ _V12_COLUMNS: list[str] = [
     "ALTER TABLE candidates ADD COLUMN cap_blocked INTEGER NOT NULL DEFAULT 0",
 ]
 
-# ALTER TABLE ADD COLUMN statements for v16: close_time on position tables.
+# ALTER TABLE ADD COLUMN statements for v16: close_time on positions.
 _V16_COLUMNS: list[str] = [
     "ALTER TABLE positions ADD COLUMN close_time TEXT DEFAULT NULL",
 ]
+
 
 
 async def get_schema_version(db: Database) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TypedDict
 
 from gimmes.models.error import ErrorLogEntry
@@ -228,16 +229,14 @@ async def get_positions(db: Database) -> list[Position]:
 
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
     rows = await cursor.fetchall()
-    positions: list[Position] = []
+    positions = []
     for row in rows:
         close_time_val = row["close_time"] if "close_time" in row.keys() else None
         close_time_dt = None
         if close_time_val:
-            from datetime import datetime as _dt
-
             try:
-                close_time_dt = _dt.fromisoformat(close_time_val)
-            except ValueError:
+                close_time_dt = datetime.fromisoformat(close_time_val)
+            except (ValueError, TypeError):
                 pass
         positions.append(
             Position(
@@ -586,6 +585,35 @@ async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def get_position_close_times(
+    db: Database, *, table: str = "positions",
+) -> list[tuple[str, datetime]]:
+    """Return (ticker, close_time) pairs for open positions with a known close_time."""
+    if table not in _ALLOWED_POSITION_TABLES:
+        raise ValueError(f"Invalid position table: {table}")
+
+    from zoneinfo import ZoneInfo
+
+    _utc = ZoneInfo("UTC")
+
+    cursor = await db.conn.execute(
+        f"SELECT ticker, close_time FROM {table}"  # noqa: S608
+        " WHERE count > 0 AND close_time IS NOT NULL"
+    )
+    rows = await cursor.fetchall()
+    results: list[tuple[str, datetime]] = []
+    for row in rows:
+        try:
+            ct = datetime.fromisoformat(row["close_time"])
+            # Normalize naive datetimes to UTC (Kalshi API returns UTC)
+            if ct.tzinfo is None:
+                ct = ct.replace(tzinfo=_utc)
+            results.append((row["ticker"], ct))
+        except (ValueError, TypeError):
+            continue
+    return results
 
 
 async def has_open_position(db: Database, ticker: str) -> bool:
