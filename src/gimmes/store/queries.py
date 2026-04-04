@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TypedDict
 
 from gimmes.models.error import ErrorLogEntry
@@ -122,21 +123,26 @@ async def update_trade_outcome(db: Database, ticker: str, outcome: str) -> int:
 
 _UPSERT_POSITION_SQL = """INSERT INTO positions
     (ticker, title, side, count, avg_price, market_price,
-     cost_basis, market_value, unrealized_pnl, realized_pnl)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     cost_basis, market_value, unrealized_pnl, realized_pnl, close_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ticker) DO UPDATE SET
      title=excluded.title, side=excluded.side, count=excluded.count,
      avg_price=excluded.avg_price, market_price=excluded.market_price,
      cost_basis=excluded.cost_basis, market_value=excluded.market_value,
      unrealized_pnl=excluded.unrealized_pnl, realized_pnl=excluded.realized_pnl,
+     close_time=COALESCE(excluded.close_time, close_time),
      updated_at=datetime('now')"""
 
 
 def _position_params(pos: Position) -> tuple:
+    close_time_str = (
+        pos.close_time.isoformat() if pos.close_time is not None else None
+    )
     return (
         pos.ticker, pos.title, pos.side, pos.count,
         pos.avg_price, pos.market_price, pos.cost_basis,
         pos.market_value, pos.unrealized_pnl, pos.realized_pnl,
+        close_time_str,
     )
 
 
@@ -223,21 +229,31 @@ async def get_positions(db: Database) -> list[Position]:
 
     cursor = await db.conn.execute("SELECT * FROM positions WHERE count > 0")
     rows = await cursor.fetchall()
-    return [
-        Position(
-            ticker=row["ticker"],
-            title=row["title"],
-            side=row["side"],
-            count=row["count"],
-            avg_price=row["avg_price"],
-            market_price=row["market_price"],
-            cost_basis=row["cost_basis"],
-            market_value=row["market_value"],
-            unrealized_pnl=row["unrealized_pnl"],
-            realized_pnl=row["realized_pnl"],
+    positions = []
+    for row in rows:
+        close_time_val = row["close_time"] if "close_time" in row.keys() else None
+        close_time_dt = None
+        if close_time_val:
+            try:
+                close_time_dt = datetime.fromisoformat(close_time_val)
+            except (ValueError, TypeError):
+                pass
+        positions.append(
+            Position(
+                ticker=row["ticker"],
+                title=row["title"],
+                side=row["side"],
+                count=row["count"],
+                avg_price=row["avg_price"],
+                market_price=row["market_price"],
+                cost_basis=row["cost_basis"],
+                market_value=row["market_value"],
+                unrealized_pnl=row["unrealized_pnl"],
+                realized_pnl=row["realized_pnl"],
+                close_time=close_time_dt,
+            )
         )
-        for row in rows
-    ]
+    return positions
 
 
 _ALLOWED_POSITION_TABLES = frozenset({"positions", "paper_positions"})
@@ -569,6 +585,35 @@ async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def get_position_close_times(
+    db: Database, *, table: str = "positions",
+) -> list[tuple[str, datetime]]:
+    """Return (ticker, close_time) pairs for open positions with a known close_time."""
+    if table not in _ALLOWED_POSITION_TABLES:
+        raise ValueError(f"Invalid position table: {table}")
+
+    from zoneinfo import ZoneInfo
+
+    _utc = ZoneInfo("UTC")
+
+    cursor = await db.conn.execute(
+        f"SELECT ticker, close_time FROM {table}"  # noqa: S608
+        " WHERE count > 0 AND close_time IS NOT NULL"
+    )
+    rows = await cursor.fetchall()
+    results: list[tuple[str, datetime]] = []
+    for row in rows:
+        try:
+            ct = datetime.fromisoformat(row["close_time"])
+            # Normalize naive datetimes to UTC (Kalshi API returns UTC)
+            if ct.tzinfo is None:
+                ct = ct.replace(tzinfo=_utc)
+            results.append((row["ticker"], ct))
+        except (ValueError, TypeError):
+            continue
+    return results
 
 
 async def has_open_position(db: Database, ticker: str) -> bool:
