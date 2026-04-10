@@ -3241,7 +3241,8 @@ def _check_remote_staleness(
 
     if remote_sha and remote_sha != current_commit:
         return (
-            f"Remote has newer code: local={current_commit[:8]}"
+            f"Remote differs from local:"
+            f" local={current_commit[:8]}"
             f" remote={remote_sha[:8]}."
             f" Run `gimmes update` and restart."
         )
@@ -3556,19 +3557,34 @@ def _autonomous_loop(
                 console.print(
                     f"[red bold]CODE STALE: {_stale_msg}[/red bold]"
                 )
-            elif _cur and not _staleness_warned:
-                _now_ts = time.time()
-                if _now_ts - _last_remote_check >= monitor_interval:
-                    _remote_msg = _check_remote_staleness(
-                        project_root, _cur,
+            elif _cur:
+                if _staleness_warned:
+                    # Re-print cached warning each cycle
+                    console.print(
+                        "[yellow bold]UPDATE AVAILABLE:"
+                        " Run `gimmes update` and restart."
+                        "[/yellow bold]"
                     )
-                    _last_remote_check = _now_ts
-                    if _remote_msg:
-                        console.print(
-                            f"[yellow bold]UPDATE AVAILABLE:"
-                            f" {_remote_msg}[/yellow bold]"
+                else:
+                    # Throttled remote check — skip during trade
+                    # windows to avoid blocking time-sensitive cycles
+                    _now_ts = time.time()
+                    _in_tw = is_in_trade_window()[0]
+                    if (
+                        not _in_tw
+                        and _now_ts - _last_remote_check
+                        >= monitor_interval
+                    ):
+                        _remote_msg = _check_remote_staleness(
+                            project_root, _cur,
                         )
-                        _staleness_warned = True
+                        _last_remote_check = _now_ts
+                        if _remote_msg:
+                            console.print(
+                                f"[yellow bold]UPDATE AVAILABLE:"
+                                f" {_remote_msg}[/yellow bold]"
+                            )
+                            _staleness_warned = True
 
             # Determine cycle type based on trade window calendar
             in_window, release_name, _secs_to_close = is_in_trade_window()

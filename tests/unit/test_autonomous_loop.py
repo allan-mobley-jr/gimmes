@@ -1267,6 +1267,7 @@ class TestCheckRemoteStaleness:
             assert msg is not None
             assert "remote99" in msg
             assert "local123" in msg
+            assert "differs" in msg.lower()
 
     def test_network_failure_returns_none(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:
