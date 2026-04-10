@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-04-10
+
+### Fixed
+- Backtest engine now supports dual-side mode — runs per-side filter, score, and trade passes with correct price perspective instead of passing `side="both"` to the scanner (#501)
+- Backtest series filter uses ticker prefix matching since `series_ticker` is empty on settled markets from the live API; also unions all per-side series for the initial fetch (#502)
+
 ## [0.5.0] - 2026-04-10
 
 ### Added
@@ -183,6 +189,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.5.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.1
 [0.5.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.0
 [0.4.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.2
 [0.4.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.1
