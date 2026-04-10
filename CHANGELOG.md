@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-04-10
+
+### Added
+- Position-aware trade windows in autonomous loop: full pipeline cycles automatically run near position settlement dates, not just during scheduled data release windows (#484)
+- Code staleness detection: autonomous loop warns when installed code changes or remote has newer commits available (#490)
+- Settlement date column in Clubhouse dashboard open positions table (#485)
+
+### Fixed
+- CPI and GDP trade windows now use actual BLS/BEA release dates instead of hardcoded approximations — includes 2025-2026 lookup tables with fallback heuristic for future years (#482)
+- Recalculate sleep after monitor cycles to catch newly opened trade windows (#491)
+- `gimmes update` no longer fails when new releases add files that exist as untracked in the repo (#483)
+
 ## [0.4.0] - 2026-04-03
 
 ### Added
