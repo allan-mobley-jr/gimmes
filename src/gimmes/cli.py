@@ -3833,5 +3833,130 @@ def championship(
                      monitor_interval=monitor_interval, no_dashboard=no_dashboard)
 
 
+@app.command(name="monitor", rich_help_panel="Diagnostics")
+def monitor_cmd(
+    action: str = typer.Argument(
+        "status",
+        help="on | off | status | run | quiet | notify",
+    ),
+) -> None:
+    """Manage the hourly driving range health monitor.
+
+    \b
+    Actions:
+      on      Enable the cron job (weekday trade window hours)
+      off     Disable the cron job
+      status  Show if monitor is active
+      run     Run a single check now
+      quiet   Disable iMessage alerts (log only)
+      notify  Re-enable iMessage alerts
+    """
+    import subprocess
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    script = project_root / "bin" / "monitor.sh"
+    config_file = GIMMES_HOME / "monitor.conf"
+    cron_tag = "# GIMMES_MONITOR"
+
+    # Cron schedule: every hour 11 AM - 6 PM PT (6 PM - 1 AM UTC) weekdays
+    cron_line = (
+        f"0 18,19,20,21,22,23,0,1 * * 1-5"
+        f" {script} {cron_tag}"
+    )
+
+    if action == "on":
+        # Remove existing entry, add fresh
+        try:
+            result = subprocess.run(
+                ["crontab", "-l"], capture_output=True, text=True,
+            )
+            existing = result.stdout if result.returncode == 0 else ""
+        except FileNotFoundError:
+            existing = ""
+
+        lines = [
+            l for l in existing.splitlines()
+            if cron_tag not in l
+        ]
+        lines.append(cron_line)
+        subprocess.run(
+            ["crontab", "-"],
+            input="\n".join(lines) + "\n",
+            text=True, check=True,
+        )
+        console.print("[green]Monitor enabled.[/green] Runs hourly during weekday trade windows.")
+        console.print(f"[dim]Script: {script}[/dim]")
+
+    elif action == "off":
+        try:
+            result = subprocess.run(
+                ["crontab", "-l"], capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                console.print("[yellow]No crontab found.[/yellow]")
+                return
+            lines = [
+                l for l in result.stdout.splitlines()
+                if cron_tag not in l
+            ]
+            subprocess.run(
+                ["crontab", "-"],
+                input="\n".join(lines) + "\n",
+                text=True, check=True,
+            )
+        except FileNotFoundError:
+            pass
+        console.print("[yellow]Monitor disabled.[/yellow]")
+
+    elif action == "status":
+        try:
+            result = subprocess.run(
+                ["crontab", "-l"], capture_output=True, text=True,
+            )
+            active = (
+                result.returncode == 0
+                and cron_tag in result.stdout
+            )
+        except FileNotFoundError:
+            active = False
+
+        quiet = config_file.exists() and "quiet" in config_file.read_text()
+
+        if active:
+            mode = "quiet (log only)" if quiet else "notify (iMessage alerts)"
+            console.print(f"[green]Monitor is ON[/green] — {mode}")
+        else:
+            console.print("[yellow]Monitor is OFF[/yellow]")
+
+    elif action == "run":
+        quiet_flag = (
+            ["--quiet"]
+            if config_file.exists() and "quiet" in config_file.read_text()
+            else []
+        )
+        result = subprocess.run(
+            [str(script)] + quiet_flag, check=False,
+        )
+        if result.returncode == 0:
+            console.print("[green]All checks passed.[/green]")
+        else:
+            console.print("[yellow]Issues found — check monitor log.[/yellow]")
+
+    elif action == "quiet":
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("quiet\n")
+        console.print("[yellow]iMessage alerts disabled.[/yellow] Monitor will log only.")
+
+    elif action == "notify":
+        if config_file.exists():
+            config_file.write_text("notify\n")
+        console.print("[green]iMessage alerts enabled.[/green]")
+
+    else:
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Use: on | off | status | run | quiet | notify")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
