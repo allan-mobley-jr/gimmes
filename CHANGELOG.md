@@ -167,6 +167,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.4.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.1
 [0.4.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.2.0
