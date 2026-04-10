@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-04-10
+
+### Added
+- Dual-side trading: set `strategy.side = "both"` to run YES and NO strategies simultaneously with independent price ranges, thresholds, probabilities, and series watchlists per side (#496, #497, #498)
+- Per-side config via `SideOverrides` model — `strategy.yes_overrides.*` and `strategy.no_overrides.*` override flat defaults when in dual-side mode (#496)
+- YES-side defaults to 9 equity index series (S&P 500 and Nasdaq-100 families including weekly, monthly, above/below, and up/down variants) where backtesting shows BUY YES is profitable at high prices (#497)
+- Scanner runs per-side passes with deduplication and side tagging; formatter shows Side column in dual-side output (#498)
+- Updated README with dual-side configuration guide, per-side gimme criteria, and strategy overview
+
 ## [0.4.2] - 2026-04-10
 
 ### Added
@@ -174,6 +183,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.5.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.0
 [0.4.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.2
 [0.4.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.1
 [0.4.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.0

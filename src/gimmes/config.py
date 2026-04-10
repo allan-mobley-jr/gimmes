@@ -115,10 +115,34 @@ class PaperTradingConfig(BaseModel):
 class SideOverrides(BaseModel):
     """Per-side parameter overrides, used when strategy.side = 'both'."""
 
-    min_market_price: float | None = None
-    max_market_price: float | None = None
-    min_true_probability: float | None = None
-    gimme_threshold: int | None = None
+    min_market_price: float | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "Min Market Price",
+            "description": "Override min price for this side (None = use flat default).",
+        },
+    )
+    max_market_price: float | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "Max Market Price",
+            "description": "Override max price for this side (None = use flat default).",
+        },
+    )
+    min_true_probability: float | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "Min True Probability",
+            "description": "Override min probability for this side (None = use flat default).",
+        },
+    )
+    gimme_threshold: int | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "Gimme Threshold",
+            "description": "Override threshold for this side (None = use flat default).",
+        },
+    )
 
 
 class StrategyConfig(BaseModel):
@@ -664,8 +688,24 @@ class ScannerConfig(BaseModel):
     )
     yes_series: list[str] = Field(
         default_factory=lambda: list(YES_SIDE_SERIES),
+        json_schema_extra={
+            "display_name": "YES-Side Series",
+            "description": (
+                "Series watchlist for the YES side in dual-side mode.\n"
+                "Defaults to equity index series (S&P 500, Nasdaq-100)."
+            ),
+        },
     )
-    no_series: list[str] | None = None
+    no_series: list[str] | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "NO-Side Series",
+            "description": (
+                "Series watchlist for the NO side in dual-side mode.\n"
+                "None = use the main series watchlist."
+            ),
+        },
+    )
 
 
 class ScoringWeights(BaseModel):
