@@ -197,8 +197,8 @@ The autonomous loop is orchestrated by the **Caddie Master**, which dispatches t
 | Agent | Role | Responsibilities |
 |---|---|---|
 | **The Caddie Master** | Orchestration | Dispatches agents, manages cycle flow, handles errors |
-| **The Scout** | Opportunity discovery | Scans Kalshi for markets in the configured price range, scores each for gimme potential |
-| **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns |
+| **The Scout** | Opportunity discovery | Scans Kalshi for markets in the configured price range, scores each for gimme potential, groups candidates by event for threshold ladder evaluation |
+| **The Caddie** | Research & analysis | Deep-dives shortlisted markets — news, social signals, historical patterns. Groups multi-threshold candidates by event for efficient research |
 | **The Closer** | Trade execution | Sizes positions (Kelly or EV mode), places orders, executes closes |
 | **The Monitor** | Position watching | Monitors open contracts, flags price moves, stop-loss breaches, and SIZE UP opportunities |
 | **The Scorecard** | Reporting | Tracks P&L, win rate, edge accuracy, and strategy performance |
@@ -217,7 +217,7 @@ Each `start`, `driving_range`, or `championship` invocation runs a **calendar-aw
 
 ### Trade windows
 
-The loop checks a built-in calendar of 9 trade windows — every source of historical mispricing from backtesting:
+The loop checks a built-in calendar of 9 scheduled trade windows plus dynamic position settlement windows:
 
 | Window | Schedule | Frequency |
 |--------|----------|-----------|
@@ -227,16 +227,19 @@ The loop checks a built-in calendar of 9 trade windows — every source of histo
 | ADP private payrolls | Tue before NFP 6:15 PM – Wed 8:15 AM ET | Monthly |
 | ISM Manufacturing PMI | Night before 1st biz day 8 PM – 10 AM ET | Monthly |
 | Non-Farm Payrolls | Thu 6:30 PM – 1st Fri 8:30 AM ET | Monthly |
-| CPI | Night before ~12th 6:30 PM – 8:30 AM ET | Monthly |
+| CPI | Night before release 6:30 PM – 8:30 AM ET | Monthly |
 | Core PCE | Night before last Fri 6:30 PM – 8:30 AM ET | Monthly |
-| GDP Advance Estimate | Night before ~28th 6:30 PM – 8:30 AM ET | Quarterly |
+| GDP Advance Estimate | Night before release 6:30 PM – 8:30 AM ET | Quarterly |
+| Position settlement | 18 hours before close_time | Per-position |
+
+CPI and GDP windows use actual BLS/BEA release dates (lookup table for 2025-2026, fallback heuristic for future years). Position settlement windows are created automatically when a held position's close_time doesn't fall within any scheduled window.
 
 ### Cycle types
 
-- **Full cycle** (inside a trade window): runs the complete pipeline — Monitor → Scout → Caddie → Closer → Scorecard. Pauses `--pause` seconds (default 60) between cycles.
-- **Monitor-only cycle** (outside a trade window): runs only Monitor and Groundskeeper, then sleeps until the next trade window or `--monitor-interval` (default 1 hour).
+- **Full cycle** (inside a trade window or position settlement window): runs the complete pipeline — Monitor → Scout → Caddie → Closer → Scorecard. Pauses `--pause` seconds (default 60) between cycles.
+- **Monitor-only cycle** (outside all windows): runs only Monitor and Groundskeeper, then sleeps until the next trade window or `--monitor-interval` (default 1 hour). Sleep is recalculated after each cycle to catch windows that open mid-cycle.
 
-This reduces token usage ~80-90% compared to continuous cycling while being *more* responsive during data releases.
+This reduces token usage ~80-90% compared to continuous cycling while being *more* responsive during data releases. Code staleness detection warns when the installed code has changed or the remote has newer commits — restart to pick up fixes.
 
 ### Full cycle pipeline
 
@@ -276,7 +279,7 @@ The dashboard also **auto-starts** whenever you run `gimmes start`, `gimmes driv
 | Panel | What it shows |
 |---|---|
 | **KPI Cards** | Balance, total equity, daily P&L, open position count |
-| **Positions Table** | Open positions with mark-to-market, unrealized P&L |
+| **Positions Table** | Open positions with mark-to-market, unrealized P&L, and settlement date |
 | **Risk Gauges** | Daily loss vs. limit, position count vs. max, largest position vs. cap |
 | **Equity Curve** | Historical portfolio value chart (Chart.js) |
 | **Performance Metrics** | Win rate, Sharpe ratio, max drawdown, total return |
@@ -419,6 +422,10 @@ For every shortlisted market, the Caddie runs a structured research pass:
 - Domain-specific data (polling averages, economic nowcasts, injury reports, weather forecasts)
 - Cross-platform check (Polymarket, ForecastEx) for divergent pricing signals
 - Historical base rates for comparable events
+
+**Threshold ladder research:** When multiple candidates share the same event (e.g., KXCPI-26APR at T0.3, T0.5, T0.8), the Caddie researches the underlying event once, estimates the probability distribution, and derives per-threshold probabilities. This ensures consistency and efficiency — one research pass covers all thresholds.
+
+Candidates are eligible for re-research after 48 hours regardless of prior score, ensuring stale rejections from a different macro environment don't block fresh evaluation.
 
 The Caddie produces a **Gimme Score** (0–100) and a structured memo summarizing the edge thesis.
 
