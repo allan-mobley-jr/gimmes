@@ -371,6 +371,7 @@ gimmes errors            # View error logs (--severity, --category, --unresolved
 ### Strategy
 ```bash
 gimmes backtest --from D --to D  # Backtest strategy on historical markets (--balance, --edge, --json)
+                                 # Supports dual-side mode — runs per-side passes when strategy.side=both
 gimmes lesson                    # Run strategy analysis and recommendations
 gimmes recommendations           # View past strategy recommendations
 gimmes tune                      # Apply pending strategy recommendations
@@ -483,6 +484,8 @@ Hard limits applied regardless of sizing mode:
 - 80% per-position take-profit trigger
 - 15% max exposure per event, 30% max per series
 - No positions in markets with ambiguous settlement language
+
+In dual-side mode, these limits apply independently per side — each side's positions are sized and validated using the side-specific config from `effective_config_for_side()`. Concentration limits aggregate across both sides.
 
 ---
 
