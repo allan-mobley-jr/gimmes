@@ -1383,6 +1383,23 @@
             container.innerHTML = html;
         }
 
+        function renderConfigDl(data, skipKeys) {
+            let html = '';
+            Object.keys(data).forEach(function(key) {
+                if (skipKeys && skipKeys.includes(key)) return;
+                const val = data[key];
+                if (val !== null && typeof val === 'object' && !Array.isArray(val)) return;
+                const displayVal = Array.isArray(val)
+                    ? '<span title="' + escapeHtml(val.join(', ')).replace(/"/g, '&quot;') + '">' + val.length + ' items</span>'
+                    : escapeHtml(String(val));
+                html += '<div class="flex justify-between gap-2">'
+                    + '<dt class="text-slate-500 truncate">' + escapeHtml(key) + '</dt>'
+                    + '<dd class="text-slate-300 font-mono text-right shrink-0">' + displayVal + '</dd>'
+                    + '</div>';
+            });
+            return html;
+        }
+
         function updateConfig(config) {
             const sectionMap = {
                 strategy: 'config-strategy',
@@ -1399,18 +1416,19 @@
                     el.innerHTML = '<div class="text-slate-500 text-xs">--</div>';
                     return;
                 }
-                let html = '';
-                Object.keys(data).forEach(function(key) {
-                    const val = data[key];
-                    const displayVal = Array.isArray(val)
-                        ? '<span title="' + escapeHtml(val.join(', ')).replace(/"/g, '&quot;') + '">' + val.length + ' items</span>'
-                        : escapeHtml(String(val));
-                    html += '<div class="flex justify-between gap-2">'
-                        + '<dt class="text-slate-500 truncate">' + escapeHtml(key) + '</dt>'
-                        + '<dd class="text-slate-300 font-mono text-right shrink-0">' + displayVal + '</dd>'
-                        + '</div>';
-                });
-                el.innerHTML = html;
+
+                if (section === 'strategy' && config.yes_strategy && config.no_strategy) {
+                    let html = '<div class="flex justify-between gap-2">'
+                        + '<dt class="text-slate-500">side</dt>'
+                        + '<dd class="text-slate-300 font-mono">both</dd></div>';
+                    html += '<div class="mt-2 mb-1 text-xs font-semibold text-green-400">YES Side</div>';
+                    html += renderConfigDl(config.yes_strategy);
+                    html += '<div class="mt-2 mb-1 text-xs font-semibold text-red-400">NO Side</div>';
+                    html += renderConfigDl(config.no_strategy);
+                    el.innerHTML = html;
+                } else {
+                    el.innerHTML = renderConfigDl(data, ['yes_overrides', 'no_overrides']);
+                }
             });
         }
 

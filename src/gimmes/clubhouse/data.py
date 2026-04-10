@@ -592,6 +592,22 @@ async def get_recommendations_data(db_path: Path, limit: int = 10) -> list[Recom
 async def get_config_data() -> ConfigResponse:
     """Get current configuration (read-only)."""
     config = _config()
+
+    yes_strategy = None
+    no_strategy = None
+    if config.strategy.side == "both":
+        drop = {"yes_overrides", "no_overrides", "side"}
+        yes_cfg = config.effective_config_for_side("yes")
+        no_cfg = config.effective_config_for_side("no")
+        yes_strategy = {
+            k: v for k, v in yes_cfg.strategy.model_dump().items()
+            if k not in drop
+        }
+        no_strategy = {
+            k: v for k, v in no_cfg.strategy.model_dump().items()
+            if k not in drop
+        }
+
     return ConfigResponse(
         mode=config.mode.value,
         strategy=config.strategy.model_dump(),
@@ -601,6 +617,8 @@ async def get_config_data() -> ConfigResponse:
         scanner=config.scanner.model_dump(),
         scoring=config.scoring.model_dump(),
         paper=config.paper.model_dump(),
+        yes_strategy=yes_strategy,
+        no_strategy=no_strategy,
     )
 
 
