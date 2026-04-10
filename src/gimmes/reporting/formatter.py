@@ -117,8 +117,12 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
         if m.get("event_ticker")
     )
 
+    has_side = any(m.get("side") for m in markets)
+
     table = Table(title=title)
     table.add_column("Ticker", style="cyan")
+    if has_side:
+        table.add_column("Side", style="bold")
     table.add_column("Event", style="dim", max_width=25)
     table.add_column("Title", max_width=20)
     table.add_column("Price", justify="right")
@@ -130,15 +134,18 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
         evt = m.get("event_ticker", "")
         count = event_counts.get(evt, 0)
         evt_label = f"{evt} ({count})" if count > 1 else evt
-        table.add_row(
-            m.get("ticker", ""),
+        row: list[str] = [m.get("ticker", "")]
+        if has_side:
+            row.append(m.get("side", "").upper())
+        row.extend([
             evt_label,
             m.get("title", "")[:20],
             f"${m.get('price', 0):.2f}",
             str(m.get("volume_24h", 0)),
             str(m.get("open_interest", 0)),
             f"{m.get('score', 0):.0f}",
-        )
+        ])
+        table.add_row(*row)
 
     console.print(table)
 

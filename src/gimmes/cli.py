@@ -274,8 +274,6 @@ def scan(
 
         logger = logging.getLogger("gimmes.cli")
 
-        series_tickers = series or config.scanner.series
-
         # Exclude tickers with open positions
         exclude_tickers: set[str] = set()
         try:
@@ -291,58 +289,83 @@ def scan(
         async with KalshiClient(config) as client:
             console.print("[cyan]Scanning markets...[/cyan]")
 
-            if series_tickers and not all_markets:
-                # Fetch markets only for curated series — fast and focused
-                markets = []
-                for st in series_tickers:
-                    batch = await list_all_markets(client, series_ticker=st)
-                    markets.extend(batch)
-                console.print(f"Fetched {len(markets)} markets from {len(series_tickers)} series")
-            else:
-                markets = await list_all_markets(client)
-                console.print(f"Fetched {len(markets)} markets (all)")
+            all_scored: list[dict] = []  # type: ignore[type-arg]
+            seen_tickers: set[str] = set()
 
-            candidates = filter_markets(markets, config, exclude_tickers=exclude_tickers)
-
-            # Staleness filtering — skip markets with no trading activity
-            staleness_threshold = config.scanner.staleness_cycles
-            if staleness_threshold > 0:
-                from gimmes.strategy.staleness import (
-                    check_staleness,
-                    load_staleness,
-                    save_staleness,
+            for scan_side in config.sides_to_scan:
+                side_cfg = config.effective_config_for_side(scan_side)
+                side_series = (
+                    series
+                    or side_cfg.scanner.series
                 )
 
-                staleness_path = GIMMES_HOME / "scan_staleness.json"
-                staleness_data = load_staleness(staleness_path)
-                candidates, stale_skipped, staleness_data = check_staleness(
-                    candidates, staleness_data,
-                    threshold=staleness_threshold,
+                if side_series and not all_markets:
+                    markets = []
+                    for st in side_series:
+                        batch = await list_all_markets(
+                            client, series_ticker=st,
+                        )
+                        markets.extend(batch)
+                else:
+                    markets = await list_all_markets(client)
+
+                candidates = filter_markets(
+                    markets, side_cfg,
+                    exclude_tickers=exclude_tickers,
                 )
-                save_staleness(staleness_data, staleness_path)
-                if stale_skipped:
-                    console.print(
-                        f"[dim]Skipped {len(stale_skipped)} stale"
-                        f" market(s)[/dim]"
+
+                # Staleness filtering
+                staleness_threshold = side_cfg.scanner.staleness_cycles
+                if staleness_threshold > 0:
+                    from gimmes.strategy.staleness import (
+                        check_staleness,
+                        load_staleness,
+                        save_staleness,
                     )
 
-            console.print(f"Filtered to {len(candidates)} candidates")
+                    staleness_path = GIMMES_HOME / "scan_staleness.json"
+                    staleness_data = load_staleness(staleness_path)
+                    candidates, stale_skipped, staleness_data = (
+                        check_staleness(
+                            candidates, staleness_data,
+                            threshold=staleness_threshold,
+                        )
+                    )
+                    save_staleness(staleness_data, staleness_path)
+                    if stale_skipped:
+                        console.print(
+                            f"[dim]Skipped {len(stale_skipped)}"
+                            f" stale market(s)[/dim]"
+                        )
 
-            scored = []
-            for m in candidates:
-                qs = quick_score(m, config)
-                scored.append({
-                    "ticker": m.ticker,
-                    "event_ticker": m.event_ticker,
-                    "title": m.title,
-                    "price": m.midpoint or m.last_price,
-                    "volume_24h": m.volume_24h or m.volume,
-                    "open_interest": m.open_interest,
-                    "score": qs,
-                })
+                side_label = (
+                    f" [{scan_side.upper()}]"
+                    if config.strategy.side == "both"
+                    else ""
+                )
+                console.print(
+                    f"Fetched {len(markets)} markets,"
+                    f" {len(candidates)} candidates{side_label}"
+                )
 
-            scored.sort(key=lambda r: r["score"], reverse=True)
-            format_scan_results(scored[:limit])
+                for m in candidates:
+                    if m.ticker in seen_tickers:
+                        continue
+                    seen_tickers.add(m.ticker)
+                    qs = quick_score(m, side_cfg)
+                    all_scored.append({
+                        "ticker": m.ticker,
+                        "event_ticker": m.event_ticker,
+                        "title": m.title,
+                        "price": m.midpoint or m.last_price,
+                        "volume_24h": m.volume_24h or m.volume,
+                        "open_interest": m.open_interest,
+                        "score": qs,
+                        "side": scan_side,
+                    })
+
+            all_scored.sort(key=lambda r: r["score"], reverse=True)
+            format_scan_results(all_scored[:limit])
 
     _run(_scan())
 
