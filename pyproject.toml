@@ -1,6 +1,6 @@
 [project]
 name = "gimmes"
-version = "0.4.1"
+version = "0.4.2"
 description = "Autonomous Claude Code agent system for trading Kalshi prediction markets"
 readme = "README.md"
 license = "MIT"

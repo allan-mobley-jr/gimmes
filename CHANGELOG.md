@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-04-10
+
+### Added
+- Threshold ladder strategy: scan output groups candidates by event with sibling counts, Caddie researches the underlying event once and derives per-threshold probabilities, Caddie Master validates cross-threshold consistency (#493)
+- 48-hour cooldown expiry: candidates rejected more than 48 hours ago are eligible for fresh re-evaluation regardless of prior score (#494)
+- Updated README with position-aware windows, threshold ladder research, settlement dates in dashboard, and code staleness detection
+
 ## [0.4.1] - 2026-04-10
 
 ### Added
@@ -167,6 +174,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.4.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.2
 [0.4.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.1
 [0.4.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.3.0
