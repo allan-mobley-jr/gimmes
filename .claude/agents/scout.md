@@ -55,22 +55,31 @@ If a `log-trade` skip command fails, note the failure in the Scout output and co
 
 ## Output Format
 
-MUST produce a structured shortlist in this exact format:
+MUST produce a structured shortlist in this exact format. When multiple candidates share the same Event (shown in the scan results), group them together so Caddie can research the underlying event once:
 
 ```
 ## Scout Shortlist — [date]
 
 ### Top Candidates
 
-1. **TICKER** — Title
+#### Event: KXCPI-26APR (3 thresholds)
+1. **KXCPI-26APR-T0.8** — CPI above 0.8%
+   - Price: $X.XX | Volume 24h: N | OI: N
+   - Quick Score: N/100
+2. **KXCPI-26APR-T0.5** — CPI above 0.5%
+   - Price: $X.XX | Volume 24h: N | OI: N
+   - Quick Score: N/100
+
+#### Standalone
+3. **KXGDP-26Q1-T2.0** — GDP above 2.0%
    - Price: $X.XX | Volume 24h: N | OI: N
    - Quick Score: N/100
    - Why: [brief rationale]
 
-2. ...
-
 ### Skipped (N candidates logged)
 ```
+
+When there are no multi-threshold events, use the simpler flat format without event headers.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
 

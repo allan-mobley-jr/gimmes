@@ -333,6 +333,7 @@ def scan(
                 qs = quick_score(m, config)
                 scored.append({
                     "ticker": m.ticker,
+                    "event_ticker": m.event_ticker,
                     "title": m.title,
                     "price": m.midpoint or m.last_price,
                     "volume_24h": m.volume_24h or m.volume,
