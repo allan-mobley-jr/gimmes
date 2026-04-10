@@ -109,18 +109,31 @@ def format_positions(positions: list[dict]) -> None:  # type: ignore[type-arg]
 
 def format_scan_results(markets: list[dict], title: str = "Scan Results") -> None:  # type: ignore[type-arg]
     """Display scanned markets as a Rich table."""
+    # Count siblings per event for the annotation
+    from collections import Counter
+
+    event_counts: Counter[str] = Counter(
+        m.get("event_ticker", "") for m in markets
+        if m.get("event_ticker")
+    )
+
     table = Table(title=title)
     table.add_column("Ticker", style="cyan")
-    table.add_column("Title", max_width=40)
+    table.add_column("Event", style="dim", max_width=25)
+    table.add_column("Title", max_width=20)
     table.add_column("Price", justify="right")
     table.add_column("Vol 24h", justify="right")
     table.add_column("OI", justify="right")
     table.add_column("Score", justify="right")
 
     for m in markets:
+        evt = m.get("event_ticker", "")
+        count = event_counts.get(evt, 0)
+        evt_label = f"{evt} ({count})" if count > 1 else evt
         table.add_row(
             m.get("ticker", ""),
-            m.get("title", "")[:40],
+            evt_label,
+            m.get("title", "")[:20],
             f"${m.get('price', 0):.2f}",
             str(m.get("volume_24h", 0)),
             str(m.get("open_interest", 0)),

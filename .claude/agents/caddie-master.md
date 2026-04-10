@@ -278,6 +278,8 @@ For each PROCEED candidate:
    - **APPROVE**: The thesis survives scrutiny, signals are genuinely independent, and the opportunity is not redundant with the existing portfolio.
    - **REJECT**: The thesis has a hole the Caddie cannot close, signals are not truly independent, the position would over-concentrate the portfolio, or the timing is wrong.
 
+   **Cross-threshold consistency (when multiple PROCEED candidates share the same event):** Verify that probability estimates are monotonic — P(metric > low threshold) >= P(metric > high threshold). If probabilities are inconsistent, REJECT ALL candidates from that event and log the inconsistency. When approving multiple thresholds, verify total proposed deployment fits within the event concentration limit (max_event_exposure_pct). Approve only the highest-edge thresholds that fit.
+
 4. **Log the decision BEFORE dispatching Closer** (audit trail):
    ```bash
    gimmes position-note TICKER \
