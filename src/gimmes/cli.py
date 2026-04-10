@@ -3736,6 +3736,11 @@ def _autonomous_loop(
             if max_cycles > 0 and cycles_run >= max_cycles:
                 break
 
+            # Recalculate sleep after cycle completes — a trade window
+            # may have opened during the cycle execution.
+            if cycle_type == "monitor":
+                fresh_secs = seconds_until_next_window()
+                post_sleep = min(fresh_secs, monitor_interval)
             console.print(f"[dim]Next cycle in {post_sleep}s...[/dim]")
             time.sleep(post_sleep)
     except KeyboardInterrupt:
