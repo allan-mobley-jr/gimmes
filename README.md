@@ -217,7 +217,7 @@ Each `start`, `driving_range`, or `championship` invocation runs a **calendar-aw
 
 ### Trade windows
 
-The loop checks a built-in calendar of 9 trade windows — every source of historical mispricing from backtesting:
+The loop checks a built-in calendar of 9 scheduled trade windows plus dynamic position settlement windows:
 
 | Window | Schedule | Frequency |
 |--------|----------|-----------|
