@@ -66,6 +66,22 @@ DEFAULT_SERIES: list[str] = [
     t for tickers in SERIES_CATEGORIES.values() for t in tickers
 ]
 
+# Backtested gimme series — categories with proven structural edge.
+# Excludes series with negative P&L in backtesting:
+#   KXCPI (MoM headline), KXPCECORE, KXU3, KXUE (international),
+#   KXTNOTEW, KXJOBLESSCLAIMS (borderline/high variance),
+#   Housing, Fed, Politics, commodities, misc econ.
+GIMME_SERIES: list[str] = [
+    # Inflation (YoY + Core — NOT headline MoM)
+    "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY",
+    # Employment (payrolls + ADP — NOT jobless claims or unemployment rate)
+    "KXPAYROLLS", "KXADP",
+    # GDP
+    "KXGDP",
+    # Equity indices (daily range — NOT up/down)
+    "KXINX", "KXNASDAQ100",
+]
+
 # YES-side equity index series — backtesting shows BUY YES is only
 # profitable on equity index contracts at high prices (>= 70c).
 YES_SIDE_SERIES: list[str] = [
@@ -649,16 +665,16 @@ class ScannerConfig(BaseModel):
         },
     )
     series: list[str] = Field(
-        default_factory=lambda: list(DEFAULT_SERIES),
+        default_factory=lambda: list(GIMME_SERIES),
         json_schema_extra={
             "display_name": "Series Watchlist",
             "description": (
                 "The list of Kalshi series tickers to scan. A 'series' is a group of\n"
                 "related markets (e.g. KXCPI covers all CPI-related contracts).\n"
                 "\n"
-                "By default, the scanner only looks at markets in these series rather\n"
-                "than scanning ALL of Kalshi. This keeps scans fast and focused on\n"
-                "categories where the system has informational edge.\n"
+                "By default, the scanner uses backtested gimme series — categories\n"
+                "with proven structural edge. Use 'gimmes discover <Category>' to\n"
+                "find additional series.\n"
                 "\n"
                 "Use 'gimmes discover <Category>' to find new series tickers.\n"
                 "Categories: Economics, Politics, Financials, etc.\n"
