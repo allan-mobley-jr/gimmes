@@ -3179,6 +3179,75 @@ def _detect_rate_limit(output: bytes) -> tuple[bool, int]:
     return True, 1800  # 30 min fallback
 
 
+def _check_code_staleness(
+    project_root: Path,
+    startup_commit: str | None,
+) -> tuple[str, bool, str | None]:
+    """Check if the running code has changed since startup.
+
+    Returns ``(current_commit, is_stale, message)``.  Fails open —
+    any git error returns ``("", False, None)``.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return "", False, None
+        current = result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return "", False, None
+
+    if startup_commit is None:
+        return current, False, None
+
+    if current != startup_commit:
+        return current, True, (
+            f"Installed code changed: startup={startup_commit[:8]}"
+            f" current={current[:8]}."
+            f" Restart to pick up changes."
+        )
+    return current, False, None
+
+
+def _check_remote_staleness(
+    project_root: Path,
+    current_commit: str,
+) -> str | None:
+    """Check if remote has commits ahead of *current_commit*.
+
+    Returns a warning message or ``None`` if up to date.
+    Uses ``git ls-remote`` (read-only, no fetch).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "origin", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        remote_sha = (
+            result.stdout.split()[0] if result.stdout.strip() else None
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+    if remote_sha and remote_sha != current_commit:
+        return (
+            f"Remote has newer code: local={current_commit[:8]}"
+            f" remote={remote_sha[:8]}."
+            f" Run `gimmes update` and restart."
+        )
+    return None
+
+
 def _extract_terminal_text(json_bytes: bytes) -> bytes:
     """Extract human-readable assistant text from Claude JSON output.
 
@@ -3364,6 +3433,11 @@ def _autonomous_loop(
     consecutive_failures = 0
     session_status = "stopped"
 
+    # Code staleness detection
+    _startup_commit: str | None = None
+    _last_remote_check: float = 0.0
+    _staleness_warned = False
+
     # Custom SIGINT handler — Python's default SIGINT → KeyboardInterrupt
     # delivery is blocked by Thread.join() on macOS (CPython bpo-45274).
     # This handler fires at the C level and sends SIGTERM to the subprocess
@@ -3471,6 +3545,30 @@ def _autonomous_loop(
         while max_cycles == 0 or cycles_run < max_cycles:
             cycle += 1
             cycles_run += 1
+
+            # Code staleness check
+            _cur, _stale, _stale_msg = _check_code_staleness(
+                project_root, _startup_commit,
+            )
+            if _startup_commit is None and _cur:
+                _startup_commit = _cur
+            if _stale and _stale_msg:
+                console.print(
+                    f"[red bold]CODE STALE: {_stale_msg}[/red bold]"
+                )
+            elif _cur and not _staleness_warned:
+                _now_ts = time.time()
+                if _now_ts - _last_remote_check >= monitor_interval:
+                    _remote_msg = _check_remote_staleness(
+                        project_root, _cur,
+                    )
+                    _last_remote_check = _now_ts
+                    if _remote_msg:
+                        console.print(
+                            f"[yellow bold]UPDATE AVAILABLE:"
+                            f" {_remote_msg}[/yellow bold]"
+                        )
+                        _staleness_warned = True
 
             # Determine cycle type based on trade window calendar
             in_window, release_name, _secs_to_close = is_in_trade_window()

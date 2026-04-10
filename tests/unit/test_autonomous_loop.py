@@ -13,6 +13,8 @@ from typer.testing import CliRunner
 
 from gimmes.cli import (
     _autonomous_loop,
+    _check_code_staleness,
+    _check_remote_staleness,
     _communicate_interruptible,
     _detect_rate_limit,
     _extract_terminal_text,
@@ -118,6 +120,14 @@ class TestAutonomousLoop:
             patch(
                 "gimmes.strategy.calendar.seconds_until_next_window",
                 return_value=3600,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch(
+                "gimmes.cli._check_remote_staleness",
+                return_value=None,
             ),
         ):
             yield
@@ -1181,3 +1191,87 @@ class TestCaddieMasterAgent:
         assert "name: Caddie Master" in content
         assert "tools:" in content
         assert "Agent" in content
+
+
+class TestCheckCodeStaleness:
+    def test_first_call_returns_commit(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="abc123def\n",
+            )
+            commit, stale, msg = _check_code_staleness(tmp_path, None)
+            assert commit == "abc123def"
+            assert stale is False
+            assert msg is None
+
+    def test_same_commit_not_stale(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="abc123def\n",
+            )
+            _, stale, msg = _check_code_staleness(
+                tmp_path, "abc123def",
+            )
+            assert stale is False
+            assert msg is None
+
+    def test_different_commit_is_stale(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="new456ghi\n",
+            )
+            _, stale, msg = _check_code_staleness(
+                tmp_path, "old123abc",
+            )
+            assert stale is True
+            assert "old123ab" in msg
+            assert "new456gh" in msg
+
+    def test_git_failure_returns_empty(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=128, stdout="",
+            )
+            commit, stale, msg = _check_code_staleness(
+                tmp_path, "abc",
+            )
+            assert commit == ""
+            assert stale is False
+
+    def test_git_not_found(self, tmp_path: Path) -> None:
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            commit, stale, msg = _check_code_staleness(
+                tmp_path, "abc",
+            )
+            assert commit == ""
+            assert stale is False
+
+
+class TestCheckRemoteStaleness:
+    def test_same_commit_returns_none(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="abc123def\tHEAD\n",
+            )
+            msg = _check_remote_staleness(tmp_path, "abc123def")
+            assert msg is None
+
+    def test_different_commit_returns_warning(
+        self, tmp_path: Path,
+    ) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="remote99\tHEAD\n",
+            )
+            msg = _check_remote_staleness(tmp_path, "local123")
+            assert msg is not None
+            assert "remote99" in msg
+            assert "local123" in msg
+
+    def test_network_failure_returns_none(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = _subprocess.TimeoutExpired(
+                cmd="git", timeout=10,
+            )
+            msg = _check_remote_staleness(tmp_path, "abc")
+            assert msg is None
