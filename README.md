@@ -396,8 +396,8 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Buy price:** configurable per side (NO default: 40¢–75¢, YES default: 70¢–85¢)
-- **Model probability:** configurable per side (NO default: ≥50%, YES default: ≥85%)
+- **Buy price:** configurable per side (flat default: 55¢–85¢; recommended dual-side: NO 40¢–75¢, YES 70¢–85¢ via overrides)
+- **Model probability:** configurable per side (flat default: ≥90%; recommended dual-side: NO ≥50%, YES ≥85% via overrides)
 - **GimmeScore:** ≥65 (configurable via `gimme_threshold`) — composite of edge size, signal strength, liquidity, and time value
 - **Liquidity:** Sufficient depth to absorb the position without moving the market
 - **Time horizon:** Contract resolves within 0.5–90 days (configurable)
@@ -410,7 +410,7 @@ A market qualifies as a gimme when it clears all of the following:
 
 ### Phase 1 — Scan
 
-The Scout polls the Kalshi API for active markets in the configured series watchlist. In dual-side mode (`strategy.side = "both"`), the scanner runs two passes — one per side with independent price ranges, thresholds, and series (NO uses 15 macro/financial series, YES uses 9 equity index series). Each candidate is tagged with its scan side. The Scout filters by price range, volume, open interest, and time to resolution, then scores each on:
+The Scout polls the Kalshi API for active markets in the configured series watchlist. In dual-side mode (`strategy.side = "both"`), the scanner runs two passes — one per side with independent price ranges, thresholds, and series (NO uses the main scanner watchlist, YES defaults to 9 equity index series). Each candidate is tagged with its scan side. The Scout filters by price range, volume, open interest, and time to resolution, then scores each on:
 
 - Volume and liquidity depth
 - Time to resolution
