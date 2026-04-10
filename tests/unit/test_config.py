@@ -13,6 +13,9 @@ from gimmes.config import (
     GimmesConfig,
     Mode,
     RiskConfig,
+    ScannerConfig,
+    SideOverrides,
+    StrategyConfig,
     _load_config_from_db,
     config_keys_in_db,
     load_config,
@@ -394,3 +397,94 @@ class TestMigrationV14:
             version = await run_migrations(db)
 
         assert version >= 14
+
+
+class TestSidesConfig:
+    def test_sides_to_scan_single_yes(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="yes"),
+        )
+        assert config.sides_to_scan == ["yes"]
+
+    def test_sides_to_scan_single_no(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        assert config.sides_to_scan == ["no"]
+
+    def test_sides_to_scan_both(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="both"),
+        )
+        assert config.sides_to_scan == ["yes", "no"]
+
+    def test_effective_config_single_side_returns_self(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        assert config.effective_config_for_side("no") is config
+
+    def test_effective_config_both_applies_yes_overrides(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(
+                side="both",
+                min_market_price=0.40,
+                yes_overrides=SideOverrides(
+                    min_market_price=0.70,
+                    min_true_probability=0.85,
+                ),
+            ),
+        )
+        yes_cfg = config.effective_config_for_side("yes")
+        assert yes_cfg.strategy.side == "yes"
+        assert yes_cfg.strategy.min_market_price == 0.70
+        assert yes_cfg.strategy.min_true_probability == 0.85
+        assert yes_cfg.strategy.max_market_price == config.strategy.max_market_price
+
+    def test_effective_config_both_applies_no_overrides(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(
+                side="both",
+                min_market_price=0.55,
+                no_overrides=SideOverrides(
+                    min_market_price=0.40,
+                    gimme_threshold=65,
+                ),
+            ),
+        )
+        no_cfg = config.effective_config_for_side("no")
+        assert no_cfg.strategy.side == "no"
+        assert no_cfg.strategy.min_market_price == 0.40
+        assert no_cfg.strategy.gimme_threshold == 65
+
+    def test_effective_config_both_applies_side_series(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="both"),
+            scanner=ScannerConfig(
+                series=["KXCPI", "KXGDP"],
+                yes_series=["KXINX", "KXNASDAQ100"],
+                no_series=["KXCPI", "KXGDP", "KXPAYROLLS"],
+            ),
+        )
+        yes_cfg = config.effective_config_for_side("yes")
+        assert yes_cfg.scanner.series == ["KXINX", "KXNASDAQ100"]
+
+        no_cfg = config.effective_config_for_side("no")
+        assert no_cfg.scanner.series == ["KXCPI", "KXGDP", "KXPAYROLLS"]
+
+    def test_effective_config_preserves_other_sections(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="both"),
+            risk=RiskConfig(bankroll_paper=8000.0),
+        )
+        yes_cfg = config.effective_config_for_side("yes")
+        assert yes_cfg.risk.bankroll_paper == 8000.0
+        assert yes_cfg.mode == Mode.DRIVING_RANGE

@@ -105,6 +105,15 @@ class PaperTradingConfig(BaseModel):
     )
 
 
+class SideOverrides(BaseModel):
+    """Per-side parameter overrides, used when strategy.side = 'both'."""
+
+    min_market_price: float | None = None
+    max_market_price: float | None = None
+    min_true_probability: float | None = None
+    gimme_threshold: int | None = None
+
+
 class StrategyConfig(BaseModel):
     model_config = ConfigDict(json_schema_extra={
         "section_name": "Strategy",
@@ -132,7 +141,7 @@ class StrategyConfig(BaseModel):
             "max_val": 100,
         },
     )
-    side: Literal["yes", "no"] = Field(
+    side: Literal["yes", "no", "both"] = Field(
         default="no",
         json_schema_extra={
             "display_name": "Trading Side",
@@ -141,6 +150,9 @@ class StrategyConfig(BaseModel):
                 "\n"
                 "  'yes': Buy YES contracts — profit when the event happens.\n"
                 "  'no' (default): Buy NO contracts — profit when the event does NOT happen.\n"
+                "  'both': Run both YES and NO strategies simultaneously with per-side\n"
+                "    parameters. Set overrides via strategy.yes_overrides.* and\n"
+                "    strategy.no_overrides.* (and scanner.yes_series / scanner.no_series).\n"
                 "\n"
                 "When set to 'no', the scanner and scorer flip their perspective:\n"
                 "the price range, sweet spots, and edge calculations all operate\n"
@@ -150,8 +162,14 @@ class StrategyConfig(BaseModel):
                 "interpreted from the configured side's perspective. When side='no',\n"
                 "provide your confidence that NO wins (not YES)."
             ),
-            "choices": ["yes", "no"],
+            "choices": ["yes", "no", "both"],
         },
+    )
+    yes_overrides: SideOverrides = Field(
+        default_factory=SideOverrides,
+    )
+    no_overrides: SideOverrides = Field(
+        default_factory=SideOverrides,
     )
     min_market_price: float = Field(
         default=0.55, gt=0.0, lt=1.0,
@@ -637,6 +655,8 @@ class ScannerConfig(BaseModel):
             "max_val": 50,
         },
     )
+    yes_series: list[str] | None = None
+    no_series: list[str] | None = None
 
 
 class ScoringWeights(BaseModel):
@@ -789,6 +809,60 @@ class GimmesConfig(BaseModel):
         if self.is_championship:
             return self.risk.bankroll_real
         return self.risk.bankroll_paper
+
+    @property
+    def sides_to_scan(self) -> list[Literal["yes", "no"]]:
+        """Return the list of sides to scan for candidates."""
+        if self.strategy.side == "both":
+            return ["yes", "no"]
+        return [self.strategy.side]  # type: ignore[list-item]
+
+    def effective_config_for_side(
+        self, side: Literal["yes", "no"],
+    ) -> GimmesConfig:
+        """Return a config tuned for a specific side.
+
+        When ``strategy.side`` is ``"yes"`` or ``"no"``, returns *self*
+        unchanged.  When ``"both"``, returns a copy with strategy and
+        scanner fields overridden from the per-side settings.
+        """
+        if self.strategy.side != "both":
+            return self
+
+        overrides = (
+            self.strategy.yes_overrides
+            if side == "yes"
+            else self.strategy.no_overrides
+        )
+
+        strategy_kwargs = self.strategy.model_dump()
+        strategy_kwargs["side"] = side
+        strategy_kwargs.pop("yes_overrides", None)
+        strategy_kwargs.pop("no_overrides", None)
+
+        for field_name in (
+            "min_market_price",
+            "max_market_price",
+            "min_true_probability",
+            "gimme_threshold",
+        ):
+            val = getattr(overrides, field_name)
+            if val is not None:
+                strategy_kwargs[field_name] = val
+
+        scanner_kwargs = self.scanner.model_dump()
+        side_series = (
+            self.scanner.yes_series
+            if side == "yes"
+            else self.scanner.no_series
+        )
+        if side_series is not None:
+            scanner_kwargs["series"] = side_series
+
+        return self.model_copy(update={
+            "strategy": StrategyConfig(**strategy_kwargs),
+            "scanner": ScannerConfig(**scanner_kwargs),
+        })
 
 
 # ---------------------------------------------------------------------------
