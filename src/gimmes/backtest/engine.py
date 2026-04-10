@@ -328,7 +328,6 @@ async def run_backtest(
     5. Return aggregated results
     """
     gc = config.gimmes_config
-    threshold = gc.strategy.gimme_threshold
     ledger = BacktestLedger(config.starting_balance)
 
     # --- 1. Fetch settled markets per series via live API ---
@@ -417,75 +416,91 @@ async def run_backtest(
         len(all_markets), len(settled),
     )
 
-    # --- 2. Filter ---
-    adapted = _adapt_for_filter(settled, max_days=gc.scanner.max_days_to_resolution)
-    passed = filter_markets(adapted, gc)
-
-    # Build a lookup from adapted ticker back to original market (with result)
+    # --- 2-4. Filter, Score, Identify trades — per side ---
+    adapted = _adapt_for_filter(
+        settled, max_days=gc.scanner.max_days_to_resolution,
+    )
     original_by_ticker = {m.ticker: m for m in settled}
+    pending: list[_PendingTrade] = []
+    seen_tickers: set[str] = set()
+    total_passed = 0
+    total_scored = 0
 
-    # --- 3. Score ---
-    scored: list[tuple[Market, Market, float]] = []  # (adapted, original, score)
-    for m in passed:
-        s = quick_score(m, gc)
-        if s >= threshold:
-            orig = original_by_ticker[m.ticker]
-            scored.append((m, orig, s))
+    for scan_side in gc.sides_to_scan:
+        side_cfg = gc.effective_config_for_side(scan_side)
+        side_threshold = side_cfg.strategy.gimme_threshold
 
-    # Sort by close_time (use original) for chronological processing
-    scored.sort(key=lambda x: x[1].close_time or datetime.min.replace(tzinfo=UTC))
+        # --- 2. Filter ---
+        passed = filter_markets(adapted, side_cfg)
+        total_passed += len(passed)
+
+        # --- 3. Score ---
+        scored: list[tuple[Market, Market, float]] = []
+        for m in passed:
+            s = quick_score(m, side_cfg)
+            if s >= side_threshold:
+                orig = original_by_ticker[m.ticker]
+                scored.append((m, orig, s))
+        total_scored += len(scored)
+
+        scored.sort(
+            key=lambda x: (
+                x[1].close_time or datetime.min.replace(tzinfo=UTC)
+            ),
+        )
+
+        # --- 4. Pass 1: identify qualifying trades ---
+        for _, orig_m, _score in scored:
+            if orig_m.ticker in seen_tickers:
+                continue
+            if orig_m.close_time is None:
+                continue
+
+            raw_price = (
+                orig_m.midpoint
+                if orig_m.midpoint > 0
+                else orig_m.last_price
+            )
+            if raw_price <= 0:
+                continue
+            eff_price = effective_price(raw_price, scan_side)
+            true_prob = min(eff_price + config.assumed_edge, 0.99)
+            count = position_size(
+                config.starting_balance,
+                eff_price,
+                true_prob,
+                fraction=side_cfg.sizing.kelly_fraction,
+                max_position_pct=side_cfg.sizing.max_position_pct,
+                fees=fees,
+                mode=side_cfg.sizing.mode,
+            )
+            if count <= 0:
+                continue
+
+            trade_fees = fee_for_order(
+                count, eff_price, is_taker=False, fees=fees,
+            )
+            entry_time = orig_m.close_time - timedelta(days=1)
+
+            seen_tickers.add(orig_m.ticker)
+            pending.append(_PendingTrade(
+                ticker=orig_m.ticker,
+                title=orig_m.title,
+                side=scan_side,
+                count=count,
+                vwap=eff_price,
+                fees=trade_fees,
+                entry_time=entry_time,
+                settle_time=orig_m.close_time,
+                result=orig_m.result,
+                event_ticker=orig_m.event_ticker,
+                series_ticker=orig_m.series_ticker,
+            ))
 
     logger.info(
-        "Filter: %d passed, %d scored above threshold (%.0f)",
-        len(passed), len(scored), threshold,
+        "Filter: %d passed, %d scored above threshold",
+        total_passed, total_scored,
     )
-
-    # --- 4. Pass 1: identify qualifying trades (no balance changes) ---
-    pending: list[_PendingTrade] = []
-    side = gc.strategy.side
-
-    for _, orig_m, _score in scored:
-        if orig_m.close_time is None:
-            continue
-
-        # Use market-level price data directly (live API provides full data)
-        raw_price = orig_m.midpoint if orig_m.midpoint > 0 else orig_m.last_price
-        if raw_price <= 0:
-            continue
-        eff_price = effective_price(raw_price, side)
-        true_prob = min(eff_price + config.assumed_edge, 0.99)
-        count = position_size(
-            config.starting_balance,
-            eff_price,
-            true_prob,
-            fraction=gc.sizing.kelly_fraction,
-            max_position_pct=gc.sizing.max_position_pct,
-            fees=fees,
-            mode=gc.sizing.mode,
-        )
-        if count <= 0:
-            continue
-
-        # Assume fill at market price (settled markets have no active book)
-        trade_fees = fee_for_order(count, eff_price, is_taker=False, fees=fees)
-
-        # Entry time: approximate as 1 day before close
-        entry_time = orig_m.close_time - timedelta(days=1)
-        settle_time = orig_m.close_time
-
-        pending.append(_PendingTrade(
-            ticker=orig_m.ticker,
-            title=orig_m.title,
-            side=side,
-            count=count,
-            vwap=eff_price,
-            fees=trade_fees,
-            entry_time=entry_time,
-            settle_time=settle_time,
-            result=orig_m.result,
-            event_ticker=orig_m.event_ticker,
-            series_ticker=orig_m.series_ticker,
-        ))
 
     # --- 5. Pass 2: process events chronologically ---
     events: list[tuple[str, datetime, _PendingTrade]] = []
@@ -564,8 +579,8 @@ async def run_backtest(
         final_balance=ledger.balance,
         equity_curve=ledger.equity_curve,
         markets_scanned=len(settled),
-        markets_passed_filter=len(passed),
-        markets_scored=len(scored),
+        markets_passed_filter=total_passed,
+        markets_scored=total_scored,
         markets_traded=traded_count,
         skipped_concentration=skipped_concentration,
         skipped_balance=skipped_balance,
