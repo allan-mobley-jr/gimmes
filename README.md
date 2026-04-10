@@ -6,15 +6,19 @@
 
 > *We only play the gimmes.*
 
-An autonomous Claude Code agent team that trades Kalshi prediction markets by finding **gimmes** — mispriced contracts where the math is on your side. The default strategy buys NO on threshold variance plays where the market overprices continuation near consensus estimates. Named after the golf term for a putt so close it's automatically conceded.
+An autonomous Claude Code agent team that trades Kalshi prediction markets by finding **gimmes** — mispriced contracts where the math is on your side. Supports dual-side trading: BUY NO on economic data threshold variance plays AND BUY YES on high-conviction equity index contracts — simultaneously, with independent parameters per side. Named after the golf term for a putt so close it's automatically conceded.
 
 ---
 
 ## What it does
 
-GIMMES hunts for mispriced contracts. The default BUY NO strategy targets threshold variance plays — "Will X be above Y?" contracts where the market overprices YES near consensus estimates. When the data says 2.0% but the market prices "above 2.5%" at 60¢ YES, the NO side at 40¢ is the gimme.
+GIMMES hunts for mispriced contracts on both sides of the market:
 
-**The core thesis:** Economic data has natural variance around consensus. Markets systematically overprice continuation at nearby thresholds, creating a persistent edge on the NO side. GIMMES finds these mispricings, sizes them, watches them, and decides when to close or add.
+- **BUY NO** (default) — targets threshold variance plays on economic data. "Will X be above Y?" contracts where the market overprices YES near consensus. When the data says 2.0% but the market prices "above 2.5%" at 60¢ YES, the NO side at 40¢ is the gimme.
+- **BUY YES** — targets high-conviction equity index contracts (S&P 500, Nasdaq-100) where the market underprices directional moves at ≥70¢.
+- **BOTH** — runs both strategies simultaneously with independent price ranges, thresholds, and series per side.
+
+**The core thesis:** Economic data has natural variance around consensus. Markets systematically overprice continuation at nearby thresholds, creating a persistent edge on the NO side. Equity index contracts at high prices offer a complementary YES-side edge. GIMMES finds these mispricings, sizes them, watches them, and decides when to close or add.
 
 ---
 
@@ -392,8 +396,8 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Buy price:** configurable range from the strategy side's perspective (default NO side: 40¢–75¢)
-- **Model probability:** ≥50% for the configured side (configurable via `min_true_probability`)
+- **Buy price:** configurable per side (NO default: 40¢–75¢, YES default: 70¢–85¢)
+- **Model probability:** configurable per side (NO default: ≥50%, YES default: ≥85%)
 - **GimmeScore:** ≥65 (configurable via `gimme_threshold`) — composite of edge size, signal strength, liquidity, and time value
 - **Liquidity:** Sufficient depth to absorb the position without moving the market
 - **Time horizon:** Contract resolves within 0.5–90 days (configurable)
@@ -406,7 +410,7 @@ A market qualifies as a gimme when it clears all of the following:
 
 ### Phase 1 — Scan
 
-The Scout polls the Kalshi API for active markets in the configured series watchlist (17 macro/financial series by default), filters by price range, volume, open interest, and time to resolution, then scores each on:
+The Scout polls the Kalshi API for active markets in the configured series watchlist. In dual-side mode (`strategy.side = "both"`), the scanner runs two passes — one per side with independent price ranges, thresholds, and series (NO uses 15 macro/financial series, YES uses 9 equity index series). Each candidate is tagged with its scan side. The Scout filters by price range, volume, open interest, and time to resolution, then scores each on:
 
 - Volume and liquidity depth
 - Time to resolution
@@ -512,6 +516,31 @@ gimmes tune                           # Apply pending strategy recommendations
 **Direct set** validates the value against the field's constraints (type, min/max, choices) and shows old → new. **The Caddie Shop** is a conversational agent that explains how parameters interact, suggests coherent multi-parameter adjustments based on your goals ("make the system more aggressive"), and sets values on your behalf — all through the CLI.
 
 The Pydantic config models in `config.py` are the single source of truth — each field's type, default, constraints, and wizard metadata are defined in one place. Adding a new config parameter automatically makes it appear in the wizard, `config set`, `config get`, and The Caddie Shop.
+
+### Dual-side configuration
+
+To enable dual-side trading:
+
+```bash
+gimmes config set strategy.side both
+
+# YES-side overrides (equity index contracts)
+gimmes config set strategy.yes_overrides.min_market_price 0.70
+gimmes config set strategy.yes_overrides.max_market_price 0.85
+gimmes config set strategy.yes_overrides.min_true_probability 0.85
+gimmes config set strategy.yes_overrides.gimme_threshold 75
+
+# NO-side overrides (economic data)
+gimmes config set strategy.no_overrides.min_market_price 0.40
+gimmes config set strategy.no_overrides.max_market_price 0.75
+gimmes config set strategy.no_overrides.min_true_probability 0.50
+gimmes config set strategy.no_overrides.gimme_threshold 65
+
+# Per-side series (optional — defaults are set automatically)
+gimmes config set scanner.yes_series "KXINX,KXINXW,KXNASDAQ100,KXNASDAQ100W"
+```
+
+When `side = "yes"` or `"no"`, the flat strategy fields are used directly. Per-side overrides only apply when `side = "both"`.
 
 ---
 
