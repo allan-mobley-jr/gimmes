@@ -149,3 +149,5 @@ class ConfigResponse(BaseModel):
     scanner: dict = {}
     scoring: dict = {}
     paper: dict = {}
+    yes_strategy: dict | None = None
+    no_strategy: dict | None = None
