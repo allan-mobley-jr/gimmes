@@ -3735,6 +3735,11 @@ def _autonomous_loop(
                     )
                     session_status = "crashed"
                     break
+                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
+                console.print(
+                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
+                )
+                time.sleep(backoff)
                 continue
 
             if returncode != 0:
@@ -3754,6 +3759,12 @@ def _autonomous_loop(
                     )
                     session_status = "crashed"
                     break
+                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
+                console.print(
+                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
+                )
+                time.sleep(backoff)
+                continue
             else:
                 consecutive_failures = 0
 
