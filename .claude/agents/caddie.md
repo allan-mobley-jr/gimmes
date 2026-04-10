@@ -49,16 +49,52 @@ When the Scout's shortlist contains **multiple candidates from the same event** 
 2. Produce a GimmeScore and structured research memo for each candidate
 3. Log completion (see Activity Logging below)
 
-## Research Framework
+## Sanity-Check Mode (Default for Gimme Categories)
 
-For each candidate, MUST investigate all of these:
+For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPAYROLLS, KXADP, KXGDP, KXINX, KXNASDAQ100), run a **fast sanity check** instead of deep research. The structural edge in these categories is proven — deep probability estimation adds noise, not signal.
+
+**Three checks (30 seconds, not 5 minutes):**
+
+1. **Extraordinary event check**: Is there a one-time event that could break the structural edge?
+   - Government shutdown affecting data collection or release
+   - Methodology change to the underlying statistic
+   - Natural disaster, policy shock, or geopolitical event specifically targeting this metric
+   - If YES → flag for Caddie Master review, do NOT auto-pass
+
+2. **Settlement clarity check**: Is the contract settlement language unambiguous?
+   - Read the contract rules from `market-info` output
+   - Red flags: "discretion", "carveout", "may determine", "at sole discretion"
+   - If red flags → PASS with rationale
+
+3. **Staleness check**: Has the underlying data already been released?
+   - If the data the contract depends on has already been published, the market should have settled
+   - A still-open contract after data release may have settlement issues → PASS
+
+**If all three checks pass → PROCEED** with the category base rate as probability:
+
+| Category | Base Rate (NO Win %) | Use as --prob |
+|----------|---------------------|---------------|
+| KXCPIYOY, KXCPICOREYOY | 90% | 0.90 |
+| KXCPICORE | 85% | 0.85 |
+| KXPAYROLLS, KXADP | 85% | 0.85 |
+| KXGDP | 85% | 0.85 |
+| KXINX, KXNASDAQ100 | 80% | 0.80 |
+
+**When to use deep research instead:**
+- Candidate is NOT in a gimme category
+- Monitor flagged a position for review (situation changed)
+- Caddie Master explicitly requests deep research
+
+## Deep Research Framework (Non-Gimme Categories Only)
+
+For candidates NOT in gimme categories, investigate all of these:
 - **Current news**: Recent developments affecting the outcome
 - **Domain data**: Polling, economic data, forecasts, expert consensus
 - **Cross-platform pricing**: How other prediction markets price this event
 - **Historical base rates**: How often similar events resolve YES
 - **Settlement rules**: Any red flags (discretion clauses, carveouts, ambiguity)
 
-## Confidence Signals
+## Confidence Signals (Deep Research Only)
 
 Identify independent signals and rate their strength (0-1). "Independent" means from different source categories — two signals from the same category count as ONE:
 
