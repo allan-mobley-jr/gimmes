@@ -66,6 +66,13 @@ DEFAULT_SERIES: list[str] = [
     t for tickers in SERIES_CATEGORIES.values() for t in tickers
 ]
 
+# YES-side equity index series — backtesting shows BUY YES is only
+# profitable on equity index contracts at high prices (>= 70c).
+YES_SIDE_SERIES: list[str] = [
+    "KXINX", "KXINXW", "KXINXM", "KXINXAB", "KXINXZ",
+    "KXNASDAQ100", "KXNASDAQ100W", "KXNASDAQ100M", "KXNASDAQ100Z",
+]
+
 
 class Mode(StrEnum):
     DRIVING_RANGE = "driving_range"
@@ -655,7 +662,9 @@ class ScannerConfig(BaseModel):
             "max_val": 50,
         },
     )
-    yes_series: list[str] | None = None
+    yes_series: list[str] = Field(
+        default_factory=lambda: list(YES_SIDE_SERIES),
+    )
     no_series: list[str] | None = None
 
 
