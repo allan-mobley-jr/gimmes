@@ -206,7 +206,9 @@ gimmes candidates --ticker TICKER --limit 1
 
 Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5, and `cooldown_cutoff` = max(0, gimme_threshold - 15)):
 
-1. **No prior research** (no records found) → send to Caddie
+**Time-based expiry (check first):** If the prior research `Scanned` timestamp is more than 48 hours ago, treat the candidate as having no prior research — send to Caddie for fresh evaluation regardless of score. The macro environment may have changed significantly since the original assessment.
+
+1. **No prior research** (no records found, or expired per above) → send to Caddie
 2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip:
    ```bash
    gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
