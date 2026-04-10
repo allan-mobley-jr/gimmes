@@ -339,7 +339,13 @@ async def run_backtest(
         config.end_date.year, config.end_date.month,
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
-    series_list = gc.scanner.series or []
+    # Union all series across sides to ensure we fetch everything needed
+    all_series: set[str] = set(gc.scanner.series or [])
+    if gc.scanner.yes_series:
+        all_series.update(gc.scanner.yes_series)
+    if gc.scanner.no_series:
+        all_series.update(gc.scanner.no_series)
+    series_list = sorted(all_series)
     chunks = monthly_chunks(config.start_date, config.end_date)
     logger.info(
         "Fetching settled markets for %d series × %d monthly chunks via live API...",
@@ -429,9 +435,17 @@ async def run_backtest(
     for scan_side in gc.sides_to_scan:
         side_cfg = gc.effective_config_for_side(scan_side)
         side_threshold = side_cfg.strategy.gimme_threshold
+        side_series = side_cfg.scanner.series
 
-        # --- 2. Filter ---
-        passed = filter_markets(adapted, side_cfg)
+        # --- 2. Filter (restrict to this side's series) ---
+        # series_ticker may be empty on settled markets, so match
+        # by ticker prefix (e.g., "KXCPI" matches "KXCPI-26MAR-T1.3")
+        side_prefixes = tuple(s + "-" for s in side_series) if side_series else ()
+        side_adapted = [
+            m for m in adapted
+            if not side_prefixes or m.ticker.startswith(side_prefixes)
+        ]
+        passed = filter_markets(side_adapted, side_cfg)
         total_passed += len(passed)
 
         # --- 3. Score ---
