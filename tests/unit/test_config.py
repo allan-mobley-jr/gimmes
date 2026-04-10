@@ -9,6 +9,7 @@ import pytest
 
 from gimmes.config import (
     DEFAULT_SERIES,
+    GIMME_SERIES,
     SERIES_CATEGORIES,
     GimmesConfig,
     Mode,
@@ -205,13 +206,13 @@ class TestLoadConfig:
 class TestDefaultSeries:
     def test_series_defaults_to_curated_list_when_no_db(self, tmp_path):
         config = load_config(db_path=tmp_path / "nonexistent.db")
-        assert config.scanner.series == DEFAULT_SERIES
+        assert config.scanner.series == GIMME_SERIES
 
     def test_series_defaults_to_curated_list_with_empty_db(self, tmp_path):
         db = tmp_path / "test.db"
         _create_config_db(db)
         config = load_config(db_path=db)
-        assert config.scanner.series == DEFAULT_SERIES
+        assert config.scanner.series == GIMME_SERIES
 
     def test_explicit_series_overrides_default(self, tmp_path):
         db = tmp_path / "test.db"
