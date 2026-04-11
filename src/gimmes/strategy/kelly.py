@@ -4,7 +4,41 @@ from __future__ import annotations
 
 from typing import Literal
 
+from gimmes.config import CATEGORY_BASE_RATES
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
+
+
+def apply_base_rate_floor(
+    true_probability: float,
+    ticker: str,
+    *,
+    side: str = "no",
+    base_rates: dict[str, float] | None = None,
+) -> float:
+    """Apply category base rate as a floor to a NO-side probability estimate.
+
+    ``CATEGORY_BASE_RATES`` contains NO-side win rates, so the floor is
+    only applied when *side* is ``"no"``.  For ``"yes"`` or ``"both"``,
+    *true_probability* is returned unchanged.
+
+    The ticker's series is extracted (everything before the first ``-``)
+    and matched against keys in *base_rates*.  If the base rate exceeds
+    *true_probability*, returns the base rate; otherwise returns
+    *true_probability* unchanged.
+    """
+    if side != "no":
+        return true_probability
+
+    if base_rates is None:
+        base_rates = CATEGORY_BASE_RATES
+
+    # Extract series prefix (e.g. "KXCPIYOY" from "KXCPIYOY-26MAR-T3.5")
+    series = ticker.split("-")[0] if "-" in ticker else ticker
+
+    rate = base_rates.get(series)
+    if rate is None:
+        return true_probability
+    return max(true_probability, rate)
 
 
 def kelly_fraction(

@@ -90,6 +90,23 @@ YES_SIDE_SERIES: list[str] = [
 ]
 
 
+# Backtested NO-side win rates by series prefix.  Used as a probability
+# floor for position sizing — if the LLM estimate is lower than the base
+# rate, the base rate is used instead.  Prevents undersizing when the
+# structural edge is known from backtest data.
+CATEGORY_BASE_RATES: dict[str, float] = {
+    "KXCPIYOY": 0.90,
+    "KXCPICOREYOY": 0.90,
+    "KXCPICORE": 0.85,
+    "KXPAYROLLS": 0.85,
+    "KXADP": 0.85,
+    "KXGDP": 0.85,
+    "KXINX": 0.80,
+    "KXNASDAQ100": 0.80,
+    "KXISMPMI": 0.80,
+}
+
+
 class Mode(StrEnum):
     DRIVING_RANGE = "driving_range"
     CHAMPIONSHIP = "championship"
