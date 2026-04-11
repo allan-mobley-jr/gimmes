@@ -397,8 +397,8 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Category:** Must be in a backtested gimme category (KXINX, KXNASDAQ100, KXPAYROLLS, KXCPIYOY, KXCPICORE, KXCPICOREYOY, KXGDP, KXADP, KXISMPMI) — categories are configurable via `scanner.series`
-- **Buy price:** NO side 40¢–75¢ (configurable via `min/max_market_price`)
+- **Category:** Must be in a backtested gimme category from the default watchlist (`KXINX`, `KXNASDAQ100`, `KXPAYROLLS`, `KXCPIYOY`, `KXCPICORE`, `KXCPICOREYOY`, `KXGDP`, `KXADP`). Additional series such as `KXISMPMI` can be enabled via `scanner.series`
+- **Buy price:** NO side defaults to 40¢–75¢ (`strategy.min_market_price` / `strategy.max_market_price`)
 - **Liquidity:** Sufficient volume and open interest to absorb the position
 - **Time horizon:** Contract resolves within 0.5–90 days (configurable)
 - **Concentration limits:** Max 15% per event, 30% per series — prevents over-exposure
