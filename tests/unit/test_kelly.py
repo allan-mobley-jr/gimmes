@@ -139,39 +139,52 @@ class TestPositionSizeEV:
 
 class TestApplyBaseRateFloor:
     def test_floor_raises_low_estimate(self) -> None:
-        result = apply_base_rate_floor(0.75, "KXCPIYOY-26MAR-T3.5")
+        result = apply_base_rate_floor(0.75, "KXCPIYOY-26MAR-T3.5", side="no")
         assert result == 0.90
 
     def test_higher_estimate_passes_through(self) -> None:
-        result = apply_base_rate_floor(0.95, "KXCPIYOY-26MAR-T3.5")
+        result = apply_base_rate_floor(0.95, "KXCPIYOY-26MAR-T3.5", side="no")
         assert result == 0.95
 
     def test_exact_match(self) -> None:
-        result = apply_base_rate_floor(0.90, "KXCPIYOY-26MAR-T3.5")
+        result = apply_base_rate_floor(0.90, "KXCPIYOY-26MAR-T3.5", side="no")
         assert result == 0.90
 
     def test_no_match_passes_through(self) -> None:
-        result = apply_base_rate_floor(0.60, "KXFED-26MAR-YES")
+        result = apply_base_rate_floor(0.60, "KXFED-26MAR-YES", side="no")
         assert result == 0.60
 
-    def test_longest_prefix_wins(self) -> None:
-        # KXCPICOREYOY (0.90) should beat KXCPICORE (0.85)
-        result = apply_base_rate_floor(0.70, "KXCPICOREYOY-26MAR-T3.5")
+    def test_series_extraction(self) -> None:
+        # KXCPICOREYOY is the series, not a prefix match
+        result = apply_base_rate_floor(0.70, "KXCPICOREYOY-26MAR-T3.5", side="no")
         assert result == 0.90
 
-    def test_shorter_prefix_when_appropriate(self) -> None:
-        result = apply_base_rate_floor(0.70, "KXCPICORE-26MAR-T0.3")
+    def test_no_prefix_collision(self) -> None:
+        # KXCPICORE-26MAR should match KXCPICORE (0.85), not be confused
+        # with KXCPICOREYOY
+        result = apply_base_rate_floor(0.70, "KXCPICORE-26MAR-T0.3", side="no")
         assert result == 0.85
 
     def test_custom_base_rates(self) -> None:
         custom = {"KXFOO": 0.92}
-        result = apply_base_rate_floor(0.80, "KXFOO-26MAR-T1", base_rates=custom)
+        result = apply_base_rate_floor(0.80, "KXFOO-26MAR-T1", side="no", base_rates=custom)
         assert result == 0.92
 
+    def test_yes_side_skips_floor(self) -> None:
+        # NO base rates should NOT apply to YES trades
+        result = apply_base_rate_floor(0.60, "KXCPIYOY-26MAR-T3.5", side="yes")
+        assert result == 0.60
+
+    def test_both_side_skips_floor(self) -> None:
+        result = apply_base_rate_floor(0.60, "KXCPIYOY-26MAR-T3.5", side="both")
+        assert result == 0.60
+
+    def test_default_side_is_no(self) -> None:
+        result = apply_base_rate_floor(0.70, "KXCPIYOY-26MAR-T3.5")
+        assert result == 0.90  # default side="no" applies floor
+
     def test_floor_increases_position_size(self) -> None:
-        # Low probability = tiny position
         low_contracts = position_size(10000, 0.65, 0.70)
-        # Floored probability = bigger position
-        floored_prob = apply_base_rate_floor(0.70, "KXCPIYOY-26MAR-T3.5")
+        floored_prob = apply_base_rate_floor(0.70, "KXCPIYOY-26MAR-T3.5", side="no")
         floored_contracts = position_size(10000, 0.65, floored_prob)
         assert floored_contracts > low_contracts

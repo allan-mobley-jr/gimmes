@@ -479,7 +479,7 @@ async def run_backtest(
                 continue
             eff_price = effective_price(raw_price, scan_side)
             true_prob = min(eff_price + config.assumed_edge, 0.99)
-            true_prob = apply_base_rate_floor(true_prob, orig_m.ticker)
+            true_prob = apply_base_rate_floor(true_prob, orig_m.ticker, side=scan_side)
             count = position_size(
                 config.starting_balance,
                 eff_price,

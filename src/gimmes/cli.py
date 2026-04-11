@@ -436,7 +436,7 @@ def size(
             fees = get_multipliers(market.series_ticker)
 
             bankroll = config.bankroll
-            probability = apply_base_rate_floor(probability, ticker)
+            probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
             kf = kelly_fraction(
                 price, probability,
                 fraction=config.sizing.kelly_fraction, fees=fees,
@@ -503,7 +503,7 @@ def validate(
                 await sync_positions(db, positions)
 
             fees = get_multipliers(market.series_ticker)
-            probability = apply_base_rate_floor(probability, ticker)
+            probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
             if dollars <= 0:
                 contracts = position_size(
                     bankroll, price, probability,
@@ -662,7 +662,7 @@ def order(
 
             bankroll = config.bankroll
             if is_buy and count <= 0 and probability is not None:
-                probability = apply_base_rate_floor(probability, ticker)
+                probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
                 final_count = position_size(
                     bankroll, eff_price, probability,
                     fraction=config.sizing.kelly_fraction,
