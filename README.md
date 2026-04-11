@@ -397,12 +397,12 @@ All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full
 
 A market qualifies as a gimme when it clears all of the following:
 
-- **Buy price:** configurable per side (flat default: 55¢–85¢; recommended dual-side: NO 40¢–75¢, YES 70¢–85¢ via overrides)
-- **Model probability:** configurable per side (flat default: ≥90%; recommended dual-side: NO ≥50%, YES ≥85% via overrides)
-- **GimmeScore:** ≥65 (configurable via `gimme_threshold`) — composite of edge size, signal strength, liquidity, and time value
-- **Liquidity:** Sufficient depth to absorb the position without moving the market
+- **Category:** Must be in a backtested gimme category from the default watchlist (`KXINX`, `KXNASDAQ100`, `KXPAYROLLS`, `KXCPIYOY`, `KXCPICORE`, `KXCPICOREYOY`, `KXGDP`, `KXADP`). Additional series such as `KXISMPMI` can be enabled via `scanner.series`
+- **Buy price:** NO side defaults to 40¢–75¢ (`strategy.min_market_price` / `strategy.max_market_price`)
+- **Liquidity:** Sufficient volume and open interest to absorb the position
 - **Time horizon:** Contract resolves within 0.5–90 days (configurable)
 - **Concentration limits:** Max 15% per event, 30% per series — prevents over-exposure
+- **Sanity check:** No exceptional circumstances that invalidate the structural edge
 - **Settlement clarity:** Unambiguous resolution criteria — no subjective carve-outs
 
 ---
@@ -420,15 +420,11 @@ The Scout polls the Kalshi API for active markets in the configured series watch
 
 ### Phase 2 — Research
 
-For every shortlisted market, the Caddie runs a structured research pass:
+For candidates in backtested gimme categories, the Caddie runs a **sanity check** — a quick verification that no exceptional circumstance invalidates the structural edge (government shutdown, data revision, one-time event). This replaces the previous deep research mode for proven categories, saving ~80% of tokens per candidate.
 
-- Current news and recent developments
-- Social sentiment (X/Twitter, Reddit, relevant forums)
-- Domain-specific data (polling averages, economic nowcasts, injury reports, weather forecasts)
-- Cross-platform check (Polymarket, ForecastEx) for divergent pricing signals
-- Historical base rates for comparable events
+For non-gimme or new categories, the Caddie runs a full structured research pass: news, sentiment, domain-specific data, cross-platform pricing, and historical base rates.
 
-**Threshold ladder research:** When multiple candidates share the same event (e.g., KXCPI-26APR at T0.3, T0.5, T0.8), the Caddie researches the underlying event once, estimates the probability distribution, and derives per-threshold probabilities. This ensures consistency and efficiency — one research pass covers all thresholds.
+**Threshold ladder research:** When multiple candidates share the same event (e.g., KXCPI-26APR at T0.3, T0.5, T0.8), the Caddie researches the underlying event once and derives per-threshold probabilities — one research pass covers all thresholds.
 
 Candidates are eligible for re-research after 48 hours regardless of prior score, ensuring stale rejections from a different macro environment don't block fresh evaluation.
 
@@ -475,6 +471,8 @@ edge_dollars     = (true_probability × $1.00) - price - fees
 ratio            = edge_dollars / cost_per_contract
 position_size    = 0.25 × ratio × bankroll
 ```
+
+**Base rate floor:** For gimme categories with backtested win rates, the probability input is floored at the category base rate (80-90%) to prevent undersizing from conservative LLM estimates. If the Caddie estimates higher than the base rate, the higher estimate is used. This ensures positions are sized to the known structural edge, not the per-trade LLM noise.
 
 Hard limits applied regardless of sizing mode:
 - Max 10% of bankroll per position (configurable)

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-04-11
+
+### Fixed
+- Position sizing now uses backtested category base rates (80-90%) as a probability floor instead of unreliable LLM estimates (55-65%), increasing position sizes ~3.3x in gimme categories — only applied to NO-side trades, uses exact series matching to prevent prefix collisions (#517)
+
+### Changed
+- Updated README: documented Caddie sanity-check mode, base rate floor for sizing, simplified gimme criteria to reflect category-first approach
+
 ## [0.6.0] - 2026-04-11
 
 ### Added
@@ -200,6 +208,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.6.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.6.1
 [0.6.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.6.0
 [0.5.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.1
 [0.5.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.0
