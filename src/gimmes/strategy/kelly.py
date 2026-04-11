@@ -4,7 +4,34 @@ from __future__ import annotations
 
 from typing import Literal
 
+from gimmes.config import CATEGORY_BASE_RATES
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
+
+
+def apply_base_rate_floor(
+    true_probability: float,
+    ticker: str,
+    base_rates: dict[str, float] | None = None,
+) -> float:
+    """Apply category base rate as a floor to the probability estimate.
+
+    Matches the ticker against series prefixes in *base_rates* (longest
+    prefix wins).  If the base rate exceeds *true_probability*, returns
+    the base rate.  Otherwise returns *true_probability* unchanged.
+    """
+    if base_rates is None:
+        base_rates = CATEGORY_BASE_RATES
+
+    best_rate = 0.0
+    best_len = 0
+    for prefix, rate in base_rates.items():
+        if ticker.startswith(prefix) and len(prefix) > best_len:
+            best_rate = rate
+            best_len = len(prefix)
+
+    if best_len == 0:
+        return true_probability
+    return max(true_probability, best_rate)
 
 
 def kelly_fraction(

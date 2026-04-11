@@ -418,7 +418,7 @@ def size(
         from gimmes.reporting.formatter import format_kv_table
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import edge_after_fees, fee_for_order
-        from gimmes.strategy.kelly import kelly_fraction, position_size
+        from gimmes.strategy.kelly import apply_base_rate_floor, kelly_fraction, position_size
 
         async with trading_context(config) as (client, broker, _db):
             market = await get_market(client, ticker)
@@ -436,6 +436,7 @@ def size(
             fees = get_multipliers(market.series_ticker)
 
             bankroll = config.bankroll
+            probability = apply_base_rate_floor(probability, ticker)
             kf = kelly_fraction(
                 price, probability,
                 fraction=config.sizing.kelly_fraction, fees=fees,
@@ -481,7 +482,7 @@ def validate(
         from gimmes.risk.validator import validate_trade
         from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis
         from gimmes.strategy.fee_cache import get_multipliers
-        from gimmes.strategy.kelly import position_size
+        from gimmes.strategy.kelly import apply_base_rate_floor, position_size
         from gimmes.strategy.scanner import effective_price
 
         async with trading_context(config) as (client, broker, db):
@@ -502,6 +503,7 @@ def validate(
                 await sync_positions(db, positions)
 
             fees = get_multipliers(market.series_ticker)
+            probability = apply_base_rate_floor(probability, ticker)
             if dollars <= 0:
                 contracts = position_size(
                     bankroll, price, probability,
@@ -631,7 +633,7 @@ def order(
         from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis, insert_error
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
-        from gimmes.strategy.kelly import position_size
+        from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 
         logger = logging.getLogger("gimmes.cli")
 
@@ -660,6 +662,7 @@ def order(
 
             bankroll = config.bankroll
             if is_buy and count <= 0 and probability is not None:
+                probability = apply_base_rate_floor(probability, ticker)
                 final_count = position_size(
                     bankroll, eff_price, probability,
                     fraction=config.sizing.kelly_fraction,

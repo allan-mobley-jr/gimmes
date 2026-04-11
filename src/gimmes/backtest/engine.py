@@ -18,7 +18,7 @@ from gimmes.risk.limits import (
     compute_exposure_for_group,
 )
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
-from gimmes.strategy.kelly import position_size
+from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
 
@@ -479,6 +479,7 @@ async def run_backtest(
                 continue
             eff_price = effective_price(raw_price, scan_side)
             true_prob = min(eff_price + config.assumed_edge, 0.99)
+            true_prob = apply_base_rate_floor(true_prob, orig_m.ticker)
             count = position_size(
                 config.starting_balance,
                 eff_price,
