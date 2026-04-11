@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-04-11
+
+### Added
+- `gimmes monitor` command for local driving range health checks with iMessage alerts — runs hourly via cron during weekday trade windows, checks risk limits, cycle failures, and error logs (#511)
+- Caddie sanity-check mode for gimme categories — 30-second 3-check fast path using category base rates instead of 5-minute deep research, ~80% token savings per candidate (#514)
+- Clubhouse dashboard displays per-side config values (YES/NO) when in dual-side mode (#512)
+- Exponential backoff (30/60/120/240s) on transient cycle failures instead of fixed sleep (#506)
+
+### Changed
+- Default scanner watchlist reduced from 51 series to 8 backtested gimme series — removes categories with negative backtested P&L; users can restore via `gimmes config set scanner.series` (#513)
+
 ## [0.5.1] - 2026-04-10
 
 ### Fixed
@@ -189,6 +200,7 @@ on Kalshi prediction markets using a team of Claude Code agents.
 - Self-update command with stale-code protection and tag-based version
   checks
 
+[0.6.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.6.0
 [0.5.1]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.1
 [0.5.0]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.5.0
 [0.4.2]: https://github.com/allan-mobley-jr/gimmes/releases/tag/v0.4.2
