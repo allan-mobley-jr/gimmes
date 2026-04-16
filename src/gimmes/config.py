@@ -315,6 +315,28 @@ class StrategyConfig(BaseModel):
             "max_val": 0.50,
         },
     )
+    cm_min_edge_after_fees: float = Field(
+        default=0.05, ge=0.0, le=1.0,
+        json_schema_extra={
+            "display_name": "CM Min Edge After Fees",
+            "description": (
+                "The minimum edge Caddie Master requires before approving a PROCEED\n"
+                "candidate in Step 4c review. CM cites this number when rejecting\n"
+                "on edge magnitude, so reviews are auditable instead of subjective.\n"
+                "\n"
+                "This is a second gate above min_edge_after_fees. It must be >=\n"
+                "strategy.min_edge_after_fees — CM can never be laxer than the\n"
+                "validator. Set equal to min_edge_after_fees to effectively disable\n"
+                "CM's extra edge gate.\n"
+                "\n"
+                "  • 0.05 (default): 5pp floor for CM approval\n"
+                "  • Higher (e.g. 0.08): CM insists on fatter edges than validator\n"
+                "  • = min_edge_after_fees: No extra CM edge gate (validator only)"
+            ),
+            "min_val": 0.0,
+            "max_val": 0.50,
+        },
+    )
     cycle_timeout: int = Field(
         default=2700, gt=0,
         json_schema_extra={
@@ -332,6 +354,21 @@ class StrategyConfig(BaseModel):
             "max_val": 86400,
         },
     )
+
+    @model_validator(mode="after")
+    def _reconcile_cm_floor(self) -> StrategyConfig:
+        cm_explicit = "cm_min_edge_after_fees" in self.model_fields_set
+        if self.cm_min_edge_after_fees < self.min_edge_after_fees:
+            if cm_explicit:
+                raise ValueError(
+                    f"strategy.cm_min_edge_after_fees "
+                    f"({self.cm_min_edge_after_fees:.3f}) must be >= "
+                    f"strategy.min_edge_after_fees "
+                    f"({self.min_edge_after_fees:.3f}) — "
+                    f"Caddie Master cannot be laxer than the validator."
+                )
+            self.cm_min_edge_after_fees = self.min_edge_after_fees
+        return self
 
 
 class SizingConfig(BaseModel):

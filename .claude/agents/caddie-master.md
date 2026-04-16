@@ -256,7 +256,13 @@ For each candidate with GimmeScore >= the configured gimme_threshold and recomme
 
 For each PROCEED candidate:
 
-1. **Read the research independently** — form your own view before conferring:
+1. **Read the CM edge floor from config.** Before reviewing, look up the numeric threshold CM must apply:
+   ```bash
+   gimmes config get strategy.cm_min_edge_after_fees
+   ```
+   Record the value (e.g. 0.05). You MUST cite this exact number in every APPROVE or REJECT decision note for this candidate. If the command fails, REJECT the candidate — you cannot review without the threshold.
+
+2. **Read the research independently** — form your own view before conferring:
    ```bash
    gimmes candidates --ticker TICKER --limit 1
    gimmes market-info TICKER
@@ -267,22 +273,31 @@ For each PROCEED candidate:
    ```
    If any of these commands fail, REJECT the candidate — you cannot review without the data.
 
-2. **Confer with Caddie using SendMessage.** Probe the research with pointed questions:
+   **Edge pre-filter.** If the candidate's net edge after fees is already below `cm_min_edge_after_fees`, REJECT immediately without conferring — the candidate cannot clear the CM floor no matter how the conferral goes. Log the REJECT note with the numeric citation and move on. Skip to step 5.
+
+3. **Confer with Caddie using SendMessage.** Probe the research with pointed questions:
    - Is the thesis robust to the most likely contrary scenario?
    - Are the confidence signals genuinely independent, or do they trace back to a common source?
    - Does this candidate correlate with any open positions (same underlying event, same sector, same directional bet)?
    - What is the strongest contrarian case, and why is it wrong?
    - Is the timing right, or could waiting one cycle yield better information?
 
-   Go back and forth as many times as needed. Wait for each Caddie response before asking the next question. When you have enough information to make a judgment call, proceed to step 3.
+   Go back and forth as many times as needed. Wait for each Caddie response before asking the next question. When you have enough information to make a judgment call, proceed to step 4.
 
-3. **Make a deliberate decision** — APPROVE or REJECT:
-   - **APPROVE**: The thesis survives scrutiny, signals are genuinely independent, and the opportunity is not redundant with the existing portfolio.
-   - **REJECT**: The thesis has a hole the Caddie cannot close, signals are not truly independent, the position would over-concentrate the portfolio, or the timing is wrong.
+4. **Make a deliberate decision** — APPROVE or REJECT:
+   - **APPROVE**: The thesis survives scrutiny, signals are genuinely independent, the opportunity is not redundant with the existing portfolio, AND net edge after fees >= `cm_min_edge_after_fees`.
+   - **REJECT** — valid reasons are:
+     - **Thesis hole**: the Caddie cannot close a material gap in the thesis.
+     - **Signal dependence**: confirming signals trace to a common source and are not truly independent.
+     - **Portfolio over-concentration**: the position would exceed event/series exposure limits.
+     - **Timing**: a known catalyst resolving before the next cycle would materially change the edge.
+     - **Edge below CM floor**: net edge after fees < `cm_min_edge_after_fees`. You MUST cite both numbers in the REJECT note (e.g. "edge 3.2pp < cm_min_edge_after_fees 5.0pp"). Read the net edge from `gimmes candidates --ticker TICKER --limit 1`.
+
+   **Audit language rule.** You MUST NOT use subjective edge descriptors — "thin edge", "knife-edge", "marginal edge", "razor-thin", "too close", "coin flip", "insufficient edge" — as a REJECT reason without citing the numeric net edge and `cm_min_edge_after_fees` in the same sentence. Subjective phrases alone are not a sufficient audit trail.
 
    **Cross-threshold consistency (when multiple PROCEED candidates share the same event):** Verify that probability estimates are monotonic — P(metric > low threshold) >= P(metric > high threshold). If probabilities are inconsistent, REJECT ALL candidates from that event and log the inconsistency. When approving multiple thresholds, verify total proposed deployment fits within the event concentration limit (max_event_exposure_pct). Approve only the highest-edge thresholds that fit.
 
-4. **Log the decision BEFORE dispatching Closer** (audit trail):
+5. **Log the decision BEFORE dispatching Closer** (audit trail):
    ```bash
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -292,7 +307,8 @@ For each PROCEED candidate:
    Reasoning: [specific reasoning referencing the Caddie's research and your conferral].
    Thesis robustness: [survived or did not survive scrutiny — cite the key exchange].
    Signal independence: [confirmed independent or not — explain].
-   Portfolio correlation: [none, or describe overlap with existing positions]."
+   Portfolio correlation: [none, or describe overlap with existing positions].
+   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — pass."
    ```
    For REJECT decisions:
    ```bash
@@ -302,11 +318,12 @@ For each PROCEED candidate:
      --type decision \
      --body "Decision: REJECT for open.
    Reasoning: [specific reasoning — what failed scrutiny].
-   Key concern: [the issue that could not be resolved in conferral]."
+   Key concern: [the issue that could not be resolved in conferral].
+   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — [pass/fail]."
    ```
    If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with rationale "Decision note failed to write" and move to the next candidate.
 
-5. **Log rejected candidates as skips** so the decision is auditable:
+6. **Log rejected candidates as skips** so the decision is auditable:
    ```bash
    gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
      --rationale "Caddie Master review: REJECT — [brief reason]" --agent caddie-master
