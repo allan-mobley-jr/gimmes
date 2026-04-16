@@ -436,24 +436,24 @@ def size(
             fees = get_multipliers(market.series_ticker)
 
             bankroll = config.bankroll
-            probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
+            true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
             kf = kelly_fraction(
-                price, probability,
+                price, true_prob,
                 fraction=config.sizing.kelly_fraction, fees=fees,
             )
             contracts = position_size(
-                bankroll, price, probability,
+                bankroll, price, true_prob,
                 fraction=config.sizing.kelly_fraction,
                 max_position_pct=config.sizing.max_position_pct, fees=fees,
                 mode=config.sizing.mode,
             )
             fee = fee_for_order(contracts, price, is_taker=False, fees=fees)
-            edge = edge_after_fees(price, probability, fees=fees)
+            edge = edge_after_fees(price, true_prob, fees=fees)
             cost = contracts * price + fee
 
             table = format_kv_table(f"Position Sizing: {ticker}", [
                 ("Market Price", f"${price:.2f}"),
-                ("True Probability", f"{probability:.1%}"),
+                ("True Probability", f"{true_prob:.1%}"),
                 ("Edge After Fees", f"{edge:.1%}"),
                 ("Kelly Fraction", f"{kf:.4f}"),
                 ("Bankroll", f"${bankroll:,.2f}"),
@@ -503,10 +503,10 @@ def validate(
                 await sync_positions(db, positions)
 
             fees = get_multipliers(market.series_ticker)
-            probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
+            true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
             if dollars <= 0:
                 contracts = position_size(
-                    bankroll, price, probability,
+                    bankroll, price, true_prob,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                     mode=config.sizing.mode,
@@ -557,7 +557,7 @@ def validate(
             event_exp = compute_exposure_for_group(positions, market.event_ticker)
             series_exp = compute_exposure_for_group(positions, market.series_ticker)
             result = validate_trade(
-                market, trade_dollars, probability, bankroll,
+                market, trade_dollars, true_prob, bankroll,
                 total_daily_pnl, len(positions), existing_tickers, config,
                 fees=fees, deployed_cost_basis=deployed, size_up=size_up,
                 existing_cost_basis=existing_cost_basis,
@@ -661,10 +661,11 @@ def order(
             is_taker = config.orders.preferred_order_type != "maker"
 
             bankroll = config.bankroll
+            true_prob = probability
             if is_buy and count <= 0 and probability is not None:
-                probability = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
+                true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
                 final_count = position_size(
-                    bankroll, eff_price, probability,
+                    bankroll, eff_price, true_prob,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                     mode=config.sizing.mode,
@@ -754,8 +755,6 @@ def order(
                             " override.[/red]"
                         )
                         return
-
-                true_prob = probability
 
                 existing_cost_basis = 0.0
                 if size_up:
