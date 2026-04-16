@@ -3258,7 +3258,7 @@ def _detect_api_error(output: bytes) -> tuple[bool, bool, str]:
             parsed = _json.loads(output.strip())
         except (_json.JSONDecodeError, UnicodeDecodeError):
             return False, False, ""
-        if isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed.get("type") == "result":
             event = parsed
 
     if event is None or not event.get("is_error"):
@@ -3277,6 +3277,35 @@ def _detect_api_error(output: bytes) -> tuple[bool, bool, str]:
 
     is_transient = any(p.search(detail) for p in _transient_api_patterns())
     return True, is_transient, detail
+
+
+def _apply_failure_backoff(
+    consecutive_failures: int,
+    max_consecutive_failures: int,
+) -> bool:
+    """Check circuit breaker after a cycle failure; apply backoff if not.
+
+    Returns True if the caller should halt the loop (breaker tripped),
+    False if the caller should ``continue`` after the backoff sleep.
+    Callers increment ``consecutive_failures`` and print their own
+    branch-specific failure message before invoking this helper.
+    """
+    import time as _time
+
+    if (max_consecutive_failures > 0
+            and consecutive_failures >= max_consecutive_failures):
+        console.print(
+            f"[red bold]Circuit breaker tripped:"
+            f" {max_consecutive_failures} consecutive"
+            f" failures. Halting autonomous loop.[/red bold]"
+        )
+        return True
+    backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
+    console.print(
+        f"[dim]Backoff: retrying in {backoff}s...[/dim]"
+    )
+    _time.sleep(backoff)
+    return False
 
 
 def _check_code_staleness(
@@ -3810,21 +3839,11 @@ def _autonomous_loop(
                         f" (failure {consecutive_failures}"
                         f"/{max_consecutive_failures})[/yellow]"
                     )
-                    if (max_consecutive_failures > 0
-                            and consecutive_failures >= max_consecutive_failures):
-                        console.print(
-                            f"[red bold]Circuit breaker tripped:"
-                            f" {max_consecutive_failures} consecutive"
-                            f" failures. Halting autonomous loop."
-                            f"[/red bold]"
-                        )
+                    if _apply_failure_backoff(
+                        consecutive_failures, max_consecutive_failures,
+                    ):
                         session_status = "crashed"
                         break
-                    backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
-                    console.print(
-                        f"[dim]Backoff: retrying in {backoff}s...[/dim]"
-                    )
-                    time.sleep(backoff)
                     continue
 
             except subprocess.TimeoutExpired:
@@ -3836,20 +3855,11 @@ def _autonomous_loop(
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
-                if (max_consecutive_failures > 0
-                        and consecutive_failures >= max_consecutive_failures):
-                    console.print(
-                        f"[red bold]Circuit breaker tripped:"
-                        f" {max_consecutive_failures} consecutive"
-                        f" failures. Halting autonomous loop.[/red bold]"
-                    )
+                if _apply_failure_backoff(
+                    consecutive_failures, max_consecutive_failures,
+                ):
                     session_status = "crashed"
                     break
-                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
-                console.print(
-                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
-                )
-                time.sleep(backoff)
                 continue
 
             if returncode != 0:
@@ -3860,20 +3870,11 @@ def _autonomous_loop(
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
-                if (max_consecutive_failures > 0
-                        and consecutive_failures >= max_consecutive_failures):
-                    console.print(
-                        f"[red bold]Circuit breaker tripped:"
-                        f" {max_consecutive_failures} consecutive"
-                        f" failures. Halting autonomous loop.[/red bold]"
-                    )
+                if _apply_failure_backoff(
+                    consecutive_failures, max_consecutive_failures,
+                ):
                     session_status = "crashed"
                     break
-                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
-                console.print(
-                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
-                )
-                time.sleep(backoff)
                 continue
             else:
                 consecutive_failures = 0
