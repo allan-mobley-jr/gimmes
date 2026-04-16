@@ -16,12 +16,18 @@ mark a name as local and all of them would reintroduce the bug.
 from __future__ import annotations
 
 import symtable
+from functools import cache
 from pathlib import Path
 
 import pytest
 
 CLI_PATH = Path(__file__).resolve().parents[2] / "src" / "gimmes" / "cli.py"
 GUARDED_FUNCTIONS = ("_size", "_validate", "_order")
+
+
+@cache
+def _cli_symtable() -> symtable.SymbolTable:
+    return symtable.symtable(CLI_PATH.read_text(), str(CLI_PATH), "exec")
 
 
 def _find_nested(parent: symtable.SymbolTable, name: str) -> symtable.Function | None:
@@ -36,8 +42,7 @@ def _find_nested(parent: symtable.SymbolTable, name: str) -> symtable.Function |
 
 @pytest.mark.parametrize("func_name", GUARDED_FUNCTIONS)
 def test_probability_parameter_is_not_shadowed(func_name: str) -> None:
-    table = symtable.symtable(CLI_PATH.read_text(), str(CLI_PATH), "exec")
-    func = _find_nested(table, func_name)
+    func = _find_nested(_cli_symtable(), func_name)
     assert func is not None, f"{func_name} not found in cli.py"
 
     try:
