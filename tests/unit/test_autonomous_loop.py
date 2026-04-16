@@ -16,6 +16,7 @@ from gimmes.cli import (
     _check_code_staleness,
     _check_remote_staleness,
     _communicate_interruptible,
+    _detect_api_error,
     _detect_rate_limit,
     _extract_terminal_text,
     _set_mode,
@@ -1180,6 +1181,244 @@ class TestDetectRateLimit:
         )
         is_limited, pause = _detect_rate_limit(output)
         assert is_limited is True
+
+
+def _stream_json_result(is_error: bool, result: object) -> bytes:
+    import json
+
+    envelope = {"type": "result", "is_error": is_error, "result": result}
+    return (b'{"type":"assistant"}\n' + json.dumps(envelope).encode() + b"\n")
+
+
+class TestDetectApiError:
+    """Tests for _detect_api_error helper (issue #522)."""
+
+    def test_detects_api_500(self) -> None:
+        output = _stream_json_result(
+            True,
+            'API Error: 500 {"type":"error","error":{"type":"api_error",'
+            '"message":"Internal server error"}} · check status.claude.com',
+        )
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+        assert "500" in detail
+
+    @pytest.mark.parametrize("code", [502, 503, 504, 529, 599])
+    def test_detects_other_5xx(self, code: int) -> None:
+        output = _stream_json_result(True, f"API Error: {code} Upstream failure")
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+
+    def test_detects_overloaded_error(self) -> None:
+        output = _stream_json_result(
+            True, '{"type":"overloaded_error","message":"Overloaded"}',
+        )
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+
+    def test_detects_timeout(self) -> None:
+        output = _stream_json_result(True, "Request timed out after 600s")
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+
+    def test_detects_connection_reset(self) -> None:
+        output = _stream_json_result(True, "connection reset by peer (ECONNRESET)")
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+
+    def test_permanent_4xx_auth_error_is_error_but_not_transient(self) -> None:
+        output = _stream_json_result(
+            True, "API Error: 401 authentication_error: invalid x-api-key",
+        )
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is False
+        assert "401" in detail
+
+    def test_permanent_invalid_request_is_error_but_not_transient(self) -> None:
+        output = _stream_json_result(True, "invalid_request_error: tool not found")
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is False
+
+    def test_success_envelope_is_not_error(self) -> None:
+        output = _stream_json_result(
+            False, "Cycle complete. All steps passed. No timeout.",
+        )
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is False
+        assert is_transient is False
+
+    def test_empty_output(self) -> None:
+        assert _detect_api_error(b"") == (False, False, "")
+        assert _detect_api_error(b"   \n") == (False, False, "")
+
+    def test_no_result_event(self) -> None:
+        output = b'{"type":"assistant"}\n{"type":"tool_use"}\n'
+        assert _detect_api_error(output) == (False, False, "")
+
+    def test_malformed_json_lines_are_skipped(self) -> None:
+        output = (
+            b"not-json\n"
+            + _stream_json_result(True, "API Error: 500 bad")
+        )
+        had_error, is_transient, _ = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+
+    def test_null_result_uses_subtype_as_detail(self) -> None:
+        output = (
+            b'{"type":"result","is_error":true,"result":null,'
+            b'"subtype":"error_during_execution"}\n'
+        )
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is False
+        assert detail == "error_during_execution"
+
+    def test_mixed_stream_picks_terminal_result_event(self) -> None:
+        # assistant + tool_use events before and after the result envelope
+        import json
+
+        msgs = [
+            b'{"type":"system","subtype":"init"}',
+            b'{"type":"assistant","message":"reasoning"}',
+            b'{"type":"tool_use","name":"Bash"}',
+            json.dumps({
+                "type": "result", "is_error": True,
+                "result": "API Error: 503 Service Unavailable",
+            }).encode(),
+        ]
+        output = b"\n".join(msgs) + b"\n"
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+        assert "503" in detail
+
+    def test_utf8_non_ascii_bytes_in_detail(self) -> None:
+        # The real-world error string includes U+00B7 middle dot (\xc2\xb7)
+        import json
+
+        envelope = {
+            "type": "result", "is_error": True,
+            "result": "API Error: 500 Internal server error \u00b7 status.claude.com",
+        }
+        output = json.dumps(envelope, ensure_ascii=False).encode("utf-8") + b"\n"
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+        assert "\u00b7" in detail
+
+    def test_dict_result_is_serialized_to_json(self) -> None:
+        output = _stream_json_result(
+            True, {"type": "overloaded_error", "message": "Overloaded"},
+        )
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+        assert '"overloaded_error"' in detail
+
+
+class TestApiErrorLoopIntegration:
+    """Loop-level integration for #522 — API errors retry via backoff."""
+
+    def test_transient_api_error_triggers_backoff_and_retries(
+        self, capsys,  # type: ignore[no-untyped-def]
+    ) -> None:
+        transient_output = _stream_json_result(
+            True, "API Error: 500 Internal server error",
+        )
+        ok_output = _stream_json_result(False, "ok")
+        call_count = 0
+
+        def popen_side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_popen(returncode=0, output=transient_output)
+            return _mock_popen(returncode=0, output=ok_output)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=popen_side_effect),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
+            patch("gimmes.cli._check_remote_staleness", return_value=None),
+            patch("time.sleep") as mock_sleep,
+        ):
+            _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
+
+        out = capsys.readouterr().out
+        assert "transient API error" in out
+        mock_sleep.assert_any_call(30)
+        assert call_count == 2
+
+    def test_permanent_api_error_still_counts_as_failure(
+        self, capsys,  # type: ignore[no-untyped-def]
+    ) -> None:
+        # A 401 auth failure is not transient but must still be counted as
+        # a cycle failure. Otherwise consecutive_failures resets and the
+        # loop burns forever on a broken API key — the original #522 bug
+        # class, just for permanent instead of transient errors.
+        permanent_output = _stream_json_result(
+            True, "API Error: 401 authentication_error: invalid x-api-key",
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(
+                    returncode=0, output=permanent_output,
+                ),
+            ) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
+            patch("gimmes.cli._check_remote_staleness", return_value=None),
+            patch("time.sleep"),
+        ):
+            _autonomous_loop(
+                "driving_range", pause_seconds=0,
+                max_consecutive_failures=2,
+            )
+
+        out = capsys.readouterr().out
+        assert mock_popen.call_count == 2
+        assert "API error" in out
+        assert "transient API error" not in out
+        assert "Circuit breaker tripped" in out
+
+    def test_api_error_trips_circuit_breaker(
+        self, capsys,  # type: ignore[no-untyped-def]
+    ) -> None:
+        transient_output = _stream_json_result(
+            True, "API Error: 503 Service Unavailable",
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(
+                    returncode=0, output=transient_output,
+                ),
+            ) as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
+            patch("gimmes.cli._check_remote_staleness", return_value=None),
+            patch("time.sleep"),
+        ):
+            _autonomous_loop(
+                "driving_range", pause_seconds=0,
+                max_consecutive_failures=3,
+            )
+
+        assert mock_popen.call_count == 3
+        out = capsys.readouterr().out
+        assert "Circuit breaker tripped" in out
 
 
 class TestCaddieMasterAgent:

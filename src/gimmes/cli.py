@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import re
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -3205,6 +3207,107 @@ def _detect_rate_limit(output: bytes) -> tuple[bool, int]:
     return True, 1800  # 30 min fallback
 
 
+@functools.cache
+def _transient_api_patterns() -> tuple[re.Pattern[str], ...]:
+    sources = (
+        r"API Error:\s*5\d{2}\b",
+        r"\boverloaded_error\b",
+        r"\bOverloaded\b",
+        r"\btimed?[\s_-]?out\b",
+        r"\bconnection\s+(?:error|reset|refused|aborted)\b",
+        r"\bECONNRESET\b|\bETIMEDOUT\b",
+        r"\b(?:read|write)\s+timeout\b",
+    )
+    return tuple(re.compile(p, re.IGNORECASE) for p in sources)
+
+
+def _detect_api_error(output: bytes) -> tuple[bool, bool, str]:
+    """Classify the Claude SDK result envelope for API-level errors.
+
+    Returns ``(had_error, is_transient, detail)`` where:
+    - ``had_error`` is True when the terminal ``type: result`` event has
+      ``is_error: true`` — the cycle failed inside the SDK even when the
+      subprocess returncode is 0.
+    - ``is_transient`` is True when the error string matches a known
+      retryable pattern (5xx, overloaded, timeout, connection reset).
+      Callers should still treat non-transient errors as failures — the
+      circuit breaker bounds retry on persistent/permanent errors.
+    - ``detail`` is the serialized error content for logging.
+    """
+    import json as _json
+
+    if not output or not output.strip():
+        return False, False, ""
+
+    event: dict[str, object] | None = None
+    lines = output.strip().split(b"\n")
+    if len(lines) > 1:
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = _json.loads(line)
+            except (_json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(parsed, dict) and parsed.get("type") == "result":
+                event = parsed
+                break
+    else:
+        try:
+            parsed = _json.loads(output.strip())
+        except (_json.JSONDecodeError, UnicodeDecodeError):
+            return False, False, ""
+        if isinstance(parsed, dict) and parsed.get("type") == "result":
+            event = parsed
+
+    if event is None or not event.get("is_error"):
+        return False, False, ""
+
+    raw = event.get("result")
+    if raw is None:
+        detail = str(event.get("subtype") or "unknown")
+    elif isinstance(raw, str):
+        detail = raw
+    else:
+        try:
+            detail = _json.dumps(raw)
+        except (TypeError, ValueError):
+            detail = str(raw)
+
+    is_transient = any(p.search(detail) for p in _transient_api_patterns())
+    return True, is_transient, detail
+
+
+def _apply_failure_backoff(
+    consecutive_failures: int,
+    max_consecutive_failures: int,
+) -> bool:
+    """Check circuit breaker after a cycle failure; apply backoff if not.
+
+    Returns True if the caller should halt the loop (breaker tripped),
+    False if the caller should ``continue`` after the backoff sleep.
+    Callers increment ``consecutive_failures`` and print their own
+    branch-specific failure message before invoking this helper.
+    """
+    import time as _time
+
+    if (max_consecutive_failures > 0
+            and consecutive_failures >= max_consecutive_failures):
+        console.print(
+            f"[red bold]Circuit breaker tripped:"
+            f" {max_consecutive_failures} consecutive"
+            f" failures. Halting autonomous loop.[/red bold]"
+        )
+        return True
+    backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
+    console.print(
+        f"[dim]Backoff: retrying in {backoff}s...[/dim]"
+    )
+    _time.sleep(backoff)
+    return False
+
+
 def _check_code_staleness(
     project_root: Path,
     startup_commit: str | None,
@@ -3719,6 +3822,30 @@ def _autonomous_loop(
                     consecutive_failures = 0
                     continue
 
+                # --- Anthropic API error detection ---
+                # SDK returns is_error=true with returncode=0 for API errors.
+                # Route every such case through the failure/backoff path so
+                # the circuit breaker bounds retry on persistent errors.
+                had_api_error, is_transient, api_detail = _detect_api_error(
+                    stdout_bytes,
+                )
+                if had_api_error:
+                    consecutive_failures += 1
+                    kind = "transient API error" if is_transient else "API error"
+                    snippet = api_detail[:200].replace("\n", " ")
+                    console.print(
+                        f"[yellow]Cycle {cycle} hit {kind}:"
+                        f" {snippet}"
+                        f" (failure {consecutive_failures}"
+                        f"/{max_consecutive_failures})[/yellow]"
+                    )
+                    if _apply_failure_backoff(
+                        consecutive_failures, max_consecutive_failures,
+                    ):
+                        session_status = "crashed"
+                        break
+                    continue
+
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
                 consecutive_failures += 1
@@ -3728,20 +3855,11 @@ def _autonomous_loop(
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
-                if (max_consecutive_failures > 0
-                        and consecutive_failures >= max_consecutive_failures):
-                    console.print(
-                        f"[red bold]Circuit breaker tripped:"
-                        f" {max_consecutive_failures} consecutive"
-                        f" failures. Halting autonomous loop.[/red bold]"
-                    )
+                if _apply_failure_backoff(
+                    consecutive_failures, max_consecutive_failures,
+                ):
                     session_status = "crashed"
                     break
-                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
-                console.print(
-                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
-                )
-                time.sleep(backoff)
                 continue
 
             if returncode != 0:
@@ -3752,20 +3870,11 @@ def _autonomous_loop(
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
-                if (max_consecutive_failures > 0
-                        and consecutive_failures >= max_consecutive_failures):
-                    console.print(
-                        f"[red bold]Circuit breaker tripped:"
-                        f" {max_consecutive_failures} consecutive"
-                        f" failures. Halting autonomous loop.[/red bold]"
-                    )
+                if _apply_failure_backoff(
+                    consecutive_failures, max_consecutive_failures,
+                ):
                     session_status = "crashed"
                     break
-                backoff = min(30 * 2 ** (consecutive_failures - 1), 240)
-                console.print(
-                    f"[dim]Backoff: retrying in {backoff}s...[/dim]"
-                )
-                time.sleep(backoff)
                 continue
             else:
                 consecutive_failures = 0
