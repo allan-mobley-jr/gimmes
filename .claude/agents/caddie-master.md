@@ -260,7 +260,7 @@ For each PROCEED candidate:
    ```bash
    gimmes config get strategy.cm_min_edge_after_fees
    ```
-   Record the value (e.g. 0.05). You MUST cite this exact number in every APPROVE or REJECT decision note for this candidate. If the command fails, REJECT the candidate — you cannot review without the threshold.
+   Record the value and convert to percentage points (e.g. 0.05 = 5pp). You MUST cite the pp value in every APPROVE or REJECT decision note for this candidate. If the command fails, REJECT the candidate — you cannot review without the threshold.
 
 2. **Read the research independently** — form your own view before conferring:
    ```bash
@@ -273,7 +273,7 @@ For each PROCEED candidate:
    ```
    If any of these commands fail, REJECT the candidate — you cannot review without the data.
 
-   **Edge pre-filter.** If the candidate's net edge after fees is already below `cm_min_edge_after_fees`, REJECT immediately without conferring — the candidate cannot clear the CM floor no matter how the conferral goes. Log the REJECT note with the numeric citation and move on. Skip to step 5.
+   **Edge pre-filter.** If the candidate's net edge after fees is already below `cm_min_edge_after_fees`, REJECT immediately without conferring — the candidate cannot clear the CM floor no matter how the conferral goes. Log the REJECT note with the numeric citation and move on. Skip to sub-step 6 (log rejected candidates as skips).
 
 3. **Confer with Caddie using SendMessage.** Probe the research with pointed questions:
    - Is the thesis robust to the most likely contrary scenario?

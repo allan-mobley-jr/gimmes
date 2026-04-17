@@ -316,7 +316,7 @@ class StrategyConfig(BaseModel):
         },
     )
     cm_min_edge_after_fees: float = Field(
-        default=0.05, ge=0.0, le=1.0,
+        default=0.05, ge=0.0, le=0.50,
         json_schema_extra={
             "display_name": "CM Min Edge After Fees",
             "description": (

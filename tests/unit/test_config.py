@@ -209,7 +209,7 @@ class TestCMMinEdgeAfterFees:
     def test_default_is_five_pp(self) -> None:
         assert StrategyConfig().cm_min_edge_after_fees == 0.05
 
-    @pytest.mark.parametrize("value", [-0.01, 1.01, 2.0])
+    @pytest.mark.parametrize("value", [-0.01, 0.51, 1.01])
     def test_bounds_reject_out_of_range(self, value: float) -> None:
         from pydantic import ValidationError
 
