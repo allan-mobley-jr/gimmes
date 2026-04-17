@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.2] - 2026-04-17
 
 ### Added
 - `strategy.cm_min_edge_after_fees` (default 0.05) — explicit edge floor Caddie Master applies in Step 4c review. CM must cite the numeric threshold in every APPROVE/REJECT decision note; subjective descriptors like "thin edge" or "knife-edge" without a numeric citation are forbidden. Invariant: must be >= `strategy.min_edge_after_fees`. (#527)
