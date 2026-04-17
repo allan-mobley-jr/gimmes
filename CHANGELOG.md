@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `strategy.cm_min_edge_after_fees` (default 0.05) — explicit edge floor Caddie Master applies in Step 4c review. CM must cite the numeric threshold in every APPROVE/REJECT decision note; subjective descriptors like "thin edge" or "knife-edge" without a numeric citation are forbidden. Invariant: must be >= `strategy.min_edge_after_fees`. (#527)
+
+### Fixed
+- Driving range crashes on transient Anthropic API 5xx instead of retrying — `is_error: true` result envelopes are now treated as cycle failures and routed through the existing backoff + circuit breaker, recovering from API 5xx, overloads, timeouts, and connection resets (#526)
+- `UnboundLocalError` in `validate`/`size`/`order` CLI commands caused by `probability` variable shadowing in nested async functions (#525)
+
 ## [0.6.1] - 2026-04-11
 
 ### Fixed

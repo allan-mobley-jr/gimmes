@@ -203,6 +203,56 @@ class TestLoadConfig:
         assert config.strategy.min_market_price == 0.55  # default
 
 
+class TestCMMinEdgeAfterFees:
+    """Tests for strategy.cm_min_edge_after_fees (issue #523)."""
+
+    def test_default_is_five_pp(self) -> None:
+        assert StrategyConfig().cm_min_edge_after_fees == 0.05
+
+    @pytest.mark.parametrize("value", [-0.01, 0.51, 1.01])
+    def test_bounds_reject_out_of_range(self, value: float) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StrategyConfig(cm_min_edge_after_fees=value)
+
+    def test_invariant_rejects_explicit_cm_below_validator(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            StrategyConfig(
+                min_edge_after_fees=0.05,
+                cm_min_edge_after_fees=0.01,
+            )
+        assert "must be >= strategy.min_edge_after_fees" in str(exc_info.value)
+
+    def test_cm_auto_bumps_to_validator_when_not_set(self) -> None:
+        # Backward compatibility: users who have raised min_edge_after_fees
+        # above the cm default shouldn't error on upgrade. When cm isn't
+        # explicitly set, it tracks the validator floor.
+        s = StrategyConfig(min_edge_after_fees=0.08)
+        assert s.cm_min_edge_after_fees == 0.08
+
+    def test_invariant_allows_cm_equal_to_validator(self) -> None:
+        s = StrategyConfig(
+            min_edge_after_fees=0.05, cm_min_edge_after_fees=0.05,
+        )
+        assert s.cm_min_edge_after_fees == 0.05
+
+    def test_invariant_allows_cm_above_validator(self) -> None:
+        s = StrategyConfig(
+            min_edge_after_fees=0.03, cm_min_edge_after_fees=0.08,
+        )
+        assert s.cm_min_edge_after_fees == 0.08
+
+    def test_override_via_db(self, tmp_path) -> None:
+        db = tmp_path / "test.db"
+        _create_config_db(db)
+        save_config_value("strategy.cm_min_edge_after_fees", 0.08, db_path=db)
+        config = load_config(db_path=db)
+        assert config.strategy.cm_min_edge_after_fees == 0.08
+
+
 class TestDefaultSeries:
     def test_series_defaults_to_curated_list_when_no_db(self, tmp_path):
         config = load_config(db_path=tmp_path / "nonexistent.db")
