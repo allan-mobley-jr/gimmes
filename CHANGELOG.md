@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-04-18
+
+### Fixed
+- Autonomous loop hangs indefinitely between cycles after macOS system sleep/wake — replaced bare `time.sleep` with chunked `_resilient_sleep` using `time.monotonic()` to detect wall-clock jumps and resume promptly (#531)
+- Monitor staleness alert fires false positives during normal monitor-only cycling — raised default threshold from 2h to 3h, configurable via `GIMMES_STALENESS_THRESHOLD` env var (#532)
+
 ## [0.6.2] - 2026-04-17
 
 ### Added
