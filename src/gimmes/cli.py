@@ -4002,8 +4002,8 @@ def monitor_cmd(
             existing = ""
 
         lines = [
-            l for l in existing.splitlines()
-            if cron_tag not in l
+            line for line in existing.splitlines()
+            if cron_tag not in line
         ]
         lines.append(cron_line)
         subprocess.run(
@@ -4023,8 +4023,8 @@ def monitor_cmd(
                 console.print("[yellow]No crontab found.[/yellow]")
                 return
             lines = [
-                l for l in result.stdout.splitlines()
-                if cron_tag not in l
+                line for line in result.stdout.splitlines()
+                if cron_tag not in line
             ]
             subprocess.run(
                 ["crontab", "-"],
