@@ -15,6 +15,7 @@ LOG_DIR="${GIMMES_HOME}/logs"
 MONITOR_LOG="${LOG_DIR}/monitor.log"
 CONFIG_FILE="${GIMMES_HOME}/monitor.conf"
 NOTIFY_PHONE="+17706162336"
+STALENESS_THRESHOLD="${GIMMES_STALENESS_THRESHOLD:-10800}"
 
 QUIET=false
 [[ "${1:-}" == "--quiet" ]] && QUIET=true
@@ -69,8 +70,8 @@ if [[ -n "$latest_log" ]]; then
         log_age=$(( $(date +%s) - $(stat -c %Y "$latest_log") ))
     fi
     hours_ago=$((log_age / 3600))
-    if [[ "$log_age" -gt 7200 ]]; then
-        issues+=("No cycle in ${hours_ago}h — driving range may have stopped")
+    if [[ "$log_age" -gt "$STALENESS_THRESHOLD" ]]; then
+        issues+=("No cycle in ${hours_ago}h — driving range may have stopped (threshold: $((STALENESS_THRESHOLD/3600))h)")
     fi
 fi
 
