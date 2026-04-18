@@ -3279,6 +3279,24 @@ def _detect_api_error(output: bytes) -> tuple[bool, bool, str]:
     return True, is_transient, detail
 
 
+def _resilient_sleep(seconds: float) -> None:
+    """Sleep that survives macOS system sleep/wake.
+
+    A single ``time.sleep(N)`` can hang indefinitely when the OS suspends
+    the process during lid-close.  This helper sleeps in 60-second chunks
+    and checks ``time.monotonic()`` (which includes suspend time on macOS)
+    between each chunk so the loop resumes promptly after a wake event.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + seconds
+    while True:
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            break
+        _time.sleep(min(remaining, 60))
+
+
 def _apply_failure_backoff(
     consecutive_failures: int,
     max_consecutive_failures: int,
@@ -3290,8 +3308,6 @@ def _apply_failure_backoff(
     Callers increment ``consecutive_failures`` and print their own
     branch-specific failure message before invoking this helper.
     """
-    import time as _time
-
     if (max_consecutive_failures > 0
             and consecutive_failures >= max_consecutive_failures):
         console.print(
@@ -3304,7 +3320,7 @@ def _apply_failure_backoff(
     console.print(
         f"[dim]Backoff: retrying in {backoff}s...[/dim]"
     )
-    _time.sleep(backoff)
+    _resilient_sleep(backoff)
     return False
 
 
@@ -3818,7 +3834,7 @@ def _autonomous_loop(
                         f" {h}h {m:02d}m until reset."
                         f"[/red bold]"
                     )
-                    time.sleep(rl_pause)
+                    _resilient_sleep(rl_pause)
                     consecutive_failures = 0
                     continue
 
@@ -3888,7 +3904,7 @@ def _autonomous_loop(
                 fresh_secs = seconds_until_next_window()
                 post_sleep = min(fresh_secs, monitor_interval)
             console.print(f"[dim]Next cycle in {post_sleep}s...[/dim]")
-            time.sleep(post_sleep)
+            _resilient_sleep(post_sleep)
     except KeyboardInterrupt:
         if proc is not None and proc.poll() is None:
             _kill_process_group(proc)
