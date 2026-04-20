@@ -60,6 +60,7 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
    - Methodology change to the underlying statistic
    - Natural disaster, policy shock, or geopolitical event specifically targeting this metric
    - If YES → flag for Caddie Master review, do NOT auto-pass
+   - **CPI/inflation exception**: When the extraordinary event fires for an inflation category (KXCPI, KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPCECORE), do NOT abandon base-effect arithmetic. The YoY calculation methodology remains valid — the extraordinary event changes the MoM *estimate*, not the *math*. Adjust the MoM input range to reflect the event (e.g., elevated gas prices raise expected MoM from 0.2% to 0.4%), then recompute threshold probabilities mechanically: for each threshold T, calculate the MoM needed for YoY to exceed T, compare that to the adjusted MoM estimate, and derive P(exceed). Still flag for CM review, but include the arithmetic result alongside the flag — do NOT replace arithmetic with a vague "structural edge is broken" conclusion.
 
 2. **Settlement clarity check**: Is the contract settlement language unambiguous?
    - Read the contract rules from `market-info` output
@@ -93,6 +94,12 @@ For candidates NOT in gimme categories, investigate all of these:
 - **Cross-platform pricing**: How other prediction markets price this event
 - **Historical base rates**: How often similar events resolve YES
 - **Settlement rules**: Any red flags (discretion clauses, carveouts, ambiguity)
+
+**Threshold-arithmetic primacy rule (MUST follow):** When the Caddie has computed a threshold-specific probability via mechanical arithmetic (e.g., "MoM must be ≥ X% for YoY to exceed T%"), web forecasts MUST be used to validate the MoM/input estimate — NEVER to override the threshold probability directly.
+
+- A consensus point forecast of "3.6% YoY" does NOT mean P(YoY > 3.6%) ≈ 50%. Point estimates reflect the distribution's center; threshold probability depends on the distribution's width. For CPI MoM, historical σ ≈ 0.15pp — a point estimate 0.2pp above a threshold implies P(exceed) is high, not a coin flip.
+- Quarterly/annualized rates (e.g., Cleveland Fed CPI nowcast "5.5% annualized") MUST be converted to the contract's units (YoY or MoM) before comparison. Do not compare annualized quarterly rates to YoY thresholds.
+- When arithmetic and web forecasts disagree, show BOTH in the research memo and explain the discrepancy. Do not silently discard the arithmetic result.
 
 ## Confidence Signals (Deep Research Only)
 
