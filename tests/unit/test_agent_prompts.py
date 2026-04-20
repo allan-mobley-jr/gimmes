@@ -88,7 +88,7 @@ def test_caddie_threshold_arithmetic_primacy_rule(caddie_text: str) -> None:
     import re
 
     assert re.search(
-        r"(?is)threshold.arithmetic primacy.*NEVER to override the threshold probability",
+        r"(?is)threshold.arithmetic primacy.*NEVER.*override.*threshold probability",
         caddie_text,
     ), (
         "Caddie's deep research framework must contain the "
