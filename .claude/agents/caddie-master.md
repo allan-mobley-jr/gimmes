@@ -262,6 +262,12 @@ For each PROCEED candidate:
    ```
    Record the value and convert to percentage points (e.g. 0.05 = 5pp). You MUST cite the pp value in every APPROVE or REJECT decision note for this candidate. If the command fails, REJECT the candidate — you cannot review without the threshold.
 
+   Also read the configured trading side:
+   ```bash
+   gimmes config get strategy.side
+   ```
+   Record the value as `trading_side` (e.g. "no", "yes", or "both"). If this command fails, default to "both" (permissive).
+
 2. **Read the research independently** — form your own view before conferring:
    ```bash
    gimmes candidates --ticker TICKER --limit 1
@@ -292,6 +298,7 @@ For each PROCEED candidate:
      - **Portfolio over-concentration**: the position would exceed event/series exposure limits.
      - **Timing**: a known catalyst resolving before the next cycle would materially change the edge.
      - **Edge below CM floor**: net edge after fees < `cm_min_edge_after_fees`. You MUST cite both numbers in the REJECT note (e.g. "edge 3.2pp < cm_min_edge_after_fees 5.0pp"). Read the net edge from `gimmes candidates --ticker TICKER --limit 1`.
+     - **Side constraint**: when `trading_side` is `"yes"` or `"no"`, REJECT any candidate whose side does not match `trading_side`. The structural edge is side-specific — if the configured side has no edge on a candidate, the correct action is PASS, not switching sides. Only when `trading_side` = `"both"` are both sides permitted. This applies even during extraordinary events.
 
    **Audit language rule.** You MUST NOT use subjective edge descriptors — "thin edge", "knife-edge", "marginal edge", "razor-thin", "too close", "coin flip", "insufficient edge" — as a REJECT reason without citing the numeric net edge and `cm_min_edge_after_fees` in the same sentence. Subjective phrases alone are not a sufficient audit trail.
 

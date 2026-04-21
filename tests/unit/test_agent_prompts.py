@@ -32,6 +32,20 @@ def test_caddie_master_reads_cm_min_edge_after_fees(caddie_master_text: str) -> 
     )
 
 
+def test_caddie_master_reads_strategy_side(caddie_master_text: str) -> None:
+    assert "gimmes config get strategy.side" in caddie_master_text, (
+        "Caddie Master Step 4c must read strategy.side from config "
+        "to enforce the side constraint rule (#540)."
+    )
+
+
+def test_caddie_master_side_constraint_reject_rule(caddie_master_text: str) -> None:
+    assert "Side constraint" in caddie_master_text, (
+        "Step 4c REJECT criteria must include a 'Side constraint' rule "
+        "that rejects candidates mismatched with strategy.side (#540)."
+    )
+
+
 def test_caddie_master_cites_cm_floor_in_reject_criteria(
     caddie_master_text: str,
 ) -> None:
