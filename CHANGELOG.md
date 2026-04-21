@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-04-21
+
+### Added
+- Caddie base-effect arithmetic primacy rules for CPI/inflation markets — the sanity-check extraordinary event handler now keeps mechanical threshold math instead of deferring to headline web forecasts, and the deep research framework requires web forecasts to validate MoM inputs rather than override threshold probabilities (#536)
+
+### Fixed
+- Stream idle timeout and partial response now recognized as transient API errors for retry (#538)
+
 ## [0.6.3] - 2026-04-18
 
 ### Fixed
