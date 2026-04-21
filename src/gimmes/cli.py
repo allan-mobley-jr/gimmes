@@ -3217,6 +3217,8 @@ def _transient_api_patterns() -> tuple[re.Pattern[str], ...]:
         r"\bconnection\s+(?:error|reset|refused|aborted)\b",
         r"\bECONNRESET\b|\bETIMEDOUT\b",
         r"\b(?:read|write)\s+timeout\b",
+        r"\bstream\s+idle\s+timeout\b",
+        r"\bpartial\s+response\b",
     )
     return tuple(re.compile(p, re.IGNORECASE) for p in sources)
 

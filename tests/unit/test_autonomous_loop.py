@@ -1271,6 +1271,16 @@ class TestDetectApiError:
         assert had_error is True
         assert is_transient is True
 
+    def test_detects_stream_idle_timeout(self) -> None:
+        output = _stream_json_result(
+            True,
+            "API Error: Stream idle timeout - partial response received",
+        )
+        had_error, is_transient, detail = _detect_api_error(output)
+        assert had_error is True
+        assert is_transient is True
+        assert "Stream idle timeout" in detail
+
     def test_null_result_uses_subtype_as_detail(self) -> None:
         output = (
             b'{"type":"result","is_error":true,"result":null,'
