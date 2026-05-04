@@ -3011,7 +3011,11 @@ def _championship_gate(config: GimmesConfig) -> None:
 @app.command(name="start", rich_help_panel="Autonomous Trading")
 def start(
     cycles: int = typer.Option(
-        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+        400, "--cycles", "--max-cycles", "-n", min=0,
+        help=(
+            "Max Claude API cycles before exit (default 400, ~1 trading day;"
+            " 0=unlimited, prints warning)."
+        ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
     no_dashboard: bool = typer.Option(
@@ -3472,7 +3476,7 @@ def _wrap_stream_json(raw: bytes) -> bytes:
 def _autonomous_loop(
     mode: str,
     *,
-    max_cycles: int = 0,
+    max_cycles: int = 400,
     pause_seconds: int = 60,
     monitor_interval: int = 3600,
     no_dashboard: bool = False,
@@ -3574,6 +3578,12 @@ def _autonomous_loop(
     console.print(f"Monitor interval (outside windows): {monitor_interval}s")
     if max_cycles > 0:
         console.print(f"Max cycles: {max_cycles}")
+    else:
+        console.print(
+            "[yellow]Warning: Unbounded run -- no Claude API budget will be"
+            " enforced from this flag. Consider --max-cycles or the daily-budget"
+            " guardrail (#545).[/yellow]"
+        )
     console.print("Press Ctrl+C to stop\n")
 
     cycle = get_max_global_cycle(config.db_path)
@@ -3923,7 +3933,11 @@ def _autonomous_loop(
 @app.command(name="driving_range", rich_help_panel="Autonomous Trading")
 def driving_range(
     cycles: int = typer.Option(
-        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+        400, "--cycles", "--max-cycles", "-n", min=0,
+        help=(
+            "Max Claude API cycles before exit (default 400, ~1 trading day;"
+            " 0=unlimited, prints warning)."
+        ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
     monitor_interval: int = typer.Option(
@@ -3943,7 +3957,11 @@ def driving_range(
 @app.command(name="championship", rich_help_panel="Autonomous Trading")
 def championship(
     cycles: int = typer.Option(
-        0, "--cycles", "-n", min=0, help="Max cycles to run (0=unlimited)",
+        400, "--cycles", "--max-cycles", "-n", min=0,
+        help=(
+            "Max Claude API cycles before exit (default 400, ~1 trading day;"
+            " 0=unlimited, prints warning)."
+        ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
     monitor_interval: int = typer.Option(
