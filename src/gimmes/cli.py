@@ -3802,17 +3802,22 @@ def _autonomous_loop(
             env["GIMMES_CYCLE"] = str(cycle)
             env["GIMMES_CYCLE_TYPE"] = cycle_type
             log_path = logs_dir / f"cycle-{cycle:03d}.json"
+            cmd = [
+                claude_path,
+                "--agent", "Caddie Master",
+                "-p", cycle_prompt,
+                "--verbose",
+                "--output-format", "stream-json",
+                "--allowedTools",
+                "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
+            ]
+            # Optional runtime model override for the Caddie Master subprocess.
+            # When unset, Claude Code reads the model from agent frontmatter.
+            if config.model.default:
+                cmd.extend(["--model", config.model.default])
             try:
                 proc = subprocess.Popen(
-                    [
-                        claude_path,
-                        "--agent", "Caddie Master",
-                        "-p", cycle_prompt,
-                        "--verbose",
-                        "--output-format", "stream-json",
-                        "--allowedTools",
-                        "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
-                    ],
+                    cmd,
                     env=env,
                     cwd=project_root,
                     stdout=subprocess.PIPE,

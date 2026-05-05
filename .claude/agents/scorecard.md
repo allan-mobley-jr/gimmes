@@ -1,6 +1,7 @@
 ---
 name: Scorecard
 description: Generates performance reports — P&L, win rate, edge accuracy, strategy metrics
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read

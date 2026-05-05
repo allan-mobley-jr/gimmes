@@ -1,6 +1,7 @@
 ---
 name: Groundskeeper
 description: Reviews error logs after each cycle and escalates critical or recurring errors to GitHub issues
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read

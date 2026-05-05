@@ -1,6 +1,7 @@
 ---
 name: Caddie Master
 description: Orchestrates the autonomous trading pipeline — dispatches agents and manages cycle state
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read
