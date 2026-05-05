@@ -28,6 +28,15 @@ _RECONCILE_HINT = (
     " to sync positions with the broker.[/yellow]"
 )
 
+DEFAULT_AUTONOMOUS_CYCLES = 400
+"""Default `--cycles` value for autonomous-loop commands.
+
+Sized to roughly one saturated trading day at the default 60s in-window
+pause + 3600s monitor interval (~390 in-window cycles + ~17 monitor cycles).
+Pass `--cycles 0` (or `--max-cycles 0`) to opt into unbounded runs; the loop
+prints a startup warning when it does.
+"""
+
 
 def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
     """Extract a human-readable message from an httpx.HTTPStatusError."""
@@ -3011,10 +3020,11 @@ def _championship_gate(config: GimmesConfig) -> None:
 @app.command(name="start", rich_help_panel="Autonomous Trading")
 def start(
     cycles: int = typer.Option(
-        400, "--cycles", "--max-cycles", "-n", min=0,
+        DEFAULT_AUTONOMOUS_CYCLES, "--cycles", "--max-cycles", "-n", min=0,
         help=(
-            "Max Claude API cycles before exit (default 400, ~1 trading day;"
-            " 0=unlimited, prints warning)."
+            f"Max Claude API cycles before exit (default"
+            f" {DEFAULT_AUTONOMOUS_CYCLES}, ~1 trading day; 0=unlimited,"
+            " prints warning)."
         ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
@@ -3476,7 +3486,7 @@ def _wrap_stream_json(raw: bytes) -> bytes:
 def _autonomous_loop(
     mode: str,
     *,
-    max_cycles: int = 400,
+    max_cycles: int = DEFAULT_AUTONOMOUS_CYCLES,
     pause_seconds: int = 60,
     monitor_interval: int = 3600,
     no_dashboard: bool = False,
@@ -3581,8 +3591,9 @@ def _autonomous_loop(
     else:
         console.print(
             "[yellow]Warning: Unbounded run -- no Claude API budget will be"
-            " enforced from this flag. Consider --max-cycles or the daily-budget"
-            " guardrail (#545).[/yellow]"
+            " enforced. Pass --max-cycles N to bound the run"
+            f" (e.g. --max-cycles {DEFAULT_AUTONOMOUS_CYCLES} for"
+            " ~1 trading day).[/yellow]"
         )
     console.print("Press Ctrl+C to stop\n")
 
@@ -3933,10 +3944,11 @@ def _autonomous_loop(
 @app.command(name="driving_range", rich_help_panel="Autonomous Trading")
 def driving_range(
     cycles: int = typer.Option(
-        400, "--cycles", "--max-cycles", "-n", min=0,
+        DEFAULT_AUTONOMOUS_CYCLES, "--cycles", "--max-cycles", "-n", min=0,
         help=(
-            "Max Claude API cycles before exit (default 400, ~1 trading day;"
-            " 0=unlimited, prints warning)."
+            f"Max Claude API cycles before exit (default"
+            f" {DEFAULT_AUTONOMOUS_CYCLES}, ~1 trading day; 0=unlimited,"
+            " prints warning)."
         ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),
@@ -3957,10 +3969,11 @@ def driving_range(
 @app.command(name="championship", rich_help_panel="Autonomous Trading")
 def championship(
     cycles: int = typer.Option(
-        400, "--cycles", "--max-cycles", "-n", min=0,
+        DEFAULT_AUTONOMOUS_CYCLES, "--cycles", "--max-cycles", "-n", min=0,
         help=(
-            "Max Claude API cycles before exit (default 400, ~1 trading day;"
-            " 0=unlimited, prints warning)."
+            f"Max Claude API cycles before exit (default"
+            f" {DEFAULT_AUTONOMOUS_CYCLES}, ~1 trading day; 0=unlimited,"
+            " prints warning)."
         ),
     ),
     pause: int = typer.Option(60, "--pause", min=0, help="Seconds between cycles (default 60)"),

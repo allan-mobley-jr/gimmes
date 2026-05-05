@@ -185,9 +185,10 @@ class TestAutonomousLoop:
             _autonomous_loop("driving_range", max_cycles=0, pause_seconds=0)
 
         output = capsys.readouterr().out
-        assert "Unbounded run" in output
-        assert "#545" in output
-        assert "--max-cycles" in output
+        # Flatten rich's terminal-width line wrapping before substring checks.
+        flat = " ".join(output.split())
+        assert "Unbounded run" in flat
+        assert "Pass --max-cycles" in flat
 
     def test_no_warning_when_max_cycles_positive(self, capsys) -> None:  # type: ignore[no-untyped-def]
         """max_cycles>0 (bounded) does not print the unbounded-run warning."""
@@ -961,7 +962,7 @@ class TestDrivingRangeCommand:
         result = runner.invoke(app, ["driving_range", "--help"])
         assert result.exit_code == 0
         assert "--max-cycles" in result.output
-        assert "400" in result.output
+        assert "[default: 400]" in result.output
 
     def test_cycles_and_max_cycles_last_wins(self) -> None:
         """When both --cycles and --max-cycles are passed, the last value wins."""
@@ -1036,6 +1037,13 @@ class TestChampionshipCommand:
             "championship", max_cycles=7, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
         )
+
+    def test_help_documents_new_default_and_alias(self) -> None:
+        """`gimmes championship --help` mentions --max-cycles alias and default 400."""
+        result = runner.invoke(app, ["championship", "--help"])
+        assert result.exit_code == 0
+        assert "--max-cycles" in result.output
+        assert "[default: 400]" in result.output
 
 
 class TestSwitchCommand:
@@ -1148,6 +1156,13 @@ class TestStartCommand:
             "driving_range", max_cycles=7, pause_seconds=60,
             no_dashboard=False,
         )
+
+    def test_help_documents_new_default_and_alias(self) -> None:
+        """`gimmes start --help` mentions --max-cycles alias and default 400."""
+        result = runner.invoke(app, ["start", "--help"])
+        assert result.exit_code == 0
+        assert "--max-cycles" in result.output
+        assert "[default: 400]" in result.output
 
     def test_start_championship_requires_confirmation(self, monkeypatch) -> None:
         monkeypatch.setenv("GIMMES_MODE", "championship")
