@@ -1,6 +1,7 @@
 ---
 name: Scout
 description: Scans Kalshi markets for gimme candidates, quick-scores them, and produces a shortlist
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read

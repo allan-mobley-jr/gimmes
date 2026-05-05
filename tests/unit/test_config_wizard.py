@@ -193,6 +193,25 @@ class TestParseInput:
         with pytest.raises(ValueError, match="Must be one of"):
             _parse_input("c", s)
 
+    def test_parse_str_invalid_choice_uses_actual_model_default_setting(self) -> None:
+        """Regression: model.default's choices list must be all-strings.
+
+        Previously included `None` to signal "unset is allowed" — that broke
+        the error formatting in this very function (`', '.join(choices)`
+        TypeErrors on a None element). Pin the contract: deriving the Setting
+        from ModelConfig and feeding an unknown id produces the expected
+        "Must be one of: ..." ValueError, not a TypeError.
+        """
+        from gimmes.config import ModelConfig
+        from gimmes.config_wizard import _field_to_setting
+
+        field_info = ModelConfig.model_fields["default"]
+        setting = _field_to_setting("model", "default", field_info)
+        assert setting is not None, "model.default did not produce a Setting"
+
+        with pytest.raises(ValueError, match="Must be one of"):
+            _parse_input("not-a-real-model-id", setting)
+
     def test_parse_list(self) -> None:
         s = Setting(key="a.b", name="", description="", type="list", default=[])
         result = _parse_input("KXCPI, KXGDP, KXFED", s)

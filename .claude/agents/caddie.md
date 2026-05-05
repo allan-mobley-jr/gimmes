@@ -1,6 +1,7 @@
 ---
 name: Caddie
 description: Deep research and analysis on gimme candidates — produces probability estimates and GimmeScores
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read

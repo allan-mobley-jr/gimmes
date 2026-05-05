@@ -202,6 +202,51 @@ class TestAutonomousLoop:
         output = capsys.readouterr().out
         assert "Unbounded run" not in output
 
+    def test_no_model_flag_when_default_unset(self) -> None:
+        """When config.model.default is None, --model is not passed to claude."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        cmd = mock_popen.call_args.args[0]
+        assert "--model" not in cmd
+
+    def test_model_flag_passed_when_default_set(self) -> None:
+        """When config.model.default is set, --model <id> is passed to claude."""
+        from gimmes import cli as gimmes_cli
+        from gimmes.config import ModelConfig
+
+        original_load_config = gimmes_cli.load_config
+
+        def patched_load_config(*args, **kwargs):  # type: ignore[no-untyped-def]
+            cfg = original_load_config(*args, **kwargs)
+            return cfg.model_copy(
+                update={"model": ModelConfig(default="claude-opus-4-7")},
+            )
+
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=patched_load_config),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        cmd = mock_popen.call_args.args[0]
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "claude-opus-4-7"
+
     def test_passes_correct_claude_args(self) -> None:
         mock_proc = _mock_popen()
         with (
@@ -1593,6 +1638,42 @@ class TestCaddieMasterAgent:
         assert "name: Caddie Master" in content
         assert "tools:" in content
         assert "Agent" in content
+
+
+class TestAutonomousLoopAgentModels:
+    """All 7 autonomous-loop agents pin Sonnet 4.6 in their frontmatter (#544)."""
+
+    AGENTS_DIR = (
+        Path(__file__).resolve().parent.parent.parent / ".claude" / "agents"
+    )
+    EXPECTED_MODEL = "claude-sonnet-4-6"
+
+    @pytest.mark.parametrize(
+        "agent_file",
+        [
+            "caddie-master.md",
+            "scout.md",
+            "caddie.md",
+            "closer.md",
+            "monitor.md",
+            "groundskeeper.md",
+            "scorecard.md",
+        ],
+    )
+    def test_agent_pins_sonnet_4_6(self, agent_file: str) -> None:
+        # Match the frontmatter `model:` field exactly (whitespace-tolerant,
+        # value-anchored). A loose substring check would silently pass on
+        # `model: sonnet-4-6-old` or break on `model:  sonnet-4-6` — neither
+        # is what we want for a value Claude CLI parses.
+        import re
+
+        text = (self.AGENTS_DIR / agent_file).read_text()
+        assert text.startswith("---\n"), f"{agent_file}: missing frontmatter"
+        end = text.index("\n---", 4)
+        frontmatter = text[4:end]
+        match = re.search(r"^model:\s+(\S+)\s*$", frontmatter, re.MULTILINE)
+        assert match is not None, f"{agent_file}: no `model:` field"
+        assert match.group(1) == self.EXPECTED_MODEL
 
 
 class TestCheckCodeStaleness:

@@ -199,6 +199,53 @@ class TestConfigSet:
         assert "80" in result.output
 
 
+class TestModelConfig:
+    """Tests for the new model.* config keys (#544)."""
+
+    def test_set_model_default_round_trips(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "model.default", "claude-opus-4-7"],
+            )
+        assert result.exit_code == 0
+        assert "claude-opus-4-7" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'model.default'",
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert json.loads(row[0]) == "claude-opus-4-7"
+
+    def test_get_model_default_after_set(self, db_file: Path) -> None:
+        """`config get model.default` returns the value just written."""
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            runner.invoke(
+                app, ["config", "set", "model.default", "claude-opus-4-7"],
+            )
+            result = runner.invoke(app, ["config", "get", "model.default"])
+        assert result.exit_code == 0
+        assert "claude-opus-4-7" in result.output
+
+    def test_set_model_default_rejects_unknown_id(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "model.default", "gpt-5"],
+            )
+        assert result.exit_code == 1
+
+    def test_set_model_default_rejects_empty_string(
+        self, db_file: Path,
+    ) -> None:
+        """Empty string is not a valid model id; validator must reject."""
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "model.default", ""],
+            )
+        assert result.exit_code == 1
+
+
 class TestConfigGet:
     def test_get_single_key(self, db_file: Path) -> None:
         conn = sqlite3.connect(str(db_file))

@@ -885,6 +885,66 @@ class ScoringConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Model selection (autonomous-loop overrides)
+# ---------------------------------------------------------------------------
+
+KNOWN_MODELS: tuple[str, ...] = (
+    "claude-sonnet-4-6",
+    "claude-opus-4-7",
+    "claude-haiku-4-5",
+)
+
+
+class ModelConfig(BaseModel):
+    """Runtime model override for the Caddie Master subprocess.
+
+    Setting ``model.default`` adds ``--model <id>`` to the Caddie Master
+    subprocess in :func:`_autonomous_loop`. The six sub-agents (Scout,
+    Caddie, Closer, Monitor, Groundskeeper, Scorecard) continue to read
+    their own frontmatter at dispatch time — Claude Code's sub-agent
+    tool does not accept a runtime model override from the parent. To
+    override a sub-agent at runtime, edit ``.claude/agents/<name>.md``
+    directly. To restore Caddie Master to its frontmatter default,
+    run ``gimmes config set model.default claude-sonnet-4-6`` (matches
+    Caddie Master's frontmatter, so the explicit ``--model`` becomes a
+    no-op). Only the ids in :data:`KNOWN_MODELS` are accepted.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "section_name": "Model Selection",
+            "section_description": (
+                "Runtime override for the Caddie Master subprocess only.\n"
+                "Sub-agent overrides require editing\n"
+                ".claude/agents/<name>.md directly."
+            ),
+            "section_order": 8,
+        },
+    )
+
+    default: str | None = Field(
+        default=None,
+        json_schema_extra={
+            "display_name": "Caddie Master model override",
+            "description": (
+                "Passes --model <id> to the Caddie Master subprocess only."
+            ),
+            "choices": list(KNOWN_MODELS),
+        },
+    )
+
+    @model_validator(mode="after")
+    def _validate_model_id(self) -> ModelConfig:
+        if self.default is not None and self.default not in KNOWN_MODELS:
+            raise ValueError(
+                f"model.default={self.default!r} not in {KNOWN_MODELS}; "
+                "edit .claude/agents/<name>.md directly for an unlisted model"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Main config
 # ---------------------------------------------------------------------------
 
@@ -909,6 +969,7 @@ class GimmesConfig(BaseModel):
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
 
     # Database
     db_path: Path = Field(default_factory=lambda: GIMMES_HOME / "gimmes.db")
@@ -997,6 +1058,7 @@ CONFIG_SECTIONS: list[tuple[str, type[BaseModel]]] = [
     ("orders", OrdersConfig),
     ("scanner", ScannerConfig),
     ("scoring", ScoringConfig),
+    ("model", ModelConfig),
 ]
 
 
@@ -1123,4 +1185,5 @@ def load_config(db_path: Path | None = None) -> GimmesConfig:
         orders=OrdersConfig(**overrides.get("orders", {})),
         scanner=ScannerConfig(**overrides.get("scanner", {})),
         scoring=ScoringConfig(**overrides.get("scoring", {})),
+        model=ModelConfig(**overrides.get("model", {})),
     )

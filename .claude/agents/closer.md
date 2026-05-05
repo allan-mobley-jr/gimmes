@@ -1,6 +1,7 @@
 ---
 name: Closer
 description: Validates, sizes, and executes trades for approved gimme candidates
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read

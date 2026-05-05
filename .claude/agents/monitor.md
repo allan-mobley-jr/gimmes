@@ -1,6 +1,7 @@
 ---
 name: Monitor
 description: Surveillance and journalism agent — watches open positions, writes field observations to the journal, and flags positions for Caddie Master review when price or news warrants attention
+model: claude-sonnet-4-6
 tools:
   - Bash
   - Read
