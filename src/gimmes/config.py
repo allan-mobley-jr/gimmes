@@ -898,21 +898,16 @@ KNOWN_MODELS: tuple[str, ...] = (
 class ModelConfig(BaseModel):
     """Runtime model override for the Caddie Master subprocess.
 
-    Default behavior: every autonomous-loop agent reads its own ``model:``
-    field from ``.claude/agents/<name>.md`` (set to ``claude-sonnet-4-6``
-    after #544). The Claude CLI accepts either short aliases (``sonnet``,
-    ``opus``, ``haiku``) or fully-qualified ids (``claude-sonnet-4-6``,
-    ``claude-opus-4-7``); the fully-qualified form is used here to pin
-    versions explicitly.
-
-    Setting ``model.default`` adds ``--model <id>`` to the top-level
-    ``Caddie Master`` subprocess invocation in :func:`_autonomous_loop`,
-    overriding the Caddie Master frontmatter for that run. This affects
-    only the Caddie Master process — the six sub-agents (Scout, Caddie,
-    Closer, Monitor, Groundskeeper, Scorecard) continue to read their own
-    frontmatter, because Claude Code's sub-agent dispatch does not accept
-    a runtime override from the parent. To override a sub-agent at runtime,
-    edit ``.claude/agents/<name>.md`` directly.
+    Setting ``model.default`` adds ``--model <id>`` to the Caddie Master
+    subprocess in :func:`_autonomous_loop`. The six sub-agents (Scout,
+    Caddie, Closer, Monitor, Groundskeeper, Scorecard) continue to read
+    their own frontmatter at dispatch time — Claude Code's sub-agent
+    tool does not accept a runtime model override from the parent. To
+    override a sub-agent at runtime, edit ``.claude/agents/<name>.md``
+    directly. To restore Caddie Master to its frontmatter default,
+    run ``gimmes config set model.default claude-sonnet-4-6`` (matches
+    Caddie Master's frontmatter, so the explicit ``--model`` becomes a
+    no-op). Only the ids in :data:`KNOWN_MODELS` are accepted.
     """
 
     model_config = ConfigDict(
@@ -920,8 +915,8 @@ class ModelConfig(BaseModel):
         json_schema_extra={
             "section_name": "Model Selection",
             "section_description": (
-                "Runtime override for the top-level Caddie Master subprocess.\n"
-                "Per-agent overrides are done by editing\n"
+                "Runtime override for the Caddie Master subprocess only.\n"
+                "Sub-agent overrides require editing\n"
                 ".claude/agents/<name>.md directly."
             ),
             "section_order": 8,
@@ -931,12 +926,11 @@ class ModelConfig(BaseModel):
     default: str | None = Field(
         default=None,
         json_schema_extra={
-            "display_name": "Default model override",
+            "display_name": "Caddie Master model override",
             "description": (
-                "If set, passes --model <id> to the Caddie Master subprocess.\n"
-                "None means honor each agent's frontmatter."
+                "Passes --model <id> to the Caddie Master subprocess only."
             ),
-            "choices": [None, *KNOWN_MODELS],
+            "choices": list(KNOWN_MODELS),
         },
     )
 

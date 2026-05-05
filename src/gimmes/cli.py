@@ -3811,8 +3811,10 @@ def _autonomous_loop(
                 "--allowedTools",
                 "Bash,Read,Glob,Grep,Agent,WebSearch,WebFetch",
             ]
-            # Optional runtime model override for the Caddie Master subprocess.
-            # When unset, Claude Code reads the model from agent frontmatter.
+            # Optional runtime model override for the Caddie Master subprocess
+            # only. The six sub-agents (Scout, Caddie, Closer, Monitor,
+            # Groundskeeper, Scorecard) read their own frontmatter when
+            # dispatched, regardless of what is passed here.
             if config.model.default:
                 cmd.extend(["--model", config.model.default])
             try:
