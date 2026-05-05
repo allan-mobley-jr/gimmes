@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Autonomous loop commands (`start`, `driving_range`, `championship`) now default `--cycles` to 400 (~1 trading day worst-case at default 60s pause + 3600s monitor interval) to bound Claude API spend per run; pass `--cycles 0` (or the new `--max-cycles 0` alias) for the previous unbounded behavior, which now logs a startup warning (#543)
+
 ## [0.6.4] - 2026-04-21
 
 ### Added

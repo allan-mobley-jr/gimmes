@@ -152,7 +152,7 @@ The **Caddie Master** dispatches agents each cycle. During trade windows (around
 
 The [Clubhouse](#the-clubhouse) dashboard auto-launches at `http://127.0.0.1:1919` (or the next available port) — check the printed URL and open your browser to watch live.
 
-Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` to run a fixed number of cycles, `--pause N` to adjust seconds between full cycles, `--monitor-interval N` for seconds between monitor-only checks.
+Press **Ctrl+C** to stop. Run the command again to resume — the loop reads database state, so it picks up where it left off. Use `--cycles N` (alias `--max-cycles N`, default 400 ≈ one trading day) to run a bounded number of cycles, `--pause N` to adjust seconds between full cycles, `--monitor-interval N` for seconds between monitor-only checks. Pass `--cycles 0` for unbounded runs (a startup warning will print).
 
 ---
 
@@ -389,7 +389,7 @@ gimmes driving_range     # Autonomous loop -- paper trading (auto-starts dashboa
 gimmes championship      # Autonomous loop -- real money (auto-starts dashboard)
 ```
 
-All three accept `--cycles N` (0 = unlimited), `--pause N` (seconds between full cycles, default 60), `--monitor-interval N` (seconds between monitor-only cycles outside trade windows, default 3600), and `--no-dashboard`.
+All three accept `--cycles N` (alias `--max-cycles N`; default 400 ≈ one trading day, pass `0` for unbounded with a startup warning), `--pause N` (seconds between full cycles, default 60), `--monitor-interval N` (seconds between monitor-only cycles outside trade windows, default 3600), and `--no-dashboard`.
 
 ---
 

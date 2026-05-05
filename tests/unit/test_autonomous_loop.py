@@ -172,6 +172,36 @@ class TestAutonomousLoop:
 
         assert mock_popen.call_count == 3
 
+    def test_warns_when_max_cycles_zero(self, capsys) -> None:  # type: ignore[no-untyped-def]
+        """max_cycles=0 (unbounded) prints a startup warning."""
+        def side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise KeyboardInterrupt
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=side_effect),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=0, pause_seconds=0)
+
+        output = capsys.readouterr().out
+        # Flatten rich's terminal-width line wrapping before substring checks.
+        flat = " ".join(output.split())
+        assert "Unbounded run" in flat
+        assert "Pass --max-cycles" in flat
+
+    def test_no_warning_when_max_cycles_positive(self, capsys) -> None:  # type: ignore[no-untyped-def]
+        """max_cycles>0 (bounded) does not print the unbounded-run warning."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
+
+        output = capsys.readouterr().out
+        assert "Unbounded run" not in output
+
     def test_passes_correct_claude_args(self) -> None:
         mock_proc = _mock_popen()
         with (
@@ -899,6 +929,57 @@ class TestDrivingRangeCommand:
             monitor_interval=3600, no_dashboard=False,
         )
 
+    def test_default_cycles_is_400(self) -> None:
+        """Without --cycles, the new bounded default (400) is passed through."""
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(app, ["driving_range"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "driving_range", max_cycles=400, pause_seconds=60,
+            monitor_interval=3600, no_dashboard=False,
+        )
+
+    def test_max_cycles_alias_works(self) -> None:
+        """The --max-cycles alias is accepted and passes through to max_cycles."""
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(app, ["driving_range", "--max-cycles", "7"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "driving_range", max_cycles=7, pause_seconds=60,
+            monitor_interval=3600, no_dashboard=False,
+        )
+
+    def test_help_documents_new_default_and_alias(self) -> None:
+        """`gimmes driving_range --help` mentions --max-cycles alias and default 400."""
+        result = runner.invoke(app, ["driving_range", "--help"])
+        assert result.exit_code == 0
+        assert "--max-cycles" in result.output
+        assert "[default: 400]" in result.output
+
+    def test_cycles_and_max_cycles_last_wins(self) -> None:
+        """When both --cycles and --max-cycles are passed, the last value wins."""
+        with (
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(
+                app, ["driving_range", "--cycles", "5", "--max-cycles", "9"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "driving_range", max_cycles=9, pause_seconds=60,
+            monitor_interval=3600, no_dashboard=False,
+        )
+
 
 class TestChampionshipCommand:
     def test_command_exists(self) -> None:
@@ -926,6 +1007,43 @@ class TestChampionshipCommand:
             "championship", max_cycles=1, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
         )
+
+    def test_default_cycles_is_400(self) -> None:
+        """Without --cycles, the new bounded default (400) is passed through."""
+        with (
+            patch("gimmes.cli._championship_gate"),
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(app, ["championship"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "championship", max_cycles=400, pause_seconds=60,
+            monitor_interval=3600, no_dashboard=False,
+        )
+
+    def test_max_cycles_alias_works(self) -> None:
+        """The --max-cycles alias is accepted and passes through to max_cycles."""
+        with (
+            patch("gimmes.cli._championship_gate"),
+            patch("gimmes.cli._set_mode"),
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+        ):
+            result = runner.invoke(app, ["championship", "--max-cycles", "7"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "championship", max_cycles=7, pause_seconds=60,
+            monitor_interval=3600, no_dashboard=False,
+        )
+
+    def test_help_documents_new_default_and_alias(self) -> None:
+        """`gimmes championship --help` mentions --max-cycles alias and default 400."""
+        result = runner.invoke(app, ["championship", "--help"])
+        assert result.exit_code == 0
+        assert "--max-cycles" in result.output
+        assert "[default: 400]" in result.output
 
 
 class TestSwitchCommand:
@@ -1010,6 +1128,41 @@ class TestStartCommand:
             "driving_range", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
         )
+
+    def test_default_cycles_is_400(self) -> None:
+        """Without --cycles, the new bounded default (400) is passed through."""
+        with (
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            result = runner.invoke(app, ["start"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "driving_range", max_cycles=400, pause_seconds=60,
+            no_dashboard=False,
+        )
+
+    def test_max_cycles_alias_works(self) -> None:
+        """The --max-cycles alias is accepted and passes through to max_cycles."""
+        with (
+            patch("gimmes.cli._autonomous_loop") as mock_loop,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            result = runner.invoke(app, ["start", "--max-cycles", "7"])
+
+        assert result.exit_code == 0, result.output
+        mock_loop.assert_called_once_with(
+            "driving_range", max_cycles=7, pause_seconds=60,
+            no_dashboard=False,
+        )
+
+    def test_help_documents_new_default_and_alias(self) -> None:
+        """`gimmes start --help` mentions --max-cycles alias and default 400."""
+        result = runner.invoke(app, ["start", "--help"])
+        assert result.exit_code == 0
+        assert "--max-cycles" in result.output
+        assert "[default: 400]" in result.output
 
     def test_start_championship_requires_confirmation(self, monkeypatch) -> None:
         monkeypatch.setenv("GIMMES_MODE", "championship")
