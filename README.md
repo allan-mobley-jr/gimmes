@@ -391,6 +391,22 @@ gimmes championship      # Autonomous loop -- real money (auto-starts dashboard)
 
 All three accept `--cycles N` (alias `--max-cycles N`; default 400 ≈ one trading day, pass `0` for unbounded with a startup warning), `--pause N` (seconds between full cycles, default 60), `--monitor-interval N` (seconds between monitor-only cycles outside trade windows, default 3600), and `--no-dashboard`.
 
+### Daily Claude API budget cap
+
+The autonomous loop enforces a UTC-day budget cap on Claude API usage to keep
+runs from blowing through Anthropic's rate plan. Two cap types apply
+simultaneously:
+
+- `--max-sessions-per-day N` (default 80) — number of `claude` subprocesses spawned per UTC day.
+- `--max-daily-cost-usd X` (default $25) — estimated dollar cost per UTC day, computed per cycle from the `usage` block in each subprocess's stream-json output multiplied by the model's per-million-token rate.
+
+State is persisted to `${GIMMES_HOME}/budget.json` so it survives loop
+restarts. When either cap is hit, the loop prints a yellow warning and
+sleeps until the next UTC midnight, at which point the day's counters
+roll over and trading resumes automatically. Pass `0` for either flag to
+disable that cap. Inspect today's totals and remaining headroom with
+`gimmes budget` (`gimmes budget --json` for machine-readable output).
+
 ---
 
 ## Gimme criteria

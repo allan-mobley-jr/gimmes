@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import subprocess as _subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -246,6 +247,77 @@ class TestAutonomousLoop:
         cmd = mock_popen.call_args.args[0]
         assert "--model" in cmd
         assert cmd[cmd.index("--model") + 1] == "claude-opus-4-7"
+
+    def test_loop_blocks_when_session_cap_already_reached(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pre-spawn budget check skips the cycle when session cap is hit (#545)."""
+        # Pre-populate budget.json at the cap.
+        from gimmes.config import GIMMES_HOME
+        budget_path = GIMMES_HOME / "budget.json"
+        today = datetime.now(UTC).date().isoformat()
+        budget_path.parent.mkdir(parents=True, exist_ok=True)
+        budget_path.write_text(_json.dumps({
+            "version": 1,
+            "days": {today: {"sessions": 5, "cost_usd": 0.0}},
+        }))
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("gimmes.cli._resilient_sleep", side_effect=KeyboardInterrupt),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range",
+                max_cycles=1,
+                pause_seconds=0,
+                max_sessions_per_day=5,
+            )
+
+        # Loop should hit pre-spawn block, sleep, get interrupted — never spawn.
+        mock_popen.assert_not_called()
+
+    def test_loop_records_usage_after_successful_cycle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Loop parses usage from stream-json stdout and records to budget.json."""
+        from gimmes.config import GIMMES_HOME
+        budget_path = GIMMES_HOME / "budget.json"
+
+        # Build a stream-json stdout with a usage block.
+        stream_json = (
+            b'{"type":"system","subtype":"init"}\n'
+            b'{"type":"result","is_error":false,"usage":'
+            b'{"input_tokens":1000000,"output_tokens":0,'
+            b'"cache_creation_input_tokens":0,'
+            b'"cache_read_input_tokens":0}}'
+        )
+        mock_proc = _mock_popen(returncode=0, output=stream_json)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                return_value=stream_json,
+            ),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        # 1M input tokens at Sonnet rate ($3/M) = $3 expected cost.
+        assert budget_path.exists()
+        data = _json.loads(budget_path.read_text())
+        today = datetime.now(UTC).date().isoformat()
+        assert today in data["days"]
+        entry = data["days"][today]
+        assert entry["sessions"] == 1
+        assert entry["cost_usd"] == pytest.approx(3.0, abs=1e-6)
+        # Token totals must accumulate too — guards the integration against
+        # a regression where cost is recorded but tokens are dropped.
+        assert entry["input_tokens"] == 1_000_000
+        assert entry["output_tokens"] == 0
 
     def test_passes_correct_claude_args(self) -> None:
         mock_proc = _mock_popen()
@@ -972,6 +1044,7 @@ class TestDrivingRangeCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=1, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_default_cycles_is_400(self) -> None:
@@ -986,6 +1059,7 @@ class TestDrivingRangeCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=400, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_max_cycles_alias_works(self) -> None:
@@ -1000,6 +1074,7 @@ class TestDrivingRangeCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=7, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_help_documents_new_default_and_alias(self) -> None:
@@ -1023,6 +1098,7 @@ class TestDrivingRangeCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=9, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
 
@@ -1051,6 +1127,7 @@ class TestChampionshipCommand:
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_default_cycles_is_400(self) -> None:
@@ -1066,6 +1143,7 @@ class TestChampionshipCommand:
         mock_loop.assert_called_once_with(
             "championship", max_cycles=400, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_max_cycles_alias_works(self) -> None:
@@ -1081,6 +1159,7 @@ class TestChampionshipCommand:
         mock_loop.assert_called_once_with(
             "championship", max_cycles=7, pause_seconds=60,
             monitor_interval=3600, no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_help_documents_new_default_and_alias(self) -> None:
@@ -1172,6 +1251,7 @@ class TestStartCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_default_cycles_is_400(self) -> None:
@@ -1186,6 +1266,7 @@ class TestStartCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=400, pause_seconds=60,
             no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_max_cycles_alias_works(self) -> None:
@@ -1200,6 +1281,7 @@ class TestStartCommand:
         mock_loop.assert_called_once_with(
             "driving_range", max_cycles=7, pause_seconds=60,
             no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
     def test_help_documents_new_default_and_alias(self) -> None:
@@ -1228,6 +1310,7 @@ class TestStartCommand:
         mock_loop.assert_called_once_with(
             "championship", max_cycles=1, pause_seconds=60,
             no_dashboard=False,
+            max_sessions_per_day=None, max_daily_cost_usd=None,
         )
 
 
