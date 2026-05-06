@@ -2024,6 +2024,126 @@ def log_error(
     _run(_log())
 
 
+@app.command(name="budget", rich_help_panel="Diagnostics")
+def budget(
+    days: int = typer.Option(
+        1, "--days", "-d", min=1, max=30,
+        help="Show last N UTC days (default 1: today only).",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit JSON instead of a table.",
+    ),
+) -> None:
+    """Show today's Claude API budget consumption against caps (#545)."""
+    import json as _json
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _td
+
+    from gimmes.budget import (
+        DEFAULT_MAX_SESSIONS,
+        DEFAULT_MAX_USD,
+        BudgetTracker,
+    )
+    from gimmes.config import GIMMES_HOME
+
+    tracker = BudgetTracker(
+        path=GIMMES_HOME / "budget.json",
+        max_sessions=DEFAULT_MAX_SESSIONS,
+        max_cost_usd=DEFAULT_MAX_USD,
+    )
+    # Display the caps the loop most recently used (falls back to defaults
+    # before any cycle has been recorded).
+    effective_max_sessions, effective_max_usd = tracker.caps_in_effect()
+
+    # Use the tracker's own clock so this command stays consistent with
+    # the loop's view of "today" — important when tests freeze the clock.
+    today = _datetime.fromisoformat(tracker.today_date()).date()
+    summaries = [
+        tracker.summary_for_date((today - _td(days=offset)).isoformat())
+        for offset in range(days)
+    ]
+
+    secs = tracker.secs_until_reset()
+
+    # ``0`` is treated as "unlimited" by the loop (matches --cycles 0
+    # semantics); render that as "∞" / null in the diagnostic so the
+    # operator doesn't see "0 / 0" and assume the budget is exhausted.
+    sess_cap_str = "∞" if effective_max_sessions == 0 else str(effective_max_sessions)
+    cost_cap_str = "∞" if effective_max_usd == 0 else f"${effective_max_usd:.2f}"
+
+    if json_out:
+        out = [
+            {
+                "date": s.date,
+                "sessions": s.sessions,
+                "cost_usd": round(s.cost_usd, 4),
+                "input_tokens": s.input_tokens,
+                "output_tokens": s.output_tokens,
+                "cache_creation_tokens": s.cache_creation_tokens,
+                "cache_read_tokens": s.cache_read_tokens,
+                "max_sessions": (
+                    None if effective_max_sessions == 0
+                    else effective_max_sessions
+                ),
+                "max_cost_usd": (
+                    None if effective_max_usd == 0 else effective_max_usd
+                ),
+                "remaining_sessions": (
+                    None if effective_max_sessions == 0
+                    else max(0, effective_max_sessions - s.sessions)
+                ),
+                "remaining_cost_usd": (
+                    None if effective_max_usd == 0
+                    else round(max(0.0, effective_max_usd - s.cost_usd), 4)
+                ),
+                "seconds_until_reset": secs,
+            }
+            for s in summaries
+        ]
+        console.print(_json.dumps(out, indent=2))
+        return
+
+    h, rem = divmod(secs, 3600)
+    m, _ = divmod(rem, 60)
+    for s in summaries:
+        sess_pct_str = (
+            f" ({(s.sessions / effective_max_sessions) * 100:.0f}%)"
+            if effective_max_sessions > 0 else ""
+        )
+        cost_pct_str = (
+            f" ({(s.cost_usd / effective_max_usd) * 100:.0f}%)"
+            if effective_max_usd > 0 else ""
+        )
+        console.print(f"[bold]Claude API Budget — {s.date} (UTC)[/bold]")
+        console.print(
+            f"  Sessions:  {s.sessions} / {sess_cap_str}{sess_pct_str}"
+        )
+        console.print(
+            f"  Cost:      ${s.cost_usd:.2f} / {cost_cap_str}{cost_pct_str}"
+        )
+        if effective_max_sessions == 0 and effective_max_usd == 0:
+            console.print("  Remaining: unlimited")
+        else:
+            remaining_sessions = (
+                "∞" if effective_max_sessions == 0
+                else str(max(0, effective_max_sessions - s.sessions))
+            )
+            remaining_cost = (
+                "∞" if effective_max_usd == 0
+                else f"${max(0.0, effective_max_usd - s.cost_usd):.2f}"
+            )
+            console.print(
+                f"  Remaining: {remaining_sessions} sessions, {remaining_cost}"
+            )
+        console.print(
+            f"  Tokens:    in={s.input_tokens:,}  out={s.output_tokens:,}"
+            f"  cache_create={s.cache_creation_tokens:,}"
+            f"  cache_read={s.cache_read_tokens:,}"
+        )
+        console.print(f"  Resets in: {h}h {m}m (UTC midnight)")
+        console.print()
+
+
 @app.command(name="errors", rich_help_panel="Diagnostics")
 def errors(
     severity: str | None = typer.Option(None, "--severity", "-s", help="Filter by severity"),
@@ -3031,6 +3151,18 @@ def start(
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
+    max_sessions_per_day: int = typer.Option(
+        None, "--max-sessions-per-day", min=0,
+        help=(
+            "Daily Claude session cap (UTC). 0=unlimited. Default 80."
+        ),
+    ),
+    max_daily_cost_usd: float = typer.Option(
+        None, "--max-daily-cost-usd", min=0.0,
+        help=(
+            "Daily Claude API cost cap in USD (UTC). 0=unlimited. Default $25."
+        ),
+    ),
 ) -> None:
     """Start autonomous trading loop using the current mode from .env."""
     config = load_config()
@@ -3040,8 +3172,12 @@ def start(
     if config.is_championship:
         _championship_gate(config)
 
-    _autonomous_loop(mode_val, max_cycles=cycles, pause_seconds=pause,
-                     no_dashboard=no_dashboard)
+    _autonomous_loop(
+        mode_val, max_cycles=cycles, pause_seconds=pause,
+        no_dashboard=no_dashboard,
+        max_sessions_per_day=max_sessions_per_day,
+        max_daily_cost_usd=max_daily_cost_usd,
+    )
 
 
 def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
@@ -3491,6 +3627,8 @@ def _autonomous_loop(
     monitor_interval: int = 3600,
     no_dashboard: bool = False,
     max_consecutive_failures: int = 5,
+    max_sessions_per_day: int | None = None,
+    max_daily_cost_usd: float | None = None,
 ) -> None:
     """Run the Caddie Master orchestrator agent via claude --agent in a loop.
 
@@ -3590,12 +3728,42 @@ def _autonomous_loop(
         console.print(f"Max cycles: {max_cycles}")
     else:
         console.print(
-            "[yellow]Warning: Unbounded run -- no Claude API budget will be"
-            " enforced. Pass --max-cycles N to bound the run"
-            f" (e.g. --max-cycles {DEFAULT_AUTONOMOUS_CYCLES} for"
-            " ~1 trading day).[/yellow]"
+            "[yellow]Warning: Unbounded run -- the per-process --cycles"
+            " cap is disabled. The daily Claude API budget cap from #545"
+            " (--max-sessions-per-day / --max-daily-cost-usd) still"
+            " applies and will halt the loop at UTC midnight on cap hit."
+            f" Pass --max-cycles {DEFAULT_AUTONOMOUS_CYCLES} for ~1 trading"
+            " day if you also want a per-process bound.[/yellow]"
         )
     console.print("Press Ctrl+C to stop\n")
+
+    # --- Daily Claude API budget guardrail (#545) ---
+    from gimmes.budget import (
+        DEFAULT_MAX_SESSIONS,
+        DEFAULT_MAX_USD,
+        BudgetTracker,
+        parse_usage_from_stream_json,
+    )
+    from gimmes.config import GIMMES_HOME
+
+    budget_tracker = BudgetTracker(
+        path=GIMMES_HOME / "budget.json",
+        max_sessions=(
+            DEFAULT_MAX_SESSIONS
+            if max_sessions_per_day is None
+            else max_sessions_per_day
+        ),
+        max_cost_usd=(
+            DEFAULT_MAX_USD
+            if max_daily_cost_usd is None
+            else max_daily_cost_usd
+        ),
+    )
+    # Persist the live caps immediately so `gimmes budget` shows the
+    # operator's actual limits even if the loop blocks before the first
+    # cycle records anything.
+    budget_tracker.persist_caps()
+    console.print(f"[dim]{budget_tracker.format_status_line()}[/dim]\n")
 
     cycle = get_max_global_cycle(config.db_path)
     cycles_run = 0
@@ -3712,6 +3880,63 @@ def _autonomous_loop(
             return False, None
 
         while max_cycles == 0 or cycles_run < max_cycles:
+            # --- Daily budget guardrail (#545) ---
+            blocked, reason = budget_tracker.should_block()
+            if blocked:
+                import contextlib as _contextlib
+                import json as _json_mod
+                import logging as _stdlib_logging
+                import subprocess as _subprocess
+                msg = budget_tracker.alert_message(reason or "")
+                secs = budget_tracker.secs_until_reset()
+                console.print(
+                    f"[red bold]BUDGET CAP HIT ({reason}): {msg}[/red bold]"
+                )
+                _stdlib_logging.getLogger("gimmes").warning(
+                    "budget cap hit: %s — sleeping %ds until UTC midnight",
+                    reason, secs,
+                )
+                # Persist a cycle-log entry so a remote operator can see
+                # *why* the loop slept even if they were not attached to
+                # the console. Cap-blocked iterations don't increment the
+                # ``cycle`` counter, so include a UTC-second suffix to
+                # avoid clobbering prior block logs when the loop wakes
+                # early and re-enters the same blocked slot.
+                with _contextlib.suppress(OSError):
+                    _ts = int(budget_tracker._now().timestamp())
+                    _block_log = (
+                        logs_dir
+                        / f"cycle-{cycle:03d}-block-{_ts}.json"
+                    )
+                    _block_log.write_text(_json_mod.dumps({
+                        "type": "budget_cap_block",
+                        "reason": reason,
+                        "message": msg,
+                        "seconds_until_reset": secs,
+                        "status": budget_tracker.format_status_line(),
+                    }))
+                # Best-effort iMessage push via osascript (matches the
+                # bin/monitor.sh pattern). Failures are silenced — the
+                # console + log are the primary signal; iMessage is a
+                # convenience for remote operators. Set GIMMES_NOTIFY_PHONE
+                # in the env to enable.
+                _phone = os.environ.get("GIMMES_NOTIFY_PHONE")
+                if _phone:
+                    with _contextlib.suppress(Exception):
+                        _subprocess.run(
+                            [
+                                "osascript", "-e",
+                                f'tell application "Messages" to send'
+                                f' "GIMMES BUDGET CAP: {msg}" to participant'
+                                f' "{_phone}"',
+                            ],
+                            check=False, timeout=5,
+                            stdout=_subprocess.DEVNULL,
+                            stderr=_subprocess.DEVNULL,
+                        )
+                _resilient_sleep(secs)
+                continue
+
             cycle += 1
             cycles_run += 1
 
@@ -3851,6 +4076,27 @@ def _autonomous_loop(
                 sys.stdout.buffer.flush()
                 returncode = proc.returncode
 
+                # --- Per-cycle Claude API usage accounting (#545) ---
+                # Anthropic charges for tokens regardless of cycle outcome,
+                # so always increment the session count once the subprocess
+                # has spawned. When the usage block is parseable, record
+                # full token + dollar cost; otherwise count the session
+                # only (cost stays at $0 for that cycle — conservative for
+                # the session cap, intentionally lossy for the cost cap).
+                _usage = parse_usage_from_stream_json(stdout_bytes)
+                if _usage is not None:
+                    budget_tracker.record_cycle(
+                        _usage,
+                        model_id=(
+                            config.model.default or "claude-sonnet-4-6"
+                        ),
+                    )
+                else:
+                    budget_tracker.record_session_no_usage()
+                console.print(
+                    f"[dim]{budget_tracker.format_status_line()}[/dim]"
+                )
+
                 # --- Rate limit detection ---
                 is_rate_limited, rl_pause = _detect_rate_limit(
                     stdout_bytes,
@@ -3966,11 +4212,27 @@ def driving_range(
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
+    max_sessions_per_day: int = typer.Option(
+        None, "--max-sessions-per-day", min=0,
+        help=(
+            "Daily Claude session cap (UTC). 0=unlimited. Default 80."
+        ),
+    ),
+    max_daily_cost_usd: float = typer.Option(
+        None, "--max-daily-cost-usd", min=0.0,
+        help=(
+            "Daily Claude API cost cap in USD (UTC). 0=unlimited. Default $25."
+        ),
+    ),
 ) -> None:
     """Switch to Driving Range mode and start autonomous trading loop (paper trading)."""
     _set_mode("driving_range")
-    _autonomous_loop("driving_range", max_cycles=cycles, pause_seconds=pause,
-                     monitor_interval=monitor_interval, no_dashboard=no_dashboard)
+    _autonomous_loop(
+        "driving_range", max_cycles=cycles, pause_seconds=pause,
+        monitor_interval=monitor_interval, no_dashboard=no_dashboard,
+        max_sessions_per_day=max_sessions_per_day,
+        max_daily_cost_usd=max_daily_cost_usd,
+    )
 
 
 @app.command(name="championship", rich_help_panel="Autonomous Trading")
@@ -3991,13 +4253,29 @@ def championship(
     no_dashboard: bool = typer.Option(
         False, "--no-dashboard", help="Disable auto-start of Clubhouse dashboard",
     ),
+    max_sessions_per_day: int = typer.Option(
+        None, "--max-sessions-per-day", min=0,
+        help=(
+            "Daily Claude session cap (UTC). 0=unlimited. Default 80."
+        ),
+    ),
+    max_daily_cost_usd: float = typer.Option(
+        None, "--max-daily-cost-usd", min=0.0,
+        help=(
+            "Daily Claude API cost cap in USD (UTC). 0=unlimited. Default $25."
+        ),
+    ),
 ) -> None:
     """Switch to Championship mode and start autonomous trading loop (REAL MONEY)."""
     config = load_config()
     _championship_gate(config)
     _set_mode("championship")
-    _autonomous_loop("championship", max_cycles=cycles, pause_seconds=pause,
-                     monitor_interval=monitor_interval, no_dashboard=no_dashboard)
+    _autonomous_loop(
+        "championship", max_cycles=cycles, pause_seconds=pause,
+        monitor_interval=monitor_interval, no_dashboard=no_dashboard,
+        max_sessions_per_day=max_sessions_per_day,
+        max_daily_cost_usd=max_daily_cost_usd,
+    )
 
 
 @app.command(name="monitor", rich_help_panel="Diagnostics")
