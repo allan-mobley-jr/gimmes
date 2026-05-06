@@ -366,6 +366,7 @@ gimmes position-notes TICKER    # Position journal entries
 ### Diagnostics
 ```bash
 gimmes errors            # View error logs (--severity, --category, --unresolved)
+gimmes budget            # Show today's Claude API budget (--days N, --json)
 ```
 
 ### Strategy

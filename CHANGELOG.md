@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-06
+
 ### Added
-- Daily Claude API budget guardrail for the autonomous loop. Per-cycle token usage is parsed from each `claude` subprocess output, accumulated into `${GIMMES_HOME}/budget.json` keyed by UTC date, and checked against two caps before each cycle: a session-count cap (`--max-sessions-per-day`, default 80) and a USD cost cap (`--max-daily-cost-usd`, default $25). When either cap is hit the loop logs a warning and sleeps until the next UTC midnight, then resumes automatically. New `gimmes budget` CLI command shows today's running totals and remaining headroom. (#545)
+- Daily Claude API budget guardrail for the autonomous loop. Two caps apply per UTC day: `--max-sessions-per-day N` (default 80) and `--max-daily-cost-usd X` (default $25). On cap hit the loop logs a warning, sends an iMessage push (when `GIMMES_NOTIFY_PHONE` is set), and sleeps until the next UTC midnight, then resumes automatically. Pass `0` for either flag to disable that cap. State is persisted to `${GIMMES_HOME}/budget.json`; new `gimmes budget` CLI command (with `--days N` and `--json`) shows running totals and remaining headroom. (#550)
 
 ### Changed
-- Autonomous loop commands (`start`, `driving_range`, `championship`) now default `--cycles` to 400 (~1 trading day worst-case at default 60s pause + 3600s monitor interval) to bound Claude API spend per run; pass `--cycles 0` (or the new `--max-cycles 0` alias) for the previous unbounded behavior, which now logs a startup warning (#543)
-- Autonomous-loop agents (Caddie Master, Scout, Caddie, Closer, Monitor, Groundskeeper, Scorecard) now pin `model: claude-sonnet-4-6` in their `.claude/agents/*.md` frontmatter, dropping per-cycle Claude API cost ~10× from Opus. `gimmes config set model.default <id>` overrides the Caddie Master subprocess only; sub-agents still read their own frontmatter (edit those files for per-agent overrides). (#544)
+- Autonomous loop commands (`start`, `driving_range`, `championship`) now default `--cycles` to 400 (~1 trading day worst-case) to bound Claude API spend per run. Pass `--cycles 0` (or the new `--max-cycles 0` alias) for the previous unbounded behavior, which now logs a startup warning. (#548)
+- Autonomous-loop agents (Caddie Master, Scout, Caddie, Closer, Monitor, Groundskeeper, Scorecard) now pin `model: claude-sonnet-4-6` in their `.claude/agents/*.md` frontmatter, dropping per-cycle Claude API cost ~10× from Opus. To override only the Caddie Master subprocess at runtime: `gimmes config set model.default claude-opus-4-7`. Sub-agents continue to read their own frontmatter (edit those files for per-agent overrides). (#549)
+
+### Fixed
+- Caddie Master Step 4c now reads `strategy.side` from config and rejects any candidate whose side does not match the configured side. The structural edge is side-specific; CM was previously overriding the configured side during extraordinary events, which caused the KXCPI-26MAR-T0.8 YES trade loss. (#541)
 
 ## [0.6.4] - 2026-04-21
 
