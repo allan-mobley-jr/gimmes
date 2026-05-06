@@ -122,7 +122,10 @@ def parse_usage_from_stream_json(stdout: bytes) -> dict | None:
             continue
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # ``json.loads`` accepts bytes but raises UnicodeDecodeError on
+            # invalid UTF-8 — non-UTF-8 terminal noise must not crash the
+            # loop's accounting path.
             continue
         if not isinstance(event, dict):
             continue
@@ -140,8 +143,10 @@ def parse_usage_from_stream_json(stdout: bytes) -> dict | None:
 
 
 def _default_clock() -> datetime:
-    """Module-level default clock — extracted from BudgetTracker so the
-    dataclass field can use a non-lambda default for clarity."""
+    """Module-level default clock. Tests monkey-patch this to freeze time;
+    :class:`BudgetTracker` resolves it lazily per-call (rather than capturing
+    a reference at instantiation) so a patched ``_default_clock`` takes
+    effect for trackers already in flight."""
     return datetime.now(UTC)
 
 
@@ -160,13 +165,25 @@ class BudgetTracker:
     path: Path
     max_sessions: int = DEFAULT_MAX_SESSIONS
     max_cost_usd: float = DEFAULT_MAX_USD
-    clock: Callable[[], datetime] = _default_clock
+    # ``None`` = use module-level :func:`_default_clock` (resolved lazily).
+    # Pass an explicit callable in tests to freeze time deterministically.
+    clock: Callable[[], datetime] | None = None
     _write_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False,
     )
 
+    def _now(self) -> datetime:
+        return (self.clock or _default_clock)()
+
+    def today_date(self) -> str:
+        """Public accessor for today's UTC date string (the same one
+        :meth:`today` uses to look up state). Useful for callers that
+        need a tracker-consistent "today" reference without re-deriving
+        from a separate clock source."""
+        return self._today_key()
+
     def _today_key(self) -> str:
-        return self.clock().date().isoformat()
+        return self._now().date().isoformat()
 
     def _read_state(self) -> dict:
         """Read budget.json, recovering gracefully from missing/corrupt."""
@@ -177,7 +194,7 @@ class BudgetTracker:
             data = json.loads(text)
         except (OSError, json.JSONDecodeError) as exc:
             archive = self.path.with_suffix(
-                f".corrupt.{int(self.clock().timestamp())}",
+                f".corrupt.{int(self._now().timestamp())}",
             )
             with contextlib.suppress(OSError):
                 self.path.replace(archive)
@@ -222,7 +239,7 @@ class BudgetTracker:
 
     def _prune(self, data: dict) -> None:
         """Drop day entries older than RETAIN_DAYS days."""
-        cutoff = (self.clock().date() - timedelta(days=RETAIN_DAYS)).isoformat()
+        cutoff = (self._now().date() - timedelta(days=RETAIN_DAYS)).isoformat()
         data["days"] = {
             k: v for k, v in data["days"].items() if k >= cutoff
         }
@@ -278,10 +295,38 @@ class BudgetTracker:
 
     def secs_until_reset(self) -> int:
         """Seconds until the next UTC midnight (when day key rolls over)."""
-        now = self.clock()
+        now = self._now()
         tomorrow = (now + timedelta(days=1)).date()
         midnight = datetime.combine(tomorrow, time.min, tzinfo=UTC)
         return max(0, int((midnight - now).total_seconds()))
+
+    def _apply_record(
+        self, data: dict, usage: dict, cost: float,
+    ) -> None:
+        """Mutate ``data`` in place to record one cycle. Caller holds lock."""
+        self._prune(data)
+        data["caps"] = {
+            "max_sessions": self.max_sessions,
+            "max_cost_usd": self.max_cost_usd,
+        }
+        key = self._today_key()
+        entry = data["days"].setdefault(key, {})
+        entry["sessions"] = int(entry.get("sessions", 0)) + 1
+        entry["cost_usd"] = round(
+            float(entry.get("cost_usd", 0.0)) + cost, 6,
+        )
+        entry["input_tokens"] = int(entry.get("input_tokens", 0)) + int(
+            usage.get("input_tokens", 0),
+        )
+        entry["output_tokens"] = int(entry.get("output_tokens", 0)) + int(
+            usage.get("output_tokens", 0),
+        )
+        entry["cache_creation_tokens"] = int(
+            entry.get("cache_creation_tokens", 0),
+        ) + int(usage.get("cache_creation_input_tokens", 0))
+        entry["cache_read_tokens"] = int(
+            entry.get("cache_read_tokens", 0),
+        ) + int(usage.get("cache_read_input_tokens", 0))
 
     def record_cycle(self, usage: dict, model_id: str) -> DaySummary:
         """Add one cycle's usage to today's totals; persists atomically.
@@ -293,31 +338,36 @@ class BudgetTracker:
         cost = cost_from_usage(usage, model_id)
         with self._write_lock:
             data = self._read_state()
-            self._prune(data)
+            self._apply_record(data, usage, cost)
+            self._atomic_write(data)
+        return self.today()
+
+    def record_session_no_usage(self) -> DaySummary:
+        """Record one cycle that produced no parseable ``usage`` block.
+
+        Anthropic charges for the cycle either way, so the session count
+        must reflect that the subprocess ran. The dollar cost stays at $0
+        for this cycle (we couldn't measure it) — this is conservative
+        for the session cap and intentionally lossy for the cost cap.
+        """
+        with self._write_lock:
+            data = self._read_state()
+            self._apply_record(data, {}, 0.0)
+            self._atomic_write(data)
+        return self.today()
+
+    def persist_caps(self) -> None:
+        """Write the tracker's current caps to ``budget.json`` without
+        recording a session. Lets ``gimmes budget`` show the true caps
+        even before the first cycle runs.
+        """
+        with self._write_lock:
+            data = self._read_state()
             data["caps"] = {
                 "max_sessions": self.max_sessions,
                 "max_cost_usd": self.max_cost_usd,
             }
-            key = self._today_key()
-            entry = data["days"].setdefault(key, {})
-            entry["sessions"] = int(entry.get("sessions", 0)) + 1
-            entry["cost_usd"] = round(
-                float(entry.get("cost_usd", 0.0)) + cost, 6,
-            )
-            entry["input_tokens"] = int(entry.get("input_tokens", 0)) + int(
-                usage.get("input_tokens", 0),
-            )
-            entry["output_tokens"] = int(entry.get("output_tokens", 0)) + int(
-                usage.get("output_tokens", 0),
-            )
-            entry["cache_creation_tokens"] = int(
-                entry.get("cache_creation_tokens", 0),
-            ) + int(usage.get("cache_creation_input_tokens", 0))
-            entry["cache_read_tokens"] = int(
-                entry.get("cache_read_tokens", 0),
-            ) + int(usage.get("cache_read_input_tokens", 0))
             self._atomic_write(data)
-        return self.today()
 
     def format_status_line(self) -> str:
         """One-line status for the loop's startup banner / periodic prints."""

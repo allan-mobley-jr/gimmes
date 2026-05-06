@@ -401,11 +401,14 @@ simultaneously:
 - `--max-daily-cost-usd X` (default $25) — estimated dollar cost per UTC day, computed per cycle from the `usage` block in each subprocess's stream-json output multiplied by the model's per-million-token rate.
 
 State is persisted to `${GIMMES_HOME}/budget.json` so it survives loop
-restarts. When either cap is hit, the loop prints a yellow warning and
-sleeps until the next UTC midnight, at which point the day's counters
+restarts. When either cap is hit, the loop prints a red `BUDGET CAP HIT`
+banner, sends an iMessage push when `GIMMES_NOTIFY_PHONE` is set in the
+environment, writes a `cycle-NNN-block.json` entry to `${GIMMES_HOME}/logs/`,
+and sleeps until the next UTC midnight, at which point the day's counters
 roll over and trading resumes automatically. Pass `0` for either flag to
 disable that cap. Inspect today's totals and remaining headroom with
-`gimmes budget` (`gimmes budget --json` for machine-readable output).
+`gimmes budget` (`gimmes budget --json` for machine-readable output, which
+also includes the active caps and seconds until reset).
 
 ---
 

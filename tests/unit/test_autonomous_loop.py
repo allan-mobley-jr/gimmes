@@ -252,14 +252,17 @@ class TestAutonomousLoop:
         self, tmp_path: Path,
     ) -> None:
         """Pre-spawn budget check skips the cycle when session cap is hit (#545)."""
-        # Pre-populate budget.json at the cap.
+        # Freeze the tracker's clock so the seeded date and the loop's
+        # observed date can't diverge across a UTC midnight boundary.
+        _frozen = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
         from gimmes.config import GIMMES_HOME
         budget_path = GIMMES_HOME / "budget.json"
-        today = datetime.now(UTC).date().isoformat()
+        today = _frozen.date().isoformat()
         budget_path.parent.mkdir(parents=True, exist_ok=True)
         budget_path.write_text(_json.dumps({
             "version": 1,
             "days": {today: {"sessions": 5, "cost_usd": 0.0}},
+            "caps": {"max_sessions": 5, "max_cost_usd": 25.0},
         }))
 
         with (
@@ -267,6 +270,7 @@ class TestAutonomousLoop:
             patch("subprocess.Popen") as mock_popen,
             patch("gimmes.cli._resilient_sleep", side_effect=KeyboardInterrupt),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.budget._default_clock", lambda: _frozen),
         ):
             _autonomous_loop(
                 "driving_range",
@@ -278,10 +282,84 @@ class TestAutonomousLoop:
         # Loop should hit pre-spawn block, sleep, get interrupted — never spawn.
         mock_popen.assert_not_called()
 
+    def test_loop_records_session_when_usage_unparseable(
+        self, tmp_path: Path,
+    ) -> None:
+        """If the stream-json stdout has no parseable usage, the cycle
+        still counts toward the session cap (Anthropic charged for it)."""
+        _frozen = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
+        from gimmes.config import GIMMES_HOME
+        budget_path = GIMMES_HOME / "budget.json"
+
+        # stdout with no parseable JSON / no usage block.
+        stream_json = b"random non-json terminal noise\n"
+        mock_proc = _mock_popen(returncode=0, output=stream_json)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                return_value=stream_json,
+            ),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.budget._default_clock", lambda: _frozen),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        assert budget_path.exists()
+        data = _json.loads(budget_path.read_text())
+        today = _frozen.date().isoformat()
+        entry = data["days"][today]
+        assert entry["sessions"] == 1
+        assert entry["cost_usd"] == 0.0
+        assert entry["input_tokens"] == 0
+
+    def test_loop_writes_block_log_on_cap_hit(self, tmp_path: Path) -> None:
+        """When the budget cap blocks the cycle, a cycle-NNN-block-*.json
+        log is written for remote operators."""
+        _frozen = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
+        from gimmes.config import GIMMES_HOME
+        budget_path = GIMMES_HOME / "budget.json"
+        logs_dir = GIMMES_HOME / "logs"
+        today = _frozen.date().isoformat()
+        budget_path.parent.mkdir(parents=True, exist_ok=True)
+        budget_path.write_text(_json.dumps({
+            "version": 1,
+            "days": {today: {"sessions": 5, "cost_usd": 0.0}},
+            "caps": {"max_sessions": 5, "max_cost_usd": 25.0},
+        }))
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("gimmes.cli._resilient_sleep", side_effect=KeyboardInterrupt),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.budget._default_clock", lambda: _frozen),
+        ):
+            _autonomous_loop(
+                "driving_range",
+                max_cycles=1,
+                pause_seconds=0,
+                max_sessions_per_day=5,
+            )
+
+        mock_popen.assert_not_called()
+        # A block log should be written under logs/.
+        block_logs = list(logs_dir.glob("cycle-*-block-*.json"))
+        assert len(block_logs) == 1, (
+            f"Expected one block log, found {block_logs}"
+        )
+        block = _json.loads(block_logs[0].read_text())
+        assert block["type"] == "budget_cap_block"
+        assert block["reason"] == "sessions"
+        assert "seconds_until_reset" in block
+
     def test_loop_records_usage_after_successful_cycle(
         self, tmp_path: Path,
     ) -> None:
         """Loop parses usage from stream-json stdout and records to budget.json."""
+        _frozen = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
         from gimmes.config import GIMMES_HOME
         budget_path = GIMMES_HOME / "budget.json"
 
@@ -303,13 +381,14 @@ class TestAutonomousLoop:
                 return_value=stream_json,
             ),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.budget._default_clock", lambda: _frozen),
         ):
             _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
 
         # 1M input tokens at Sonnet rate ($3/M) = $3 expected cost.
         assert budget_path.exists()
         data = _json.loads(budget_path.read_text())
-        today = datetime.now(UTC).date().isoformat()
+        today = _frozen.date().isoformat()
         assert today in data["days"]
         entry = data["days"][today]
         assert entry["sessions"] == 1

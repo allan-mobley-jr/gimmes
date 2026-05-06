@@ -127,6 +127,11 @@ class TestParseUsageFromStreamJson:
     def test_returns_none_on_only_malformed(self) -> None:
         assert parse_usage_from_stream_json(b"not json\n{also not json") is None
 
+    def test_returns_none_on_invalid_utf8_bytes(self) -> None:
+        """``json.loads`` raises ``UnicodeDecodeError`` on non-UTF-8 input —
+        the parser must absorb that to keep its fail-open contract."""
+        assert parse_usage_from_stream_json(b"\xff\xfe garbage\n") is None
+
     def test_returns_none_when_no_usage_in_any_event(self) -> None:
         events = [
             b'{"type":"system","subtype":"init"}',
@@ -373,6 +378,44 @@ class TestBudgetTracker:
             path=path, max_sessions=42, max_cost_usd=7.5,
         )
         assert tracker.caps_in_effect() == (42, 7.5)
+
+    def test_record_session_no_usage_increments_sessions_with_zero_cost(
+        self, tmp_path: Path,
+    ) -> None:
+        """When parser returns no usage, the cycle still counts toward
+        the session cap (Anthropic charged for it) at $0 attributed cost."""
+        clock = _fixed_clock(datetime(2026, 4, 30, 12, 0, tzinfo=UTC))
+        tracker = BudgetTracker(path=tmp_path / "budget.json", clock=clock)
+        tracker.record_session_no_usage()
+        tracker.record_session_no_usage()
+        s = tracker.today()
+        assert s.sessions == 2
+        assert s.cost_usd == 0.0
+        assert s.input_tokens == 0
+        assert s.output_tokens == 0
+
+    def test_persist_caps_writes_caps_without_recording_session(
+        self, tmp_path: Path,
+    ) -> None:
+        """``persist_caps()`` makes the caps visible to ``gimmes budget``
+        before any cycle has run."""
+        path = tmp_path / "budget.json"
+        clock = _fixed_clock(datetime(2026, 4, 30, 12, 0, tzinfo=UTC))
+        tracker = BudgetTracker(
+            path=path, max_sessions=99, max_cost_usd=42.5, clock=clock,
+        )
+        tracker.persist_caps()
+        # File written, caps recorded, no session increment.
+        data = json.loads(path.read_text())
+        assert data["caps"]["max_sessions"] == 99
+        assert data["caps"]["max_cost_usd"] == 42.5
+        # No day entry created.
+        assert "2026-04-30" not in data.get("days", {})
+
+    def test_today_date_returns_iso_string(self, tmp_path: Path) -> None:
+        clock = _fixed_clock(datetime(2026, 4, 30, 12, 0, tzinfo=UTC))
+        tracker = BudgetTracker(path=tmp_path / "budget.json", clock=clock)
+        assert tracker.today_date() == "2026-04-30"
 
 
 # ---------------------------------------------------------------------------

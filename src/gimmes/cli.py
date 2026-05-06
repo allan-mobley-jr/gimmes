@@ -2036,7 +2036,6 @@ def budget(
 ) -> None:
     """Show today's Claude API budget consumption against caps (#545)."""
     import json as _json
-    from datetime import UTC as _UTC
     from datetime import datetime as _datetime
     from datetime import timedelta as _td
 
@@ -2056,11 +2055,21 @@ def budget(
     # before any cycle has been recorded).
     effective_max_sessions, effective_max_usd = tracker.caps_in_effect()
 
-    today = _datetime.now(_UTC).date()
+    # Use the tracker's own clock so this command stays consistent with
+    # the loop's view of "today" — important when tests freeze the clock.
+    today = _datetime.fromisoformat(tracker.today_date()).date()
     summaries = [
         tracker.summary_for_date((today - _td(days=offset)).isoformat())
         for offset in range(days)
     ]
+
+    secs = tracker.secs_until_reset()
+
+    # ``0`` is treated as "unlimited" by the loop (matches --cycles 0
+    # semantics); render that as "∞" / null in the diagnostic so the
+    # operator doesn't see "0 / 0" and assume the budget is exhausted.
+    sess_cap_str = "∞" if effective_max_sessions == 0 else str(effective_max_sessions)
+    cost_cap_str = "∞" if effective_max_usd == 0 else f"${effective_max_usd:.2f}"
 
     if json_out:
         out = [
@@ -2072,38 +2081,60 @@ def budget(
                 "output_tokens": s.output_tokens,
                 "cache_creation_tokens": s.cache_creation_tokens,
                 "cache_read_tokens": s.cache_read_tokens,
+                "max_sessions": (
+                    None if effective_max_sessions == 0
+                    else effective_max_sessions
+                ),
+                "max_cost_usd": (
+                    None if effective_max_usd == 0 else effective_max_usd
+                ),
+                "remaining_sessions": (
+                    None if effective_max_sessions == 0
+                    else max(0, effective_max_sessions - s.sessions)
+                ),
+                "remaining_cost_usd": (
+                    None if effective_max_usd == 0
+                    else round(max(0.0, effective_max_usd - s.cost_usd), 4)
+                ),
+                "seconds_until_reset": secs,
             }
             for s in summaries
         ]
         console.print(_json.dumps(out, indent=2))
         return
 
-    secs = tracker.secs_until_reset()
     h, rem = divmod(secs, 3600)
     m, _ = divmod(rem, 60)
     for s in summaries:
-        sess_pct = (
-            (s.sessions / effective_max_sessions) * 100
-            if effective_max_sessions > 0 else 0
+        sess_pct_str = (
+            f" ({(s.sessions / effective_max_sessions) * 100:.0f}%)"
+            if effective_max_sessions > 0 else ""
         )
-        cost_pct = (
-            (s.cost_usd / effective_max_usd) * 100
-            if effective_max_usd > 0 else 0
+        cost_pct_str = (
+            f" ({(s.cost_usd / effective_max_usd) * 100:.0f}%)"
+            if effective_max_usd > 0 else ""
         )
         console.print(f"[bold]Claude API Budget — {s.date} (UTC)[/bold]")
         console.print(
-            f"  Sessions:  {s.sessions} / {effective_max_sessions}"
-            f"   ({sess_pct:.0f}%)"
+            f"  Sessions:  {s.sessions} / {sess_cap_str}{sess_pct_str}"
         )
         console.print(
-            f"  Cost:      ${s.cost_usd:.2f} / ${effective_max_usd:.2f}"
-            f"   ({cost_pct:.0f}%)"
+            f"  Cost:      ${s.cost_usd:.2f} / {cost_cap_str}{cost_pct_str}"
         )
-        remaining_sessions = max(0, effective_max_sessions - s.sessions)
-        remaining_cost = max(0.0, effective_max_usd - s.cost_usd)
-        console.print(
-            f"  Remaining: {remaining_sessions} sessions, ${remaining_cost:.2f}"
-        )
+        if effective_max_sessions == 0 and effective_max_usd == 0:
+            console.print("  Remaining: unlimited")
+        else:
+            remaining_sessions = (
+                "∞" if effective_max_sessions == 0
+                else str(max(0, effective_max_sessions - s.sessions))
+            )
+            remaining_cost = (
+                "∞" if effective_max_usd == 0
+                else f"${max(0.0, effective_max_usd - s.cost_usd):.2f}"
+            )
+            console.print(
+                f"  Remaining: {remaining_sessions} sessions, {remaining_cost}"
+            )
         console.print(
             f"  Tokens:    in={s.input_tokens:,}  out={s.output_tokens:,}"
             f"  cache_create={s.cache_creation_tokens:,}"
@@ -3697,10 +3728,12 @@ def _autonomous_loop(
         console.print(f"Max cycles: {max_cycles}")
     else:
         console.print(
-            "[yellow]Warning: Unbounded run -- no Claude API budget will be"
-            " enforced. Pass --max-cycles N to bound the run"
-            f" (e.g. --max-cycles {DEFAULT_AUTONOMOUS_CYCLES} for"
-            " ~1 trading day).[/yellow]"
+            "[yellow]Warning: Unbounded run -- the per-process --cycles"
+            " cap is disabled. The daily Claude API budget cap from #545"
+            " (--max-sessions-per-day / --max-daily-cost-usd) still"
+            " applies and will halt the loop at UTC midnight on cap hit."
+            f" Pass --max-cycles {DEFAULT_AUTONOMOUS_CYCLES} for ~1 trading"
+            " day if you also want a per-process bound.[/yellow]"
         )
     console.print("Press Ctrl+C to stop\n")
 
@@ -3726,6 +3759,10 @@ def _autonomous_loop(
             else max_daily_cost_usd
         ),
     )
+    # Persist the live caps immediately so `gimmes budget` shows the
+    # operator's actual limits even if the loop blocks before the first
+    # cycle records anything.
+    budget_tracker.persist_caps()
     console.print(f"[dim]{budget_tracker.format_status_line()}[/dim]\n")
 
     cycle = get_max_global_cycle(config.db_path)
@@ -3847,6 +3884,7 @@ def _autonomous_loop(
             blocked, reason = budget_tracker.should_block()
             if blocked:
                 import contextlib as _contextlib
+                import json as _json_mod
                 import logging as _stdlib_logging
                 import subprocess as _subprocess
                 msg = budget_tracker.alert_message(reason or "")
@@ -3858,6 +3896,25 @@ def _autonomous_loop(
                     "budget cap hit: %s — sleeping %ds until UTC midnight",
                     reason, secs,
                 )
+                # Persist a cycle-log entry so a remote operator can see
+                # *why* the loop slept even if they were not attached to
+                # the console. Cap-blocked iterations don't increment the
+                # ``cycle`` counter, so include a UTC-second suffix to
+                # avoid clobbering prior block logs when the loop wakes
+                # early and re-enters the same blocked slot.
+                with _contextlib.suppress(OSError):
+                    _ts = int(budget_tracker._now().timestamp())
+                    _block_log = (
+                        logs_dir
+                        / f"cycle-{cycle:03d}-block-{_ts}.json"
+                    )
+                    _block_log.write_text(_json_mod.dumps({
+                        "type": "budget_cap_block",
+                        "reason": reason,
+                        "message": msg,
+                        "seconds_until_reset": secs,
+                        "status": budget_tracker.format_status_line(),
+                    }))
                 # Best-effort iMessage push via osascript (matches the
                 # bin/monitor.sh pattern). Failures are silenced — the
                 # console + log are the primary signal; iMessage is a
@@ -4020,11 +4077,12 @@ def _autonomous_loop(
                 returncode = proc.returncode
 
                 # --- Per-cycle Claude API usage accounting (#545) ---
-                # Anthropic charges for tokens regardless of cycle outcome
-                # (rate-limit, error, success), so record on every cycle
-                # that has a parseable usage block. Fail-open: a missing
-                # or malformed usage block skips accounting for this cycle
-                # rather than crashing the loop.
+                # Anthropic charges for tokens regardless of cycle outcome,
+                # so always increment the session count once the subprocess
+                # has spawned. When the usage block is parseable, record
+                # full token + dollar cost; otherwise count the session
+                # only (cost stays at $0 for that cycle — conservative for
+                # the session cap, intentionally lossy for the cost cap).
                 _usage = parse_usage_from_stream_json(stdout_bytes)
                 if _usage is not None:
                     budget_tracker.record_cycle(
@@ -4033,9 +4091,11 @@ def _autonomous_loop(
                             config.model.default or "claude-sonnet-4-6"
                         ),
                     )
-                    console.print(
-                        f"[dim]{budget_tracker.format_status_line()}[/dim]"
-                    )
+                else:
+                    budget_tracker.record_session_no_usage()
+                console.print(
+                    f"[dim]{budget_tracker.format_status_line()}[/dim]"
+                )
 
                 # --- Rate limit detection ---
                 is_rate_limited, rl_pause = _detect_rate_limit(
