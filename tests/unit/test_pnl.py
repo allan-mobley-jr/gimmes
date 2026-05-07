@@ -85,8 +85,11 @@ class TestCalculatePnl:
         assert summary.losing_trades == 1
 
 
-class TestCalculatePnlFifo:
-    """Regression coverage for #561 — FIFO with weighted-average cost basis."""
+class TestCalculatePnlWeightedAverage:
+    """Regression coverage for #561 — running weighted-average cost basis.
+
+    (Average-cost accounting at the position level — not lot-based FIFO.)
+    """
 
     @staticmethod
     def _t(action: str, ticker: str, price: float, count: int, ts: str,
