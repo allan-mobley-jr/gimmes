@@ -2030,8 +2030,10 @@ def audit_cycles(
         ...,
         "--date",
         help=(
-            "UTC date to audit (YYYY-MM-DD). Cycles are bucketed by their "
-            "start_time converted to America/New_York."
+            "UTC date to audit (YYYY-MM-DD). Cycles are selected by UTC "
+            "day-of-start with a 12-hour pre-buffer for cycles that "
+            "spilled in from the prior evening; the hour-of-window "
+            "aggregate in the rendered report converts to America/New_York."
         ),
     ),
     output: str = typer.Option(
@@ -2046,9 +2048,10 @@ def audit_cycles(
     """Audit a day's autonomous-loop cycle logs and produce a Markdown report.
 
     Phase 0 of #546. Parses every ``${GIMMES_HOME}/logs/cycle-NNNN.json``
-    that started on the target date (in EDT), extracts Scout / Caddie / trade
-    extracts, cross-checks trade counts against the ``trades`` SQLite table,
-    and renders a deterministic Markdown report.
+    whose UTC start_time falls on (or pre-buffer-spills into) the target
+    UTC date, extracts Scout / Caddie / trade extracts, cross-checks trade
+    counts against the ``trades`` SQLite table, and renders a deterministic
+    Markdown report. The hour aggregate is bucketed in EDT for readability.
     """
     from datetime import date as _date
 
@@ -2074,7 +2077,9 @@ def audit_cycles(
     )
     md = render_markdown(summaries=summaries, target_date=parsed_date)
     if output == "-":
-        console.print(md)
+        # markup=False so Rich doesn't interpret bracketed Markdown text
+        # (e.g. `[start_time, end_time]`) as style tags and corrupt stdout.
+        console.print(md, markup=False, highlight=False)
     else:
         out_path = Path(output)
         out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -145,8 +145,15 @@ def parse_cycle_log(
     in_trade_window_fn=None,
 ) -> CycleSummary:
     """Parse a single ``cycle-NNNN.json`` (or ``cycle-NNNN-block-*.json``)
-    log file. Fail-open: regex misses produce ``None`` cells with a warning,
-    not exceptions. Only structural failures (e.g. unreadable file) raise.
+    log file.
+
+    Fully fail-open: regex misses, malformed JSON, missing fields, stray
+    non-dict elements in the events list, and DB query failures all
+    produce a :class:`CycleSummary` with ``None`` extraction cells and
+    descriptive entries in :attr:`CycleSummary.parse_warnings`. The
+    function does not raise for any of these conditions, so callers do
+    not need to wrap invocations in ``try``/``except``. (Programming
+    errors — e.g. wrong argument type — still raise normally.)
     """
     cycle_id = _cycle_id_from_path(path)
     warnings: list[str] = []
@@ -330,22 +337,23 @@ def audit_date(
 ) -> list[CycleSummary]:
     """Audit cycle logs associated with ``target_date``'s trade window.
 
-    A cycle is included if any of:
+    A cycle is included if either:
 
-    - its UTC ``start_time.date()`` equals ``target_date``, OR
-    - its UTC ``start_time`` falls within ``pre_buffer_hours`` before
-      ``target_date 00:00 UTC`` (captures cycles that started late on the
-      prior evening and whose trade-window work / placed orders landed
-      on ``target_date``), OR
-    - its ``end_time`` lands on or after ``target_date 00:00 UTC`` (cycles
-      that span the boundary).
+    - its UTC ``start_time`` falls within
+      ``[target_date 00:00, target_date+1 00:00)`` UTC, OR
+    - its UTC ``start_time`` falls within
+      ``[target_date 00:00 - pre_buffer_hours, target_date 00:00)`` UTC
+      **AND** its UTC ``end_time`` lands on or after ``target_date 00:00``
+      (i.e. the cycle started late on the prior evening but its work
+      spilled into the target day).
 
-    The default ``pre_buffer_hours=12`` aligns with the longest gimmes
-    trade window (Wed 6:30 PM ET → Thu 8:30 AM ET, ~14 h, but the half
-    spilling backwards from any UTC date is at most 12 h).
+    The default ``pre_buffer_hours=12`` is conservative for gimmes' longest
+    trade window (Wed 6:30 PM ET → Thu 8:30 AM ET) — a cycle that opens at
+    18:30 ET = 22:30 UTC EST / 23:30 UTC EDT lands within 12 h of UTC
+    midnight, so 12 h covers every realistic spillover.
 
     Block-log siblings are paired with their parent cycle if the parent
-    falls in the audit set.
+    falls in the audit set; orphan blocks are silently dropped.
     """
     from datetime import timedelta as _td
 
@@ -403,14 +411,27 @@ def render_markdown(
     deferred_phase1_issue: int = 553,
     deferred_phase23_issue: int = 554,
 ) -> str:
-    """Render a deterministic Markdown report. Re-running with the same
-    summaries must produce byte-identical output (sort + fixed format)."""
+    """Render a deterministic Markdown report.
+
+    Sorts ``summaries`` by ``(start_time, cycle_id)`` internally so the
+    output is byte-identical regardless of caller-supplied order; cycles
+    without a ``start_time`` (block logs) sort after timestamped cycles.
+    """
     if not summaries:
         return (
             f"# {target_date.isoformat()} Cycle-Staleness Audit "
             f"(Phase 0 of #{parent_issue})\n\n"
             "No cycles found for this date.\n"
         )
+
+    # Defensive in-place sort to make the contract independent of caller.
+    summaries = sorted(
+        summaries,
+        key=lambda s: (
+            s.start_time or datetime.max.replace(tzinfo=UTC),
+            s.cycle_id,
+        ),
+    )
 
     full_cycles = [s for s in summaries if s.cycle_type == "full"]
     monitor_cycles = [s for s in summaries if s.cycle_type == "monitor"]
@@ -474,10 +495,14 @@ def render_markdown(
         )
     elif overnight_trades > 0 and pre_release_trades == 0 and pre_release_cycles:
         verdict = "REJECTED (one-day data)"
+        on_word = "cycle" if len(overnight_cycles) == 1 else "cycles"
+        on_trade = "trade" if overnight_trades == 1 else "trades"
+        pr_word = "cycle" if len(pre_release_cycles) == 1 else "cycles"
         verdict_reason = (
-            f"{len(overnight_cycles)} overnight cycles produced "
-            f"{overnight_trades} trades; {len(pre_release_cycles)} pre-release "
-            "cycles produced 0 trades. H5's prediction is inverted on this date."
+            f"{len(overnight_cycles)} overnight {on_word} produced "
+            f"{overnight_trades} {on_trade}; {len(pre_release_cycles)} "
+            f"pre-release {pr_word} produced 0 trades. "
+            "H5's prediction is inverted on this date."
         )
     else:
         verdict = "PARTIALLY REJECTED (one-day data)"
@@ -517,8 +542,8 @@ def render_markdown(
     )
     lines.append(
         "- Trade ground truth: read-only SQL on the `trades` table, "
-        "windowed to each cycle's `[start_time, end_time]` and excluding "
-        "`skip`/`cooldown`/`cap_blocked` bookkeeping rows."
+        "windowed to each cycle's start/end timestamps and excluding "
+        "Scout/Caddie `skip` bookkeeping rows."
     )
     lines.append(
         "- Hour-of-window bucketing converts each cycle's start time to "

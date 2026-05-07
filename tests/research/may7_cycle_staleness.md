@@ -2,7 +2,7 @@
 
 ## Executive summary
 
-- **H5: REJECTED (one-day data)** — 12 overnight cycles produced 1 trades; 1 pre-release cycles produced 0 trades. H5's prediction is inverted on this date.
+- **H5: REJECTED (one-day data)** — 12 overnight cycles produced 1 trade; 1 pre-release cycle produced 0 trades. H5's prediction is inverted on this date.
 - 22 cycles total: 22 full, 0 monitor, 0 errored, 0 cap-blocked.
 - 2 trades placed across 2 cycles.
 
@@ -13,7 +13,7 @@ H5 (verbatim from #546): overnight 8 PM EDT–2 AM EDT cycles produce no actiona
 ## Methodology
 
 - Source: `${GIMMES_HOME}/logs/cycle-*.json` parsed via `gimmes.reporting.cycle_audit.parse_cycle_log`.
-- Trade ground truth: read-only SQL on the `trades` table, windowed to each cycle's `[start_time, end_time]` and excluding `skip`/`cooldown`/`cap_blocked` bookkeeping rows.
+- Trade ground truth: read-only SQL on the `trades` table, windowed to each cycle's start/end timestamps and excluding Scout/Caddie `skip` bookkeeping rows.
 - Hour-of-window bucketing converts each cycle's start time to America/New_York and groups by EDT hour.
 - Scout shortlist size and Caddie pass count are extracted from assistant text via ordered regex patterns (see `_SCOUT_PATTERNS`); regex misses produce `unknown` cells, never exceptions.
 
