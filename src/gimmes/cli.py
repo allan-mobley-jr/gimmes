@@ -2024,6 +2024,75 @@ def log_error(
     _run(_log())
 
 
+@app.command(name="audit-cycles", rich_help_panel="Diagnostics")
+def audit_cycles(
+    target_date: str = typer.Option(
+        ...,
+        "--date",
+        help=(
+            "UTC date to audit (YYYY-MM-DD). Cycles are selected by UTC "
+            "day-of-start with a 12-hour pre-buffer for cycles that "
+            "spilled in from the prior evening; the hour-of-window "
+            "aggregate in the rendered report converts to America/New_York."
+        ),
+    ),
+    output: str = typer.Option(
+        "-",
+        "--output",
+        "-o",
+        help=(
+            "Path to write the Markdown report. Use '-' for stdout (default)."
+        ),
+    ),
+) -> None:
+    """Audit a day's autonomous-loop cycle logs and produce a Markdown report.
+
+    Phase 0 of #546. Parses every ``${GIMMES_HOME}/logs/cycle-NNNN.json``
+    whose UTC start_time falls on (or pre-buffer-spills into) the target
+    UTC date, extracts Scout / Caddie / trade extracts, cross-checks trade
+    counts against the ``trades`` SQLite table, and renders a deterministic
+    Markdown report. The hour aggregate is bucketed in EDT for readability.
+    """
+    from datetime import date as _date
+
+    from gimmes.config import GIMMES_HOME
+    from gimmes.reporting.cycle_audit import audit_date, render_markdown
+
+    try:
+        parsed_date = _date.fromisoformat(target_date)
+    except ValueError as exc:
+        console.print(f"[red]Invalid --date value: {exc}[/red]")
+        raise typer.Exit(1)
+
+    log_dir = GIMMES_HOME / "logs"
+    db_path = GIMMES_HOME / "gimmes.db"
+    if not log_dir.is_dir():
+        console.print(f"[red]No logs directory at {log_dir}[/red]")
+        raise typer.Exit(1)
+
+    summaries = audit_date(
+        log_dir=log_dir,
+        db_path=db_path if db_path.exists() else None,
+        target_date=parsed_date,
+    )
+    md = render_markdown(summaries=summaries, target_date=parsed_date)
+    if output == "-":
+        # Defensive: pass the rendered Markdown through Rich verbatim.
+        # Today's report doesn't emit `[bracketed]` segments that Rich
+        # would interpret as style tags, but if a future field ever does
+        # (e.g. an embedded `[start_time, end_time]` literal), markup=False
+        # + highlight=False keep stdout faithful.
+        console.print(md, markup=False, highlight=False)
+    else:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md)
+        console.print(
+            f"[green]Audit written to {out_path}[/green] "
+            f"({len(summaries)} cycles)."
+        )
+
+
 @app.command(name="budget", rich_help_panel="Diagnostics")
 def budget(
     days: int = typer.Option(
