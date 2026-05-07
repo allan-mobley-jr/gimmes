@@ -2093,6 +2093,156 @@ def audit_cycles(
         )
 
 
+@app.command(name="pause-backtest", rich_help_panel="Diagnostics")
+def pause_backtest(
+    date_from: str | None = typer.Option(
+        None,
+        "--from",
+        help=(
+            "UTC date (YYYY-MM-DD) to start the backtest. Defaults to the "
+            "earliest `candidates.scanned_at` date in gimmes.db."
+        ),
+    ),
+    date_to: str | None = typer.Option(
+        None,
+        "--to",
+        help=(
+            "UTC date (YYYY-MM-DD) to end the backtest, inclusive. "
+            "Defaults to today (UTC)."
+        ),
+    ),
+    output: str = typer.Option(
+        "-",
+        "--output",
+        "-o",
+        help="Path to write the Markdown report. '-' = stdout (default).",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json",
+        help="Emit JSON instead of Markdown.",
+    ),
+) -> None:
+    """Phase 1a backtest of `pause_seconds` against trade-coincidence
+    plus hour-of-window aggregation across all on-disk cycle logs (#556).
+    """
+    import json as _json
+    import sqlite3
+    from dataclasses import asdict
+    from datetime import UTC as _UTC
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    from gimmes.config import GIMMES_HOME
+    from gimmes.reporting.pause_backtest import build_summary, render_markdown
+    from gimmes.strategy.calendar import is_in_trade_window
+
+    log_dir = GIMMES_HOME / "logs"
+    db_path = GIMMES_HOME / "gimmes.db"
+    if not log_dir.is_dir():
+        console.print(f"[red]No logs directory at {log_dir}[/red]")
+        raise typer.Exit(1)
+    if not db_path.exists():
+        console.print(f"[red]No database at {db_path}[/red]")
+        raise typer.Exit(1)
+
+    # Default --from to the earliest candidates.scanned_at date.
+    if date_from is None:
+        try:
+            with sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True,
+            ) as conn:
+                row = conn.execute(
+                    "SELECT MIN(scanned_at) FROM candidates",
+                ).fetchone()
+            if row and row[0]:
+                from gimmes.reporting.pause_backtest import _parse_iso
+                earliest = _parse_iso(row[0])
+                if earliest is None:
+                    raise ValueError("unparseable scanned_at")
+                date_from_d = earliest.date()
+            else:
+                date_from_d = _datetime.now(_UTC).date()
+        except (sqlite3.Error, ValueError) as exc:
+            console.print(
+                f"[red]Could not determine default --from: {exc}[/red]",
+            )
+            raise typer.Exit(1)
+    else:
+        try:
+            date_from_d = _date.fromisoformat(date_from)
+        except ValueError as exc:
+            console.print(f"[red]Invalid --from value: {exc}[/red]")
+            raise typer.Exit(1)
+
+    if date_to is None:
+        date_to_d = _datetime.now(_UTC).date()
+    else:
+        try:
+            date_to_d = _date.fromisoformat(date_to)
+        except ValueError as exc:
+            console.print(f"[red]Invalid --to value: {exc}[/red]")
+            raise typer.Exit(1)
+
+    if date_to_d < date_from_d:
+        console.print(
+            f"[red]--to ({date_to_d}) must be on or after --from "
+            f"({date_from_d})[/red]"
+        )
+        raise typer.Exit(1)
+
+    summary = build_summary(
+        log_dir=log_dir,
+        db_path=db_path,
+        date_from=date_from_d,
+        date_to=date_to_d,
+        in_trade_window_fn=is_in_trade_window,
+    )
+
+    if json_out:
+        payload = {
+            "date_from": summary.date_from.isoformat(),
+            "date_to": summary.date_to.isoformat(),
+            "cycles_audited": summary.cycles_audited,
+            "trades_with_no_candidate": summary.trades_with_no_candidate,
+            "warnings": summary.warnings,
+            "trades": [
+                {
+                    **asdict(t),
+                    "trade_time": t.trade_time.isoformat(),
+                    "first_seen_time": (
+                        t.first_seen_time.isoformat()
+                        if t.first_seen_time
+                        else None
+                    ),
+                }
+                for t in summary.trades
+            ],
+            "hour_buckets": [asdict(b) for b in summary.hour_buckets],
+            "gap_buckets": [asdict(b) for b in summary.gap_buckets],
+            "by_window_name": summary.by_window_name,
+        }
+        # markup/highlight off so Rich doesn't mangle JSON's `[` array
+        # delimiters into style tags or apply syntax coloring that
+        # corrupts piped output.
+        console.print(
+            _json.dumps(payload, indent=2),
+            markup=False, highlight=False, soft_wrap=True,
+        )
+        return
+
+    md = render_markdown(summary)
+    if output == "-":
+        console.print(md, markup=False, highlight=False)
+    else:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md)
+        console.print(
+            f"[green]Backtest written to {out_path}[/green] "
+            f"({len(summary.trades)} trades, {summary.cycles_audited} cycles)."
+        )
+
+
 @app.command(name="budget", rich_help_panel="Diagnostics")
 def budget(
     days: int = typer.Option(
