@@ -1697,6 +1697,35 @@ class TestDetectApiError:
 class TestApiErrorLoopIntegration:
     """Loop-level integration for #522 — API errors retry via backoff."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_loop(self, tmp_path, monkeypatch):
+        """Isolate the loop from real DB, asyncio, and calendar so the
+        retry/backoff path is deterministic."""
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch("gimmes.store.session.close_orphan_activities", return_value=0),
+            patch("gimmes.store.session.get_max_global_cycle", return_value=0),
+            patch("asyncio.run", side_effect=lambda coro: coro.close()),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(True, "Index contracts", 3600),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
+        ):
+            yield
+
     def test_transient_api_error_triggers_backoff_and_retries(
         self, capsys,  # type: ignore[no-untyped-def]
     ) -> None:
@@ -1719,7 +1748,7 @@ class TestApiErrorLoopIntegration:
             patch("gimmes.clubhouse.server.start_background", return_value=None),
             patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
             patch("gimmes.cli._check_remote_staleness", return_value=None),
-            patch("time.sleep") as mock_sleep,
+            patch("gimmes.cli._resilient_sleep") as mock_sleep,
         ):
             _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
 
@@ -1749,7 +1778,7 @@ class TestApiErrorLoopIntegration:
             patch("gimmes.clubhouse.server.start_background", return_value=None),
             patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
             patch("gimmes.cli._check_remote_staleness", return_value=None),
-            patch("time.sleep"),
+            patch("gimmes.cli._resilient_sleep"),
         ):
             _autonomous_loop(
                 "driving_range", pause_seconds=0,
@@ -1779,7 +1808,7 @@ class TestApiErrorLoopIntegration:
             patch("gimmes.clubhouse.server.start_background", return_value=None),
             patch("gimmes.cli._check_code_staleness", return_value=("", False, None)),
             patch("gimmes.cli._check_remote_staleness", return_value=None),
-            patch("time.sleep"),
+            patch("gimmes.cli._resilient_sleep"),
         ):
             _autonomous_loop(
                 "driving_range", pause_seconds=0,
