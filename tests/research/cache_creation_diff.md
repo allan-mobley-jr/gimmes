@@ -31,9 +31,16 @@ Every cycle's first assistant turn shows `cache_create=0, cache_read=15,095`. Th
 
 Issue body cites `budget.json` totals: 2.085M cache_create / 22 sessions = **~95K avg/cycle**. Direct stream-json analysis of 7 cycles shows **~1M avg/cycle**. The tracker is recording roughly 1/10th of the real cache_create.
 
-Root cause: `gimmes.budget.parse_usage_from_stream_json` (budget.py:109-142) iterates events in **reverse** and returns the **first** `usage` block it finds. That captures the final result-event usage, not the sum across all 200-300 assistant turns within the cycle. **All cycle accounting since #545/v0.7.0 has been undercounting cache_creation by ~10×**, which is why the cap was thought to bind at 22 cycles — it actually binds where it should given the real cycle cost (~$5/cycle in trade windows, $26/22 ≈ $1.20 if ~1/4 of cycles were full-pipeline trade-window runs and the rest monitor-only).
+Root cause: `gimmes.budget.parse_usage_from_stream_json` (`src/gimmes/budget.py:109-142`) iterates events in **reverse** and returns the **first** `usage` block it finds. That captures the final result-event usage, not the sum across all 200-300 assistant turns within the cycle.
 
-This is a tracking bug, not a cache-behavior bug. **Filed as a follow-up issue.**
+**Two separable consequences** (don't conflate them):
+
+1. **Tokens reported are ~10× lower than reality.** Direct sum vs single-block: 1.0M vs 95K avg cache_create per cycle.
+2. **Cost reported is ~5× lower than reality.** `cost_from_usage` runs against the same under-counted `usage` dict, so daily `cost_usd` reflects only the final-turn cost of each cycle. Real per-cycle cost is ~\$5.68 (table above, sourced from Anthropic's authoritative `result.total_cost_usd`); budget.json recorded \$26 / 22 ≈ \$1.20.
+
+**Implication for cap behavior:** the daily \$25 cap binds at 22 cycles *as recorded*, but real spend at that point was closer to ~\$125 (22 × \$5.68). So the cap is not biting at the right point — it's biting later in real-cost terms than the configured \$25 implies. Operators who think they have ~\$25/day of headroom actually consumed much more before the tracker noticed.
+
+This is a tracking bug, not a cache-behavior bug. Filed as #563.
 
 ## What the cache_create actually is
 
@@ -58,5 +65,5 @@ The cache_creation tail is doing its job. The ~$5/cycle full-pipeline cost is a 
 
 ## Follow-up
 
-- File issue: `parse_usage_from_stream_json` returns first-found usage block, undercounting cache_create by ~10×. Fix: sum `cache_creation_input_tokens` and `cache_read_input_tokens` across **all** assistant events plus the result. Apply to `BudgetTracker.record_cycle` so daily totals reflect reality. Critical for the daily budget cap to bind at the right point.
-- After the tracker fix lands, re-evaluate whether the daily cap (default $25) should be raised; with corrected accounting, $25 may bind at far fewer cycles than the design-time 80-session assumption.
+- **#563 (filed)** — `parse_usage_from_stream_json` undercount fix. Sum across **all** assistant events plus the result. Critical for the daily budget cap to bind at the right point.
+- After #563 lands, re-evaluate whether the daily cap (default \$25) should be raised or lowered; with corrected accounting, \$25 binds at *fewer* cycles than the design-time 80-session assumption — operators may want to update the cap or accept that real ceiling.
