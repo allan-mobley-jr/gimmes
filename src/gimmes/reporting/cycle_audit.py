@@ -424,11 +424,16 @@ def render_markdown(
             "No cycles found for this date.\n"
         )
 
-    # Defensive in-place sort to make the contract independent of caller.
+    # Defensive sort to make the contract independent of caller-supplied
+    # order. Matches ``audit_date``'s ordering: cycles without a
+    # ``start_time`` (block logs) sort before timestamped cycles via
+    # ``datetime.min`` fallback. Block logs already share their parent's
+    # ``cycle_id``, so the secondary sort keeps each block paired with
+    # its parent in the table.
     summaries = sorted(
         summaries,
         key=lambda s: (
-            s.start_time or datetime.max.replace(tzinfo=UTC),
+            s.start_time or datetime.min.replace(tzinfo=UTC),
             s.cycle_id,
         ),
     )
@@ -471,7 +476,13 @@ def render_markdown(
     if not overnight_cycles and not pre_release_cycles:
         verdict = "INCONCLUSIVE"
         verdict_reason = "No cycles ran in either bucket."
-    elif overnight_trades == 0 and pre_release_trades == 0:
+    def _cycles(n: int) -> str:
+        return "cycle" if n == 1 else "cycles"
+
+    def _trades(n: int) -> str:
+        return "trade" if n == 1 else "trades"
+
+    if overnight_trades == 0 and pre_release_trades == 0:
         verdict = "INCONCLUSIVE"
         verdict_reason = (
             f"Zero trades in both buckets ({len(overnight_cycles)} overnight, "
@@ -480,36 +491,38 @@ def render_markdown(
     elif overnight_trades == 0 and pre_release_trades > 0:
         verdict = "ACCEPTED (one-day data)"
         verdict_reason = (
-            f"{len(overnight_cycles)} overnight cycles produced 0 trades; "
-            f"{pre_release_trades} trades came from {len(pre_release_cycles)} "
-            "pre-release cycles."
+            f"{len(overnight_cycles)} overnight {_cycles(len(overnight_cycles))} "
+            f"produced 0 trades; {pre_release_trades} "
+            f"{_trades(pre_release_trades)} came from "
+            f"{len(pre_release_cycles)} pre-release "
+            f"{_cycles(len(pre_release_cycles))}."
         )
     elif overnight_trades > 0 and not pre_release_cycles:
         verdict = "REJECTED for overnight bucket; pre-release uninformed"
         verdict_reason = (
-            f"{len(overnight_cycles)} overnight cycles produced "
-            f"{overnight_trades} trades — overnight is NOT alpha-empty as "
-            "H5 predicted. No cycles ran in the 5–9 AM ET pre-release "
-            "bucket (e.g. cap-blocked, no scheduled window, or system "
-            "down) so the comparison side is missing."
+            f"{len(overnight_cycles)} overnight {_cycles(len(overnight_cycles))} "
+            f"produced {overnight_trades} {_trades(overnight_trades)} — "
+            "overnight is NOT alpha-empty as H5 predicted. No cycles ran "
+            "in the 5–9 AM ET pre-release bucket (e.g. cap-blocked, no "
+            "scheduled window, or system down) so the comparison side is "
+            "missing."
         )
     elif overnight_trades > 0 and pre_release_trades == 0 and pre_release_cycles:
         verdict = "REJECTED (one-day data)"
-        on_word = "cycle" if len(overnight_cycles) == 1 else "cycles"
-        on_trade = "trade" if overnight_trades == 1 else "trades"
-        pr_word = "cycle" if len(pre_release_cycles) == 1 else "cycles"
         verdict_reason = (
-            f"{len(overnight_cycles)} overnight {on_word} produced "
-            f"{overnight_trades} {on_trade}; {len(pre_release_cycles)} "
-            f"pre-release {pr_word} produced 0 trades. "
+            f"{len(overnight_cycles)} overnight {_cycles(len(overnight_cycles))} "
+            f"produced {overnight_trades} {_trades(overnight_trades)}; "
+            f"{len(pre_release_cycles)} pre-release "
+            f"{_cycles(len(pre_release_cycles))} produced 0 trades. "
             "H5's prediction is inverted on this date."
         )
     else:
         verdict = "PARTIALLY REJECTED (one-day data)"
         verdict_reason = (
-            f"Overnight {len(overnight_cycles)} cycles → "
-            f"{overnight_trades} trades; pre-release "
-            f"{len(pre_release_cycles)} cycles → {pre_release_trades} trades. "
+            f"Overnight {len(overnight_cycles)} {_cycles(len(overnight_cycles))} "
+            f"→ {overnight_trades} {_trades(overnight_trades)}; pre-release "
+            f"{len(pre_release_cycles)} {_cycles(len(pre_release_cycles))} "
+            f"→ {pre_release_trades} {_trades(pre_release_trades)}. "
             "Both buckets produced signal."
         )
 

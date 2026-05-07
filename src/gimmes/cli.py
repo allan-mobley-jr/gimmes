@@ -2077,8 +2077,11 @@ def audit_cycles(
     )
     md = render_markdown(summaries=summaries, target_date=parsed_date)
     if output == "-":
-        # markup=False so Rich doesn't interpret bracketed Markdown text
-        # (e.g. `[start_time, end_time]`) as style tags and corrupt stdout.
+        # Defensive: pass the rendered Markdown through Rich verbatim.
+        # Today's report doesn't emit `[bracketed]` segments that Rich
+        # would interpret as style tags, but if a future field ever does
+        # (e.g. an embedded `[start_time, end_time]` literal), markup=False
+        # + highlight=False keep stdout faithful.
         console.print(md, markup=False, highlight=False)
     else:
         out_path = Path(output)

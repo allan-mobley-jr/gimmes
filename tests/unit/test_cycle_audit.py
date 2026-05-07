@@ -376,8 +376,10 @@ class TestRenderMarkdown:
     def test_render_invariant_under_input_reordering(
         self, tmp_path: Path,
     ) -> None:
-        """Reversing the input summaries must produce the same Markdown —
-        the renderer must be insensitive to caller-supplied order."""
+        """Reversing the input summaries must produce the same Markdown
+        byte-for-byte — including the per-cycle table, which depends on
+        iteration order. Catches a regression that drops the internal
+        sort in ``render_markdown``."""
         summaries = [
             CycleSummary(
                 cycle_id=1, log_path=tmp_path / "x", cycle_type="full",
@@ -399,16 +401,14 @@ class TestRenderMarkdown:
             ),
         ]
         a = render_markdown(summaries=summaries, target_date=date(2026, 5, 7))
-        b = render_markdown(summaries=list(reversed(summaries)), target_date=date(2026, 5, 7))
-        # Hour-bucket aggregate is a sorted dict, so it's invariant. The
-        # per-cycle table walks input order — assert the verdict and
-        # aggregate sections match even under reversal.
-        verdict_a = next(line for line in a.split("\n") if "H5:" in line)
-        verdict_b = next(line for line in b.split("\n") if "H5:" in line)
-        assert verdict_a == verdict_b
-        agg_a = a.split("## Aggregate by hour-of-window")[1]
-        agg_b = b.split("## Aggregate by hour-of-window")[1]
-        assert agg_a == agg_b
+        b = render_markdown(
+            summaries=list(reversed(summaries)),
+            target_date=date(2026, 5, 7),
+        )
+        assert a == b, (
+            "render_markdown must produce byte-identical output regardless "
+            "of caller-supplied order"
+        )
 
     def test_aggregate_hour_bucket_math(self, tmp_path: Path) -> None:
         """Hour aggregate row must show count, trades, and trades/cycle
