@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from gimmes.strategy.fees import fee_for_order
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,38 +35,74 @@ class PnLSummary:
 def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  # accepts TradeRecord dicts
     """Calculate P&L from a list of trade records.
 
-    Args:
-        trades: List of trade dicts from the database.
+    Groups by ``(ticker, side)`` and walks each group in timestamp-ascending
+    order, maintaining a running weighted-average cost basis. ``size_up`` is
+    treated as an additional open and rolls into the average. Each ``close``
+    matches against the residual position at the running average cost.
+
+    A close that exceeds the residual position is logged as an orphan and
+    contributes \\$0 P&L for the unmatched portion (the matched portion still
+    gets real P&L). This avoids the prior bug where empty ``open_list``
+    defaulted ``open_price`` to 0.0 and inflated P&L by ``close_price * count``.
+
+    Note: ``get_trades`` returns rows in ``timestamp DESC``; this function
+    re-sorts ascending so the caller doesn't have to coordinate ordering.
     """
     summary = PnLSummary()
 
-    # Group trades by ticker to match opens with closes
-    opens: dict[str, list[dict]] = {}  # type: ignore[type-arg]
-    closes: dict[str, list[dict]] = {}  # type: ignore[type-arg]
-
+    # Group by (ticker, side); ignore non-actionable rows (skips).
+    groups: dict[tuple[str, str], list[dict]] = {}  # type: ignore[type-arg]
     for t in trades:
         action = t.get("action", "")
-        ticker = t.get("ticker", "")
-        if action == "open":
-            opens.setdefault(ticker, []).append(t)
-        elif action == "close":
-            closes.setdefault(ticker, []).append(t)
+        if action not in ("open", "close", "size_up"):
+            continue
+        key = (t.get("ticker", ""), t.get("side", "yes"))
+        groups.setdefault(key, []).append(t)
 
-    for ticker, close_list in closes.items():
-        open_list = opens.get(ticker, [])
-        for close in close_list:
-            # Find matching open
-            open_price = open_list[0]["price"] if open_list else 0.0
-            close_price = close.get("price", 0.0)
-            count = close.get("count", 0)
+    for (ticker, side), events in groups.items():
+        events.sort(key=lambda e: str(e.get("timestamp", "")))
+        remaining = 0
+        avg_cost = 0.0
 
-            pnl = (close_price - open_price) * count
-            # Estimate fees for both legs (open + close)
-            open_fee = fee_for_order(count, open_price) if open_price > 0 else 0.0
-            close_fee = fee_for_order(count, close_price) if close_price > 0 else 0.0
+        for e in events:
+            action = e["action"]
+            count = int(e.get("count", 0) or 0)
+            price = float(e.get("price", 0.0) or 0.0)
+
+            if action in ("open", "size_up"):
+                if count <= 0:
+                    continue
+                total = remaining + count
+                avg_cost = (
+                    (avg_cost * remaining + price * count) / total
+                    if total
+                    else 0.0
+                )
+                remaining = total
+                continue
+
+            # action == "close"
+            if count <= 0:
+                continue
+            matched = min(count, remaining)
+            orphan = count - matched
+            pnl = (price - avg_cost) * matched if matched else 0.0
+            if orphan:
+                _log.warning(
+                    "orphan close: ticker=%s side=%s count=%d remaining=%d",
+                    ticker, side, count, remaining,
+                )
+
+            # Fees on matched volume for the open leg, full count for the close
+            # leg (operator paid the close transaction in full regardless of
+            # whether the open is on record).
+            open_fee = (
+                fee_for_order(matched, avg_cost) if matched and avg_cost > 0 else 0.0
+            )
+            close_fee = fee_for_order(count, price) if price > 0 else 0.0
             summary.total_fees += open_fee + close_fee
-            summary.total_trades += 1
             summary.gross_pnl += pnl
+            summary.total_trades += 1
 
             if pnl > 0:
                 summary.winning_trades += 1
@@ -74,11 +113,12 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
             else:
                 summary.scratch_trades += 1
 
-    # Count open-only trades (skips and still-open)
-    for ticker, open_list in opens.items():
-        if ticker not in closes:
-            for _ in open_list:
-                summary.total_trades += 1
+            remaining -= matched
+
+        # Still-open residual: count once per (ticker, side) with carry, so
+        # the prior open-only test (test_open_only_counted) keeps passing.
+        if remaining > 0:
+            summary.total_trades += 1
 
     summary.net_pnl = summary.gross_pnl - summary.total_fees
     return summary

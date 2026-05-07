@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from gimmes.reporting.pnl import calculate_pnl
 
 
@@ -81,3 +83,108 @@ class TestCalculatePnl:
         assert summary.total_trades == 2  # 2 completed trades
         assert summary.winning_trades == 1
         assert summary.losing_trades == 1
+
+
+class TestCalculatePnlWeightedAverage:
+    """Regression coverage for #561 — running weighted-average cost basis.
+
+    (Average-cost accounting at the position level — not lot-based FIFO.)
+    """
+
+    @staticmethod
+    def _t(action: str, ticker: str, price: float, count: int, ts: str,
+           side: str = "yes") -> dict:  # type: ignore[type-arg]
+        return {
+            "action": action, "ticker": ticker, "side": side,
+            "price": price, "count": count, "timestamp": ts,
+        }
+
+    def test_two_opens_one_close_uses_weighted_average(self) -> None:
+        trades = [
+            self._t("open", "X", 0.40, 100, "2026-05-01T10:00:00"),
+            self._t("open", "X", 0.60, 100, "2026-05-01T11:00:00"),
+            self._t("close", "X", 0.70, 200, "2026-05-01T12:00:00"),
+        ]
+        # avg = 0.50; pnl = (0.70 - 0.50) * 200 = 40
+        summary = calculate_pnl(trades)
+        assert summary.gross_pnl == pytest.approx(40.0)
+        assert summary.total_trades == 1
+        assert summary.winning_trades == 1
+
+    def test_one_open_two_partial_closes(self) -> None:
+        trades = [
+            self._t("open", "X", 0.50, 100, "2026-05-01T10:00:00"),
+            self._t("close", "X", 0.60, 40, "2026-05-01T11:00:00"),
+            self._t("close", "X", 0.70, 60, "2026-05-01T12:00:00"),
+        ]
+        # (0.60-0.50)*40 + (0.70-0.50)*60 = 4 + 12 = 16
+        summary = calculate_pnl(trades)
+        assert summary.gross_pnl == pytest.approx(16.0)
+        assert summary.total_trades == 2
+        assert summary.winning_trades == 2
+
+    def test_size_up_rolls_into_average(self) -> None:
+        trades = [
+            self._t("open", "X", 0.50, 100, "2026-05-01T10:00:00"),
+            self._t("size_up", "X", 0.60, 50, "2026-05-01T11:00:00"),
+            self._t("close", "X", 0.70, 150, "2026-05-01T12:00:00"),
+        ]
+        # avg = (0.50*100 + 0.60*50)/150 = 0.5333...; pnl = (0.70-0.5333)*150 = 25
+        summary = calculate_pnl(trades)
+        assert summary.gross_pnl == pytest.approx(25.0, abs=0.01)
+        assert summary.winning_trades == 1
+
+    def test_orphan_close_no_inflation(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        trades = [self._t("close", "X", 0.80, 50, "2026-05-01T10:00:00")]
+        with caplog.at_level("WARNING"):
+            summary = calculate_pnl(trades)
+        assert summary.gross_pnl == 0.0  # NOT 0.80 * 50 = 40
+        assert summary.total_trades == 1
+        assert "orphan close" in caplog.text
+
+    def test_close_partially_orphan(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        trades = [
+            self._t("open", "X", 0.50, 50, "2026-05-01T10:00:00"),
+            self._t("close", "X", 0.70, 80, "2026-05-01T11:00:00"),
+        ]
+        with caplog.at_level("WARNING"):
+            summary = calculate_pnl(trades)
+        # 50 contracts matched at avg 0.50 → (0.70-0.50)*50 = 10; 30 orphan = 0
+        assert summary.gross_pnl == pytest.approx(10.0)
+        assert "orphan close" in caplog.text
+
+    def test_yes_and_no_sides_isolated(self) -> None:
+        trades = [
+            self._t("open", "X", 0.40, 10, "t1", side="yes"),
+            self._t("close", "X", 0.50, 10, "t2", side="yes"),  # +1.0
+            self._t("open", "X", 0.30, 10, "t3", side="no"),
+            self._t("close", "X", 0.20, 10, "t4", side="no"),   # -1.0
+        ]
+        summary = calculate_pnl(trades)
+        assert summary.winning_trades == 1
+        assert summary.losing_trades == 1
+        assert summary.gross_pnl == pytest.approx(0.0)
+
+    def test_handles_reverse_timestamp_input(self) -> None:
+        # get_trades returns DESC; calculate_pnl must re-sort.
+        trades = [
+            self._t("close", "X", 0.70, 100, "2026-05-01T12:00:00"),
+            self._t("open", "X", 0.50, 100, "2026-05-01T10:00:00"),
+        ]
+        summary = calculate_pnl(trades)
+        assert summary.gross_pnl == pytest.approx(20.0)
+        assert summary.winning_trades == 1
+
+    def test_size_up_only_no_close_counts_residual_once(self) -> None:
+        # Open + size_up with no close → 1 residual position, total_trades=1
+        trades = [
+            self._t("open", "X", 0.50, 100, "t1"),
+            self._t("size_up", "X", 0.60, 50, "t2"),
+        ]
+        summary = calculate_pnl(trades)
+        assert summary.total_trades == 1
+        assert summary.gross_pnl == 0.0

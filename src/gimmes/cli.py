@@ -1642,8 +1642,8 @@ def report() -> None:
             async with Database(config.db_path) as db:
                 # Fetch actionable trades by action so skip volume can't
                 # truncate older opens/closes under a single LIMIT (#542).
-                # size_up is fetched but currently ignored by calculate_pnl;
-                # the FIFO mispairing fix in #561 will incorporate it.
+                # size_up rolls into the running weighted-average cost basis
+                # in calculate_pnl (#561).
                 opens = await get_trades(db, action="open", limit=100_000)
                 closes = await get_trades(db, action="close", limit=100_000)
                 size_ups = await get_trades(db, action="size_up", limit=100_000)
