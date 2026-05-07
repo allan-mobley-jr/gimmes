@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `calculate_pnl` no longer mispairs multiple closes against the first open per ticker. Group key is now `(ticker, side)`; events sort by timestamp ascending; opens and `size_up` events roll into a running weighted-average cost basis; closes match against residual position at average cost. Orphan closes (close with no matching open, or close exceeding remaining contracts) log a warning and contribute \$0 P&L for the unmatched portion instead of inflating P&L by `close_price * count`. (#561)
 - `gimmes report` was silently zero-output when skip volume dominated the trades table — `get_trades(db, limit=1000)` returns the most-recent 1000 rows ordered by timestamp, and 17k+ skip records evicted the actionable opens/closes the P&L calculator needed. Report now fetches by action (`open`, `close`, `size_up`) separately so skip volume can't truncate. Note: `calculate_pnl` still mispairs multiple closes against the first open per ticker — tracked separately in #561. (#542)
 
 ### Changed
