@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- All trade-window factories now open at 04:00 ET on the release day instead of the prior evening (formerly 18:30 ET, 20:00 ET, 23:00 ET, etc.). Window-close times unchanged. Eliminates the empirically dead 18:00–04:00 ET block where 12 days of cycle data showed ~0.009 trades/cycle (1 trade in 116 full cycles), while preserving the 5–8 AM EDT pre-positioning window where smart money activity concentrates. Affects `_jobless_claims`, `_treasury_notes`, `_adp`, `_ism_pmi`, `_nfp`, `_cpi`, `_core_pce`, and `_gdp_advance`. (#558)
+- All formerly overnight release windows now open at 04:00 ET on the release day instead of the prior evening (formerly 18:30 ET, 20:00 ET, 23:00 ET, etc.). Window-close times unchanged. `_index_contracts` (release-day-only 14:00–16:00 ET) is unaffected. Eliminates the empirically dead 18:00–04:00 ET block where 12 days of cycle data showed ~0.009 trades/cycle (1 trade in 116 full cycles), while preserving the 5–8 AM EDT pre-positioning window where smart money activity concentrates. Affects `_jobless_claims`, `_treasury_notes`, `_adp`, `_ism_pmi`, `_nfp`, `_cpi`, `_core_pce`, and `_gdp_advance`. (#558)
 
 ## [0.7.0] - 2026-05-06
 

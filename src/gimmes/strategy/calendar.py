@@ -46,7 +46,7 @@ def _nearest_business_day(dt: datetime) -> datetime:
 
 
 def _release_day_window(
-    release_date: datetime,
+    release_dt: datetime,
     close_time: time,
     open_time: time = time(4, 0),
 ) -> tuple[datetime, datetime]:
@@ -59,10 +59,10 @@ def _release_day_window(
     skip; callers parameterizing ``open_time`` to 02:00–03:00 on the DST
     transition day risk a non-existent local time from ``replace()``.
     """
-    open_dt = release_date.replace(
+    open_dt = release_dt.replace(
         hour=open_time.hour, minute=open_time.minute, second=0, microsecond=0,
     )
-    close_dt = release_date.replace(
+    close_dt = release_dt.replace(
         hour=close_time.hour, minute=close_time.minute, second=0, microsecond=0,
     )
     return open_dt, close_dt

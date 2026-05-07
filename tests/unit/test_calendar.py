@@ -57,10 +57,11 @@ class TestIndexContracts:
 class TestJoblessClaims:
     def test_wednesday_evening_not_in_window(self) -> None:
         # Post-#558: night-before pre-roll dropped. Wed April 1 7:00 PM is
-        # now in the dead zone — the Thu window opens 04:00 ET on release day.
+        # in the dead zone — assert no window is active at all (not just
+        # that Jobless claims is silent).
         dt = datetime(2026, 4, 1, 19, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "Jobless claims"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_thursday_4am_in_window(self) -> None:
         # Thursday April 2, 4:00 AM ET — new release-day window opens
@@ -85,10 +86,11 @@ class TestJoblessClaims:
 
 class TestTreasuryNotes:
     def test_tuesday_midnight_not_in_window(self) -> None:
-        # Post-#558: Tue 23:30 ET no longer opens the Wed Treasury window.
+        # Post-#558: Tue 23:30 ET no longer opens the Wed Treasury window
+        # and falls in the dead zone — assert no window is active.
         dt = datetime(2026, 4, 7, 23, 30, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "Treasury notes"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_wednesday_4am_in_window(self) -> None:
         # Wednesday April 8, 4:00 AM ET — new release-day window opens
@@ -107,10 +109,10 @@ class TestTreasuryNotes:
 
 class TestNFP:
     def test_thursday_before_first_friday_not_in_window(self) -> None:
-        # Post-#558: Thursday evening before NFP is no longer pre-roll.
+        # Post-#558: Thursday evening before NFP is in the dead zone.
         dt = datetime(2026, 4, 2, 19, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "Non-Farm Payrolls"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_first_friday_4am_in_window(self) -> None:
         # Friday April 3, 4:00 AM ET — new release-day window opens
@@ -129,10 +131,10 @@ class TestNFP:
 
 class TestCPI:
     def test_thursday_evening_not_in_window(self) -> None:
-        # Post-#558: night before CPI is no longer pre-roll.
+        # Post-#558: night before CPI is in the dead zone.
         dt = datetime(2026, 4, 9, 19, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "CPI"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_april_2026_release_4am(self) -> None:
         # Friday April 10 at 4:00 AM — new release-day window opens
@@ -164,10 +166,10 @@ class TestCPI:
 
 class TestCorePCE:
     def test_night_before_last_friday_not_in_window(self) -> None:
-        # Post-#558: Thursday evening before PCE is no longer pre-roll.
+        # Post-#558: Thursday evening before PCE is in the dead zone.
         dt = datetime(2026, 4, 23, 19, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "Core PCE"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_last_friday_4am_in_window(self) -> None:
         # April 2026: last Friday is April 24, 4:00 AM ET window opens
@@ -179,10 +181,10 @@ class TestCorePCE:
 
 class TestGDPAdvance:
     def test_january_2026_evening_before_not_in_window(self) -> None:
-        # Post-#558: Wed Jan 28 19:00 ET is no longer pre-roll.
+        # Post-#558: Wed Jan 28 19:00 ET is in the dead zone.
         dt = datetime(2026, 1, 28, 19, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "GDP Advance"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_january_2026_release_4am(self) -> None:
         # Thu Jan 29 04:00 ET — new release-day window opens
@@ -213,10 +215,10 @@ class TestGDPAdvance:
 
 class TestISMPMI:
     def test_evening_before_not_in_window(self) -> None:
-        # Post-#558: Tue Mar 31 20:00 ET is no longer pre-roll.
+        # Post-#558: Tue Mar 31 20:00 ET is in the dead zone.
         dt = datetime(2026, 3, 31, 20, 0, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "ISM PMI"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_first_business_day_4am_in_window(self) -> None:
         # March 2026: Mar 1 is Sunday → first biz day Mon Mar 2. ADP is
@@ -237,10 +239,10 @@ class TestISMPMI:
 
 class TestADP:
     def test_tuesday_evening_not_in_window(self) -> None:
-        # Post-#558: Tue Mar 31 18:30 ET is no longer pre-roll.
+        # Post-#558: Tue Mar 31 18:30 ET is in the dead zone.
         dt = datetime(2026, 3, 31, 18, 30, tzinfo=ET)
-        in_w, name, _ = is_in_trade_window(dt)
-        assert not in_w or name != "ADP"
+        in_w, _, _ = is_in_trade_window(dt)
+        assert in_w is False
 
     def test_wednesday_4am_in_window(self) -> None:
         # Wed Apr 1 04:00 ET — new release-day ADP window opens
