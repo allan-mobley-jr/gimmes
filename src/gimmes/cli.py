@@ -2095,7 +2095,7 @@ def audit_cycles(
 
 @app.command(name="pause-backtest", rich_help_panel="Diagnostics")
 def pause_backtest(
-    date_from: str = typer.Option(
+    date_from: str | None = typer.Option(
         None,
         "--from",
         help=(
@@ -2103,7 +2103,7 @@ def pause_backtest(
             "earliest `candidates.scanned_at` date in gimmes.db."
         ),
     ),
-    date_to: str = typer.Option(
+    date_to: str | None = typer.Option(
         None,
         "--to",
         help=(
@@ -2182,6 +2182,13 @@ def pause_backtest(
         except ValueError as exc:
             console.print(f"[red]Invalid --to value: {exc}[/red]")
             raise typer.Exit(1)
+
+    if date_to_d < date_from_d:
+        console.print(
+            f"[red]--to ({date_to_d}) must be on or after --from "
+            f"({date_from_d})[/red]"
+        )
+        raise typer.Exit(1)
 
     summary = build_summary(
         log_dir=log_dir,

@@ -176,6 +176,50 @@ class TestCollectTrades:
         assert trades == []
         assert any("DB not found" in w for w in warnings)
 
+    def test_first_seen_excludes_candidates_after_trade(
+        self, tmp_path: Path,
+    ) -> None:
+        """If the only candidate row for a ticker was scanned AFTER the
+        trade was placed, ``first_seen_time`` must be ``None``. Pins the
+        SQL contract that catches the ``T`` vs space separator bug
+        — without `datetime(scanned_at) <= datetime(?)` SQLite would lex-
+        compare and incorrectly include same-day post-trade sightings.
+        """
+        db = tmp_path / "gimmes.db"
+        _seed_db(db)
+        # Trade at 14:00, candidate at 14:30 (later). The candidate must
+        # NOT count as a first-sighting for this trade.
+        _add_candidate(db, "KX1", "2026-05-07 14:30:00")
+        _add_trade(db, "KX1", "open", "2026-05-07T14:00:00+00:00")
+
+        trades, _ = collect_trades(
+            db, date_from=date(2026, 5, 7), date_to=date(2026, 5, 7),
+        )
+        assert len(trades) == 1
+        assert trades[0].first_seen_time is None
+        assert trades[0].gap_seconds is None
+
+    def test_first_seen_picks_the_pre_trade_row_when_post_trade_also_exists(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two candidate rows: one before the trade, one after. The query
+        must select only the pre-trade row."""
+        db = tmp_path / "gimmes.db"
+        _seed_db(db)
+        _add_candidate(db, "KX1", "2026-05-07 13:50:00", gimme_score=70.0)
+        _add_candidate(db, "KX1", "2026-05-07 14:30:00", gimme_score=99.0)
+        _add_trade(db, "KX1", "open", "2026-05-07T14:00:00+00:00")
+
+        trades, _ = collect_trades(
+            db, date_from=date(2026, 5, 7), date_to=date(2026, 5, 7),
+        )
+        # Pre-trade sighting at 13:50 → 10 minutes before 14:00.
+        assert trades[0].first_seen_time == datetime(
+            2026, 5, 7, 13, 50, tzinfo=UTC,
+        )
+        assert trades[0].gap_seconds == 600.0
+        assert trades[0].gimme_score == 70.0  # not the post-trade 99
+
     def test_cap_blocked_flagged(self, tmp_path: Path) -> None:
         db = tmp_path / "gimmes.db"
         _seed_db(db)

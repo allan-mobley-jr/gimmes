@@ -216,13 +216,22 @@ def _first_seen(
     """Return the candidate's earliest sighting at or before ``before``,
     plus its gimme_score/edge/cap_blocked at that sighting. Caller owns
     the connection (must be opened in ``mode=ro``)."""
+    # CANNOT compare ``scanned_at`` (SQLite ``datetime('now')`` form,
+    # e.g. ``'2026-05-07 14:00:00'``) to ``before.isoformat()`` (e.g.
+    # ``'2026-05-07T14:00:00+00:00'``) lexicographically — the ``T``
+    # separator and the ``+`` offset both sort *after* a literal space,
+    # so naive lex comparison would incorrectly include same-day rows
+    # whose scanned_at is later than ``before``. Use SQLite's
+    # ``datetime(...)`` to coerce both sides to a normalized form
+    # before comparing.
     try:
         cur = conn.execute(
             """
             SELECT scanned_at, gimme_score, edge, cap_blocked
             FROM candidates
-            WHERE ticker = ? AND scanned_at <= ?
-            ORDER BY scanned_at ASC
+            WHERE ticker = ?
+              AND datetime(scanned_at) <= datetime(?)
+            ORDER BY datetime(scanned_at) ASC
             LIMIT 1
             """,
             (ticker, before.isoformat()),
