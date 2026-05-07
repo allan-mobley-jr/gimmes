@@ -45,17 +45,24 @@ def _nearest_business_day(dt: datetime) -> datetime:
     return dt
 
 
-def _overnight_window(
-    release_date: datetime,
-    open_time: time,
+def _release_day_window(
+    release_dt: datetime,
     close_time: time,
+    open_time: time = time(4, 0),
 ) -> tuple[datetime, datetime]:
-    """Build an overnight window: open evening before, close on release day."""
-    day_before = release_date - timedelta(days=1)
-    open_dt = day_before.replace(
+    """Build a release-day window opening at 04:00 ET by default.
+
+    Per #558, all formerly-overnight windows now open at 04:00 ET on the
+    release day (eliminating the 18:00–04:00 ET dead zone where 12 days of
+    data showed ~0.009 trades/cycle).  Caller passes the close time on the
+    release day.  Note: 04:00 ET is safely past the spring-forward 02:00→03:00
+    skip; callers parameterizing ``open_time`` to 02:00–03:00 on the DST
+    transition day risk a non-existent local time from ``replace()``.
+    """
+    open_dt = release_dt.replace(
         hour=open_time.hour, minute=open_time.minute, second=0, microsecond=0,
     )
-    close_dt = release_date.replace(
+    close_dt = release_dt.replace(
         hour=close_time.hour, minute=close_time.minute, second=0, microsecond=0,
     )
     return open_dt, close_dt
@@ -118,43 +125,32 @@ def _index_contracts(year: int, month: int) -> list[tuple[datetime, datetime]]:
 
 
 def _treasury_notes(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Weekly: Tue 11:00 PM → Wed 1:00 PM ET."""
-    windows: list[tuple[datetime, datetime]] = []
-    last_day = _cal.monthrange(year, month)[1]
-    for day in range(1, last_day + 1):
-        dt = datetime(year, month, day, tzinfo=ET)
-        if dt.weekday() == 1:  # Tuesday
-            open_dt = dt.replace(hour=23, minute=0, second=0, microsecond=0)
-            close_dt = (dt + timedelta(days=1)).replace(
-                hour=13, minute=0, second=0, microsecond=0,
-            )
-            windows.append((open_dt, close_dt))
-    return windows
-
-
-def _jobless_claims(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Weekly: Wed 6:30 PM → Thu 8:30 AM ET."""
+    """Weekly: Wed 4:00 AM → Wed 1:00 PM ET (release day, post-#558)."""
     windows: list[tuple[datetime, datetime]] = []
     last_day = _cal.monthrange(year, month)[1]
     for day in range(1, last_day + 1):
         dt = datetime(year, month, day, tzinfo=ET)
         if dt.weekday() == 2:  # Wednesday
-            open_dt = dt.replace(hour=18, minute=30, second=0, microsecond=0)
-            close_dt = (dt + timedelta(days=1)).replace(
-                hour=8, minute=30, second=0, microsecond=0,
-            )
-            windows.append((open_dt, close_dt))
+            windows.append(_release_day_window(dt, time(13, 0)))
+    return windows
+
+
+def _jobless_claims(year: int, month: int) -> list[tuple[datetime, datetime]]:
+    """Weekly: Thu 4:00 AM → Thu 8:30 AM ET (release day, post-#558)."""
+    windows: list[tuple[datetime, datetime]] = []
+    last_day = _cal.monthrange(year, month)[1]
+    for day in range(1, last_day + 1):
+        dt = datetime(year, month, day, tzinfo=ET)
+        if dt.weekday() == 3:  # Thursday
+            windows.append(_release_day_window(dt, time(8, 30)))
     return windows
 
 
 def _adp(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: Tue before NFP 6:15 PM → Wed 8:15 AM ET."""
+    """Monthly: Wed before NFP 4:00 AM → 8:15 AM ET (release day, post-#558)."""
     nfp_friday = _first_friday(year, month)
-    adp_wednesday = nfp_friday - timedelta(days=2)  # Wednesday before NFP
-    adp_tuesday = adp_wednesday - timedelta(days=1)
-    open_dt = adp_tuesday.replace(hour=18, minute=15, second=0, microsecond=0)
-    close_dt = adp_wednesday.replace(hour=8, minute=15, second=0, microsecond=0)
-    return [(open_dt, close_dt)]
+    adp_wednesday = nfp_friday - timedelta(days=2)
+    return [_release_day_window(adp_wednesday, time(8, 15))]
 
 
 def _first_business_day(year: int, month: int) -> datetime:
@@ -166,22 +162,19 @@ def _first_business_day(year: int, month: int) -> datetime:
 
 
 def _ism_pmi(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: night before 1st business day 8:00 PM → 1st biz day 10:00 AM."""
+    """Monthly: 1st biz day 4:00 AM → 10:00 AM ET (release day, post-#558)."""
     biz_day = _first_business_day(year, month)
-    day_before = biz_day - timedelta(days=1)
-    open_dt = day_before.replace(hour=20, minute=0, second=0, microsecond=0)
-    close_dt = biz_day.replace(hour=10, minute=0, second=0, microsecond=0)
-    return [(open_dt, close_dt)]
+    return [_release_day_window(biz_day, time(10, 0))]
 
 
 def _nfp(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: Thu 6:30 PM → 1st Friday 8:30 AM ET."""
+    """Monthly: 1st Friday 4:00 AM → 8:30 AM ET (release day, post-#558)."""
     friday = _first_friday(year, month)
-    return [_overnight_window(friday, time(18, 30), time(8, 30))]
+    return [_release_day_window(friday, time(8, 30))]
 
 
 def _cpi(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: night before CPI release 6:30 PM → release day 8:30 AM ET."""
+    """Monthly: CPI release day 4:00 AM → 8:30 AM ET (post-#558)."""
     day = _CPI_DATES.get((year, month))
     if day is None:
         # Fallback: ~12th snapped to nearest business day
@@ -189,17 +182,17 @@ def _cpi(year: int, month: int) -> list[tuple[datetime, datetime]]:
         release = _nearest_business_day(target)
     else:
         release = datetime(year, month, day, tzinfo=ET)
-    return [_overnight_window(release, time(18, 30), time(8, 30))]
+    return [_release_day_window(release, time(8, 30))]
 
 
 def _core_pce(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Monthly: night before last Friday 6:30 PM → last Fri 8:30 AM ET."""
+    """Monthly: last Friday 4:00 AM → 8:30 AM ET (release day, post-#558)."""
     friday = _last_friday(year, month)
-    return [_overnight_window(friday, time(18, 30), time(8, 30))]
+    return [_release_day_window(friday, time(8, 30))]
 
 
 def _gdp_advance(year: int, month: int) -> list[tuple[datetime, datetime]]:
-    """Quarterly (Jan/Apr/Jul/Oct): night before GDP release 6:30 PM → release day 8:30 AM."""
+    """Quarterly (Jan/Apr/Jul/Oct): release day 4:00 AM → 8:30 AM ET (post-#558)."""
     if month not in (1, 4, 7, 10):
         return []
     day = _GDP_ADVANCE_DATES.get((year, month))
@@ -209,7 +202,7 @@ def _gdp_advance(year: int, month: int) -> list[tuple[datetime, datetime]]:
         release = _nearest_business_day(target)
     else:
         release = datetime(year, month, day, tzinfo=ET)
-    return [_overnight_window(release, time(18, 30), time(8, 30))]
+    return [_release_day_window(release, time(8, 30))]
 
 
 # ---------------------------------------------------------------------------
