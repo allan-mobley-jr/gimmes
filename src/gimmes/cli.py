@@ -1640,7 +1640,14 @@ def report() -> None:
 
         try:
             async with Database(config.db_path) as db:
-                trades = await get_trades(db, limit=1000)
+                # Fetch actionable trades by action so skip volume can't
+                # truncate older opens/closes under a single LIMIT (#542).
+                # size_up is fetched but currently ignored by calculate_pnl;
+                # the FIFO mispairing fix in #561 will incorporate it.
+                opens = await get_trades(db, action="open", limit=100_000)
+                closes = await get_trades(db, action="close", limit=100_000)
+                size_ups = await get_trades(db, action="size_up", limit=100_000)
+                trades = opens + closes + size_ups
                 summary = calculate_pnl(trades)
                 format_pnl_summary(summary)
         except Exception as exc:
