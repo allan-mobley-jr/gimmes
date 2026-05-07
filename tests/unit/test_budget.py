@@ -148,6 +148,60 @@ class TestParseUsageFromStreamJson:
         assert usage is not None
         assert usage["input_tokens"] == 1
 
+    def test_sums_across_multiple_assistant_turns(self) -> None:
+        """#563 regression: a real cycle has 200-300 assistant turns; the
+        parser must sum them, not return the first/last block alone.
+        """
+        events = [
+            b'{"type":"system","subtype":"init"}',
+            b'{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5000}}}',
+            b'{"type":"assistant","message":{"usage":{"input_tokens":15,"output_tokens":25,"cache_creation_input_tokens":2000,"cache_read_input_tokens":7000}}}',
+            b'{"type":"assistant","message":{"usage":{"input_tokens":5,"output_tokens":10,"cache_creation_input_tokens":500,"cache_read_input_tokens":3000}}}',
+            b'{"type":"result","is_error":false,"usage":{"input_tokens":99,"output_tokens":99,"cache_creation_input_tokens":9999,"cache_read_input_tokens":9999}}',
+        ]
+        usage = parse_usage_from_stream_json(b"\n".join(events))
+        assert usage is not None
+        # Sum across the 3 assistant events; result.usage is ignored when
+        # any assistant turn carried a usage block (avoids double-counting).
+        assert usage["input_tokens"] == 30
+        assert usage["output_tokens"] == 55
+        assert usage["cache_creation_input_tokens"] == 3500
+        assert usage["cache_read_input_tokens"] == 15000
+
+    def test_falls_back_to_result_when_no_assistant_usage(self) -> None:
+        """If every assistant event lacks usage (test fixtures, malformed
+        upstream), still return the result envelope's usage rather than
+        producing an unhelpful None."""
+        events = [
+            b'{"type":"system","subtype":"init"}',
+            b'{"type":"assistant","message":{"id":"x"}}',  # no usage
+            b'{"type":"result","is_error":false,"usage":{"input_tokens":1234,"output_tokens":99}}',
+        ]
+        usage = parse_usage_from_stream_json(b"\n".join(events))
+        assert usage is not None
+        assert usage["input_tokens"] == 1234
+
+    def test_record_cycle_with_summed_usage_reflects_real_cost(
+        self, tmp_path: Path,
+    ) -> None:
+        """End-to-end: parse a multi-turn stream and feed it to record_cycle.
+        The recorded cost should match the per-turn sum, not the result
+        envelope's single-turn cost."""
+        clock = _fixed_clock(datetime(2026, 5, 7, 12, 0, tzinfo=UTC))
+        tracker = BudgetTracker(path=tmp_path / "budget.json", clock=clock)
+        events = [
+            b'{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":500000,"cache_read_input_tokens":6000000}}}',
+            b'{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":500000,"cache_read_input_tokens":6000000}}}',
+            b'{"type":"result","is_error":false,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":75000,"cache_read_input_tokens":2000000}}',
+        ]
+        usage = parse_usage_from_stream_json(b"\n".join(events))
+        assert usage is not None
+        tracker.record_cycle(usage, "claude-sonnet-4-6")
+        s = tracker.today()
+        # Real per-cycle cache_creation = 1M (sum), not 75K (result alone).
+        assert s.cache_creation_tokens == 1_000_000
+        assert s.cache_read_tokens == 12_000_000
+
 
 # ---------------------------------------------------------------------------
 # BudgetTracker — caps, persistence, rollover
