@@ -107,16 +107,38 @@ def cost_from_usage(usage: dict, model_id: str) -> float:
 
 
 def parse_usage_from_stream_json(stdout: bytes) -> dict | None:
-    """Extract the ``usage`` block from a Claude Code stream-json stdout.
+    """Extract aggregate ``usage`` from a Claude Code stream-json stdout.
 
-    Iterates events in reverse and returns the first parseable ``usage``
-    dict found on a ``type: result`` (or ``type: assistant`` with a
-    message-level usage) event. Fail-open: returns ``None`` on empty
-    stdout, malformed JSON, or missing fields.
+    A Caddie Master cycle emits 200-300 ``assistant`` events (parent agent
+    + subagent dispatches), each with its own per-turn ``message.usage``.
+    The terminal ``result`` event reports usage for the parent agent only,
+    not the cycle total. Returning the result event's usage in isolation
+    therefore undercounts cache_creation/cache_read by ~10× and cost by
+    ~5× (#563).
+
+    This function sums ``input_tokens``, ``output_tokens``,
+    ``cache_creation_input_tokens``, and ``cache_read_input_tokens``
+    across **every** ``assistant`` event in the stream. Subagent
+    dispatches are billed separately by Anthropic and surface as their
+    own assistant events, so this captures the cycle's true total.
+
+    Falls back to the ``result`` event's usage only if no assistant event
+    carried a usage block (test fixtures, malformed streams). Returns
+    ``None`` on empty stdout, all-malformed lines, or no usage anywhere.
     """
     if not stdout:
         return None
-    for raw in reversed(stdout.strip().split(b"\n")):
+
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    found_assistant_usage = False
+    result_usage: dict | None = None
+
+    for raw in stdout.strip().split(b"\n"):
         raw = raw.strip()
         if not raw:
             continue
@@ -129,17 +151,24 @@ def parse_usage_from_stream_json(stdout: bytes) -> dict | None:
             continue
         if not isinstance(event, dict):
             continue
-        # Direct usage on result envelope
-        usage = event.get("usage")
-        if isinstance(usage, dict) and "input_tokens" in usage:
-            return usage
-        # Nested usage on assistant message envelope
-        msg = event.get("message")
-        if isinstance(msg, dict):
-            usage = msg.get("usage")
+
+        ev_type = event.get("type")
+        if ev_type == "assistant":
+            msg = event.get("message")
+            if isinstance(msg, dict):
+                usage = msg.get("usage")
+                if isinstance(usage, dict) and "input_tokens" in usage:
+                    found_assistant_usage = True
+                    for k in totals:
+                        totals[k] += int(usage.get(k, 0) or 0)
+        elif ev_type == "result":
+            usage = event.get("usage")
             if isinstance(usage, dict) and "input_tokens" in usage:
-                return usage
-    return None
+                result_usage = usage
+
+    if found_assistant_usage:
+        return totals
+    return result_usage
 
 
 def _default_clock() -> datetime:
