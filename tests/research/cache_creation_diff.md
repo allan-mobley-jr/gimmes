@@ -67,3 +67,26 @@ The cache_creation tail is doing its job. The ~$5/cycle full-pipeline cost is a 
 
 - **#563 (filed)** — `parse_usage_from_stream_json` undercount fix. Sum across **all** assistant events plus the result. Critical for the daily budget cap to bind at the right point.
 - After #563 lands, re-evaluate whether the daily cap (default \$25) should be raised or lowered; with corrected accounting, \$25 binds at *fewer* cycles than the design-time 80-session assumption — operators may want to update the cap or accept that real ceiling.
+
+## Post-#563 validation (2026-05-08)
+
+Now that #563 has merged, sampled 17 full-pipeline cycles from May 8 (1356–1372) to validate the corrected parser against the still-running v0.7.0 daemon's broken accounting and Anthropic's authoritative `result.total_cost_usd`.
+
+| | cache_creation | cache_read | cost (17 cycles) |
+|---|---:|---:|---:|
+| Old parser (result envelope only)         | 1,214,398   | 23,706,474   | — |
+| New parser (sum-across-assistant-turns)   | 12,833,585  | 200,964,981  | — |
+| Multiplier                                 | **10.57×**  | **8.48×**    | |
+| Anthropic authoritative `result.total_cost_usd` | — | — | **\$82.86** |
+| Local PRICING applied to new totals       | — | — | \$108.52 |
+| budget.json recorded for full May 8 (24 cycles) | 1,860,124 | 36,445,024 | \$25.02 |
+
+**Findings:**
+
+1. The 10× cache_create undercount factor predicted from May 7 data **holds on May 8**: 10.57× across 17 trade-window cycles. cache_read was 8.48×, slightly lower — consistent with subagent dispatches contributing more cache_create per turn than cache_read.
+2. The new parser **slightly overestimates** total cost (\$108.52 vs Anthropic's \$82.86, ~30% over). Plausible cause: Claude Code emits subagent dispatch envelopes as separate `assistant` events, and the dispatch + subagent execution may both report overlapping usage. Net effect is a conservative overcount — safer for a budget cap to bind early than late, but worth a follow-up to align with `result.total_cost_usd` exactly.
+3. The daemon recorded **\$25.02 for 24 cycles** (the cap binding point); the **real** spend across those 24 cycles is closer to **\$117** (\$4.87/cycle × 24). Operators have been consuming roughly **5× their stated daily cap**.
+
+**Recommended cap action:** raise `--max-daily-cost-usd` to a value reflecting the corrected per-cycle cost. At \$4.87/cycle authoritative, the current \$25 cap maps to ~5 cycles/day. To get back to the design-time ~80 cycles/day, the cap would need to be ~\$390/day; for a more modest 30 trade-window cycles/day, ~\$150/day. Operators should pick the value matching their actual willingness to spend, not the legacy \$25 default.
+
+**Closing #552.** The cache_creation tail is doing its job (Phase 1 finding); the apparent runaway cost was an accounting artifact (Phase 2 finding, fixed in #563); the cap should be re-tuned based on the validation table above (operator action). All three open threads are resolved.
