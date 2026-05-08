@@ -52,6 +52,9 @@ uv.lock
 # Research (private notes)
 .research/
 
+# Backtest CSV outputs (regenerated per run)
+tests/research/output/
+
 # Claude Code local settings
 .claude/settings.local.json
 .claude/worktrees/
