@@ -72,7 +72,7 @@ The cache_creation tail is doing its job. The ~$5/cycle full-pipeline cost is a 
 
 Now that #563 has merged, sampled 17 full-pipeline cycles from May 8 (1356–1372) to validate the corrected parser against the still-running v0.7.0 daemon's broken accounting and Anthropic's authoritative `result.total_cost_usd`.
 
-| | cache_creation | cache_read | cost (17 cycles) |
+| | cache_create | cache_read | cost (17 cycles) |
 |---|---:|---:|---:|
 | Old parser (result envelope only)         | 1,214,398   | 23,706,474   | — |
 | New parser (sum-across-assistant-turns)   | 12,833,585  | 200,964,981  | — |
