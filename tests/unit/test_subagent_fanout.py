@@ -462,6 +462,60 @@ class TestRenderMarkdown:
         assert "Highest-cost" not in md  # no non-master buckets present
 
 
+class TestSummaryReportedCostCoverage:
+    def test_total_cost_reported_none_when_all_cycles_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        c1 = tmp_path / "cycle-0001.json"
+        _write_cycle(c1, [
+            _assistant_event(_basic_usage(10)),
+            {"type": "result"},  # no total_cost_usd
+        ])
+        summary = build_summary([parse_cycle_log(c1)])
+        assert summary.total_cost_usd_reported is None
+        # Markdown shows the "?" sentinel rather than $0.00.
+        md = render_markdown(summary)
+        assert "**?**" in md
+
+    def test_partial_coverage_surfaces_in_markdown(self, tmp_path: Path) -> None:
+        # One cycle reports cost, one does not — the partial sum must
+        # be rendered alongside an explicit "(1 of 2 cycles reported)"
+        # so the gap is visible rather than silently understated.
+        c1 = tmp_path / "cycle-0001.json"
+        c2 = tmp_path / "cycle-0002.json"
+        _write_cycle(c1, [
+            _assistant_event(_basic_usage(10)),
+            {"type": "result", "total_cost_usd": 0.005},
+        ])
+        _write_cycle(c2, [
+            _assistant_event(_basic_usage(20)),
+            {"type": "result"},  # missing total
+        ])
+        summary = build_summary([parse_cycle_log(c1), parse_cycle_log(c2)])
+        assert summary.total_cost_usd_reported == 0.005
+        assert summary.cycles_with_reported_cost == 1
+        md = render_markdown(summary)
+        assert "(1 of 2 cycles reported)" in md
+        # Pin the dollar formatting too so a regression in the format
+        # string would fail the test (otherwise only the parenthetical
+        # is fenced).
+        assert "**$0.01**" in md
+        # Cycle 2's per-cycle Table 1 cost cell must render "?" for the
+        # missing reported total, not "$0.00".
+        assert "| 2 | 2 | ? | 0 |" in md
+
+    def test_full_coverage_omits_partial_suffix(self, tmp_path: Path) -> None:
+        # Negative regression-fence: when every cycle reports cost, the
+        # "(N of M cycles reported)" suffix must NOT appear.
+        c1 = tmp_path / "cycle-0001.json"
+        _write_cycle(c1, [
+            _assistant_event(_basic_usage(10)),
+            {"type": "result", "total_cost_usd": 0.005},
+        ])
+        md = render_markdown(build_summary([parse_cycle_log(c1)]))
+        assert "cycles reported" not in md
+
+
 class TestBuildSummaryMixedModels:
     def test_mixed_model_cost_summed_per_cycle(self, tmp_path: Path) -> None:
         # Two cycles on different models. Build_summary must sum each

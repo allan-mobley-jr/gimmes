@@ -133,8 +133,21 @@ class FanoutSummary:
         return len(self.cycles)
 
     @property
-    def total_cost_usd_reported(self) -> float:
-        return sum(c.total_cost_usd_reported or 0.0 for c in self.cycles)
+    def cycles_with_reported_cost(self) -> int:
+        return sum(1 for c in self.cycles if c.total_cost_usd_reported is not None)
+
+    @property
+    def total_cost_usd_reported(self) -> float | None:
+        # Returns None when *no* audited cycle has a reported cost — that
+        # avoids rendering a misleading $0.00 sum. When some cycles
+        # reported and others didn't, returns the partial sum; the
+        # render layer surfaces "(N of M cycles reported)" so the
+        # coverage gap is visible rather than silently understated.
+        reported = [c.total_cost_usd_reported for c in self.cycles
+                    if c.total_cost_usd_reported is not None]
+        if not reported:
+            return None
+        return sum(reported)
 
     @property
     def total_cost_usd_computed(self) -> float:
@@ -423,10 +436,19 @@ def render_markdown(summary: FanoutSummary) -> str:
     lines: list[str] = []
     lines.append("# Subagent fanout characterization (Phase 1 of #571)")
     lines.append("")
+    if summary.total_cost_usd_reported is None:
+        reported_str = "**?** (no cycle reported a total)"
+    else:
+        coverage = ""
+        if summary.cycles_with_reported_cost < summary.cycles_audited:
+            coverage = (
+                f" ({summary.cycles_with_reported_cost} of"
+                f" {summary.cycles_audited} cycles reported)"
+            )
+        reported_str = f"**${summary.total_cost_usd_reported:.2f}**{coverage}"
     lines.append(
         f"Audited **{summary.cycles_audited}** cycles.  "
-        f"Sum of reported `result.total_cost_usd`: "
-        f"**${summary.total_cost_usd_reported:.2f}**.  "
+        f"Sum of reported `result.total_cost_usd`: {reported_str}.  "
         f"Sum of bucket costs (this report): "
         f"**${summary.total_cost_usd_computed:.2f}**.",
     )

@@ -1,7 +1,8 @@
 """Phase 1 driver for #571: characterize current subagent fanout.
 
 Walks a stratified sample of recent ``cycle-NNNN.json`` logs from
-``${GIMMES_HOME}/logs`` and emits:
+``~/.gimmes/logs`` (matching the path used by ``pause_and_hour_backtest.py``
+and the autonomous loop's default ``logs_dir``) and emits:
 
 - ``tests/research/output/subagent_fanout_per_cycle.csv`` — Table 1 data.
 - ``tests/research/output/subagent_fanout_buckets.csv`` — Table 2 data.
@@ -71,7 +72,9 @@ def _write_csvs(summary, paths: list[Path]) -> None:
     """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    with (OUT_DIR / "subagent_fanout_per_cycle.csv").open("w") as f:
+    with (OUT_DIR / "subagent_fanout_per_cycle.csv").open(
+        "w", newline="", encoding="utf-8",
+    ) as f:
         w = csv.DictWriter(
             f,
             fieldnames=[
@@ -88,6 +91,15 @@ def _write_csvs(summary, paths: list[Path]) -> None:
                 "cost_usd_reported": c.total_cost_usd_reported,
                 "cost_usd_computed": round(c.computed_total_cost_usd(), 6),
             }
+            if not counts:
+                # Cycle with zero dispatches still gets a row so every
+                # audited cycle is represented in the per-cycle CSV.
+                w.writerow({
+                    **base,
+                    "subagent_type": "",
+                    "dispatch_count": 0,
+                })
+                continue
             # Emit one row per dispatched subagent_type. Sorted so two
             # runs over the same cycles produce byte-identical output.
             for subtype in sorted(counts):
@@ -97,7 +109,9 @@ def _write_csvs(summary, paths: list[Path]) -> None:
                     "dispatch_count": counts[subtype],
                 })
 
-    with (OUT_DIR / "subagent_fanout_buckets.csv").open("w") as f:
+    with (OUT_DIR / "subagent_fanout_buckets.csv").open(
+        "w", newline="", encoding="utf-8",
+    ) as f:
         w = csv.DictWriter(
             f,
             fieldnames=[
