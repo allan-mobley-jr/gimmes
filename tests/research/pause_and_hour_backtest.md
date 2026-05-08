@@ -18,15 +18,20 @@
 
 ## Output
 
-### Table 1 — pause-length vs realized PnL
+### Table 1 — scan-to-open gap distribution (descriptive)
 
-| pause_s | trades_surfaced | gross_pnl |
+For each closed trade, what was the gap from the most recent pre-open candidate scan to the actual open timestamp? "Trades with scan within X" answers: of N=6 closed trades, how many had recent enough data that an algorithm running with `pause ≤ X` would have had non-stale information at trade time.
+
+Note: this is a description of **observed** gaps in the trade history, not a counterfactual ("would this trade have surfaced under pause=X?"). A true counterfactual requires modeling cycle frequency and price drift from data we don't persist (see Blocker 2 below).
+
+| pause_thresh_s | trades_with_scan_within | pnl_subset |
 |---:|---:|---:|
 | 60   | 0 | \$0.00      |
 | 120  | 0 | \$0.00      |
-| 300  | 2 | \$-258.81   |
-| 600  | 2 | \$-258.81   |
-| 900  | 2 | \$-258.81   |
+| 300  | 5 | \$-380.44   |
+| 600  | 5 | \$-380.44   |
+| 900  | 5 | \$-380.44   |
+| (no scan record) | 1 | \$132.63 |
 
 ### Table 2 — hour-of-window vs realized PnL
 

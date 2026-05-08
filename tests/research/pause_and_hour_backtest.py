@@ -23,7 +23,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,14 +55,20 @@ def _load_trades(db_path: Path, since: datetime) -> list[dict]:
 
 
 def _load_candidates(db_path: Path, since: datetime) -> list[dict]:
-    """Return candidate scans newer than ``since``, oldest first."""
+    """Return candidate scans newer than ``since``, oldest first.
+
+    ``candidates.scanned_at`` is written by SQLite ``datetime('now')`` with
+    a space separator while ``trades.timestamp`` uses ISO-8601 with ``T``.
+    Wrap both sides in ``datetime()`` so SQLite normalizes formats before
+    comparison — same pattern as ``src/gimmes/reporting/pause_backtest.py``.
+    """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
         SELECT scanned_at, ticker, market_price, edge, gimme_score
         FROM candidates
-        WHERE scanned_at >= ?
+        WHERE datetime(scanned_at) >= datetime(?)
         ORDER BY scanned_at
         """,
         (since.isoformat(),),
@@ -73,7 +79,6 @@ def _load_candidates(db_path: Path, since: datetime) -> list[dict]:
 
 def _parse_dt(s: str) -> datetime:
     """Parse ISO timestamp; ensure timezone-aware (assume UTC if naive)."""
-    from datetime import UTC
     s = s.replace(" ", "T")
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
@@ -135,20 +140,21 @@ def _pair_trades(trades: list[dict]) -> list[dict]:
     return closed
 
 
-def _candidate_first_seen(
+def _latest_scan_before(
     candidates: list[dict], ticker: str, before: datetime,
 ) -> datetime | None:
-    """Earliest scan timestamp that surfaced ``ticker`` before ``before``."""
-    earliest: datetime | None = None
+    """Return the latest scan timestamp for ``ticker`` strictly before
+    ``before``, or ``None`` if no such scan exists."""
+    latest: datetime | None = None
     for c in candidates:
         if c["ticker"] != ticker:
             continue
         ts = _parse_dt(c["scanned_at"])
-        if ts > before:
+        if ts >= before:
             continue
-        if earliest is None or ts < earliest:
-            earliest = ts
-    return earliest
+        if latest is None or ts > latest:
+            latest = ts
+    return latest
 
 
 def _hour_of_window(open_ts: str) -> int | None:
@@ -166,30 +172,13 @@ def _hour_of_window(open_ts: str) -> int | None:
     return None
 
 
-def _pause_bucket_for_trade(
-    closed: dict, candidates: list[dict], pause_s: int,
-) -> bool:
-    """Would this trade still have been surfaced under ``pause_s`` between cycles?
-
-    Approximation: the trade was placed at ``open_ts``. Find the latest
-    candidate scan for this ticker before ``open_ts``. If the gap from that
-    scan to ``open_ts`` exceeds ``pause_s``, the simulated longer pause
-    would not have surfaced the candidate in time. (Counterfactual
-    price-trajectory data is not persisted, so we can't model "missed by
-    one cycle" entry-price drift — see research blockers.)
-    """
-    open_dt = _parse_dt(closed["open_ts"])
-    seen = _candidate_first_seen(candidates, closed["ticker"], open_dt)
-    if seen is None:
-        return True  # No scan record — assume the trade still happens
-    gap = (open_dt - seen).total_seconds()
-    return gap <= pause_s
-
-
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    cutoff = datetime.now().astimezone() - timedelta(days=LOOKBACK_DAYS)
+    # Use UTC explicitly — DB timestamps are UTC for trades (isoformat) and
+    # SQLite-default UTC for candidates. A local-tz cutoff would drift the
+    # window boundary by hours when the script runs on a non-UTC host.
+    cutoff = datetime.now(UTC) - timedelta(days=LOOKBACK_DAYS)
     cutoff_iso = cutoff.isoformat()
 
     trades = _load_trades(DB_PATH, cutoff)
@@ -203,19 +192,41 @@ def main() -> None:
     print(f"Closed positions in window: {len(closed)}")
     print()
 
-    # ----- Table 1: pause-length vs realized PnL -----
-    print("--- Table 1: pause-length vs realized PnL ---")
-    print(f"{'pause_s':<10} {'trades_surfaced':<18} {'gross_pnl':<12}")
+    # ----- Table 1: scan-to-open gap distribution (descriptive) -----
+    # Phase 1 wanted a pause-vs-PnL counterfactual ("would this trade still
+    # surface under pause=X?") but that requires modeling cycle frequency
+    # and entry-price drift from data we don't persist. Instead, surface
+    # the descriptive gap from each trade's most recent pre-open candidate
+    # scan. A pause threshold below the gap means "the algorithm under
+    # that pause would have had stale data at trade time."
+    print("--- Table 1: scan-to-open gap distribution (descriptive) ---")
+    print(
+        f"{'pause_thresh_s':<16} {'trades_with_scan_within':<26}"
+        f" {'pnl_subset':<12}"
+    )
     table1: list[dict] = []
-    for pause_s in PAUSE_BUCKETS_S:
-        surfaced = [c for c in closed if _pause_bucket_for_trade(c, candidates, pause_s)]
-        pnl = sum(c["pnl"] for c in surfaced)
-        print(f"{pause_s:<10} {len(surfaced):<18} ${pnl:<11.2f}")
+    gaps: list[tuple[float | None, dict]] = []
+    for c in closed:
+        open_dt = _parse_dt(c["open_ts"])
+        scan_dt = _latest_scan_before(candidates, c["ticker"], open_dt)
+        gap = (open_dt - scan_dt).total_seconds() if scan_dt else None
+        gaps.append((gap, c))
+    for thresh in PAUSE_BUCKETS_S:
+        within = [c for gap, c in gaps if gap is not None and gap <= thresh]
+        pnl = sum(c["pnl"] for c in within)
+        print(f"{thresh:<16} {len(within):<26} ${pnl:<11.2f}")
         table1.append({
-            "pause_s": pause_s,
-            "trades_surfaced": len(surfaced),
-            "gross_pnl": pnl,
+            "pause_thresh_s": thresh,
+            "trades_with_scan_within": len(within),
+            "pnl_subset": pnl,
         })
+    no_scan = [c for gap, c in gaps if gap is None]
+    if no_scan:
+        no_scan_pnl = sum(c["pnl"] for c in no_scan)
+        print(
+            f"{'(no scan record)':<16} {len(no_scan):<26}"
+            f" ${no_scan_pnl:.2f}"
+        )
     print()
 
     # ----- Table 2: hour-of-window vs realized PnL -----
@@ -243,7 +254,10 @@ def main() -> None:
     # ----- Persist CSVs -----
     import csv
     with (OUT_DIR / "pause_vs_pnl.csv").open("w") as f:
-        w = csv.DictWriter(f, fieldnames=["pause_s", "trades_surfaced", "gross_pnl"])
+        w = csv.DictWriter(
+            f,
+            fieldnames=["pause_thresh_s", "trades_with_scan_within", "pnl_subset"],
+        )
         w.writeheader()
         w.writerows(table1)
     with (OUT_DIR / "hour_vs_pnl.csv").open("w") as f:
