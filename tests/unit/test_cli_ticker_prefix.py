@@ -15,6 +15,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -388,3 +389,185 @@ class TestMarketInfo:
             result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
         assert result.exit_code == 0, result.output
         assert get_market.await_args.args[1] == "KXCPI-26APR-T0.5"
+
+
+def _read_error_log(db_path: Path) -> list[dict]:
+    """Synchronous sqlite3 read of error_log rows, returned newest first.
+    Used by CLI failure-path tests to assert that the failing command
+    landed a structured row for Groundskeeper to surface."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT severity, category, error_code, component, message"
+            " FROM error_log ORDER BY id DESC",
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+class TestErrorLogging:
+    """Verify that the failure paths in market-info and position-context
+    (#588) write to the error_log table, so Groundskeeper sees them
+    instead of silently passing through to the Python logger only."""
+
+    def test_market_info_ambiguous_logs_error(self, seeded_db: Path) -> None:
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(app, ["market-info", "KXCPI"])
+        assert result.exit_code == 1
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "config_error"
+            and e["error_code"] == "ambiguous_ticker"
+            and e["component"] == "cli.market-info"
+            and "KXCPI" in e["message"]
+            for e in errors
+        ), errors
+
+    def test_market_info_kalshi_http_error_logs_error(
+        self, seeded_db: Path,
+    ) -> None:
+        response = MagicMock(status_code=404, text="not found")
+        get_market = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "404 Client Error",
+                request=MagicMock(),
+                response=response,
+            ),
+        )
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXBRANDNEW-26MAY-T1.0"])
+        assert result.exit_code == 1, result.output
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "api_error"
+            and e["error_code"] == "http_status_error"
+            and e["component"] == "cli.market-info"
+            and "404" in e["message"]
+            for e in errors
+        ), errors
+
+    def test_position_context_no_match_logs_error(self, seeded_db: Path) -> None:
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(app, ["position-context", "ZZZ"])
+        assert result.exit_code == 0
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "data_integrity"
+            and e["error_code"] == "position_not_found"
+            and e["component"] == "cli.position-context"
+            and "ZZZ" in e["message"]
+            for e in errors
+        ), errors
+
+    def test_position_context_ambiguous_logs_error(
+        self, seeded_db: Path,
+    ) -> None:
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(app, ["position-context", "KXCPI"])
+        assert result.exit_code == 1
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "config_error"
+            and e["error_code"] == "ambiguous_ticker"
+            and e["component"] == "cli.position-context"
+            and "KXCPI" in e["message"]
+            for e in errors
+        ), errors
+
+    def test_position_context_race_condition_logs_error(
+        self, seeded_db: Path,
+    ) -> None:
+        # Resolver returns a match (position exists at first read),
+        # but `has_open_position` returns False (another process
+        # closed it between reads). This is the race-condition branch
+        # at the bottom of position-context; it must log a distinct
+        # error_code so Groundskeeper can distinguish it from a plain
+        # no-match miss.
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch(
+                "gimmes.store.queries.has_open_position",
+                AsyncMock(return_value=False),
+             ):
+            result = runner.invoke(
+                app,
+                ["position-context", "KXJOBLESSCLAIMS-26MAY14-210000"],
+            )
+        # The user-facing path treats this as no-match (exit 0, yellow).
+        assert result.exit_code == 0, result.output
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "data_integrity"
+            and e["error_code"] == "position_closed_during_lookup"
+            and e["component"] == "cli.position-context"
+            for e in errors
+        ), errors
+
+    def test_ambiguous_context_caps_matches_to_20(
+        self, seeded_db: Path,
+    ) -> None:
+        # Seed 25 sibling positions sharing prefix ``KXBLOAT``. The
+        # logged error_log.context must truncate ``matches`` to 20 and
+        # carry the full count in ``matches_total`` so a broad prefix
+        # can't bloat the row. The terminal display already truncates
+        # at the same limit (#588 Copilot review).
+        import json as _json
+
+        async def _seed_bloat() -> None:
+            db = Database(seeded_db)
+            await db.connect()
+            try:
+                for i in range(25):
+                    await upsert_position(db, _pos(f"KXBLOAT-{i:02d}"))
+            finally:
+                await db.close()
+        asyncio.run(_seed_bloat())
+
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(app, ["position-context", "KXBLOAT"])
+        assert result.exit_code == 1, result.output
+
+        import sqlite3
+        conn = sqlite3.connect(seeded_db)
+        try:
+            row = conn.execute(
+                "SELECT context FROM error_log"
+                " WHERE error_code='ambiguous_ticker'"
+                " ORDER BY id DESC LIMIT 1",
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        ctx = _json.loads(row[0])
+        assert len(ctx["matches"]) == 20
+        assert ctx["matches_total"] == 25
+
+    def test_market_info_network_error_logs_error(
+        self, seeded_db: Path,
+    ) -> None:
+        # httpx.RequestError covers TimeoutException, ConnectError,
+        # etc. — distinct from HTTPStatusError. The catch must fire
+        # and log under category=network_error.
+        get_market = AsyncMock(
+            side_effect=httpx.ConnectError("connection refused"),
+        )
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXBRANDNEW-26MAY-T1.0"])
+        assert result.exit_code == 1, result.output
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["category"] == "network_error"
+            and e["error_code"] == "request_error"
+            and e["component"] == "cli.market-info"
+            for e in errors
+        ), errors

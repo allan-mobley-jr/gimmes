@@ -64,6 +64,26 @@ def _extract_ticker_from_url(exc) -> str | None:  # type: ignore[no-untyped-def]
 _AMBIGUOUS_MATCH_DISPLAY_LIMIT = 20
 
 
+async def _log_cli_error(db, entry) -> None:  # type: ignore[no-untyped-def]
+    """Best-effort write to error_log; never raises into the caller.
+
+    Wraps the autonomous-loop pattern used by ``cli.order`` so failure-
+    path CLI commands (``market-info``, ``position-context``, ...) can
+    surface failures to Groundskeeper without risking that a DB-locked
+    or otherwise broken logger silently breaks the user-facing path.
+    See #588.
+    """
+    import logging
+
+    from gimmes.store.queries import insert_error
+    try:
+        await insert_error(db, entry)
+    except Exception:
+        logging.getLogger("gimmes.cli").error(
+            "Failed to log error to DB", exc_info=True,
+        )
+
+
 def _print_ambiguous_ticker(prefix: str, matches: list[str]) -> None:
     """Render the candidate list when a ticker prefix is ambiguous.
 
@@ -1722,8 +1742,18 @@ def market_info(
     config = load_config()
 
     async def _info() -> None:
+        import json
+        import traceback
+
+        import httpx
+
         from gimmes.kalshi.client import KalshiClient
         from gimmes.kalshi.markets import get_market, get_orderbook
+        from gimmes.models.error import (
+            ErrorCategory,
+            ErrorLogEntry,
+            ErrorSeverity,
+        )
         from gimmes.reporting.formatter import format_kv_table
         from gimmes.risk.settlement import scan_settlement_rules
         from gimmes.store.database import Database
@@ -1736,14 +1766,76 @@ def market_info(
             matches = await resolve_ticker(
                 db, ticker, source="known_markets",
             )
-        if len(matches) > 1:
-            _print_ambiguous_ticker(ticker, matches)
-            raise typer.Exit(1)
+            if len(matches) > 1:
+                await _log_cli_error(db, ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.CONFIG_ERROR,
+                    error_code="ambiguous_ticker",
+                    component="cli.market-info",
+                    message=(
+                        f"Ambiguous ticker prefix '{ticker}':"
+                        f" matches {len(matches)} candidates"
+                    ),
+                    context=json.dumps({
+                        "ticker": ticker,
+                        "matches": matches[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT],
+                        "matches_total": len(matches),
+                    }),
+                ))
+                _print_ambiguous_ticker(ticker, matches)
+                raise typer.Exit(1)
         resolved = matches[0] if matches else ticker
 
         async with KalshiClient(config) as client:
-            market = await get_market(client, resolved)
-            orderbook = await get_orderbook(client, resolved)
+            try:
+                market = await get_market(client, resolved)
+                orderbook = await get_orderbook(client, resolved)
+            except httpx.HTTPStatusError as exc:
+                detail = _api_error_detail(exc)
+                async with Database(config.db_path) as db:
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.API_ERROR,
+                        error_code="http_status_error",
+                        component="cli.market-info",
+                        message=(
+                            f"Market lookup failed"
+                            f" ({exc.response.status_code}): {detail}"
+                        ),
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({
+                            "ticker": ticker, "resolved": resolved,
+                            "status_code": exc.response.status_code,
+                        }),
+                    ))
+                console.print(
+                    f"[red bold]Market lookup FAILED"
+                    f" ({exc.response.status_code}): {detail}[/red bold]"
+                )
+                raise typer.Exit(1)
+            except httpx.RequestError as exc:
+                # Covers TimeoutException, ConnectError, ReadTimeout, and
+                # other network-layer failures that don't carry an HTTP
+                # response. Without this branch they'd crash unlogged —
+                # the exact silent-failure class #588 closes.
+                async with Database(config.db_path) as db:
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.NETWORK_ERROR,
+                        error_code="request_error",
+                        component="cli.market-info",
+                        message=f"Market lookup network error: {exc}",
+                        stack_trace=traceback.format_exc(),
+                        context=json.dumps({
+                            "ticker": ticker, "resolved": resolved,
+                            "exc_type": type(exc).__name__,
+                        }),
+                    ))
+                console.print(
+                    f"[red bold]Market lookup FAILED:"
+                    f" {type(exc).__name__}: {exc}[/red bold]"
+                )
+                raise typer.Exit(1)
             settlement = scan_settlement_rules(market.rules_primary)
 
             risk_color = {"low": "green", "medium": "yellow", "high": "red"}.get(
@@ -1911,6 +2003,13 @@ def position_context(
     config = load_config()
 
     async def _ctx() -> None:
+        import json
+
+        from gimmes.models.error import (
+            ErrorCategory,
+            ErrorLogEntry,
+            ErrorSeverity,
+        )
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import (
@@ -1925,11 +2024,34 @@ def position_context(
                 db, ticker, source="open_positions",
             )
             if not matches:
+                await _log_cli_error(db, ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="position_not_found",
+                    component="cli.position-context",
+                    message=f"No open position found for {ticker}",
+                    context=json.dumps({"ticker": ticker}),
+                ))
                 console.print(
                     f"[yellow]No open position found for {ticker}[/yellow]",
                 )
                 return
             if len(matches) > 1:
+                await _log_cli_error(db, ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.CONFIG_ERROR,
+                    error_code="ambiguous_ticker",
+                    component="cli.position-context",
+                    message=(
+                        f"Ambiguous ticker prefix '{ticker}':"
+                        f" matches {len(matches)} candidates"
+                    ),
+                    context=json.dumps({
+                        "ticker": ticker,
+                        "matches": matches[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT],
+                        "matches_total": len(matches),
+                    }),
+                ))
                 _print_ambiguous_ticker(ticker, matches)
                 raise typer.Exit(1)
             resolved = matches[0]
@@ -1941,6 +2063,18 @@ def position_context(
             # Another process (clubhouse server, autonomous loop) may
             # have closed the position between the resolver's read and
             # the lookups. Treat it the same as no-match.
+            async with Database(config.db_path) as db:
+                await _log_cli_error(db, ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="position_closed_during_lookup",
+                    component="cli.position-context",
+                    message=(
+                        f"Position {resolved} closed between resolver"
+                        f" and trade lookup"
+                    ),
+                    context=json.dumps({"ticker": ticker, "resolved": resolved}),
+                ))
             console.print(f"[yellow]No open position found for {ticker}[/yellow]")
             return
 
