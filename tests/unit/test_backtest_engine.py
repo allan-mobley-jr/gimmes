@@ -405,13 +405,17 @@ class TestConcentrationLimits:
 # ---------------------------------------------------------------------------
 
 
+# Fixed close_time inside the BacktestConfig window (Mar 1 — May 11
+# 2026). Hard-coded so tests are deterministic instead of drifting
+# with wall-clock as `datetime.now()` would (#592 / Copilot review).
+_FIXED_CLOSE_TIME = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+
+
 def _settled_market(
     ticker: str, *, yes_bid: float, yes_ask: float, result: str = "no",
-    days_ago: int = 7,
+    close_time: datetime = _FIXED_CLOSE_TIME,
 ):
     """Synthetic settled Market — enough fields for backtest to score it."""
-    from datetime import timedelta
-
     from gimmes.models.market import Market, MarketStatus
     return Market(
         ticker=ticker,
@@ -427,7 +431,7 @@ def _settled_market(
         volume=10_000,
         volume_24h=1_000,
         open_interest=5_000,
-        close_time=datetime.now(UTC) - timedelta(days=days_ago),
+        close_time=close_time,
         result=result,
     )
 
