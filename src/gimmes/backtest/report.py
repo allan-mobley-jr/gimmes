@@ -112,7 +112,7 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     # --- Trade log ---
     if result.trades:
         trades_table = Table(title="Trade Log")
-        trades_table.add_column("Ticker", style="cyan", max_width=30)
+        trades_table.add_column("Ticker", style="cyan", overflow="fold")
         trades_table.add_column("Side", style="white")
         trades_table.add_column("Qty", justify="right")
         trades_table.add_column("Entry", justify="right")
