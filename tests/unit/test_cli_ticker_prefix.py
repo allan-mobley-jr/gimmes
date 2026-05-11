@@ -197,6 +197,36 @@ class TestTradesCommand:
         #  the natural behavior excludes it.)
         assert "KXCPI-26MAY-T0.6" not in ticker_col
 
+    def test_wildcard_in_input_is_rejected(self, seeded_db: Path) -> None:
+        # ``trades`` must apply the same wildcard guard as the other
+        # lookup commands (``%`` and ``_`` are SQL LIKE wildcards that
+        # would silently widen the filter to all trades).
+        with patch("gimmes.config.GIMMES_HOME", seeded_db.parent):
+            result = runner.invoke(
+                app, ["trades", "--ticker", "%", "-n", "10"],
+            )
+        assert result.exit_code != 0
+        # _run formats ValueError through Rich; assert the actionable
+        # error class is present without depending on Rich's exact
+        # formatting.
+        assert "[A-Z0-9.-]" in result.output
+
+    def test_whitespace_and_lowercase_input_normalized(
+        self, seeded_db: Path,
+    ) -> None:
+        # Copy-paste from another tool can carry surrounding whitespace
+        # or lowercase. Both must normalize before matching so the
+        # prefix filter behaves the same as the canonical-uppercase
+        # input would.
+        with patch("gimmes.config.GIMMES_HOME", seeded_db.parent):
+            result = runner.invoke(
+                app, ["trades", "--ticker", "  kxcpi  ", "-n", "10"],
+            )
+        assert result.exit_code == 0, result.output
+        ticker_col = _ticker_column_text(result.output)
+        assert "KXCPI-26APR-T0.5" in ticker_col
+        assert "KXCPI-26MAY-T0.6" in ticker_col
+
     def test_exact_match_short_ticker_does_not_pull_in_longer(
         self, seeded_db: Path,
     ) -> None:
@@ -230,6 +260,42 @@ async def _add_extra(db: Database) -> None:
         await insert_trade(db, _trade("KXCPI"))
     finally:
         await db.close()
+
+
+async def _add_position_only(db: Database, ticker: str) -> None:
+    """Helper: seed a position (no trade row) so the trades-table
+    exact-match probe can be verified against positions-only inputs."""
+    await db.connect()
+    try:
+        await upsert_position(db, _pos(ticker))
+    finally:
+        await db.close()
+
+
+class TestTradesExactMatchProbeIsTradesTableOnly:
+    def test_input_only_in_positions_still_uses_prefix_filter(
+        self, seeded_db: Path,
+    ) -> None:
+        # Seed a ticker into ``positions`` only (no matching trade).
+        # If the exact-match probe consulted ``known_markets`` (which
+        # includes positions), it would disable prefix mode and the
+        # user would get an empty trades result. The probe must be
+        # trades-only so the user still sees the trade family that
+        # shares the prefix.
+        asyncio.run(_add_position_only(
+            Database(seeded_db), "KXCPI",
+        ))
+        with patch("gimmes.config.GIMMES_HOME", seeded_db.parent):
+            result = runner.invoke(
+                app, ["trades", "--ticker", "KXCPI", "-n", "10"],
+            )
+        assert result.exit_code == 0, result.output
+        ticker_col = _ticker_column_text(result.output)
+        # ``KXCPI`` itself was only seeded into positions; ``trades``
+        # rows are only the ``KXCPI-*`` sisters from the fixture, so
+        # prefix mode must surface them.
+        assert "KXCPI-26APR-T0.5" in ticker_col
+        assert "KXCPI-26MAY-T0.6" in ticker_col
 
 
 def _stub_market(ticker: str) -> MagicMock:

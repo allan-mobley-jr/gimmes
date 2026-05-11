@@ -57,6 +57,36 @@ _KNOWN_MARKETS_SQL = (
 )
 
 
+def validate_ticker_prefix(prefix: str) -> str:
+    """Normalize and validate a user-supplied ticker prefix.
+
+    Strips surrounding whitespace, uppercases (Kalshi tickers are
+    canonical uppercase), and rejects characters outside
+    ``[A-Z0-9.-]`` so SQL ``LIKE`` wildcards (``%``, ``_``) and
+    SQL-injection-shaped inputs raise ``ValueError`` rather than
+    silently matching unintended rows.
+
+    Used by ``resolve_ticker`` and by the ``gimmes trades --ticker``
+    CLI path, which bypasses the resolver for its exact-match probe
+    but still needs the same input contract.
+
+    Returns the cleaned uppercase prefix. Raises ``ValueError`` on
+    empty/whitespace-only or out-of-charset input.
+    """
+    cleaned = prefix.strip().upper()
+    if not cleaned:
+        raise ValueError("ticker prefix must be non-empty")
+    if not _TICKER_CHARS.match(cleaned):
+        # Don't echo the raw prefix into the error message — the CLI's
+        # ``_run`` formats exceptions through Rich's markup parser, so
+        # a prefix like ``"[red]evil[/red]"`` would alter the rendered
+        # output. The character class is the actionable detail.
+        raise ValueError(
+            "ticker prefix contains characters outside [A-Z0-9.-]",
+        )
+    return cleaned
+
+
 async def resolve_ticker(
     db: Database, prefix: str, *, source: TickerSource,
 ) -> list[str]:
@@ -64,12 +94,8 @@ async def resolve_ticker(
 
     Args:
         db: Async SQLite connection wrapper.
-        prefix: User-supplied ticker or ticker fragment. Stripped of
-            surrounding whitespace and uppercased before matching;
-            Kalshi tickers are canonically uppercase. Raises
-            ``ValueError`` if empty/whitespace-only or if any
-            character falls outside ``[A-Z0-9.-]`` (this rejects SQL
-            ``LIKE`` wildcards in user input).
+        prefix: User-supplied ticker or ticker fragment. Normalized
+            and validated via :func:`validate_ticker_prefix`.
         source:
             - ``"open_positions"``: only positions with ``count > 0``.
               Use for ``gimmes position-context`` and
@@ -84,14 +110,7 @@ async def resolve_ticker(
         to ``[match]`` so a full exact ticker that is also a prefix of
         others does not trigger an ambiguity error.
     """
-    cleaned = prefix.strip().upper()
-    if not cleaned:
-        raise ValueError("ticker prefix must be non-empty")
-    if not _TICKER_CHARS.match(cleaned):
-        raise ValueError(
-            f"ticker prefix {prefix!r} contains characters outside"
-            f" [A-Z0-9.-]",
-        )
+    cleaned = validate_ticker_prefix(prefix)
 
     if source == "open_positions":
         cursor = await db.conn.execute(_OPEN_POSITIONS_SQL, (cleaned,))

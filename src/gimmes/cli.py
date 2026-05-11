@@ -1182,25 +1182,34 @@ def trades(
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_trades
-        from gimmes.store.ticker_resolver import resolve_ticker
+        from gimmes.store.ticker_resolver import validate_ticker_prefix
 
-        # Preserve exact-match semantics when the user types a full
-        # known ticker that's also a prefix of others (e.g. typing
-        # ``KXCPI`` when both ``KXCPI`` and ``KXCPICORE-*`` are in the
-        # trade log). The resolver's exact-match shortcut returns
-        # ``[ticker]`` in that case and we propagate
-        # ``ticker_prefix=False``. Otherwise prefix-match so a partial
-        # input lists the whole family.
+        # Normalize + validate the user's input once. ``trades`` doesn't
+        # call ``resolve_ticker`` (its prefix filter is a single SQL
+        # LIKE, not a multi-source resolution), but it must still
+        # reject wildcard chars (``%``, ``_``) so a stray
+        # ``--ticker "%"`` doesn't silently widen the filter to every
+        # trade in the table.
+        ticker_arg = (
+            validate_ticker_prefix(ticker) if ticker is not None else None
+        )
         async with Database() as db:
-            use_prefix = ticker is not None
-            ticker_arg = ticker
-            if ticker is not None:
-                exact = await resolve_ticker(
-                    db, ticker, source="known_markets",
+            use_prefix = ticker_arg is not None
+            if ticker_arg is not None:
+                # Preserve exact-match semantics when the user types a
+                # full ticker present in the trades table that is also
+                # a prefix of others (``KXCPI`` vs ``KXCPICORE-*``).
+                # Probing the trades table specifically — rather than
+                # the resolver's ``known_markets`` source — avoids
+                # disabling prefix mode when the input only appears in
+                # positions or candidates (which would hide the trade
+                # family the user expected to see).
+                cursor = await db.conn.execute(
+                    "SELECT 1 FROM trades WHERE ticker = ? LIMIT 1",
+                    (ticker_arg,),
                 )
-                if len(exact) == 1 and exact[0] == ticker.strip().upper():
+                if await cursor.fetchone() is not None:
                     use_prefix = False
-                    ticker_arg = exact[0]
             records = await get_trades(
                 db, ticker=ticker_arg, action=action, limit=limit,
                 ticker_prefix=use_prefix,

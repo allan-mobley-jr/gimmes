@@ -83,9 +83,10 @@ async def get_trades(
     """Query trade decisions with optional filters.
 
     ``ticker_prefix=True`` switches the ticker filter from exact match
-    to prefix match (``LIKE ticker || '%'``) for the CLI's
-    ``gimmes trades --ticker`` command — programmatic callers (P&L
-    reports, etc.) default to exact match to preserve their semantics.
+    to prefix match (``ticker LIKE <bound_ticker> || '%'``) for the
+    CLI's ``gimmes trades --ticker`` command — programmatic callers
+    (P&L reports, etc.) default to exact match to preserve their
+    semantics.
     """
     query = "SELECT * FROM trades WHERE 1=1"
     params: list[object] = []
