@@ -85,7 +85,11 @@ def format_performance(metrics: PerformanceMetrics) -> None:
 def format_positions(positions: list[dict]) -> None:  # type: ignore[type-arg]
     """Display positions as a Rich table."""
     table = Table(title="Open Positions")
-    table.add_column("Ticker", style="cyan")
+    # ``overflow="fold"`` keeps the full ticker visible by wrapping to
+    # the next line when the terminal can't fit it; Rich's default
+    # ``"ellipsis"`` produced truncated tickers that broke downstream
+    # commands relying on exact-match lookup (issue #567).
+    table.add_column("Ticker", style="cyan", overflow="fold")
     table.add_column("Side")
     table.add_column("Qty", justify="right")
     table.add_column("Avg Price", justify="right")
@@ -120,7 +124,7 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
     has_side = any(m.get("side") for m in markets)
 
     table = Table(title=title)
-    table.add_column("Ticker", style="cyan")
+    table.add_column("Ticker", style="cyan", overflow="fold")
     if has_side:
         table.add_column("Side", style="bold")
     table.add_column("Event", style="dim", max_width=25)

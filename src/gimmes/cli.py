@@ -1165,7 +1165,7 @@ def trades(
             return
 
         table = Table(title=f"Trade History (last {limit})")
-        table.add_column("Ticker")
+        table.add_column("Ticker", overflow="fold")
         table.add_column("Action")
         table.add_column("Side")
         table.add_column("Count", justify="right")
@@ -1226,7 +1226,7 @@ def candidates(
 
         title = f"Candidates for {ticker}" if ticker else f"Candidates (last {limit})"
         table = Table(title=title)
-        table.add_column("Ticker")
+        table.add_column("Ticker", overflow="fold")
         table.add_column("Score", justify="right")
         table.add_column("Price", justify="right")
         table.add_column("Prob", justify="right")
@@ -2790,7 +2790,7 @@ def discover(
             console.print(f"Found {len(series_list)} series in [bold]{category}[/bold]")
 
             table = Table(title=f"{category} Series")
-            table.add_column("Ticker", style="cyan")
+            table.add_column("Ticker", style="cyan", overflow="fold")
             table.add_column("Title")
 
             for s in sorted(series_list, key=lambda x: x.get("ticker", "")):
