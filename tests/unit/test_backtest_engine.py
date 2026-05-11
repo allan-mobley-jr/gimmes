@@ -398,3 +398,193 @@ class TestConcentrationLimits:
         assert compute_exposure_for_group(
             list(ledger.positions.values()), "KXGDP-26APR30",
         ) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Strategy filters in the scoring loop (#592)
+# ---------------------------------------------------------------------------
+
+
+# Fixed close_time inside the BacktestConfig window (Mar 1 — May 11
+# 2026). Hard-coded so tests are deterministic instead of drifting
+# with wall-clock as `datetime.now()` would (#592 / Copilot review).
+_FIXED_CLOSE_TIME = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+
+
+def _settled_market(
+    ticker: str, *, yes_bid: float, yes_ask: float, result: str = "no",
+    close_time: datetime = _FIXED_CLOSE_TIME,
+):
+    """Synthetic settled Market — enough fields for backtest to score it."""
+    from gimmes.models.market import Market, MarketStatus
+    return Market(
+        ticker=ticker,
+        event_ticker=ticker.rsplit("-", 1)[0],
+        series_ticker=ticker.split("-")[0],
+        title=ticker,
+        status=MarketStatus.FINALIZED,
+        yes_bid=yes_bid,
+        yes_ask=yes_ask,
+        no_bid=1.0 - yes_ask,
+        no_ask=1.0 - yes_bid,
+        last_price=(yes_bid + yes_ask) / 2,
+        volume=10_000,
+        volume_24h=1_000,
+        open_interest=5_000,
+        close_time=close_time,
+        result=result,
+    )
+
+
+def _backtest_config_with_overrides(**overrides):
+    """BacktestConfig with `gimme_threshold=0` so the new filters can
+    be tested in isolation; pass-through kwargs override strategy
+    fields. side='no' keeps effective_config_for_side from consulting
+    no_overrides, so the flat values are what the engine reads."""
+    import copy
+
+    from gimmes.backtest.engine import BacktestConfig
+    from gimmes.config import load_config
+
+    base = load_config()
+    cfg = copy.deepcopy(base)
+    cfg.strategy.gimme_threshold = 0
+    for key, value in overrides.items():
+        setattr(cfg.strategy, key, value)
+    cfg.strategy.side = "no"
+    cfg.scanner.series = ["KXCPI"]
+    cfg.scanner.no_series = []
+    cfg.scanner.yes_series = []
+    return BacktestConfig(
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 5, 11),
+        starting_balance=10_000.0,
+        gimmes_config=cfg,
+        assumed_edge=0.10,
+    )
+
+
+class TestStrategyFilters:
+    """Verify backtest engine honors min_true_probability and
+    min_edge_after_fees in addition to gimme_threshold (#592)."""
+
+    @pytest.mark.asyncio
+    # Three NO-side midpoints inside the scanner price band
+    # (min=0.40, max=0.75); varying input catches effective_price
+    # inversion and threshold-edge bugs.
+    @pytest.mark.parametrize(
+        "yes_bid,yes_ask",
+        [(0.25, 0.35), (0.40, 0.50), (0.50, 0.60)],
+    )
+    async def test_min_true_probability_filter_reduces_trades(
+        self, monkeypatch, yes_bid: float, yes_ask: float,
+    ) -> None:
+        from gimmes.backtest.engine import run_backtest
+        markets = [
+            _settled_market(
+                f"KXCPI-26MAR-T0.{i}", yes_bid=yes_bid, yes_ask=yes_ask,
+            )
+            for i in range(5)
+        ]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+
+        permissive = await run_backtest(
+            client=None,  # fetcher is stubbed
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.0,
+                min_edge_after_fees=-1.0,
+            ),
+        )
+        strict = await run_backtest(
+            client=None,
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.95,
+                min_edge_after_fees=-1.0,
+            ),
+        )
+        assert len(permissive.trades) > 0
+        assert len(strict.trades) < len(permissive.trades)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "yes_bid,yes_ask",
+        [(0.25, 0.35), (0.40, 0.50), (0.50, 0.60)],
+    )
+    async def test_min_edge_after_fees_filter_reduces_trades(
+        self, monkeypatch, yes_bid: float, yes_ask: float,
+    ) -> None:
+        from gimmes.backtest.engine import run_backtest
+        markets = [
+            _settled_market(
+                f"KXCPI-26MAR-T0.{i}", yes_bid=yes_bid, yes_ask=yes_ask,
+            )
+            for i in range(5)
+        ]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+
+        permissive = await run_backtest(
+            client=None,
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.0,
+                min_edge_after_fees=0.0,
+            ),
+        )
+        strict = await run_backtest(
+            client=None,
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.0,
+                min_edge_after_fees=0.99,
+            ),
+        )
+        assert len(permissive.trades) > 0
+        assert len(strict.trades) < len(permissive.trades)
+
+    @pytest.mark.asyncio
+    async def test_live_default_thresholds_dont_reject_typical_markets(
+        self, monkeypatch,
+    ) -> None:
+        # Regression-safety (#592 AC3): at live values
+        # (min_true_probability=0.5, min_edge_after_fees=0.01), the
+        # filter rejects nothing in the live-trade universe.
+        from gimmes.backtest.engine import run_backtest
+        markets = [
+            _settled_market(
+                f"KXCPI-26MAR-T0.{i}", yes_bid=0.50, yes_ask=0.55,
+            )
+            for i in range(5)
+        ]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+
+        live_defaults = await run_backtest(
+            client=None,
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.5,
+                min_edge_after_fees=0.01,
+            ),
+        )
+        permissive = await run_backtest(
+            client=None,
+            config=_backtest_config_with_overrides(
+                min_true_probability=0.0,
+                min_edge_after_fees=-1.0,
+            ),
+        )
+        assert len(live_defaults.trades) == len(permissive.trades)
