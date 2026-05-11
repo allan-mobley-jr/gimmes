@@ -80,6 +80,16 @@ class TestOpenPositionsSource:
             db, "ZZZ", source="open_positions",
         ) == []
 
+    async def test_wrong_suffix_misread_returns_empty(self, db: Database) -> None:
+        # Pin current behavior: a misread suffix (agent guesses ``-21-250``
+        # from a wrapped ``-210000``) must NOT silently resolve via prefix
+        # LIKE. If a fuzzy-match fallback is added later, this test should
+        # fail and force a deliberate decision. See #581 / #587.
+        await upsert_position(db, _pos("KXJOBLESSCLAIMS-26MAY14-210000"))
+        assert await resolve_ticker(
+            db, "KXJOBLESSCLAIMS-26MAY14-21-250", source="open_positions",
+        ) == []
+
     async def test_excludes_closed_positions(self, db: Database) -> None:
         # Closed position (count=0) must not match.
         await upsert_position(db, _pos("KXCLOSED-26APR-T0.5", count=0))
