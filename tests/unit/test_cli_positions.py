@@ -70,7 +70,7 @@ def _ticker_column_text(text: str) -> str:
     return "".join(parts)
 
 
-def _assert_overflow_fold_in_source(func, n_following_lines: int = 3) -> None:
+def _assert_overflow_fold_in_source(func) -> None:
     """Assert the function's source contains an
     ``add_column("Ticker", ..., overflow="fold", ...)`` call.
 
@@ -80,17 +80,20 @@ def _assert_overflow_fold_in_source(func, n_following_lines: int = 3) -> None:
     inspection is brittle in general but is the right tool when the
     alternative is mocking the entire async DB layer just to verify a
     single Rich kwarg.
+
+    Accepts both single- and double-quoted string literals so a
+    cosmetic quote-style change doesn't break the test.
     """
     src = inspect.getsource(func)
-    # Match: add_column("Ticker", ...).  Allow other kwargs before
-    # overflow.  We just need ``overflow="fold"`` to appear inside the
-    # same call.
+    # Match: add_column("Ticker", ...) or add_column('Ticker', ...);
+    # the overflow kwarg must appear inside the same parenthesized call
+    # with either quote style for the value.
     pattern = re.compile(
-        r'add_column\(\s*"Ticker"[^)]*?overflow\s*=\s*"fold"',
+        r'''add_column\(\s*["']Ticker["'][^)]*?overflow\s*=\s*["']fold["']''',
         re.DOTALL,
     )
     assert pattern.search(src), (
-        f"{func.__qualname__} does not declare overflow=\"fold\" on its"
+        f"{func.__qualname__} does not declare overflow='fold' on its"
         f" Ticker column. Source excerpt:\n{src[:500]}"
     )
 
