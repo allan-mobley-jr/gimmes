@@ -17,7 +17,12 @@ from gimmes.risk.limits import (
     check_series_exposure,
     compute_exposure_for_group,
 )
-from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
+from gimmes.strategy.fees import (
+    DEFAULT_FEE_MULTIPLIERS,
+    FeeMultipliers,
+    edge_after_fees,
+    fee_for_order,
+)
 from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
@@ -449,12 +454,34 @@ async def run_backtest(
         total_passed += len(passed)
 
         # --- 3. Score ---
-        scored: list[tuple[Market, Market, float]] = []
+        # Mirror live gating (validator.py:152-175): gimme_threshold +
+        # min_true_probability + min_edge_after_fees (#592).
+        min_true_prob = side_cfg.strategy.min_true_probability
+        min_edge = side_cfg.strategy.min_edge_after_fees
+        scored: list[tuple[Market, Market, float, float, float]] = []
         for m in passed:
             s = quick_score(m, side_cfg)
-            if s >= side_threshold:
-                orig = original_by_ticker[m.ticker]
-                scored.append((m, orig, s))
+            if s < side_threshold:
+                continue
+            orig = original_by_ticker[m.ticker]
+            raw_price = (
+                orig.midpoint if orig.midpoint > 0 else orig.last_price
+            )
+            if raw_price <= 0:
+                continue
+            eff_price = effective_price(raw_price, scan_side)
+            true_prob = min(eff_price + config.assumed_edge, 0.99)
+            true_prob = apply_base_rate_floor(
+                true_prob, orig.ticker, side=scan_side,
+            )
+            if true_prob < min_true_prob:
+                continue
+            edge = edge_after_fees(
+                eff_price, true_prob, is_taker=False, fees=fees,
+            )
+            if edge < min_edge:
+                continue
+            scored.append((m, orig, s, eff_price, true_prob))
         total_scored += len(scored)
 
         scored.sort(
@@ -464,22 +491,12 @@ async def run_backtest(
         )
 
         # --- 4. Pass 1: identify qualifying trades ---
-        for _, orig_m, _score in scored:
+        for _, orig_m, _score, eff_price, true_prob in scored:
             if orig_m.ticker in seen_tickers:
                 continue
             if orig_m.close_time is None:
                 continue
 
-            raw_price = (
-                orig_m.midpoint
-                if orig_m.midpoint > 0
-                else orig_m.last_price
-            )
-            if raw_price <= 0:
-                continue
-            eff_price = effective_price(raw_price, scan_side)
-            true_prob = min(eff_price + config.assumed_edge, 0.99)
-            true_prob = apply_base_rate_floor(true_prob, orig_m.ticker, side=scan_side)
             count = position_size(
                 config.starting_balance,
                 eff_price,
