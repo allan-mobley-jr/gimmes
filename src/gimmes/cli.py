@@ -1776,7 +1776,11 @@ def market_info(
                         f"Ambiguous ticker prefix '{ticker}':"
                         f" matches {len(matches)} candidates"
                     ),
-                    context=json.dumps({"ticker": ticker, "matches": matches}),
+                    context=json.dumps({
+                        "ticker": ticker,
+                        "matches": matches[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT],
+                        "matches_total": len(matches),
+                    }),
                 ))
                 _print_ambiguous_ticker(ticker, matches)
                 raise typer.Exit(1)
@@ -2042,7 +2046,11 @@ def position_context(
                         f"Ambiguous ticker prefix '{ticker}':"
                         f" matches {len(matches)} candidates"
                     ),
-                    context=json.dumps({"ticker": ticker, "matches": matches}),
+                    context=json.dumps({
+                        "ticker": ticker,
+                        "matches": matches[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT],
+                        "matches_total": len(matches),
+                    }),
                 ))
                 _print_ambiguous_ticker(ticker, matches)
                 raise typer.Exit(1)

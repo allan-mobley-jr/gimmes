@@ -509,6 +509,45 @@ class TestErrorLogging:
             for e in errors
         ), errors
 
+    def test_ambiguous_context_caps_matches_to_20(
+        self, seeded_db: Path,
+    ) -> None:
+        # Seed 25 sibling positions sharing prefix ``KXBLOAT``. The
+        # logged error_log.context must truncate ``matches`` to 20 and
+        # carry the full count in ``matches_total`` so a broad prefix
+        # can't bloat the row. The terminal display already truncates
+        # at the same limit (#588 Copilot review).
+        import json as _json
+
+        async def _seed_bloat() -> None:
+            db = Database(seeded_db)
+            await db.connect()
+            try:
+                for i in range(25):
+                    await upsert_position(db, _pos(f"KXBLOAT-{i:02d}"))
+            finally:
+                await db.close()
+        asyncio.run(_seed_bloat())
+
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(app, ["position-context", "KXBLOAT"])
+        assert result.exit_code == 1, result.output
+
+        import sqlite3
+        conn = sqlite3.connect(seeded_db)
+        try:
+            row = conn.execute(
+                "SELECT context FROM error_log"
+                " WHERE error_code='ambiguous_ticker'"
+                " ORDER BY id DESC LIMIT 1",
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        ctx = _json.loads(row[0])
+        assert len(ctx["matches"]) == 20
+        assert ctx["matches_total"] == 25
+
     def test_market_info_network_error_logs_error(
         self, seeded_db: Path,
     ) -> None:
