@@ -78,13 +78,23 @@ async def get_trades(
     ticker: str | None = None,
     action: str | None = None,
     limit: int = 50,
+    ticker_prefix: bool = False,
 ) -> list[TradeRecord]:
-    """Query trade decisions with optional filters."""
+    """Query trade decisions with optional filters.
+
+    ``ticker_prefix=True`` switches the ticker filter from exact match
+    to prefix match (``LIKE ticker || '%'``) for the CLI's
+    ``gimmes trades --ticker`` command — programmatic callers (P&L
+    reports, etc.) default to exact match to preserve their semantics.
+    """
     query = "SELECT * FROM trades WHERE 1=1"
     params: list[object] = []
 
     if ticker:
-        query += " AND ticker = ?"
+        if ticker_prefix:
+            query += " AND ticker LIKE ? || '%'"
+        else:
+            query += " AND ticker = ?"
         params.append(ticker)
     if action:
         query += " AND action = ?"

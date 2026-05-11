@@ -61,6 +61,34 @@ def _extract_ticker_from_url(exc) -> str | None:  # type: ignore[no-untyped-def]
     return ticker or None
 
 
+_AMBIGUOUS_MATCH_DISPLAY_LIMIT = 20
+
+
+def _print_ambiguous_ticker(prefix: str, matches: list[str]) -> None:
+    """Render the candidate list when a ticker prefix is ambiguous.
+
+    Used by ``position-context``, ``position-notes``, and
+    ``market-info``; ``trades`` filters by prefix directly and never
+    errors on multiple matches. When ``matches`` exceeds the display
+    limit, a trailing ``... and N more`` line is appended so a broad
+    prefix doesn't flood the terminal.
+    """
+    console.print(
+        f"[red]Ambiguous ticker prefix '{prefix}'. Matches:[/red]",
+    )
+    shown = matches[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT]
+    for match in shown:
+        console.print(f"  {match}")
+    if len(matches) > _AMBIGUOUS_MATCH_DISPLAY_LIMIT:
+        remaining = len(matches) - _AMBIGUOUS_MATCH_DISPLAY_LIMIT
+        console.print(
+            f"  [dim]... and {remaining} more[/dim]",
+        )
+    console.print(
+        "[dim]Specify a longer prefix or full ticker.[/dim]",
+    )
+
+
 def _run(coro):  # type: ignore[no-untyped-def]
     """Run an async coroutine from sync CLI context with error handling."""
     import logging
@@ -1154,10 +1182,28 @@ def trades(
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_trades
+        from gimmes.store.ticker_resolver import resolve_ticker
 
+        # Preserve exact-match semantics when the user types a full
+        # known ticker that's also a prefix of others (e.g. typing
+        # ``KXCPI`` when both ``KXCPI`` and ``KXCPICORE-*`` are in the
+        # trade log). The resolver's exact-match shortcut returns
+        # ``[ticker]`` in that case and we propagate
+        # ``ticker_prefix=False``. Otherwise prefix-match so a partial
+        # input lists the whole family.
         async with Database() as db:
+            use_prefix = ticker is not None
+            ticker_arg = ticker
+            if ticker is not None:
+                exact = await resolve_ticker(
+                    db, ticker, source="known_markets",
+                )
+                if len(exact) == 1 and exact[0] == ticker.strip().upper():
+                    use_prefix = False
+                    ticker_arg = exact[0]
             records = await get_trades(
-                db, ticker=ticker, action=action, limit=limit,
+                db, ticker=ticker_arg, action=action, limit=limit,
+                ticker_prefix=use_prefix,
             )
 
         if not records:
@@ -1671,10 +1717,24 @@ def market_info(
         from gimmes.kalshi.markets import get_market, get_orderbook
         from gimmes.reporting.formatter import format_kv_table
         from gimmes.risk.settlement import scan_settlement_rules
+        from gimmes.store.database import Database
+        from gimmes.store.ticker_resolver import resolve_ticker
+
+        # Resolve prefix against local DB state (positions ∪ candidates
+        # ∪ trades). Falls through to Kalshi with the literal input when
+        # no local match — preserves first-time market-lookup behavior.
+        async with Database(config.db_path) as db:
+            matches = await resolve_ticker(
+                db, ticker, source="known_markets",
+            )
+        if len(matches) > 1:
+            _print_ambiguous_ticker(ticker, matches)
+            raise typer.Exit(1)
+        resolved = matches[0] if matches else ticker
 
         async with KalshiClient(config) as client:
-            market = await get_market(client, ticker)
-            orderbook = await get_orderbook(client, ticker)
+            market = await get_market(client, resolved)
+            orderbook = await get_orderbook(client, resolved)
             settlement = scan_settlement_rules(market.rules_primary)
 
             risk_color = {"low": "green", "medium": "yellow", "high": "red"}.get(
@@ -1849,17 +1909,33 @@ def position_context(
             get_position_notes,
             has_open_position,
         )
+        from gimmes.store.ticker_resolver import resolve_ticker
 
         async with Database(config.db_path) as db:
-            trade = await get_open_trade_for_ticker(db, ticker)
-            is_open = await has_open_position(db, ticker)
-            notes = await get_position_notes(db, ticker, limit=20)
+            matches = await resolve_ticker(
+                db, ticker, source="open_positions",
+            )
+            if not matches:
+                console.print(
+                    f"[yellow]No open position found for {ticker}[/yellow]",
+                )
+                return
+            if len(matches) > 1:
+                _print_ambiguous_ticker(ticker, matches)
+                raise typer.Exit(1)
+            resolved = matches[0]
+            trade = await get_open_trade_for_ticker(db, resolved)
+            is_open = await has_open_position(db, resolved)
+            notes = await get_position_notes(db, resolved, limit=20)
 
         if not trade or not is_open:
+            # Another process (clubhouse server, autonomous loop) may
+            # have closed the position between the resolver's read and
+            # the lookups. Treat it the same as no-match.
             console.print(f"[yellow]No open position found for {ticker}[/yellow]")
             return
 
-        console.print(f"\n[bold]Position Context: {ticker}[/bold]\n")
+        console.print(f"\n[bold]Position Context: {resolved}[/bold]\n")
         console.print("[bold]--- OPEN TRADE ---[/bold]")
         console.print(f"Opened:           {format_local_timestamp(str(trade['timestamp']))}")
         console.print(
@@ -1945,15 +2021,30 @@ def position_notes(
     async def _notes() -> None:
         from gimmes.store.database import Database
         from gimmes.store.queries import get_position_notes
+        from gimmes.store.ticker_resolver import resolve_ticker
 
         async with Database(config.db_path) as db:
-            notes = await get_position_notes(db, ticker, limit=limit)
+            matches = await resolve_ticker(
+                db, ticker, source="open_positions",
+            )
+            if not matches:
+                console.print(
+                    f"[yellow]No notes found for {ticker}[/yellow]",
+                )
+                return
+            if len(matches) > 1:
+                _print_ambiguous_ticker(ticker, matches)
+                raise typer.Exit(1)
+            resolved = matches[0]
+            notes = await get_position_notes(db, resolved, limit=limit)
 
         if not notes:
-            console.print(f"[yellow]No notes found for {ticker}[/yellow]")
+            console.print(f"[yellow]No notes found for {resolved}[/yellow]")
             return
 
-        console.print(f"\n[bold]Position Notes: {ticker} ({len(notes)} notes)[/bold]\n")
+        console.print(
+            f"\n[bold]Position Notes: {resolved} ({len(notes)} notes)[/bold]\n",
+        )
         for n in reversed(notes):
             _print_note(n)
             console.print()
