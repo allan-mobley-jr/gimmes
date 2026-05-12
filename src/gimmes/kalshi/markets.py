@@ -96,7 +96,8 @@ async def list_markets(
         params["max_close_ts"] = max_close_ts
 
     data = await client.get("/markets", params=params)
-    markets = [parse_market(m) for m in data.get("markets", [])]
+    # `or []` coerces explicit `null` from Kalshi (#574).
+    markets = [parse_market(m) for m in (data.get("markets") or [])]
     next_cursor = data.get("cursor")
     return markets, next_cursor
 
@@ -158,7 +159,8 @@ async def list_series(
     if category:
         params["category"] = category
     data = await client.get("/series", params=params)
-    return data.get("series", [])
+    # `or []` — Kalshi returns `{"series": null}` for empty categories (#574).
+    return data.get("series") or []
 
 
 async def get_event(client: KalshiClient, event_ticker: str) -> dict:  # type: ignore[type-arg]
@@ -180,7 +182,7 @@ async def get_series_fee_changes(
     if series_ticker:
         params["series_ticker"] = series_ticker
     data = await client.get("/series/fee_changes", params=params)
-    return data.get("series_fee_change_arr", [])
+    return data.get("series_fee_change_arr") or []  # null-coerce (#574)
 
 
 async def get_orderbook(client: KalshiClient, ticker: str, depth: int = 10) -> Orderbook:
