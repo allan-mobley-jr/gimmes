@@ -265,6 +265,82 @@ class TestPositionNotes:
             )
             assert row_id > 0
 
+    async def test_filter_by_note_type_returns_only_that_type(
+        self, db: Database,
+    ) -> None:
+        for nt in ("observation", "flag", "decision", "context"):
+            await insert_position_note(
+                db, ticker="FILTER-T", note_type=nt, body=f"{nt} body",
+            )
+        decisions = await get_position_notes(
+            db, "FILTER-T", note_type="decision",
+        )
+        assert len(decisions) == 1
+        assert decisions[0]["note_type"] == "decision"
+
+    async def test_580_old_path_evicts_decisions_under_chatty_observations(
+        self, db: Database,
+    ) -> None:
+        # 5 decisions then 16 newer observations: the OLD path
+        # (limit=20, filter in Python) evicts the oldest decision;
+        # the NEW path (note_type filter) returns all 5.
+        for i in range(5):
+            await insert_position_note(
+                db, ticker="EVICT-T", note_type="decision",
+                body=f"decision {i}", cycle=100 + i,
+            )
+        for i in range(16):
+            await insert_position_note(
+                db, ticker="EVICT-T", note_type="observation",
+                body=f"obs {i}", cycle=200 + i,
+            )
+        notes = await get_position_notes(db, "EVICT-T", limit=20)
+        old_path_decisions = [n for n in notes if n["note_type"] == "decision"]
+        assert len(old_path_decisions) == 4, "eviction not reproduced"
+        new_path_decisions = await get_position_notes(
+            db, "EVICT-T", limit=20, note_type="decision",
+        )
+        assert len(new_path_decisions) == 5
+
+    async def test_filter_by_note_type_respects_limit_within_type(
+        self, db: Database,
+    ) -> None:
+        # The #580 regression: when limit is applied to ALL notes, a
+        # chatty observation/flag stream evicts older decisions before
+        # the limit is reached. Filtering by note_type must apply the
+        # limit AFTER the type filter, so 5 decisions are returned even
+        # when 15 observations interleave.
+        for i in range(15):
+            await insert_position_note(
+                db, ticker="MIX-T", note_type="observation",
+                body=f"obs {i}",
+            )
+        for i in range(15):
+            await insert_position_note(
+                db, ticker="MIX-T", note_type="decision",
+                body=f"decision {i}",
+            )
+        result = await get_position_notes(
+            db, "MIX-T", limit=5, note_type="decision",
+        )
+        assert len(result) == 5
+        assert all(n["note_type"] == "decision" for n in result)
+        # Newest-first ordering preserved: decision 14 first.
+        assert result[0]["body"] == "decision 14"
+
+    async def test_filter_by_note_type_none_returns_all_types(
+        self, db: Database,
+    ) -> None:
+        # Default behavior must be unchanged (regression guard for the
+        # existing position-notes command at cli.py:2182).
+        for nt in ("observation", "flag", "decision", "context"):
+            await insert_position_note(
+                db, ticker="DEFAULT-T", note_type=nt, body=f"{nt} body",
+            )
+        all_notes = await get_position_notes(db, "DEFAULT-T")
+        types = {n["note_type"] for n in all_notes}
+        assert types == {"observation", "flag", "decision", "context"}
+
 
 # ---------------------------------------------------------------------------
 # get_candidate_for_ticker (#275)

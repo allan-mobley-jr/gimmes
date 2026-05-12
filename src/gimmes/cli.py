@@ -2058,6 +2058,11 @@ def position_context(
             trade = await get_open_trade_for_ticker(db, resolved)
             is_open = await has_open_position(db, resolved)
             notes = await get_position_notes(db, resolved, limit=20)
+            # Fetch decisions separately so chatty observations can't
+            # evict the CM governance trail (#580).
+            decisions = await get_position_notes(
+                db, resolved, limit=25, note_type="decision",
+            )
 
         if not trade or not is_open:
             # Another process (clubhouse server, autonomous loop) may
@@ -2107,7 +2112,6 @@ def position_context(
         else:
             console.print("[dim]No notes yet.[/dim]")
 
-        decisions = [n for n in notes if n["note_type"] == "decision"]
         if decisions:
             console.print("\n[bold yellow]--- CADDIE MASTER DECISIONS ---[/bold yellow]")
             for n in decisions:
