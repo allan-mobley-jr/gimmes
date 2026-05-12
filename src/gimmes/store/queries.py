@@ -665,12 +665,23 @@ async def get_position_notes(
     ticker: str,
     *,
     limit: int = 50,
+    note_type: str | None = None,
 ) -> list[dict]:  # type: ignore[type-arg]
-    """Return position notes for a ticker, newest first."""
-    cursor = await db.conn.execute(
-        "SELECT * FROM position_notes WHERE ticker = ? ORDER BY id DESC LIMIT ?",
-        (ticker, limit),
-    )
+    """Return position notes for a ticker, newest first.
+
+    When ``note_type`` is set, the type filter is applied before
+    ``limit`` so chatty notes of other types can't evict matches (#580).
+    """
+    if note_type is None:
+        sql = "SELECT * FROM position_notes WHERE ticker = ? ORDER BY id DESC LIMIT ?"
+        params: tuple = (ticker, limit)
+    else:
+        sql = (
+            "SELECT * FROM position_notes WHERE ticker = ? AND note_type = ?"
+            " ORDER BY id DESC LIMIT ?"
+        )
+        params = (ticker, note_type, limit)
+    cursor = await db.conn.execute(sql, params)
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
