@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-05-12
+
+### Fixed
+- `gimmes market-info` and `gimmes position-context` now write to the `error_log` table on failure paths that previously logged only to Python logging: ambiguous prefix, no-match, race-condition close during lookup, Kalshi `HTTPStatusError`, and `httpx.RequestError`. Groundskeeper now sees what monitor-only cycles previously hid — the gap that let #581 run 60+ cycles without escalation. Extracts the `try / except log-only` envelope into a module-scope `_log_cli_error` helper; the ambiguous-prefix `context` payload caps `matches` at 20 with a `matches_total` count to bound row size. (#588)
+- `gimmes backtest` now applies the full strategy filter set in its scoring loop. The engine previously honored only `strategy.gimme_threshold`, silently ignoring `strategy.min_true_probability` and `strategy.min_edge_after_fees` — parameter sweeps over either returned identical results. Logic mirrors `risk/validator.py`: `true_prob = effective_price + assumed_edge + base_rate_floor`, reject below `min_true_probability`; `edge_after_fees` rejected below `min_edge_after_fees`. The computed `(eff_price, true_prob)` ride forward in the `scored` tuple so Pass 1 doesn't recompute. Regression-safe at default live-config values. (#592)
+
 ## [0.8.0] - 2026-05-11
 
 ### Added
