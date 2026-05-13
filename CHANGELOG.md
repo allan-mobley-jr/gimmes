@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-05-13
+
+### Fixed
+- `gimmes discover <category>` no longer crashes with `TypeError: object of type 'NoneType' has no len()` when Kalshi returns `{"series": null}` for an empty category. `dict.get(key, default)` returns the explicit None value, not the default — coercing with `or []` in `list_series`, `list_markets`, and `get_series_fee_changes` keeps all three honest to their `list[dict]` return-type contract. (#574)
+- `gimmes position-context` no longer displays stale Caddie Master decision cycles for chatty positions. The "CADDIE MASTER DECISIONS" panel previously filtered for `note_type == "decision"` *after* applying a 20-row mixed-type limit on `get_position_notes`; on positions with many recent observation/flag notes (e.g. KXCPIYOY-26APR-T3.7, which showed c1403 governing despite the DB having c1409), recent decisions were silently evicted from the display window. `get_position_notes` now accepts an optional `note_type` kwarg, and the CLI issues a second query with `limit=25, note_type="decision"` so the full governance trail renders regardless of interleaved note density. (#580)
+
 ## [0.8.1] - 2026-05-12
 
 ### Fixed
