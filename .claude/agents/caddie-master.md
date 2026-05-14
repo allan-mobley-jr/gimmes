@@ -119,10 +119,19 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 4. Make your own deliberate decision — **HOLD**, **CLOSE**, or **SIZE UP**:
    - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding. When choosing HOLD, you MUST specify a re-evaluation condition so Monitor knows when to re-flag (prevents the flag-HOLD-re-flag-HOLD loop).
-   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, risk limits require action, or a profit-taking flag indicates the position has captured most of its available edge.
+   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, a stop-loss flag fires AND the thesis is degraded (see stop-loss rule below), or a profit-taking flag indicates the position has captured most of its available edge.
    - **SIZE UP**: Price moved adversely while the original thesis remains fully intact, resulting in a larger edge than at entry. Proceed to Step 2d.
 
    When reviewing a **profit-taking flag**: the position has captured a large share of its maximum possible profit. The default action is CLOSE to lock in gains, UNLESS resolution is imminent (< 24h) and remaining upside is nearly risk-free.
+
+   When reviewing a **stop-loss flag**: stop-loss is a safety valve, not an automatic CLOSE. Read Monitor's `Thesis:` line in the flag body.
+   - If `Thesis: degraded` — CLOSE to cap the loss.
+   - If `Thesis: intact` AND resolution is imminent (< 24h per Monitor's `TimeToResolution:` line) — HOLD; the loss is already realized in mark-to-market and re-entering after a forced close incurs fees plus worse cost basis.
+   - If `Thesis: intact` AND resolution is NOT imminent — HOLD only if you can articulate a specific re-evaluation condition tighter than the original (e.g. "close if price drops another 5pp"); otherwise CLOSE.
+   - **Missing or malformed thesis fallback (REQUIRED)**: if Monitor's `Thesis:` line is absent, or its value is anything other than the exact string `intact` or `degraded` (including modifiers like `partially degraded`, `still intact`, or different casing), treat the flag as `Thesis: degraded` and CLOSE. Conservative default: never assume `intact` when the signal is ambiguous.
+   - **Same-ticker reopen lockout (REQUIRED)**: if you CLOSE a stop-loss position, log the cycle number in the decision note. In Step 4c review for the same cycle and the next cycle, you MUST REJECT any candidate matching the closed ticker — see the "Stop-loss reopen lockout" REJECT criterion in Step 4c.
+
+   Canonical anti-pattern to avoid: KXGDP-26APR30-T2.5 (cycles 1199-1200), where a thesis-intact position was force-closed on a 104%-of-stop-loss breach and re-opened 26 minutes later on the same ticker — a round-trip that realized a \$58 loss plus fees plus worse cost basis.
 
 5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
    ```bash
@@ -300,6 +309,7 @@ For each PROCEED candidate:
      - **Timing**: a known catalyst resolving before the next cycle would materially change the edge.
      - **Edge below CM floor**: net edge after fees < `cm_min_edge_after_fees`. You MUST cite both numbers in the REJECT note (e.g. "edge 3.2pp < cm_min_edge_after_fees 5.0pp"). Read the net edge from `gimmes candidates --ticker TICKER --limit 1`.
      - **Side constraint**: when `trading_side` is `"yes"` or `"no"`, REJECT any candidate whose side does not match `trading_side`. The structural edge is side-specific — if the configured side has no edge on a candidate, REJECT rather than switching sides. Only when `trading_side` = `"both"` are both sides permitted. This applies even during extraordinary events.
+     - **Stop-loss reopen lockout** (#586): REJECT any candidate whose ticker has a `gimmes position-notes TICKER` entry with `Decision: CLOSE` referencing a stop-loss flag in cycle `$GIMMES_CYCLE` or `$GIMMES_CYCLE - 1`. Lockout is two cycles; thereafter the ticker is re-evaluable. See step 2c rationale.
 
    **Audit language rule.** You MUST NOT use subjective edge descriptors — "thin edge", "knife-edge", "marginal edge", "razor-thin", "too close", "coin flip", "insufficient edge" — as a REJECT reason without citing the numeric net edge and `cm_min_edge_after_fees` in the same sentence. Subjective phrases alone are not a sufficient audit trail.
 

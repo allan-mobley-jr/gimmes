@@ -13,6 +13,7 @@ import pytest
 AGENTS_DIR = Path(__file__).resolve().parents[2] / ".claude" / "agents"
 CADDIE_MASTER = AGENTS_DIR / "caddie-master.md"
 CADDIE = AGENTS_DIR / "caddie.md"
+MONITOR = AGENTS_DIR / "monitor.md"
 
 
 @pytest.fixture(scope="module")
@@ -23,6 +24,11 @@ def caddie_master_text() -> str:
 @pytest.fixture(scope="module")
 def caddie_text() -> str:
     return CADDIE.read_text()
+
+
+@pytest.fixture(scope="module")
+def monitor_text() -> str:
+    return MONITOR.read_text()
 
 
 def test_caddie_master_reads_cm_min_edge_after_fees(caddie_master_text: str) -> None:
@@ -115,4 +121,72 @@ def test_caddie_point_estimate_not_fifty_percent(caddie_text: str) -> None:
     assert "does NOT mean P(" in caddie_text, (
         "Caddie must explicitly state that a consensus point forecast "
         "near a threshold does NOT mean ~50% probability of exceeding it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stop-loss override rule (#586)
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_stop_loss_safety_valve_rule(
+    caddie_master_text: str,
+) -> None:
+    # The new step 2c stop-loss rule must remain in the prompt — if it
+    # drifts, the close-and-reopen anti-pattern reappears (see #586).
+    assert "stop-loss is a safety valve" in caddie_master_text, (
+        "Step 2c must contain the 'stop-loss is a safety valve' rule "
+        "preventing automatic CLOSE on thesis-intact stop-loss breaches."
+    )
+    # The asymmetric rule shape MUST be present: thesis-degraded forces
+    # CLOSE, thesis-intact + imminent settlement forces HOLD. Asserting
+    # both halves prevents a future edit from deleting either branch
+    # while keeping the preamble.
+    assert "`Thesis: degraded`" in caddie_master_text and "CLOSE" in caddie_master_text, (
+        "The stop-loss rule must map `Thesis: degraded` -> CLOSE."
+    )
+    assert "`Thesis: intact`" in caddie_master_text and "imminent" in caddie_master_text, (
+        "The stop-loss rule must map `Thesis: intact` + imminent settlement"
+        " -> HOLD."
+    )
+    # Missing-field fallback: ambiguous thesis must default to CLOSE.
+    assert "Missing or malformed thesis fallback" in caddie_master_text, (
+        "Must define behavior when Monitor's `Thesis:` line is absent or"
+        " malformed (conservative default = CLOSE)."
+    )
+    # The no-immediate-reopen rule must have a concrete enforcement point
+    # in Step 4c, not just float in step 2c. (#586 close-and-reopen).
+    assert "Stop-loss reopen lockout" in caddie_master_text, (
+        "Step 4c REJECT criteria must include a 'Stop-loss reopen lockout'"
+        " rule so the prohibition has a concrete enforcement point."
+    )
+
+
+def test_monitor_stop_loss_flag_carries_thesis_and_time(
+    monitor_text: str,
+) -> None:
+    # Caddie Master's stop-loss rule reads Monitor's `Thesis:` and
+    # `TimeToResolution:` fields from the flag body. If Monitor stops
+    # writing them, CM's rule silently degrades to the old behavior.
+    import re
+
+    # Match the stop-loss bullet block by regex anchored to bullet
+    # boundaries — robust against future re-ordering of the bullets
+    # around it. Captures up to the next top-level bullet `\n- **`.
+    match = re.search(
+        r"- \*\*Stop-loss breach\*\*:(.*?)(?=\n- \*\*|\Z)",
+        monitor_text,
+        flags=re.DOTALL,
+    )
+    assert match is not None, "monitor.md must contain a Stop-loss breach bullet."
+    stop_loss_section = match.group(1)
+
+    assert "Thesis: intact" in stop_loss_section, (
+        "Stop-loss flag body must specify the `Thesis: intact|degraded`"
+        " line so Caddie Master can apply the asymmetric rule (#586)."
+    )
+    assert "TimeToResolution:" in stop_loss_section, (
+        "Stop-loss flag body must include `TimeToResolution:` so Caddie"
+        " Master can identify the <24h imminent-settlement HOLD path"
+        " without inferring it."
     )
