@@ -82,6 +82,15 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 | KXGDP | 85% | 0.85 |
 | KXINX, KXNASDAQ100 | 80% | 0.80 |
 
+4. **Sibling-strike selection (per-event Kelly rule)**: When two or more candidates from the SAME event_ticker (the full prefix before the final `-T<strike>` segment, e.g., `KXADP-26APR-T100000` and `KXADP-26APR-T125000` share event_ticker `KXADP-26APR`; `KXADP-26APR-T100000` and `KXADP-26MAY-T100000` do NOT — different months are different events) pass checks 1–3 in the same review batch on the configured `trading_side` (read from `gimmes config get strategy.side`) and share the same gimme-category base rate, PROCEED ONLY the candidate with the LOWEST price on `trading_side`; PASS the higher-priced siblings.
+   - Rationale: under the fast-track assumption of a constant category base rate, `edge = base_rate − entry_price` is monotonic in entry price alone, so the cheapest entry on the trading side is Kelly-optimal. Picking a higher-priced sibling leaks edge for no informational gain (fixes #591).
+   - PASS rationale MUST cite the dominant sibling ticker and its price on the trading side (e.g., `"PASS — dominated by sibling KXADP-26APR-T125000 NO at \$0.48; this strike NO at \$0.71 has lower edge under the same base rate"`).
+   - When `trading_side` is `both`, this rule does NOT fire — strikes on opposite sides aren't directly comparable; apportion to Caddie Master via PROCEED so each side's Kelly is considered independently.
+   - Tied prices (within \$0.01): PROCEED all tied candidates and let Caddie Master apply the concentration limit (`max_event_exposure_pct`) to pick which fit.
+   - Does NOT apply when the extraordinary-event exception (check 1, CPI carveout above) fires for any sibling — in that case each sibling has its own arithmetic-derived probability and must be flagged for Caddie Master review individually.
+   - **Sibling-price monotonicity check (REQUIRED before applying the rule)**: among the PROCEED candidates in this event, the looser-threshold strike's `trading_side` price MUST be >= the tighter-threshold strike's price. If a looser strike is priced CHEAPER than a tighter sibling on the same side, that is a market mispricing / arbitrage signal — log it in your research memo and PROCEED both anyway (do NOT collapse to the cheapest, which would incorrectly PASS the tighter-strike gimme). The cheapest-sibling rule above assumes monotonically-priced siblings; violations are themselves the signal.
+   - **Cross-cycle limitation (acknowledged)**: this rule applies only within the same review batch. If Scout outputs siblings across multiple cycles, both will PROCEED independently — Caddie Master's `max_event_exposure_pct` concentration limit (`caddie-master.md` Step 4c) provides backstop coverage when both reach review.
+
 **When to use deep research instead:**
 - Candidate is NOT in a gimme category
 - Monitor flagged a position for review (situation changed)

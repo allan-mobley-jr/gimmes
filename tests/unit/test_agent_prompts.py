@@ -154,6 +154,70 @@ def test_caddie_jobless_claims_in_gimme_category_list(caddie_text: str) -> None:
     )
 
 
+def test_caddie_sibling_strike_selection_rule(caddie_text: str) -> None:
+    # Within an event, Caddie must PASS higher-priced sibling strikes
+    # when a cheaper sibling shares the same gimme-category base rate.
+    # Without this rule, the per-strike scoring picks higher-priced
+    # (worse Kelly) strikes — the canonical case from #591.
+    #
+    # Scope assertions to the Sanity-Check Mode block so the rule can't
+    # silently drift into an unrelated section of the prompt while
+    # keeping the keyword in the doc.
+    import re
+
+    sanity_check_match = re.search(
+        r"## Sanity-Check Mode.*?(?=\n## )",
+        caddie_text,
+        flags=re.DOTALL,
+    )
+    assert sanity_check_match is not None, (
+        "caddie.md must contain a '## Sanity-Check Mode' section."
+    )
+    sanity_block = sanity_check_match.group(0)
+
+    assert "Sibling-strike selection" in sanity_block, (
+        "Sanity-Check Mode must contain the per-event sibling-strike"
+        " rule (#591)."
+    )
+    # The rule must pin the cheapest-on-the-trading-side as the
+    # PROCEED winner. Accept either explicit "LOWEST" or "lowest"
+    # paired with a price-on-trading-side reference — the load-bearing
+    # claim is that the rule selects on PRICE, not score or threshold.
+    assert "LOWEST price" in sanity_block or "LOWEST NO price" in sanity_block, (
+        "Sibling-strike rule must pin 'LOWEST price on trading_side' (or"
+        " 'LOWEST NO price' if NO-side hardcoded) — a softening to 'lower'"
+        " or 'preferred' would reintroduce the bias #591 fixes."
+    )
+    assert "same event_ticker" in sanity_block or "SAME event_ticker" in sanity_block, (
+        "Sibling-strike rule must scope to same event_ticker so it"
+        " doesn't accidentally compare strikes across different events."
+    )
+    assert "KXADP-26APR" in sanity_block, (
+        "Sibling-strike rule must cite the canonical KXADP-26APR"
+        " T100000-vs-T125000 anti-pattern so a future drift can't"
+        " quietly remove the evidence."
+    )
+    # Three load-bearing sub-rules from the diff must remain pinned:
+    assert "PASS rationale MUST cite the dominant sibling" in sanity_block, (
+        "Sibling-strike rule must require PASS rationale to cite the"
+        " dominant sibling — auditability anchor."
+    )
+    assert "extraordinary-event exception" in sanity_block, (
+        "Sibling-strike rule must defer to the CPI extraordinary-event"
+        " carveout — if that exception fires for any sibling, each"
+        " sibling needs Caddie Master review individually."
+    )
+    assert "monotonicity" in sanity_block.lower(), (
+        "Sibling-strike rule must address sibling-price monotonicity —"
+        " a looser-strike priced below tighter is the gimme signal, not"
+        " a reason to collapse to the cheapest."
+    )
+    assert "trading_side" in sanity_block, (
+        "Sibling-strike rule must reference `trading_side` (or strategy"
+        " side) so it works on YES, NO, and 'both' configurations."
+    )
+
+
 def test_caddie_jobless_claims_has_base_rate_matching_payrolls(
     caddie_text: str,
 ) -> None:
