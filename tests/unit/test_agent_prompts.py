@@ -125,6 +125,60 @@ def test_caddie_point_estimate_not_fifty_percent(caddie_text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sanity-check gimme-category inclusion (#590)
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_jobless_claims_in_gimme_category_list(caddie_text: str) -> None:
+    # KXJOBLESSCLAIMS must remain in the sanity-check fast-track list —
+    # removing it would re-introduce the live-vs-backtest market-mix
+    # bias documented in #590 (live picker overweighted CPI losers
+    # while JOBLESS, a backtest winner, fell through to deep research
+    # and got under-approved).
+    import re
+
+    # The opening sentence of the Sanity-Check Mode section enumerates
+    # the gimme categories in parentheses. Pin JOBLESS there.
+    sanity_check_section = re.search(
+        r"For candidates in backtested gimme categories \(([^)]+)\),",
+        caddie_text,
+    )
+    assert sanity_check_section is not None, (
+        "Caddie must have a 'For candidates in backtested gimme categories"
+        " (...)' opening sentence in the Sanity-Check Mode section."
+    )
+    series_list = sanity_check_section.group(1)
+    assert "KXJOBLESSCLAIMS" in series_list, (
+        "KXJOBLESSCLAIMS must remain in the Sanity-Check gimme list (#590)."
+        f" Current list: {series_list}"
+    )
+
+
+def test_caddie_jobless_claims_has_base_rate_matching_payrolls(
+    caddie_text: str,
+) -> None:
+    # The base-rate table must include KXJOBLESSCLAIMS with the same
+    # probability (0.85) as its peer employment series KXPAYROLLS/KXADP.
+    # Pin the exact number — a silent drop to a different rate (e.g.
+    # 0.50) would still produce "a numeric probability" and would not
+    # be caught by a loose `0\.\d+` regex, but it would violate the AC
+    # ("same treatment as KXPAYROLLS") and re-introduce the bias #590
+    # was filed to fix.
+    import re
+
+    row_match = re.search(
+        r"\|[^|]*KXJOBLESSCLAIMS[^|]*\|[^|]*\|[^|]*0\.85[^|]*\|",
+        caddie_text,
+    )
+    assert row_match is not None, (
+        "Caddie sanity-check base-rate table must include a row for"
+        " KXJOBLESSCLAIMS with probability 0.85 (peer-matched with"
+        " KXPAYROLLS/KXADP) so the fast-track path has a defined --prob"
+        " consistent with the employment family (#590)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stop-loss override rule (#586)
 # ---------------------------------------------------------------------------
 
