@@ -134,25 +134,46 @@ def test_caddie_master_stop_loss_safety_valve_rule(
 ) -> None:
     # The new step 2c stop-loss rule must remain in the prompt — if it
     # drifts, the close-and-reopen anti-pattern reappears (see #586).
-    assert "stop-loss is a safety valve" in caddie_master_text, (
-        "Step 2c must contain the 'stop-loss is a safety valve' rule "
-        "preventing automatic CLOSE on thesis-intact stop-loss breaches."
+    # Scope assertions to the literal stop-loss subsection so they can't
+    # pass vacuously by matching strings elsewhere in the prompt.
+    import re
+
+    sl_match = re.search(
+        r"When reviewing a \*\*stop-loss flag\*\*:(.*?)Canonical anti-pattern to avoid:",
+        caddie_master_text,
+        flags=re.DOTALL,
     )
-    # The asymmetric rule shape MUST be present: thesis-degraded forces
-    # CLOSE, thesis-intact + imminent settlement forces HOLD. Asserting
-    # both halves prevents a future edit from deleting either branch
-    # while keeping the preamble.
-    assert "`Thesis: degraded`" in caddie_master_text and "CLOSE" in caddie_master_text, (
-        "The stop-loss rule must map `Thesis: degraded` -> CLOSE."
+    assert sl_match is not None, (
+        "Step 2c must contain a 'When reviewing a **stop-loss flag**:' block"
+        " ending at the 'Canonical anti-pattern to avoid:' line."
     )
-    assert "`Thesis: intact`" in caddie_master_text and "imminent" in caddie_master_text, (
-        "The stop-loss rule must map `Thesis: intact` + imminent settlement"
-        " -> HOLD."
+    sl_block = sl_match.group(1)
+
+    assert "stop-loss is a safety valve" in sl_block, (
+        "Step 2c stop-loss block must contain the 'safety valve' framing"
+        " preventing automatic CLOSE on thesis-intact breaches."
     )
-    # Missing-field fallback: ambiguous thesis must default to CLOSE.
-    assert "Missing or malformed thesis fallback" in caddie_master_text, (
-        "Must define behavior when Monitor's `Thesis:` line is absent or"
-        " malformed (conservative default = CLOSE)."
+    # The asymmetric rule MUST encode both branches. Match the literal
+    # mapping inside the block so a future edit that flips either branch
+    # fails the test.
+    assert re.search(r"`Thesis: degraded`[^.]*CLOSE", sl_block), (
+        "Stop-loss block must map `Thesis: degraded` -> CLOSE in the same"
+        " sentence."
+    )
+    assert re.search(r"`Thesis: intact`[^.]*imminent[^.]*HOLD", sl_block), (
+        "Stop-loss block must map `Thesis: intact` + imminent settlement"
+        " -> HOLD in the same sentence."
+    )
+    assert "Missing or malformed thesis fallback" in sl_block, (
+        "Stop-loss block must define behavior when Monitor's `Thesis:`"
+        " line is absent or malformed (conservative default = CLOSE)."
+    )
+    # The CLOSE-marker requirement so step 4c lockout can match. Without
+    # this line, the lockout has no deterministic anchor.
+    assert "Trigger: Stop-loss breach" in sl_block, (
+        "Stop-loss block must require the literal `Trigger: Stop-loss"
+        " breach` line in the decision note body so step 4c lockout"
+        " has a deterministic match anchor."
     )
     # The no-immediate-reopen rule must have a concrete enforcement point
     # in Step 4c, not just float in step 2c. (#586 close-and-reopen).
@@ -160,6 +181,63 @@ def test_caddie_master_stop_loss_safety_valve_rule(
         "Step 4c REJECT criteria must include a 'Stop-loss reopen lockout'"
         " rule so the prohibition has a concrete enforcement point."
     )
+
+
+def test_caddie_master_4c_lockout_requires_both_markers(
+    caddie_master_text: str,
+) -> None:
+    # Step 4c's REJECT criterion must require BOTH `Decision: CLOSE` AND
+    # `Trigger: Stop-loss breach` in the same decision note. Without the
+    # AND, a future edit could weaken the rule to match on `Decision:
+    # CLOSE` alone — locking out tickers for any close, not just
+    # stop-loss closes — or to match on `Trigger: Stop-loss breach`
+    # alone — locking out tickers from a flag that didn't actually
+    # result in a close. Both halves must appear in the lockout text.
+    import re
+
+    lockout_match = re.search(
+        r"\*\*Stop-loss reopen lockout\*\*[^\n]+",
+        caddie_master_text,
+    )
+    assert lockout_match is not None, (
+        "Step 4c must contain a 'Stop-loss reopen lockout' REJECT bullet."
+    )
+    lockout_text = lockout_match.group(0)
+    assert "Decision: CLOSE" in lockout_text, (
+        "Step 4c lockout must reference `Decision: CLOSE` so a non-close"
+        " note can't trigger the lockout."
+    )
+    assert "Trigger: Stop-loss breach" in lockout_text, (
+        "Step 4c lockout must reference `Trigger: Stop-loss breach` so"
+        " non-stop-loss closes (e.g. new-information CLOSEs) don't"
+        " trigger the lockout."
+    )
+
+
+def test_monitor_template_body_carries_conditional_fields(
+    monitor_text: str,
+) -> None:
+    # The "Writing Flags" template body MUST contain the new conditional
+    # field lines (Thesis:, Price:, TimeToResolution:) — otherwise a
+    # Monitor copy-pasting the template would silently regress to the
+    # pre-#586 format while the trigger-description test still passes.
+    import re
+
+    template_match = re.search(
+        r"\*\*Template\*\*[^`]+```bash(.*?)```",
+        monitor_text,
+        flags=re.DOTALL,
+    )
+    assert template_match is not None, (
+        "Writing Flags section must contain a `bash` code block under"
+        " the **Template** label."
+    )
+    template_body = template_match.group(1)
+    for field in ("Thesis:", "Price:", "TimeToResolution:"):
+        assert field in template_body, (
+            f"Monitor flag template body must include `{field}` so the"
+            f" copy-paste path doesn't silently drop the field (#586)."
+        )
 
 
 def test_monitor_stop_loss_flag_carries_thesis_and_time(
@@ -181,12 +259,16 @@ def test_monitor_stop_loss_flag_carries_thesis_and_time(
     assert match is not None, "monitor.md must contain a Stop-loss breach bullet."
     stop_loss_section = match.group(1)
 
-    assert "Thesis: intact" in stop_loss_section, (
-        "Stop-loss flag body must specify the `Thesis: intact|degraded`"
-        " line so Caddie Master can apply the asymmetric rule (#586)."
-    )
-    assert "TimeToResolution:" in stop_loss_section, (
-        "Stop-loss flag body must include `TimeToResolution:` so Caddie"
-        " Master can identify the <24h imminent-settlement HOLD path"
-        " without inferring it."
+    for field in ("Thesis:", "Price:", "TimeToResolution:"):
+        assert field in stop_loss_section, (
+            f"Stop-loss bullet must name `{field}` field by reference so"
+            f" the requirement surfaces at the trigger description (the"
+            f" formatting rules live in the Writing Flags field table)."
+        )
+    # The bullet must also pin the exact trigger-name spelling so step
+    # 4c's literal `Trigger: Stop-loss breach` lockout match works.
+    assert "exact spelling" in stop_loss_section, (
+        "Stop-loss bullet must instruct Monitor to use the exact"
+        " spelling `Stop-loss breach` for the Trigger value, else step"
+        " 4c's literal lockout match can miss case/spacing variants."
     )

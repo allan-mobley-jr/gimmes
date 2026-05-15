@@ -41,7 +41,7 @@ Flag a position for Caddie Master review — by writing a `flag` note — when A
 - **New information**: You find news or data published AFTER the position was opened that materially affects the probability estimate — and that information was NOT already accounted for in the original thesis.
 - **Time decay**: Resolution is < 24 hours away AND position is not yet profitable.
 - **Risk approaching**: Daily P&L loss approaching the configured daily loss limit (from the "Daily Loss Limit" line in `risk-check` output).
-- **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15. The flag body MUST include: (1) a standardized thesis line using exactly `Thesis: intact` or `Thesis: degraded` based on your research, (2) a price line showing entry vs current (e.g., `Price: entry $0.57 -> current $0.48 (D -9pp)`), and (3) a `TimeToResolution:` line in hours (e.g., `TimeToResolution: 18h`). Caddie Master uses these three fields to discriminate thesis-intact-imminent-settlement HOLD from thesis-degraded CLOSE (per caddie-master.md step 2c stop-loss rule).
+- **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15. Use trigger name `Stop-loss breach` (exact spelling) and include `Thesis:`, `Price:`, and `TimeToResolution:` fields per the field-requirements table in "Writing Flags" below. Caddie Master's step 2c stop-loss rule discriminates thesis-intact-imminent-settlement HOLD from thesis-degraded CLOSE using those three fields — missing or malformed fields force the conservative CLOSE path.
 - **Profit-taking threshold**: The position's unrealized gain >= the "Position Take-Profit" percentage (from `risk-check` output) multiplied by maximum possible profit. Max profit for a YES position = (1.00 - entry_price) x contracts; for NO = entry_price x contracts. For example, at 80% take-profit, entry $0.40, and 10 contracts, max profit = $6.00 and the flag triggers when unrealized P&L >= $4.80.
 
 A trigger condition means Caddie Master should look at this position. It does NOT mean the position should be closed. Caddie Master decides what to do.
@@ -83,17 +83,40 @@ Do NOT write a context note if the assessment is unchanged. Track inflection poi
 
 ## Writing Flags (when trigger conditions are met)
 
-When a trigger condition is met, write a flag note in addition to the observation note:
+When a trigger condition is met, write a flag note in addition to the observation note.
+
+**Multiple-trigger rule (REQUIRED):** if more than one condition fires in the same cycle (e.g. price movement AND stop-loss breach), write a **separate flag note per trigger**. Do NOT combine them into a single `Trigger:` value — Caddie Master's step-4c lockout matches on the literal `Trigger: Stop-loss breach` line and will silently miss a combined value like `Price movement + Stop-loss breach`.
+
+**Trigger-name vocabulary (REQUIRED — use these exact strings):**
+- `Trigger: Price movement` — for the adverse-or-favorable Npp price-trigger condition.
+- `Trigger: New information` — for material new news/data published after entry.
+- `Trigger: Time decay` — for the <24h-to-settlement + not-profitable condition.
+- `Trigger: Risk approaching` — for the daily-loss-limit-approaching condition.
+- `Trigger: Stop-loss breach` — for unrealized P&L <= -(stop-loss% × cost basis).
+- `Trigger: Profit-taking threshold` — for unrealized gain >= take-profit threshold.
+
+**Field-requirements table:** include these conditional fields ONLY when the named trigger fires. Omit the field's whole line otherwise — do NOT render `Thesis: omit` or any placeholder text.
+
+| Field | Required for | Format |
+|---|---|---|
+| `Thesis:` | `Price movement` (adverse only), `Stop-loss breach` | exact value `intact` or `degraded` — no modifiers, no different casing |
+| `Price:` | `Price movement` (adverse only), `Stop-loss breach` | `entry $X -> current $Y (D Npp)` |
+| `TimeToResolution:` | `Stop-loss breach` | integer hours followed by `h` (e.g. `18h`, `2h`). No fractions, no `1d 2h`, no other units. Caddie Master compares this against `< 24` numerically. |
+
+**Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above):
 
 ```bash
 gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type flag \
-  --body "Trigger: [which condition].
+  --body "Trigger: [exact name from the trigger-name vocabulary above].
 What changed: [specific price, news, or data point].
 Original thesis said: [quote the relevant portion of the thesis].
 Assessment: [Is this new information the thesis did not account for? Or is this the same data viewed differently? Be precise and honest].
+Thesis: [intact or degraded].
+Price: [entry \$X -> current \$Y (D Npp)].
+TimeToResolution: [Nh].
 For Caddie Master: [factual summary of the situation — no recommendation]."
 ```
 
