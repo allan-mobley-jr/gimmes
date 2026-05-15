@@ -52,7 +52,7 @@ When the Scout's shortlist contains **multiple candidates from the same event** 
 
 ## Sanity-Check Mode (Default for Gimme Categories)
 
-For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPAYROLLS, KXADP, KXGDP, KXINX, KXNASDAQ100), run a **fast sanity check** instead of deep research. The structural edge in these categories is proven — deep probability estimation adds noise, not signal.
+For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPAYROLLS, KXADP, KXGDP, KXINX, KXNASDAQ100, KXJOBLESSCLAIMS), run a **fast sanity check** instead of deep research. The structural edge in these categories is proven — deep probability estimation adds noise, not signal.
 
 **Three checks (30 seconds, not 5 minutes):**
 
@@ -78,7 +78,7 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 |----------|---------------------|---------------|
 | KXCPIYOY, KXCPICOREYOY | 90% | 0.90 |
 | KXCPICORE | 85% | 0.85 |
-| KXPAYROLLS, KXADP | 85% | 0.85 |
+| KXPAYROLLS, KXADP, KXJOBLESSCLAIMS | 85% | 0.85 |
 | KXGDP | 85% | 0.85 |
 | KXINX, KXNASDAQ100 | 80% | 0.80 |
 
