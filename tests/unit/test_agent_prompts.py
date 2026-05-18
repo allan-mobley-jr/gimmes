@@ -417,11 +417,14 @@ def test_groundskeeper_has_github_dedup_preflight(
         "Step 2.5 must use `gh issue list --state all --label bug"
         " --search ...` to find both open and closed matching issues."
     )
-    assert "--json number,title,state,closedAt" in groundskeeper_text, (
-        "Step 2.5 must request JSON output with state + closedAt so"
-        " the branching logic has structured input rather than parsing"
-        " text (unstable across `gh` versions)."
-    )
+    # JSON fields: must request createdAt (for OPEN selection rule),
+    # url (for resolve-error sync), closedAt (for CLOSED branches).
+    # Missing any of these makes a downstream branch unimplementable.
+    for field in ("number", "title", "state", "createdAt", "closedAt", "url"):
+        assert field in groundskeeper_text, (
+            f"Step 2.5 --json must include `{field}` field — without"
+            f" it, the agent can't apply a downstream branch correctly."
+        )
     assert "(error_code, component)" in groundskeeper_text, (
         "Step 2.5 must name the dedup key as the tuple"
         " `(error_code, component)`, not error_code alone or category"
@@ -483,12 +486,22 @@ def test_groundskeeper_rules_pin_preflight_requirement(
     # If the Rules section doesn't pin the requirement, a future edit
     # could quietly drop the Step 2.5 invocation from the Step 3 flow
     # while leaving the Step 2.5 description intact — silently
-    # reverting #600.
+    # reverting #600. Scope to the Rules block so we catch removals
+    # from there even if the phrase appears elsewhere in the prompt.
     import re
 
+    rules_block = re.search(
+        r"## Rules\s*\n(.*?)(?=\n## |\Z)",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    )
+    assert rules_block is not None, (
+        "groundskeeper.md must contain a `## Rules` section."
+    )
+    rules_body = rules_block.group(1)
     assert re.search(
         r"MUST run Step 2\.5.*before every `gh issue create`",
-        groundskeeper_text,
+        rules_body,
     ), (
         "Rules section must contain a 'MUST run Step 2.5 ... before"
         " every gh issue create' line to enforce the pre-flight check."
@@ -501,8 +514,19 @@ def test_groundskeeper_permits_commenting_on_existing_issues(
     # The old rule "NEVER close or modify existing GitHub issues" was
     # too broad — it forbade the Step 2.5 commenting path. The new
     # rule must explicitly permit comments as the only sanctioned
-    # modification.
-    assert "MAY add comments to existing open issues" in groundskeeper_text, (
+    # modification. Scope to the Rules block.
+    import re
+
+    rules_block = re.search(
+        r"## Rules\s*\n(.*?)(?=\n## |\Z)",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    )
+    assert rules_block is not None, (
+        "groundskeeper.md must contain a `## Rules` section."
+    )
+    rules_body = rules_block.group(1)
+    assert "MAY add comments to existing open issues" in rules_body, (
         "Rules section must permit commenting on open issues as the"
         " only sanctioned modification (#600 Step 2.5 enforcement)."
     )
@@ -522,11 +546,14 @@ def test_groundskeeper_search_query_uses_quoted_terms(
         groundskeeper_text,
         flags=re.DOTALL,
     ).group(0)
-    assert '\'in:title "ERROR_CODE" "COMPONENT"\'' in block, (
-        "Step 2.5 search must use quoted terms scoped to title:"
-        " `'in:title \"ERROR_CODE\" \"COMPONENT\"'`. Unquoted body"
-        " matching pulls in noise that silently suppresses legitimate"
-        " new issues."
+    # ERROR_CODE lives in the title (Step 3 title template), COMPONENT
+    # lives in the body. Both must be quoted so GitHub search doesn't
+    # tokenize on `_`/`-`/`.`.
+    assert '\'in:title "ERROR_CODE" in:body "COMPONENT"\'' in block, (
+        "Step 2.5 search must use quoted terms with `in:title` for"
+        " ERROR_CODE and `in:body` for COMPONENT — the title template"
+        " puts the error_code in the title and the component in the"
+        " body, so the search needs both scopes."
     )
 
 
@@ -605,4 +632,139 @@ def test_groundskeeper_closed_recency_cap_at_30_days(
         "Step 2.5 must define a stale-CLOSED branch (older than 30"
         " days) that treats the match as no-match — otherwise stale"
         " unrelated issues get cited as 'previously resolved'."
+    )
+
+
+def test_groundskeeper_critical_handling_preserves_safety_rule(
+    groundskeeper_text: str,
+) -> None:
+    # Step 2's hard rule says critical + risk_breach MUST file in the
+    # current cycle. The CLOSED-within-24h suppress branch would
+    # violate that for recurring critical incidents. Step 2.5 must
+    # explicitly handle critical/risk_breach: comment-on-existing-
+    # OPEN to avoid duplicates, but always file when CLOSED (any
+    # age) — never suppress.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "CRITICAL handling" in block, (
+        "Step 2.5 must contain a 'CRITICAL handling' block that"
+        " preserves the file-in-current-cycle safety rule for"
+        " critical/risk_breach."
+    )
+    assert "critical" in block.lower() and "risk_breach" in block, (
+        "CRITICAL handling must name both `critical` severity and"
+        " `risk_breach` category so the safety rule can't be evaded."
+    )
+    assert "never suppress a fresh critical/risk_breach" in block, (
+        "CRITICAL handling must explicitly forbid suppressing fresh"
+        " critical/risk_breach — closing a prior issue should not"
+        " allow a 24h suppression window on the next critical."
+    )
+
+
+def test_groundskeeper_fail_open_behavior_pinned(
+    groundskeeper_text: str,
+) -> None:
+    # The fail-open posture (file possible duplicate on `gh issue
+    # list` failure rather than silently suppress) is load-bearing.
+    # A future edit changing it to fail-closed would silently drop
+    # escalations during GitHub outages.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "fail-open" in block, (
+        "Step 2.5 must explicitly name the fail-open posture so a"
+        " future edit can't quietly flip to fail-closed."
+    )
+    assert (
+        "proceed to Step 3" in block or "file a possible duplicate" in block.lower()
+    ), (
+        "Fail-open behavior must instruct the agent to proceed to"
+        " Step 3 (file new) when `gh issue list` fails — silent"
+        " suppression is worse than possible-duplicate."
+    )
+
+
+def test_groundskeeper_title_template_includes_error_code(
+    groundskeeper_text: str,
+) -> None:
+    # Step 2.5's `in:title "ERROR_CODE"` search relies on the title
+    # actually carrying the error code. Step 3's title template must
+    # match the exact form `[SEVERITY] Error: ERROR_CODE — ...` so
+    # the literal-substring search hits.
+    import re
+
+    # Pin the full title-template shape so a future edit that
+    # restructures the title (e.g. "Error in COMPONENT: ERROR_CODE")
+    # but keeps the ERROR_CODE substring somewhere doesn't pass
+    # vacuously.
+    assert re.search(
+        r"\[SEVERITY\] Error: ERROR_CODE",
+        groundskeeper_text,
+    ), (
+        "Step 3 issue-title template must use the exact form"
+        " `[SEVERITY] Error: ERROR_CODE — ...` so Step 2.5's literal"
+        " `in:title \"ERROR_CODE\"` search can match"
+        " Groundskeeper-filed issues."
+    )
+
+
+def test_groundskeeper_critical_open_match_comments_not_files(
+    groundskeeper_text: str,
+) -> None:
+    # Without this rule, a sustained risk_breach over multiple cycles
+    # would re-file every cycle — recreating the #597 → #598 → #599
+    # pattern scoped to criticals. Critical+OPEN must comment, not
+    # file new.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    # Must explicitly cover the "critical + matching issue OPEN" case
+    # and route it to the OPEN-match comment branch.
+    assert "matching issue is OPEN" in block and "comment on it" in block, (
+        "CRITICAL handling must route critical/risk_breach with an"
+        " OPEN matching issue to the comment branch, not to file-new"
+        " — otherwise sustained critical incidents spawn duplicates."
+    )
+
+
+def test_groundskeeper_comment_failure_handling_pinned(
+    groundskeeper_text: str,
+) -> None:
+    # The "rows stay resolved + log phase=warn" comment-failure
+    # handling prevents re-comment loops AND prevents silent loss of
+    # the recurrence notification by surfacing it to operator audit.
+    # Drop either half and the failure mode reappears.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "If the comment fails after the resolves succeeded" in block, (
+        "Step 2.5 must explicitly handle the case where comment fails"
+        " after resolves succeeded — without it, the recurrence is"
+        " silently dropped."
+    )
+    assert "phase=warn" in block, (
+        "Comment-failure handling must log to activity_log with"
+        " `phase=warn` so operators can audit unfiled recurrences."
+    )
+    assert "operator audit required" in block, (
+        "Comment-failure handling must surface the audit requirement"
+        " in the warn message itself."
     )
