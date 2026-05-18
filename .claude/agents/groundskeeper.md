@@ -46,8 +46,54 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 
 **Suppress (MUST NOT escalate):**
 - `debug` or `info` severity errors
-- Errors already linked to an **open** GitHub issue (non-empty `github_issue_url`). If the linked issue is closed, treat the error as unlinked and re-apply escalation rules.
 - Transient rate limiting (HTTP 429 / `KALSHI_429`) unless 3+ occurrences in 1 hour
+
+(GitHub-issue dedup is a separate concern — handled by Step 2.5 below, NOT this suppress list. Step 2's suppress list is only for severity/category-based filters.)
+
+### Step 2.5: GitHub dedup pre-flight check (REQUIRED before Step 3)
+
+For each error group surviving Step 2, query GitHub for an existing issue with the same `(error_code, component)` tuple BEFORE filing. This closes the recurrence-noise pattern documented in #600, where the same `(error_code, component)` produced #597 → #598 → #599 in <4 hours because the local `github_issue_url` field was only set after filing and newly-arriving rows tripped the threshold in isolation.
+
+**CRITICAL handling (REQUIRED, applies before any dedup):** For `critical` severity errors and `risk_breach` category errors, the safety rule "MUST file in current cycle" from Step 2 must hold — but unconditional re-filing across multiple cycles would recreate the #597 → #598 → #599 noise pattern scoped to criticals. Run the dedup query (below) first, then:
+- **If a matching issue is OPEN**: comment on it (Step 2.5's OPEN-match branch) so the recurrence is documented on the live incident thread.
+- **If no match OR matching issue is CLOSED (any age)**: file a new issue regardless of the 24h cooldown — never suppress a fresh critical/risk_breach. CLOSED + within-24h does NOT apply the suppress path for these severities.
+
+For all OTHER escalating errors (warning/error severity, non-risk_breach categories), the normal Step 2.5 branching applies.
+
+For all other escalating errors, query:
+
+```bash
+gh issue list --state all --label bug --search 'in:title "ERROR_CODE" in:body "COMPONENT"' --json number,title,state,createdAt,closedAt,url --limit 100
+```
+
+Search-query notes:
+- **Quoted terms.** GitHub search tokenizes on `_`/`-`/`.`, so unquoted `position_not_found` would split into substring tokens and false-match unrelated issues. Quote both terms.
+- **`in:title` + `in:body` semantics.** GitHub treats multiple `in:` qualifiers as a UNION of search scopes applied to ALL free terms — i.e. both ERROR_CODE and COMPONENT are searched across title OR body, ANDed. The query returns POTENTIAL matches; some may be false positives where COMPONENT appears in an unrelated issue's body (e.g., in a stack-trace or suggested-action template). MUST verify each result by reading its title + body before treating it as a real match — only count a result if it represents Groundskeeper's own prior filing of the same `(error_code, component)` pattern, not a tangential mention.
+- **`--limit 100`, not 10.** A small limit risks missing an OPEN match if many stale CLOSED matches sort ahead. 100 is generous for any realistic dedup scope; if the actual return exceeds 100 the operator should narrow the search manually.
+- **`--json` fields.** `createdAt` is needed for the OPEN selection rule below; `url` is needed for `gimmes resolve-error --issue-url ...` in the OPEN branch; `closedAt` is needed for the CLOSED branches. All four (plus `number`, `title`, `state`) are required.
+
+**Match selection rule (REQUIRED).** When the query returns multiple matches:
+1. If ANY match has `state: OPEN`, take the most recently-created OPEN match (sort by `createdAt` descending, pick first). Skip the CLOSED branches.
+2. If ALL matches are `state: CLOSED`, take the one with the most recent `closedAt`.
+3. If `closedAt` is null on a CLOSED match (rare gh edge case), treat as stale (file new with a note that closedAt was missing).
+
+Branch on the selected match:
+
+- **No match** → proceed to Step 3 (file new issue as before).
+- **Match with `state: OPEN`** → MUST NOT file a new issue. In this order:
+  1. FIRST run `gimmes resolve-error ERROR_ID --issue-url EXISTING_URL` for EACH new error row, using the `url` field from the JSON query (NOT a constructed URL). If resolve-error fails for a row, note the failure and SKIP the comment for that row — never comment without successful resolve, or the next cycle will re-comment indefinitely.
+  2. After all rows are successfully resolved, post ONE consolidated comment on the existing open issue:
+     ```bash
+     gh issue comment NUMBER --body "Recurred at TIMESTAMP — error_log row ID(s) [IDS] — [N] occurrences in last 24h for (ERROR_CODE, COMPONENT)."
+     ```
+  3. **If the comment fails after the resolves succeeded**, log the comment failure to the activity log with `phase=warn` and message `"Recurrence comment failed for issue #N — local rows resolved against URL but comment not posted; operator audit required"`. The rows stay resolved (so the next cycle doesn't re-trip), but the recurrence notification is lost from the issue thread. Operators monitoring open issues should re-check for new error_log activity manually.
+- **Match with `state: CLOSED` AND `closedAt` within last 24h** → suppress (UNLESS severity is critical or category is risk_breach — see exception above). Resolve new rows against the closed issue URL. Rationale: allow the fix to propagate before re-escalating; recurrence within 24h of close usually means the agent context still holds the broken state.
+- **Match with `state: CLOSED` AND `closedAt` older than 24h BUT within last 30 days** → file a new issue (Step 3) whose body cites the prior closed issue: "Pattern previously resolved in #N closed at CLOSED_AT — recurrence after 24h cooldown."
+- **Match with `state: CLOSED` AND `closedAt` older than 30 days** → treat as no match; do NOT cite (the prior issue is too stale to be operationally relevant). Proceed to Step 3 with no citation.
+
+The tuple `(error_code, component)` is the dedup key. NEVER dedup on `error_code` alone (over-suppresses unrelated components) or `category` alone (too broad).
+
+If the `gh issue list` query fails, note the failure in your output and proceed to Step 3 (fail-open — better to file a possible duplicate than miss a recurring pattern silently). Operators relying on this dedup should monitor `gh auth status` and GitHub API rate limits; sustained fail-open will recreate the #600 pattern.
 
 ### Step 3: File GitHub Issues
 
@@ -143,7 +189,9 @@ Substitute actual values: total unresolved errors reviewed and number of GitHub 
 
 - NEVER modify code — you review and escalate only
 - NEVER suppress `critical` or `risk_breach` errors — no exceptions
-- NEVER close or modify existing GitHub issues — only create new ones
+- NEVER close existing GitHub issues or edit their titles/bodies — only create new issues OR add comments
+- MAY add comments to existing open issues as part of Step 2.5 dedup (the only sanctioned modification)
+- MUST run Step 2.5 GitHub dedup pre-flight check before every `gh issue create` — NEVER skip
 - MUST use CLI commands exclusively — NEVER query the database directly
 - MUST be concise in issue titles — they should be scannable
 - MUST group related errors into a single issue when they share the same root cause

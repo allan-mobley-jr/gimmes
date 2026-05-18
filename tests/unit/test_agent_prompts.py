@@ -14,6 +14,7 @@ AGENTS_DIR = Path(__file__).resolve().parents[2] / ".claude" / "agents"
 CADDIE_MASTER = AGENTS_DIR / "caddie-master.md"
 CADDIE = AGENTS_DIR / "caddie.md"
 MONITOR = AGENTS_DIR / "monitor.md"
+GROUNDSKEEPER = AGENTS_DIR / "groundskeeper.md"
 
 
 @pytest.fixture(scope="module")
@@ -29,6 +30,11 @@ def caddie_text() -> str:
 @pytest.fixture(scope="module")
 def monitor_text() -> str:
     return MONITOR.read_text()
+
+
+@pytest.fixture(scope="module")
+def groundskeeper_text() -> str:
+    return GROUNDSKEEPER.read_text()
 
 
 def test_caddie_master_reads_cm_min_edge_after_fees(caddie_master_text: str) -> None:
@@ -389,4 +395,376 @@ def test_monitor_stop_loss_flag_carries_thesis_and_time(
         "Stop-loss bullet must instruct Monitor to use the exact"
         " spelling `Stop-loss breach` for the Trigger value, else step"
         " 4c's literal lockout match can miss case/spacing variants."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Groundskeeper GitHub dedup pre-flight (#600)
+# ---------------------------------------------------------------------------
+
+
+def test_groundskeeper_has_github_dedup_preflight(
+    groundskeeper_text: str,
+) -> None:
+    # Without the pre-flight, Groundskeeper re-files the same
+    # (error_code, component) pattern every time new rows trip the
+    # threshold — the #597 → #598 → #599 cascade on 2026-05-12.
+    assert "Step 2.5" in groundskeeper_text, (
+        "groundskeeper.md must contain a 'Step 2.5' GitHub dedup"
+        " pre-flight section between Step 2 and Step 3 (#600)."
+    )
+    assert "gh issue list --state all --label bug --search" in groundskeeper_text, (
+        "Step 2.5 must use `gh issue list --state all --label bug"
+        " --search ...` to find both open and closed matching issues."
+    )
+    # JSON fields: must request createdAt (for OPEN selection rule),
+    # url (for resolve-error sync), closedAt (for CLOSED branches).
+    # Missing any of these makes a downstream branch unimplementable.
+    for field in ("number", "title", "state", "createdAt", "closedAt", "url"):
+        assert field in groundskeeper_text, (
+            f"Step 2.5 --json must include `{field}` field — without"
+            f" it, the agent can't apply a downstream branch correctly."
+        )
+    assert "(error_code, component)" in groundskeeper_text, (
+        "Step 2.5 must name the dedup key as the tuple"
+        " `(error_code, component)`, not error_code alone or category"
+        " alone."
+    )
+
+
+def test_groundskeeper_dedup_branches_all_three_states(
+    groundskeeper_text: str,
+) -> None:
+    # The Step 2.5 block must explicitly handle all three branches:
+    # OPEN match → comment, CLOSED-recent → suppress, CLOSED-stale →
+    # file new with citation. Scope assertions to the Step 2.5 block
+    # so a future edit can't pass vacuously by mentioning these
+    # keywords in an unrelated section.
+    import re
+
+    block_match = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    )
+    assert block_match is not None, (
+        "Step 2.5 section must exist as a level-3 heading between"
+        " other level-3 headings or before the next level-2 heading."
+    )
+    block = block_match.group(0)
+
+    assert "state: OPEN" in block and "gh issue comment" in block, (
+        "OPEN-match branch must instruct Groundskeeper to comment on"
+        " the existing issue rather than file a new one."
+    )
+    assert "state: CLOSED" in block and "within last 24h" in block, (
+        "CLOSED-within-24h branch must suppress (allow fix to"
+        " propagate)."
+    )
+    assert "older than 24h" in block and "cooldown" in block, (
+        "CLOSED-older-than-24h branch must file new with cooldown"
+        " framing so recurrence after fix is operationally"
+        " distinguishable from initial discovery."
+    )
+
+
+def test_groundskeeper_forbids_dedup_on_error_code_alone(
+    groundskeeper_text: str,
+) -> None:
+    # error_code alone over-suppresses unrelated components (e.g.,
+    # `position_not_found` from cli.position-context vs from the
+    # autonomous-loop order path are different bugs but share the
+    # error_code). Tuple-keyed dedup is load-bearing.
+    assert "NEVER dedup on `error_code` alone" in groundskeeper_text, (
+        "Step 2.5 must explicitly forbid error_code-alone dedup."
+    )
+
+
+def test_groundskeeper_rules_pin_preflight_requirement(
+    groundskeeper_text: str,
+) -> None:
+    # If the Rules section doesn't pin the requirement, a future edit
+    # could quietly drop the Step 2.5 invocation from the Step 3 flow
+    # while leaving the Step 2.5 description intact — silently
+    # reverting #600. Scope to the Rules block so we catch removals
+    # from there even if the phrase appears elsewhere in the prompt.
+    import re
+
+    rules_block = re.search(
+        r"## Rules\s*\n(.*?)(?=\n## |\Z)",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    )
+    assert rules_block is not None, (
+        "groundskeeper.md must contain a `## Rules` section."
+    )
+    rules_body = rules_block.group(1)
+    assert re.search(
+        r"MUST run Step 2\.5.*before every `gh issue create`",
+        rules_body,
+    ), (
+        "Rules section must contain a 'MUST run Step 2.5 ... before"
+        " every gh issue create' line to enforce the pre-flight check."
+    )
+
+
+def test_groundskeeper_permits_commenting_on_existing_issues(
+    groundskeeper_text: str,
+) -> None:
+    # The old rule "NEVER close or modify existing GitHub issues" was
+    # too broad — it forbade the Step 2.5 commenting path. The new
+    # rule must explicitly permit comments as the only sanctioned
+    # modification. Scope to the Rules block.
+    import re
+
+    rules_block = re.search(
+        r"## Rules\s*\n(.*?)(?=\n## |\Z)",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    )
+    assert rules_block is not None, (
+        "groundskeeper.md must contain a `## Rules` section."
+    )
+    rules_body = rules_block.group(1)
+    assert "MAY add comments to existing open issues" in rules_body, (
+        "Rules section must permit commenting on open issues as the"
+        " only sanctioned modification (#600 Step 2.5 enforcement)."
+    )
+
+
+def test_groundskeeper_search_query_uses_quoted_terms(
+    groundskeeper_text: str,
+) -> None:
+    # GitHub search tokenizes on `_`, `-`, `.` — unquoted error_codes
+    # like `position_not_found` split into substring tokens and
+    # false-match unrelated issues. The search MUST use quoted terms
+    # restricted to `in:title` to suppress this fuzz.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    # ERROR_CODE lives in the title (Step 3 title template), COMPONENT
+    # lives in the body. Both must be quoted so GitHub search doesn't
+    # tokenize on `_`/`-`/`.`.
+    assert '\'in:title "ERROR_CODE" in:body "COMPONENT"\'' in block, (
+        "Step 2.5 search must use quoted terms with `in:title` for"
+        " ERROR_CODE and `in:body` for COMPONENT — the title template"
+        " puts the error_code in the title and the component in the"
+        " body, so the search needs both scopes."
+    )
+
+
+def test_groundskeeper_selection_rule_prefers_open_over_closed(
+    groundskeeper_text: str,
+) -> None:
+    # If a stale CLOSED match is newer than an OPEN match, the agent
+    # must still pick the OPEN one (and comment), not the CLOSED one
+    # (and re-file). Without this rule, a reopen-then-close history
+    # silently breaks the dedup.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "Match selection rule" in block, (
+        "Step 2.5 must define a 'Match selection rule' for the"
+        " multiple-match case."
+    )
+    assert (
+        "ANY match has `state: OPEN`" in block
+        and "take the most recently-created OPEN match" in block
+    ), (
+        "Selection rule must give OPEN matches priority over CLOSED"
+        " regardless of which was more recently created/closed."
+    )
+
+
+def test_groundskeeper_open_match_resolves_before_commenting(
+    groundskeeper_text: str,
+) -> None:
+    # If `gh issue comment` runs before `gimmes resolve-error` and the
+    # resolve fails, the next cycle re-trips the threshold (because
+    # the row is still unresolved locally), finds the same open
+    # issue, and posts a duplicate comment. Idempotency requires
+    # resolve-error FIRST, then comment only after success.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "FIRST run `gimmes resolve-error" in block, (
+        "OPEN-match branch must run `gimmes resolve-error` FIRST"
+        " before posting the comment, so the local field is synced"
+        " before the comment lands."
+    )
+    assert (
+        "SKIP the comment for that row" in block
+        or "never comment without successful resolve" in block
+    ), (
+        "OPEN-match branch must explicitly skip the comment if"
+        " resolve-error fails — otherwise the next cycle re-comments"
+        " indefinitely."
+    )
+
+
+def test_groundskeeper_closed_recency_cap_at_30_days(
+    groundskeeper_text: str,
+) -> None:
+    # Without a recency cap, the "CLOSED older than 24h" branch fires
+    # on months-old unrelated issues that happen to token-match. New
+    # issue body would cite a stale unrelated issue as "previously
+    # resolved" — misleading audit trail. Cap at 30 days.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "older than 30 days" in block, (
+        "Step 2.5 must define a stale-CLOSED branch (older than 30"
+        " days) that treats the match as no-match — otherwise stale"
+        " unrelated issues get cited as 'previously resolved'."
+    )
+
+
+def test_groundskeeper_critical_handling_preserves_safety_rule(
+    groundskeeper_text: str,
+) -> None:
+    # Step 2's hard rule says critical + risk_breach MUST file in the
+    # current cycle. The CLOSED-within-24h suppress branch would
+    # violate that for recurring critical incidents. Step 2.5 must
+    # explicitly handle critical/risk_breach: comment-on-existing-
+    # OPEN to avoid duplicates, but always file when CLOSED (any
+    # age) — never suppress.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "CRITICAL handling" in block, (
+        "Step 2.5 must contain a 'CRITICAL handling' block that"
+        " preserves the file-in-current-cycle safety rule for"
+        " critical/risk_breach."
+    )
+    assert "critical" in block.lower() and "risk_breach" in block, (
+        "CRITICAL handling must name both `critical` severity and"
+        " `risk_breach` category so the safety rule can't be evaded."
+    )
+    assert "never suppress a fresh critical/risk_breach" in block, (
+        "CRITICAL handling must explicitly forbid suppressing fresh"
+        " critical/risk_breach — closing a prior issue should not"
+        " allow a 24h suppression window on the next critical."
+    )
+
+
+def test_groundskeeper_fail_open_behavior_pinned(
+    groundskeeper_text: str,
+) -> None:
+    # The fail-open posture (file possible duplicate on `gh issue
+    # list` failure rather than silently suppress) is load-bearing.
+    # A future edit changing it to fail-closed would silently drop
+    # escalations during GitHub outages.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "fail-open" in block, (
+        "Step 2.5 must explicitly name the fail-open posture so a"
+        " future edit can't quietly flip to fail-closed."
+    )
+    assert (
+        "proceed to Step 3" in block or "file a possible duplicate" in block.lower()
+    ), (
+        "Fail-open behavior must instruct the agent to proceed to"
+        " Step 3 (file new) when `gh issue list` fails — silent"
+        " suppression is worse than possible-duplicate."
+    )
+
+
+def test_groundskeeper_title_template_includes_error_code(
+    groundskeeper_text: str,
+) -> None:
+    # Step 2.5's `in:title "ERROR_CODE"` search relies on the title
+    # actually carrying the error code. Step 3's title template must
+    # match the exact form `[SEVERITY] Error: ERROR_CODE — ...` so
+    # the literal-substring search hits.
+    import re
+
+    # Pin the full title-template shape so a future edit that
+    # restructures the title (e.g. "Error in COMPONENT: ERROR_CODE")
+    # but keeps the ERROR_CODE substring somewhere doesn't pass
+    # vacuously.
+    assert re.search(
+        r"\[SEVERITY\] Error: ERROR_CODE",
+        groundskeeper_text,
+    ), (
+        "Step 3 issue-title template must use the exact form"
+        " `[SEVERITY] Error: ERROR_CODE — ...` so Step 2.5's literal"
+        " `in:title \"ERROR_CODE\"` search can match"
+        " Groundskeeper-filed issues."
+    )
+
+
+def test_groundskeeper_critical_open_match_comments_not_files(
+    groundskeeper_text: str,
+) -> None:
+    # Without this rule, a sustained risk_breach over multiple cycles
+    # would re-file every cycle — recreating the #597 → #598 → #599
+    # pattern scoped to criticals. Critical+OPEN must comment, not
+    # file new.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    # Must explicitly cover the "critical + matching issue OPEN" case
+    # and route it to the OPEN-match comment branch.
+    assert "matching issue is OPEN" in block and "comment on it" in block, (
+        "CRITICAL handling must route critical/risk_breach with an"
+        " OPEN matching issue to the comment branch, not to file-new"
+        " — otherwise sustained critical incidents spawn duplicates."
+    )
+
+
+def test_groundskeeper_comment_failure_handling_pinned(
+    groundskeeper_text: str,
+) -> None:
+    # The "rows stay resolved + log phase=warn" comment-failure
+    # handling prevents re-comment loops AND prevents silent loss of
+    # the recurrence notification by surfacing it to operator audit.
+    # Drop either half and the failure mode reappears.
+    import re
+
+    block = re.search(
+        r"### Step 2\.5:.*?(?=\n### |\n## )",
+        groundskeeper_text,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "If the comment fails after the resolves succeeded" in block, (
+        "Step 2.5 must explicitly handle the case where comment fails"
+        " after resolves succeeded — without it, the recurrence is"
+        " silently dropped."
+    )
+    assert "phase=warn" in block, (
+        "Comment-failure handling must log to activity_log with"
+        " `phase=warn` so operators can audit unfiled recurrences."
+    )
+    assert "operator audit required" in block, (
+        "Comment-failure handling must surface the audit requirement"
+        " in the warn message itself."
     )
