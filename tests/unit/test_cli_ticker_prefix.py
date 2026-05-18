@@ -159,6 +159,67 @@ class TestPositionNotes:
         assert "Ambiguous ticker prefix 'KXCPI'" in result.output
         assert "Specify a longer prefix" in result.output
 
+    def test_resolves_closed_position_ticker(self, seeded_db: Path) -> None:
+        # The seeded fixture inserts trades for KXCPI-26APR-T0.5,
+        # KXCPI-26MAY-T0.6, and KXJOBLESSCLAIMS-26MAY14-210000.
+        # Insert a position note for a CLOSED ticker (one that exists
+        # in trades but NOT in open positions) and verify position-notes
+        # can still surface it. Required for #586's Step 4c "Stop-loss
+        # reopen lockout" — after Closer closes a position, the ticker
+        # drops out of `positions` but its decision notes must remain
+        # reachable so Caddie Master can check the lockout.
+        from gimmes.models.trade import TradeDecision
+        from gimmes.store.queries import insert_position_note, insert_trade
+
+        async def _seed_closed_note() -> None:
+            db = Database(seeded_db)
+            await db.connect()
+            try:
+                # Insert a close trade for a ticker NOT in open positions.
+                closed_ticker = "KXADP-26APR-T125000"
+                await insert_trade(
+                    db,
+                    TradeDecision(
+                        ticker=closed_ticker,
+                        action=TradeDecision.Action.CLOSE,
+                        side="no",
+                        count=100,
+                        price=0.85,
+                        model_probability=0.85,
+                        gimme_score=0,
+                        edge=0.0,
+                        kelly_fraction=0.0,
+                        rationale="closed",
+                        agent="closer",
+                        order_id="o-closed",
+                    ),
+                )
+                await insert_position_note(
+                    db,
+                    ticker=closed_ticker,
+                    cycle=1199,
+                    agent="caddie-master",
+                    note_type="decision",
+                    body=(
+                        "Decision: CLOSE.\n"
+                        "Reasoning: Stop-loss BREACHED.\n"
+                        "Trigger: Stop-loss breach"
+                    ),
+                )
+            finally:
+                await db.close()
+        asyncio.run(_seed_closed_note())
+
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)):
+            result = runner.invoke(
+                app, ["position-notes", "KXADP-26APR-T125000"],
+            )
+        assert result.exit_code == 0, result.output
+        # The CLOSE decision note must be reachable so the lockout
+        # check actually has something to match against.
+        assert "Trigger: Stop-loss breach" in result.output
+        assert "Decision: CLOSE" in result.output
+
 
 class TestTradesCommand:
     # ``gimmes trades`` opens ``Database()`` with no path arg, so it

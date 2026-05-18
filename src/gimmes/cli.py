@@ -2171,8 +2171,15 @@ def position_notes(
         from gimmes.store.ticker_resolver import resolve_ticker
 
         async with Database(config.db_path) as db:
+            # Resolve against `known_markets` (positions ∪ candidates
+            # ∪ trades) rather than `open_positions` so notes for
+            # CLOSED positions are still reachable. Required for
+            # Caddie Master's Step 4c "Stop-loss reopen lockout" rule
+            # (#586) — after a stop-loss CLOSE the ticker drops out of
+            # open_positions, so a narrower resolver would silently
+            # hide the decision-note lockout signal.
             matches = await resolve_ticker(
-                db, ticker, source="open_positions",
+                db, ticker, source="known_markets",
             )
             if not matches:
                 console.print(
