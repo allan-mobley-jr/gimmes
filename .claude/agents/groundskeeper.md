@@ -46,8 +46,41 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 
 **Suppress (MUST NOT escalate):**
 - `debug` or `info` severity errors
-- Errors already linked to an **open** GitHub issue (non-empty `github_issue_url`). If the linked issue is closed, treat the error as unlinked and re-apply escalation rules.
+- Errors whose `(error_code, component)` tuple matches an open GitHub issue filed by Groundskeeper (see Step 2.5 — query GitHub directly, do NOT rely on the local `github_issue_url` field alone, which lags newly-arriving rows).
 - Transient rate limiting (HTTP 429 / `KALSHI_429`) unless 3+ occurrences in 1 hour
+
+### Step 2.5: GitHub dedup pre-flight check (REQUIRED before Step 3)
+
+For each error group surviving Step 2, query GitHub for an existing issue with the same `(error_code, component)` tuple BEFORE filing. This closes the recurrence-noise pattern documented in #600, where the same `(error_code, component)` produced #597 → #598 → #599 in <4 hours because the local `github_issue_url` field was only set after filing and newly-arriving rows tripped the threshold in isolation.
+
+```bash
+gh issue list --state all --label bug --search 'in:title "ERROR_CODE" "COMPONENT"' --json number,title,state,closedAt --limit 10
+```
+
+Note the **quoted** terms in the search — GitHub search tokenizes on `_`/`-`/`.`, so unquoted `position_not_found` would split into substring tokens and false-match unrelated issues. The `in:title` scope restricts matching to the title field (where Groundskeeper writes the error_code) rather than body — body matching pulls in noise from unrelated issues that incidentally reference the tokens.
+
+**Match selection rule (REQUIRED).** When the query returns multiple matches:
+1. If ANY match has `state: OPEN`, take the most recently-created OPEN match. Skip the CLOSED branches.
+2. If ALL matches are `state: CLOSED`, take the one with the most recent `closedAt`.
+3. If `closedAt` is null on a CLOSED match (rare gh edge case), treat as stale (file new with a note that closedAt was missing).
+
+Branch on the selected match:
+
+- **No match** → proceed to Step 3 (file new issue as before).
+- **Match with `state: OPEN`** → MUST NOT file a new issue. In this order:
+  1. FIRST run `gimmes resolve-error ERROR_ID --issue-url EXISTING_URL` for EACH new error row, so the local `github_issue_url` field is synced BEFORE the comment lands. If resolve-error fails, note the failure and SKIP the comment for that row — never comment without successful resolve, or the next cycle will re-comment indefinitely.
+  2. After all rows are successfully resolved, post ONE consolidated comment on the existing open issue:
+     ```bash
+     gh issue comment NUMBER --body "Recurred at TIMESTAMP — error_log row ID(s) [IDS] — [N] occurrences in last 24h for (ERROR_CODE, COMPONENT)."
+     ```
+  This ordering provides idempotency: a re-running Groundskeeper sees the rows are already resolved (`github_issue_url` populated) and Step 2's existing suppress-list filter catches them BEFORE they reach Step 2.5 — no duplicate comment.
+- **Match with `state: CLOSED` AND `closedAt` within last 24h** → suppress. Resolve new rows against the closed issue URL. Rationale: allow the fix to propagate before re-escalating; recurrence within 24h of close usually means the agent context still holds the broken state.
+- **Match with `state: CLOSED` AND `closedAt` older than 24h BUT within last 30 days** → file a new issue (Step 3) whose body cites the prior closed issue: "Pattern previously resolved in #N closed at CLOSED_AT — recurrence after 24h cooldown."
+- **Match with `state: CLOSED` AND `closedAt` older than 30 days** → treat as no match; do NOT cite (the prior issue is too stale to be operationally relevant). Proceed to Step 3 with no citation.
+
+The tuple `(error_code, component)` is the dedup key. NEVER dedup on `error_code` alone (over-suppresses unrelated components) or `category` alone (too broad).
+
+If the `gh issue list` query fails, note the failure in your output and proceed to Step 3 (fail-open — better to file a possible duplicate than miss a recurring pattern silently). Operators relying on this dedup should monitor `gh auth status` and GitHub API rate limits; sustained fail-open will recreate the #600 pattern.
 
 ### Step 3: File GitHub Issues
 
@@ -143,7 +176,9 @@ Substitute actual values: total unresolved errors reviewed and number of GitHub 
 
 - NEVER modify code — you review and escalate only
 - NEVER suppress `critical` or `risk_breach` errors — no exceptions
-- NEVER close or modify existing GitHub issues — only create new ones
+- NEVER close existing GitHub issues or edit their titles/bodies — only create new issues OR add comments
+- MAY add comments to existing open issues as part of Step 2.5 dedup (the only sanctioned modification)
+- MUST run Step 2.5 GitHub dedup pre-flight check before every `gh issue create` — NEVER skip
 - MUST use CLI commands exclusively — NEVER query the database directly
 - MUST be concise in issue titles — they should be scannable
 - MUST group related errors into a single issue when they share the same root cause
