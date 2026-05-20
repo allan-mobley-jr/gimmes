@@ -50,33 +50,45 @@ A trigger condition means Caddie Master should look at this position. It does NO
 
 After reading `position-context` and completing your analysis, write a **delta observation** — what changed since the prior observation, not a full re-assessment. If no prior observation exists (first cycle for this position), write a full observation.
 
+Use the `--body-file` variant via a single-quoted heredoc so dollar-prefixed prices like `$0.41` survive verbatim (#589). The quoted delimiter `<<'GIMMES_EOF'` is load-bearing — it suppresses ALL parameter expansion inside the body:
+
 ```bash
-gimmes position-note TICKER \
-  --cycle $GIMMES_CYCLE \
-  --agent monitor \
-  --type observation \
-  --body "Delta since cycle [N from prior observation note]:
+BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+cat > "$BODY_FILE" <<'GIMMES_EOF'
+Delta since cycle [N from prior observation note]:
 Price: $X.XX (was $X.XX, moved +/-Npp since last observation).
 News delta: [new developments since last observation, or 'No new developments'].
 Thesis delta: [any change in thesis assessment, or 'Unchanged'].
 Trigger conditions: [NEW triggers only — not triggers already flagged and decided on].
-Overall: [Material change / No material change]."
+Overall: [Material change / No material change].
+GIMMES_EOF
+gimmes position-note TICKER \
+  --cycle $GIMMES_CYCLE \
+  --agent monitor \
+  --type observation \
+  --body-file "$BODY_FILE"
+rm -f "$BODY_FILE"
 ```
 
-If the command fails, note the failure in your output and continue. Do not retry.
+If the command fails, note the failure in your output and continue. Do not retry. If `mktemp` or the heredoc write itself fails, treat as a logging failure and skip — never fall back to inline `--body`.
 
 ## Writing Thesis Evolution Notes (when assessment has changed)
 
-After writing the delta observation, compare your current thesis assessment against the most recent `context` note in the position history. If your assessment has changed (strengthened, weakened, or shifted), write a context note:
+After writing the delta observation, compare your current thesis assessment against the most recent `context` note in the position history. If your assessment has changed (strengthened, weakened, or shifted), write a context note (same `--body-file` heredoc pattern, #589):
 
 ```bash
+BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+cat > "$BODY_FILE" <<'GIMMES_EOF'
+Thesis evolution: [strengthened/weakened] since cycle [N].
+What changed: [specific data point or development].
+Current thesis confidence: [high/medium/low].
+GIMMES_EOF
 gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
   --agent monitor \
   --type context \
-  --body "Thesis evolution: [strengthened/weakened] since cycle [N].
-What changed: [specific data point or development].
-Current thesis confidence: [high/medium/low]."
+  --body-file "$BODY_FILE"
+rm -f "$BODY_FILE"
 ```
 
 Do NOT write a context note if the assessment is unchanged. Track inflection points, not steady state. If the command fails, note the failure and continue.
@@ -103,21 +115,26 @@ When a trigger condition is met, write a flag note in addition to the observatio
 | `Price:` | `Price movement` (adverse only), `Stop-loss breach` | `entry $X -> current $Y (D Npp)` |
 | `TimeToResolution:` | `Stop-loss breach` | integer hours followed by `h` (e.g. `18h`, `2h`). No fractions, no `1d 2h`, no other units. Caddie Master compares this against `< 24` numerically. |
 
-**Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above):
+**Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above). The quoted heredoc means dollar-prefixed prices survive literally — no backslash escapes needed (#589):
 
 ```bash
-gimmes position-note TICKER \
-  --cycle $GIMMES_CYCLE \
-  --agent monitor \
-  --type flag \
-  --body "Trigger: [exact name from the trigger-name vocabulary above].
+BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+cat > "$BODY_FILE" <<'GIMMES_EOF'
+Trigger: [exact name from the trigger-name vocabulary above].
 What changed: [specific price, news, or data point].
 Original thesis said: [quote the relevant portion of the thesis].
 Assessment: [Is this new information the thesis did not account for? Or is this the same data viewed differently? Be precise and honest].
 Thesis: [intact or degraded].
-Price: [entry \$X -> current \$Y (D Npp)].
+Price: [entry $X -> current $Y (D Npp)].
 TimeToResolution: [Nh].
-For Caddie Master: [factual summary of the situation — no recommendation]."
+For Caddie Master: [factual summary of the situation — no recommendation].
+GIMMES_EOF
+gimmes position-note TICKER \
+  --cycle $GIMMES_CYCLE \
+  --agent monitor \
+  --type flag \
+  --body-file "$BODY_FILE"
+rm -f "$BODY_FILE"
 ```
 
 Do NOT write: "I recommend closing this position." Do NOT write: "This position should be held." Write what you observed and why you are flagging it. Caddie Master decides what to do.

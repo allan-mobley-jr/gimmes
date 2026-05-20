@@ -64,6 +64,71 @@ def _extract_ticker_from_url(exc) -> str | None:  # type: ignore[no-untyped-def]
 _AMBIGUOUS_MATCH_DISPLAY_LIMIT = 20
 
 
+_MAX_PROSE_BYTES = 64 * 1024
+
+
+def _read_prose_file(path: Path, option_name: str) -> str:
+    """Read prose content from a file for --memo-file/--body-file/--rationale-file.
+
+    Bypasses argv entirely so shell expansion of ``$0``, ``$VAR``, backticks,
+    etc. cannot corrupt the stored text (#589). Validates path, size (max
+    64 KiB), and UTF-8 encoding; strips one trailing newline so heredoc-fed
+    files round-trip cleanly. Empty content is treated as a contract
+    violation since the file variant means "I have content to write."
+    """
+    if not path.exists():
+        console.print(f"[red]{option_name}: file not found: {path}[/red]")
+        raise typer.Exit(1)
+    if path.is_dir():
+        console.print(f"[red]{option_name}: path is a directory: {path}[/red]")
+        raise typer.Exit(1)
+    size = path.stat().st_size
+    if size > _MAX_PROSE_BYTES:
+        console.print(
+            f"[red]{option_name}: file too large ({size} bytes,"
+            f" max {_MAX_PROSE_BYTES})[/red]"
+        )
+        raise typer.Exit(1)
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        console.print(f"[red]{option_name}: file is not valid UTF-8: {path}[/red]")
+        raise typer.Exit(1)
+    if content.endswith("\n"):
+        content = content[:-1]
+    if not content.strip():
+        console.print(f"[red]{option_name}: file is empty[/red]")
+        raise typer.Exit(1)
+    return content
+
+
+def _resolve_prose_arg(
+    inline: str,
+    file_path: Path | None,
+    inline_name: str,
+    file_name: str,
+) -> str:
+    """Mutex-resolve inline string vs file-path variants for prose CLI args.
+
+    Both being set is a hard error rather than silent precedence — for an
+    autonomous agent emitting both simultaneously, surfacing the conflict to
+    Groundskeeper is more useful than masking it. Returns the resolved value
+    (may be empty if neither variant was supplied; callers must enforce any
+    "required" semantics themselves).
+    """
+    has_file = file_path is not None
+    has_inline = bool(inline)
+    if has_file and has_inline:
+        console.print(
+            f"[red]{inline_name} and {file_name} are mutually exclusive;"
+            f" specify only one[/red]"
+        )
+        raise typer.Exit(1)
+    if has_file:
+        return _read_prose_file(file_path, file_name)
+    return inline
+
+
 async def _log_cli_error(db, entry) -> None:  # type: ignore[no-untyped-def]
     """Best-effort write to error_log; never raises into the caller.
 
@@ -1873,10 +1938,22 @@ def log_trade(
     prob: float | None = typer.Option(None, "--prob", "-p"),
     score_val: float = typer.Option(0, "--score"),
     rationale: str = typer.Option("", "--rationale", "-r"),
+    rationale_file: Path | None = typer.Option(
+        None, "--rationale-file",
+        help=(
+            "Read rationale from a file (avoids shell expansion of $0, $VAR,"
+            " backticks). Mutually exclusive with --rationale. Use for any"
+            " prose containing dollar amounts or shell-special characters"
+            " (#589)."
+        ),
+    ),
     agent: str = typer.Option("manual", "--agent"),
 ) -> None:
     """Log a trade decision to the database."""
     config = load_config()
+    rationale_val = _resolve_prose_arg(
+        rationale, rationale_file, "--rationale", "--rationale-file",
+    )
 
     async def _log() -> None:
         from gimmes.models.trade import TradeDecision
@@ -1895,7 +1972,7 @@ def log_trade(
             model_probability=0.0 if prob is None else prob,
             gimme_score=score_val,
             edge=(prob - eff) if prob is not None else 0.0,
-            rationale=rationale,
+            rationale=rationale_val,
             agent=agent,
         )
 
@@ -1914,6 +1991,14 @@ def log_candidate(
     prob: float = typer.Option(0, "--prob", "-p", help="Model probability estimate"),
     score_val: float = typer.Option(0, "--score", help="GimmeScore (0-100)"),
     memo: str = typer.Option("", "--memo", "-m", help="Research memo summary"),
+    memo_file: Path | None = typer.Option(
+        None, "--memo-file",
+        help=(
+            "Read memo from a file (avoids shell expansion of $0, $VAR,"
+            " backticks). Mutually exclusive with --memo. Use for any prose"
+            " containing dollar amounts or shell-special characters (#589)."
+        ),
+    ),
     edge_size: float = typer.Option(0, "--edge-size", help="Edge size score"),
     signal_strength: float = typer.Option(0, "--signal-strength", help="Signal strength score"),
     liquidity_depth: float = typer.Option(0, "--liquidity-depth", help="Liquidity depth score"),
@@ -1929,6 +2014,7 @@ def log_candidate(
 ) -> None:
     """Log a scanned candidate to the candidates table."""
     config = load_config()
+    memo_val = _resolve_prose_arg(memo, memo_file, "--memo", "--memo-file")
 
     async def _log() -> None:
         from gimmes.store.database import Database
@@ -1940,7 +2026,7 @@ def log_candidate(
 
         async with Database(config.db_path) as db:
             row_id = await _insert(
-                db, ticker, title, price_val, prob, edge, score_val, memo,
+                db, ticker, title, price_val, prob, edge, score_val, memo_val,
                 edge_size_score=edge_size,
                 signal_strength_score=signal_strength,
                 liquidity_depth_score=liquidity_depth,
@@ -2130,12 +2216,25 @@ def position_note(
         "observation", "--type", "-t",
         help="Note type: observation, flag, decision, context",
     ),
-    body: str = typer.Option(..., "--body", "-b", help="Note content"),
+    body: str = typer.Option("", "--body", "-b", help="Note content"),
+    body_file: Path | None = typer.Option(
+        None, "--body-file",
+        help=(
+            "Read body from a file (avoids shell expansion of $0, $VAR,"
+            " backticks). Mutually exclusive with --body. Use for any prose"
+            " containing dollar amounts or shell-special characters (#589)."
+        ),
+    ),
 ) -> None:
     """Append a note to the position journal."""
     valid_types = ("observation", "flag", "decision", "context")
     if note_type not in valid_types:
         console.print(f"[red]Invalid type '{note_type}': must be one of {valid_types}[/red]")
+        raise typer.Exit(1)
+
+    body_val = _resolve_prose_arg(body, body_file, "--body", "--body-file")
+    if not body_val.strip():
+        console.print("[red]--body or --body-file is required[/red]")
         raise typer.Exit(1)
 
     config = load_config()
@@ -2147,7 +2246,7 @@ def position_note(
         async with Database(config.db_path) as db:
             row_id = await insert_position_note(
                 db, ticker=ticker, cycle=cycle, agent=agent,
-                note_type=note_type, body=body,
+                note_type=note_type, body=body_val,
             )
         console.print(
             f"[green]Logged position note #{row_id}"

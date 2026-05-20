@@ -42,12 +42,17 @@ Preferred (not required):
 
 ## Skip Logging
 
-**MUST log every skipped candidate** — every candidate evaluated but not shortlisted MUST get a skip log entry. Zero exceptions. Candidates with a quick score below the configured `gimme_threshold` (from step 0) MUST be logged as skips:
+**MUST log every skipped candidate** — every candidate evaluated but not shortlisted MUST get a skip log entry. Zero exceptions. Candidates with a quick score below the configured `gimme_threshold` (from step 0) MUST be logged as skips. Use the `--rationale-file` heredoc pattern so prose containing dollar amounts or `$VAR` references stays intact (#589):
 
 ```bash
+RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+reason for skipping
+GIMMES_EOF
 gimmes log-trade TICKER --action skip \
   --price 0.XX --prob 0.XX --score NN \
-  --rationale "reason for skipping" --agent scout
+  --rationale-file "$RATIONALE_FILE" --agent scout
+rm -f "$RATIONALE_FILE"
 ```
 
 MUST include `--price` (market price), `--prob` (estimated probability if available, else 0), and `--score` (quick score). This data feeds the Missed Opportunity Audit analysis.

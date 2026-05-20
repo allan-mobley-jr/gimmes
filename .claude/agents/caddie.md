@@ -224,25 +224,36 @@ MUST produce this exact format for each candidate:
 
 ## Logging
 
-For EVERY candidate researched (PROCEED, PASS, and NEEDS MORE RESEARCH), MUST log to the candidates table:
+For EVERY candidate researched (PROCEED, PASS, and NEEDS MORE RESEARCH), MUST log to the candidates table. **Prose arguments must use the `--memo-file` variant via a quoted heredoc** — inline `--memo "..."` exposes dollar-prefixed prices (`$0.41`) and `$VAR` references to shell expansion (#589). The single-quoted heredoc delimiter (`<<'GIMMES_EOF'`) is load-bearing: it suppresses ALL parameter expansion inside the body.
 
 ```bash
+MEMO_FILE=$(mktemp -t gimmes-memo.XXXXXX)
+cat > "$MEMO_FILE" <<'GIMMES_EOF'
+Brief research summary. Prose may contain $0.41, $VAR, `cmd`, or any
+other shell-special characters — none are expanded inside this heredoc.
+GIMMES_EOF
 gimmes log-candidate TICKER \
   --title "Event title" --price 0.XX --prob 0.XX --score NN \
-  --memo "Brief research summary" \
+  --memo-file "$MEMO_FILE" \
   --edge-size NN --signal-strength NN --liquidity-depth NN \
   --settlement-clarity NN --time-to-resolution NN \
   --recommendation "proceed|pass|needs_more_research"
+rm -f "$MEMO_FILE"
 ```
 
-If a `log-candidate` command fails, note the failure in your output and continue. Do not retry.
+If a `log-candidate` command fails, note the failure in your output and continue. Do not retry. If `mktemp` or the heredoc write itself fails, treat as a logging failure and skip — never fall back to inline `--memo`.
 
-Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip:
+Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip. Use `--rationale-file` for the same reason:
 
 ```bash
+RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+Caddie: [reason]
+GIMMES_EOF
 gimmes log-trade TICKER --action skip \
   --price 0.XX --prob 0.XX --score NN \
-  --rationale "Caddie: [reason]" --agent caddie
+  --rationale-file "$RATIONALE_FILE" --agent caddie
+rm -f "$RATIONALE_FILE"
 ```
 
 If a `log-trade` skip command fails, note the failure in your output and continue. Do not retry failed log commands.
