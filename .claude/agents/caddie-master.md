@@ -133,19 +133,24 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
    Canonical anti-pattern to avoid: KXGDP-26APR30-T2.5 (cycles 1199-1200), where a thesis-intact position was force-closed on a 104%-of-stop-loss breach and re-opened 26 minutes later on the same ticker — a round-trip that realized a \$58 loss plus fees plus worse cost basis.
 
-5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
+5. **Log your decision to the database BEFORE dispatching Closer** (crash-recovery anchor). Use the `--body-file` variant via a single-quoted heredoc so prices like `$0.41` and `$VAR` references in the reasoning survive verbatim (#589). The quoted delimiter `<<'GIMMES_EOF'` is load-bearing — it suppresses ALL parameter expansion inside the body:
    ```bash
+   BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+   cat > "$BODY_FILE" <<'GIMMES_EOF'
+   Decision: [HOLD or CLOSE].
+   Reasoning: [your specific reasoning referencing the original thesis and what Monitor reported].
+   Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?].
+   Re-evaluate if: [for HOLD only — specific condition, e.g. 'price moves another 8pp adverse' or 'after next CPI release Apr 10' or 'thesis-changing news emerges'].
+   Expiry: [for HOLD only — REQUIRED cycle number to reconsider regardless, use current cycle + 10].
+   GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
-     --body "Decision: [HOLD or CLOSE].
-   Reasoning: [your specific reasoning referencing the original thesis and what Monitor reported].
-   Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?].
-   Re-evaluate if: [for HOLD only — specific condition, e.g. 'price moves another 8pp adverse' or 'after next CPI release Apr 10' or 'thesis-changing news emerges'].
-   Expiry: [for HOLD only — REQUIRED cycle number to reconsider regardless, use current cycle + 10]."
+     --body-file "$BODY_FILE"
+   rm -f "$BODY_FILE"
    ```
-   If this command fails, do not proceed with a close — log the failure and move on. For SIZE UP decisions, skip this step — Step 2d has its own decision logging.
+   If this command fails, do not proceed with a close — log the failure and move on. If `mktemp` or the heredoc write itself fails, treat as a logging failure and skip — never fall back to inline `--body`. For SIZE UP decisions, skip this step — Step 2d has its own decision logging.
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
    - Cancel any resting orders first: `gimmes cancel ORDER_ID`
@@ -169,15 +174,20 @@ If Monitor flags a position where the current edge has *increased* since entry (
 
 **Execution flow** (mirrors the CLOSE pattern):
 
-1. **Log decision to the database BEFORE dispatching Closer** (crash-recovery anchor):
+1. **Log decision to the database BEFORE dispatching Closer** (crash-recovery anchor). Use the `--body-file` heredoc pattern so prices and `$VAR` references survive verbatim (#589):
    ```bash
+   BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+   cat > "$BODY_FILE" <<'GIMMES_EOF'
+   Decision: SIZE UP.
+   Reasoning: [specific reasoning referencing original thesis and Monitor's flag].
+   Edge assessment: [entry edge vs current edge].
+   GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
-     --body "Decision: SIZE UP.
-   Reasoning: [specific reasoning referencing original thesis and Monitor's flag].
-   Edge assessment: [entry edge vs current edge]."
+     --body-file "$BODY_FILE"
+   rm -f "$BODY_FILE"
    ```
    If this command fails, do not proceed with the size up — log the failure and move on.
 
@@ -219,11 +229,15 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
 **Time-based expiry (check first):** If the prior research `Scanned` timestamp is more than 48 hours ago, treat the candidate as having no prior research — send to Caddie for fresh evaluation regardless of score. The macro environment may have changed significantly since the original assessment.
 
 1. **No prior research** (no records found, or expired per above) → send to Caddie
-2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip:
+2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip via the `--rationale-file` heredoc pattern (#589):
    ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Cooldown: prior score SCORE (below cutoff), skipping re-research
+   GIMMES_EOF
    gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
-     --rationale "Cooldown: prior score SCORE (below cutoff), skipping re-research" \
-     --agent caddie-master
+     --rationale-file "$RATIONALE_FILE" --agent caddie-master
+   rm -f "$RATIONALE_FILE"
    ```
 3. **Prior score between cooldown_cutoff and (gimme_threshold - 1)** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
 4. **Prior score >= gimme_threshold with open position** (check `gimmes positions` for the ticker) → skip, already traded
@@ -251,10 +265,15 @@ Launch the Caddie agent (`caddie.md`) to:
 4. Produce a GimmeScore and research memo
 5. Recommend PROCEED, PASS, or NEEDS MORE RESEARCH
 
-**Verification:** After the Caddie returns (or fails entirely — treat a crash/timeout as zero candidates completed), verify completeness by checking that every ticker from the Scout's shortlist has a "Logged candidate" confirmation in the Caddie's output. If any tickers are missing, re-dispatch the Caddie for the missing tickers only (maximum 1 re-dispatch). If still missing after the retry, log a skip for each remaining ticker so the decision is auditable:
+**Verification:** After the Caddie returns (or fails entirely — treat a crash/timeout as zero candidates completed), verify completeness by checking that every ticker from the Scout's shortlist has a "Logged candidate" confirmation in the Caddie's output. If any tickers are missing, re-dispatch the Caddie for the missing tickers only (maximum 1 re-dispatch). If still missing after the retry, log a skip for each remaining ticker so the decision is auditable (use the `--rationale-file` heredoc pattern, #589):
 ```bash
+RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+Caddie failed to research after retry
+GIMMES_EOF
 gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
-  --rationale "Caddie failed to research after retry" --agent caddie-master
+  --rationale-file "$RATIONALE_FILE" --agent caddie-master
+rm -f "$RATIONALE_FILE"
 ```
 If a fallback `log-trade` command fails, note the failure in your output and continue. Do not retry failed log commands.
 
@@ -315,36 +334,51 @@ For each PROCEED candidate:
 
    **Cross-threshold consistency (when multiple PROCEED candidates share the same event):** Verify that probability estimates are monotonic — P(metric > low threshold) >= P(metric > high threshold). If probabilities are inconsistent, REJECT ALL candidates from that event and log the inconsistency. When approving multiple thresholds, verify total proposed deployment fits within the event concentration limit (max_event_exposure_pct). Approve only the highest-edge thresholds that fit.
 
-5. **Log the decision BEFORE dispatching Closer** (audit trail):
+5. **Log the decision BEFORE dispatching Closer** (audit trail). Use the `--body-file` heredoc pattern — net-edge citations like "3.2pp" are safe but other prose may contain `$` characters (#589):
    ```bash
-   gimmes position-note TICKER \
-     --cycle $GIMMES_CYCLE \
-     --agent caddie-master \
-     --type decision \
-     --body "Decision: APPROVE for open.
+   BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+   cat > "$BODY_FILE" <<'GIMMES_EOF'
+   Decision: APPROVE for open.
    Reasoning: [specific reasoning referencing the Caddie's research and your conferral].
    Thesis robustness: [survived or did not survive scrutiny — cite the key exchange].
    Signal independence: [confirmed independent or not — explain].
    Portfolio correlation: [none, or describe overlap with existing positions].
-   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — pass."
-   ```
-   For REJECT decisions:
-   ```bash
+   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — pass.
+   GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
      --agent caddie-master \
      --type decision \
-     --body "Decision: REJECT for open.
+     --body-file "$BODY_FILE"
+   rm -f "$BODY_FILE"
+   ```
+   For REJECT decisions:
+   ```bash
+   BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
+   cat > "$BODY_FILE" <<'GIMMES_EOF'
+   Decision: REJECT for open.
    Reasoning: [specific reasoning — what failed scrutiny].
    Key concern: [the issue that could not be resolved in conferral].
-   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — [pass/fail]."
+   Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — [pass/fail].
+   GIMMES_EOF
+   gimmes position-note TICKER \
+     --cycle $GIMMES_CYCLE \
+     --agent caddie-master \
+     --type decision \
+     --body-file "$BODY_FILE"
+   rm -f "$BODY_FILE"
    ```
-   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with rationale "Decision note failed to write" and move to the next candidate.
+   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate.
 
-6. **Log rejected candidates as skips** so the decision is auditable:
+6. **Log rejected candidates as skips** so the decision is auditable (use the `--rationale-file` heredoc pattern, #589):
    ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Caddie Master review: REJECT — [brief reason]
+   GIMMES_EOF
    gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
-     --rationale "Caddie Master review: REJECT — [brief reason]" --agent caddie-master
+     --rationale-file "$RATIONALE_FILE" --agent caddie-master
+   rm -f "$RATIONALE_FILE"
    ```
    If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
 

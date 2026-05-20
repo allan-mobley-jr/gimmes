@@ -768,3 +768,65 @@ def test_groundskeeper_comment_failure_handling_pinned(
         "Comment-failure handling must surface the audit requirement"
         " in the warn message itself."
     )
+
+
+def test_no_agent_uses_inline_memo_body_rationale_for_prose() -> None:
+    """Drift-guard for #589: agent prompts must use the `--*-file` variant
+    for the three prose-bearing gimmes CLI args (log-candidate --memo,
+    log-trade --rationale, position-note --body). Inline string variants
+    are vulnerable to shell expansion of $0, $VAR, backticks — corrupts
+    stored agent text at storage time.
+
+    Each forbidden pattern requires the gimmes subcommand to appear in
+    the same logical command before the inline arg — that way ``gh issue
+    create --body "..."`` (which writes to GitHub, not the gimmes DB) and
+    doc text that quotes the forbidden form as a warning don't trip the
+    test. Multi-line bash commands with backslash continuation are
+    collapsed to one line before searching.
+    """
+    import re
+
+    # The `[^`\n]{0,400}?` window bounds the match within a single logical
+    # bash command so a `gimmes log-candidate` in one code block can't
+    # falsely pair with a `--memo "..."` later in the file.
+    #
+    # Each forbidden arg is matched by `--<arg>\b(?!-file)` — the negative
+    # lookahead lets `--memo-file` / `--rationale-file` / `--body-file`
+    # through while forbidding bare `--memo` / `--rationale` / `--body` in
+    # any form: double-quoted (`--memo "x"`), single-quoted (`--memo 'x'`),
+    # equals (`--memo=x`), or unquoted (`--memo x`). Single-quoted bash is
+    # technically $-safe, but the file-input variant is the only sanctioned
+    # path — anything else can regress under future quoting refactors.
+    forbidden = [
+        (
+            re.compile(
+                r"gimmes\s+log-candidate\b[^`\n]{0,400}?--memo\b(?!-file)",
+            ),
+            "log-candidate --memo (use --memo-file)",
+        ),
+        (
+            re.compile(
+                r"gimmes\s+log-trade\b[^`\n]{0,400}?--rationale\b(?!-file)",
+            ),
+            "log-trade --rationale (use --rationale-file)",
+        ),
+        (
+            re.compile(
+                r"gimmes\s+position-note\b[^`\n]{0,400}?--body\b(?!-file)",
+            ),
+            "position-note --body (use --body-file)",
+        ),
+    ]
+    offenders: list[str] = []
+    for agent_file in sorted(AGENTS_DIR.glob("*.md")):
+        text = agent_file.read_text()
+        collapsed = re.sub(r"\\\n\s*", " ", text)
+        for pattern, label in forbidden:
+            if pattern.search(collapsed):
+                offenders.append(f"{agent_file.name}: {label}")
+    assert not offenders, (
+        "Inline prose CLI args are vulnerable to shell expansion of $N"
+        " tokens (#589). Use the *-file variant via a single-quoted"
+        " heredoc instead. Offending sites:\n  "
+        + "\n  ".join(offenders)
+    )

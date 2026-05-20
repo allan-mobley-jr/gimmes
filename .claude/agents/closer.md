@@ -21,8 +21,21 @@ For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`
 2. **Size**: `gimmes size TICKER --prob P` — MUST run only after validate passes.
 3. **Order**: `gimmes order TICKER --prob P --yes --agent closer` — MUST run only after steps 1-2 pass.
 4. **Log success**: The order command logs the trade and syncs positions atomically — no separate log-trade needed.
-5. **Log rejection** (if steps 1-2 failed): `gimmes log-trade TICKER --action skip --prob P --score S --rationale "[which check failed and why]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
+5. **Log rejection** (if steps 1-2 failed): use the `--rationale-file` variant — see "Writing rationale prose" below — to avoid shell expansion of `$0`, `$VAR`, backticks in the failure reason (#589):
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   [which check failed and why]
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --prob P --score S --rationale-file "$RATIONALE_FILE" --agent closer
+   rm -f "$RATIONALE_FILE"
+   ```
+   If the command fails, note the failure in your output and continue. Do not retry.
 6. **Log completion** (see Activity Logging below)
+
+## Writing rationale prose — REQUIRED pattern
+
+The `--rationale-file` variant reads prose from a file path, bypassing argv. The single-quoted heredoc delimiter (`<<'GIMMES_EOF'`) is load-bearing — it suppresses ALL parameter expansion inside the body, so `$0.41`, `$VAR`, and backticks survive verbatim. Never fall back to inline `--rationale "..."` for prose that includes captured CLI output, prices, or any text you didn't author yourself. If `mktemp` or the heredoc write fails, treat as a logging failure and skip — never fall back to the inline form.
 
 ## SIZE UP Execution
 
@@ -32,7 +45,15 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 2. **Size**: `gimmes size TICKER --prob P`
 3. **Order**: `gimmes order TICKER --prob P --size-up --yes --agent closer`
 4. **Log success**: The order command logs the trade atomically.
-5. **Log rejection** (if steps 1-2 failed): `gimmes log-trade TICKER --action skip --prob P --score 0 --rationale "SIZE UP rejected: [which check failed]" --agent closer`
+5. **Log rejection** (if steps 1-2 failed): use the `--rationale-file` heredoc pattern (see "Writing rationale prose" above):
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   SIZE UP rejected: [which check failed]
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --prob P --score 0 --rationale-file "$RATIONALE_FILE" --agent closer
+   rm -f "$RATIONALE_FILE"
+   ```
 
 All safety checks except the duplicate position check and position count check are still enforced (SIZE UP adds to an existing position, not a new one).
 
@@ -40,11 +61,28 @@ All safety checks except the duplicate position check and position count check a
 
 When Caddie Master dispatches you to CLOSE a position (sell all held contracts), execute this sequence:
 
-1. **Look up position**: Run `gimmes positions` and find the position for TICKER. Note the side and count. If no position exists (already settled or closed), log a skip: `gimmes log-trade TICKER --action skip --rationale "Close skipped: no open position found" --agent closer` and report — do not proceed.
+1. **Look up position**: Run `gimmes positions` and find the position for TICKER. Note the side and count. If no position exists (already settled or closed), log a skip and report — do not proceed:
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Close skipped: no open position found
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --rationale-file "$RATIONALE_FILE" --agent closer
+   rm -f "$RATIONALE_FILE"
+   ```
 2. **Cancel resting orders**: If any resting orders exist for TICKER, cancel them first with `gimmes cancel ORDER_ID --yes`.
 3. **Order**: `gimmes order TICKER --action sell --side SIDE --count COUNT --yes --agent closer` — sell the full held count.
 4. **Log success**: The order command logs the close trade and syncs positions atomically.
-5. **Log failure** (if order fails): `gimmes log-trade TICKER --action skip --rationale "Close order failed: [error from CLI output]" --agent closer`. If the command fails, note the failure in your output and continue. Do not retry.
+5. **Log failure** (if order fails): use the `--rationale-file` heredoc pattern — the `[error from CLI output]` may contain `$` or backticks that would corrupt under inline `--rationale`:
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Close order failed: [error from CLI output]
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --rationale-file "$RATIONALE_FILE" --agent closer
+   rm -f "$RATIONALE_FILE"
+   ```
+   If the command fails, note the failure in your output and continue. Do not retry.
 
 No validate or size step is needed — the order command validates that the position exists and the count is valid. No risk checks apply to sells.
 
@@ -62,7 +100,15 @@ No validate or size step is needed — the order command validates that the posi
 ## Order Failure Protocol
 
 If the order command fails (non-zero exit code or error output), MUST:
-1. Log the failure: `gimmes log-trade TICKER --action skip --prob P --score S --rationale "Order failed: [error from CLI output]" --agent closer`
+1. Log the failure via the `--rationale-file` heredoc pattern — captured CLI output may contain `$` or backticks (#589):
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Order failed: [error from CLI output]
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --prob P --score S --rationale-file "$RATIONALE_FILE" --agent closer
+   rm -f "$RATIONALE_FILE"
+   ```
 2. If the log-trade command itself fails, note the failure in your output and continue. Do not retry failed log commands.
 3. Report the failure in the Execution Report
 4. NEVER retry in this cycle
