@@ -560,6 +560,7 @@ class TestShellTokenizationE2E:
         import os
         import sqlite3
         import subprocess
+        import sys
 
         memo_file = tmp_path / "memo.txt"
         memo_file.write_text("Market prices YES at $0.41")
@@ -571,15 +572,17 @@ class TestShellTokenizationE2E:
         env["GIMMES_HOME"] = str(tmp_path)
         env.pop("GIMMES_CONFIG", None)
 
-        repo_root = Path(__file__).resolve().parents[2]
+        # Invoke via `sys.executable -m gimmes` rather than `uv run gimmes`:
+        # avoids nested uv overhead, no external binary dependency, and
+        # still goes through a real /bin/sh so argv tokenization happens
+        # in a real shell — the exact failure mode from #589.
         cmd = (
-            f"uv run gimmes log-candidate REPRO-589-E2E "
+            f'"{sys.executable}" -m gimmes log-candidate REPRO-589-E2E '
             f"--price 0.41 --prob 0.50 --score 78 "
             f'--memo-file "{memo_file}"'
         )
         result = subprocess.run(
             ["/bin/sh", "-c", cmd],
-            cwd=repo_root,
             env=env,
             capture_output=True,
             text=True,

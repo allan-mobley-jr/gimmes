@@ -71,18 +71,27 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     """Read prose content from a file for --memo-file/--body-file/--rationale-file.
 
     Bypasses argv entirely so shell expansion of ``$0``, ``$VAR``, backticks,
-    etc. cannot corrupt the stored text (#589). Validates path, size (max
-    64 KiB), and UTF-8 encoding; strips one trailing newline so heredoc-fed
-    files round-trip cleanly. Empty content is treated as a contract
-    violation since the file variant means "I have content to write."
+    etc. cannot corrupt the stored text (#589). Validates path is a regular
+    file (rejects FIFOs/sockets/devices that could bypass the size check or
+    block indefinitely), size (max 64 KiB), and UTF-8 encoding; strips one
+    trailing newline so heredoc-fed files round-trip cleanly. Empty content
+    is treated as a contract violation since the file variant means "I have
+    content to write."
     """
     if not path.exists():
         console.print(f"[red]{option_name}: file not found: {path}[/red]")
         raise typer.Exit(1)
-    if path.is_dir():
-        console.print(f"[red]{option_name}: path is a directory: {path}[/red]")
+    if not path.is_file():
+        console.print(
+            f"[red]{option_name}: not a regular file: {path}"
+            " (FIFOs, sockets, and device files are rejected)[/red]"
+        )
         raise typer.Exit(1)
-    size = path.stat().st_size
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        console.print(f"[red]{option_name}: cannot stat {path}: {e}[/red]")
+        raise typer.Exit(1) from e
     if size > _MAX_PROSE_BYTES:
         console.print(
             f"[red]{option_name}: file too large ({size} bytes,"
@@ -91,9 +100,12 @@ def _read_prose_file(path: Path, option_name: str) -> str:
         raise typer.Exit(1)
     try:
         content = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
         console.print(f"[red]{option_name}: file is not valid UTF-8: {path}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
+    except OSError as e:
+        console.print(f"[red]{option_name}: cannot read {path}: {e}[/red]")
+        raise typer.Exit(1) from e
     if content.endswith("\n"):
         content = content[:-1]
     if not content.strip():

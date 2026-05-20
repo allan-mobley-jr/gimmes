@@ -788,21 +788,32 @@ def test_no_agent_uses_inline_memo_body_rationale_for_prose() -> None:
 
     # The `[^`\n]{0,400}?` window bounds the match within a single logical
     # bash command so a `gimmes log-candidate` in one code block can't
-    # falsely pair with a `--memo "..."` later in the file. The `(?:\s+|=)`
-    # alternation catches both `--memo "x"` and `--memo="x"` forms.
+    # falsely pair with a `--memo "..."` later in the file.
+    #
+    # Each forbidden arg is matched by `--<arg>\b(?!-file)` — the negative
+    # lookahead lets `--memo-file` / `--rationale-file` / `--body-file`
+    # through while forbidding bare `--memo` / `--rationale` / `--body` in
+    # any form: double-quoted (`--memo "x"`), single-quoted (`--memo 'x'`),
+    # equals (`--memo=x`), or unquoted (`--memo x`). Single-quoted bash is
+    # technically $-safe, but the file-input variant is the only sanctioned
+    # path — anything else can regress under future quoting refactors.
     forbidden = [
         (
-            re.compile(r"gimmes\s+log-candidate\b[^`\n]{0,400}?--memo(?:\s+|=)\""),
+            re.compile(
+                r"gimmes\s+log-candidate\b[^`\n]{0,400}?--memo\b(?!-file)",
+            ),
             "log-candidate --memo (use --memo-file)",
         ),
         (
             re.compile(
-                r"gimmes\s+log-trade\b[^`\n]{0,400}?--rationale(?:\s+|=)\"",
+                r"gimmes\s+log-trade\b[^`\n]{0,400}?--rationale\b(?!-file)",
             ),
             "log-trade --rationale (use --rationale-file)",
         ),
         (
-            re.compile(r"gimmes\s+position-note\b[^`\n]{0,400}?--body(?:\s+|=)\""),
+            re.compile(
+                r"gimmes\s+position-note\b[^`\n]{0,400}?--body\b(?!-file)",
+            ),
             "position-note --body (use --body-file)",
         ),
     ]
