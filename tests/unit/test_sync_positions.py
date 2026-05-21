@@ -379,17 +379,35 @@ def test_caddie_master_lockout_query_does_not_match_reconcile_body() -> None:
     # Pull out the `body = (\n ... )\n` block inside
     # _log_reconcile_closes. The function name is unique in the file
     # so a simple find-from-anchor works regardless of preceding
-    # docstring backticks.
+    # docstring backticks. Use paren-depth tracking (not a naive
+    # str.find for the next `)`) so a future edit that introduces
+    # a `)` inside the body string can't terminate the slice early
+    # and silently weaken the guard.
     func_idx = queries_py.find("def _log_reconcile_closes")
     assert func_idx != -1, (
         "_log_reconcile_closes function not found (drift-guard"
         " scaffolding broken)."
     )
     body_assign_idx = queries_py.find("body = (", func_idx)
-    body_close_idx = queries_py.find(")", body_assign_idx)
-    assert body_assign_idx != -1 and body_close_idx != -1, (
+    assert body_assign_idx != -1, (
         "_log_reconcile_closes must have a `body = (...)` string"
         " assignment (drift-guard scaffolding broken)."
+    )
+    # Start tracking AFTER the opening `(`.
+    open_paren_idx = body_assign_idx + len("body = (") - 1
+    depth = 0
+    body_close_idx = -1
+    for i, ch in enumerate(queries_py[open_paren_idx:], start=open_paren_idx):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                body_close_idx = i
+                break
+    assert body_close_idx != -1, (
+        "Could not find matching `)` for the `body = (` in"
+        " _log_reconcile_closes (drift-guard scaffolding broken)."
     )
     body_template = queries_py[body_assign_idx:body_close_idx]
     assert "Trigger: Stop-loss breach" not in body_template, (
