@@ -2237,6 +2237,15 @@ def position_note(
             " containing dollar amounts or shell-special characters (#589)."
         ),
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        hidden=True,
+        help=(
+            "Bypass the observation read-back validator (#614). Reserved"
+            " for backfill scripts; autonomous Monitor cycles MUST re-write"
+            " the observation rather than --force."
+        ),
+    ),
 ) -> None:
     """Append a note to the position journal."""
     valid_types = ("observation", "flag", "decision", "context")
@@ -2253,9 +2262,52 @@ def position_note(
 
     async def _note() -> None:
         from gimmes.store.database import Database
-        from gimmes.store.queries import insert_position_note
+        from gimmes.store.observation_validator import validate
+        from gimmes.store.queries import (
+            get_position_notes,
+            insert_position_note,
+        )
+        from gimmes.store.ticker_resolver import resolve_ticker
 
         async with Database(config.db_path) as db:
+            if note_type == "observation" and not force:
+                # Read-back validator (#614): reject observation writes
+                # that contradict cited evidence in the most-recent CM
+                # decision note for this ticker. Scoped to
+                # fundamental-economic-trigger tickers; equity-index
+                # tickers pass through unconditionally.
+                #
+                # Canonicalize the ticker via resolve_ticker before the
+                # decision lookup — otherwise a Monitor invocation with
+                # `KXCPI-26APR-T0.5` would silently miss a CM decision
+                # logged under `KXCPI-26APR-T0.50` (or any other
+                # canonical-form drift), defeating the entire validator.
+                resolved_ticker = ticker
+                matches = await resolve_ticker(
+                    db, ticker, source="known_markets",
+                )
+                if len(matches) == 1:
+                    resolved_ticker = matches[0]
+                prior = await get_position_notes(
+                    db, resolved_ticker, note_type="decision", limit=1,
+                )
+                decision_body = (
+                    prior[0].get("body") if prior else None
+                )
+                ok, err = validate(
+                    ticker=resolved_ticker,
+                    observation_body=body_val,
+                    decision_body=decision_body,
+                )
+                if not ok:
+                    console.print(f"[red]{err}[/red]")
+                    raise typer.Exit(1)
+            if force and note_type == "observation":
+                console.print(
+                    "[yellow]--force bypassed the observation read-back"
+                    " validator (#614). This is an audit-visible"
+                    " bypass.[/yellow]"
+                )
             row_id = await insert_position_note(
                 db, ticker=ticker, cycle=cycle, agent=agent,
                 note_type=note_type, body=body_val,

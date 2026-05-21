@@ -1,0 +1,318 @@
+"""Unit tests for the observation read-back validator (#614).
+
+These are pure-function tests — no DB, no CLI. The CLI integration tests
+live in test_cli_observation_validator.py.
+"""
+
+from __future__ import annotations
+
+import re
+
+from gimmes.store.observation_validator import (
+    AGGREGATORS,
+    ECONOMIC_CATEGORIES,
+    NAMED_BANKS,
+    STALE_TEMPLATE_PHRASE,
+    contains_stale_template,
+    extract_cited_evidence,
+    ticker_in_economic_category,
+    validate,
+)
+
+C1407_STALE = (
+    "No named major Wall Street bank has published April CPI MoM"
+    " strictly above 0.5%"
+)
+
+CM_DECISION_WITH_BARCLAYS = (
+    "Decision: HOLD.\n"
+    "Reasoning: thesis intact; price unchanged.\n"
+    "Cited sources:\n"
+    "- Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)\n"
+    "- Wells Fargo April headline CPI MoM +0.63% (FXStreet, 2026-05-08)"
+)
+
+CM_DECISION_NO_BANKS = (
+    "Decision: HOLD.\n"
+    "Reasoning: thesis intact; price moved within noise band.\n"
+    "Cited sources:\n"
+    "None — decision based on price + thesis only"
+)
+
+
+class TestTickerInEconomicCategory:
+    def test_kxcpi_matches(self) -> None:
+        assert ticker_in_economic_category("KXCPI-26APR-T0.5")
+
+    def test_kxpayrolls_matches(self) -> None:
+        assert ticker_in_economic_category("KXPAYROLLS-26APR-T100000")
+
+    def test_kxjoblessclaims_matches(self) -> None:
+        assert ticker_in_economic_category(
+            "KXJOBLESSCLAIMS-26MAY14-210000",
+        )
+
+    def test_kxspx_does_not_match(self) -> None:
+        # Equity-index tickers are out of scope.
+        assert not ticker_in_economic_category("KXSPX-26MAY-T5000")
+
+    def test_kxinx_does_not_match(self) -> None:
+        assert not ticker_in_economic_category(
+            "KXINX-26APR27H1600-B7162",
+        )
+
+    def test_kxnasdaq100_does_not_match(self) -> None:
+        assert not ticker_in_economic_category(
+            "KXNASDAQ100-26APR24H1600-B27350",
+        )
+
+    def test_case_insensitive(self) -> None:
+        assert ticker_in_economic_category("kxcpi-26apr-t0.5")
+
+
+class TestContainsStaleTemplate:
+    def test_canonical_phrase_present(self) -> None:
+        assert contains_stale_template(C1407_STALE)
+
+    def test_case_insensitive_match(self) -> None:
+        upper = C1407_STALE.upper()
+        assert contains_stale_template(upper)
+
+    def test_phrase_absent(self) -> None:
+        assert not contains_stale_template(
+            "Barclays +0.55% confirmed; thesis intact.",
+        )
+
+    def test_empty_body(self) -> None:
+        assert not contains_stale_template("")
+
+
+class TestExtractCitedEvidence:
+    def test_extracts_barclays_with_value(self) -> None:
+        pairs = extract_cited_evidence(CM_DECISION_WITH_BARCLAYS)
+        # Should find both Barclays and Wells Fargo on their respective
+        # lines, each paired with the inline numeric value.
+        sources = [s for s, _ in pairs]
+        values = [v for _, v in pairs]
+        assert "Barclays" in sources
+        assert "Wells Fargo" in sources
+        assert "+0.55%" in values
+        assert "+0.63%" in values
+
+    def test_no_pairs_when_silent(self) -> None:
+        assert extract_cited_evidence(CM_DECISION_NO_BANKS) == []
+
+    def test_no_pairs_when_bank_without_value(self) -> None:
+        body = (
+            "Decision: HOLD.\n"
+            "Reasoning: Barclays research suggests interest in this print"
+            " but no quantitative claim made."
+        )
+        # No `%` on the Barclays line.
+        assert extract_cited_evidence(body) == []
+
+    def test_same_line_proximity_enforced(self) -> None:
+        # "Barclays said April CPI is interesting" → no `%`.
+        # Next paragraph: "+0.55% was the print".
+        # Even though `+0.55%` appears in the body, it's not on the
+        # Barclays line, so no pair.
+        body = (
+            "Barclays said April CPI is interesting.\n"
+            "\n"
+            "+0.55% was the print.\n"
+        )
+        assert extract_cited_evidence(body) == []
+
+    def test_citi_aliases_match_citibank_and_citigroup(self) -> None:
+        # Pre-#614 the regex was strict `\bCiti\b`, which silently let
+        # "Citibank +0.42%" through as a non-citation. The silent-
+        # failure-hunter on PR #614 surfaced this as a real silent-pass
+        # path (CM prose freely writes Citibank/Citigroup for the same
+        # institution). The validator now treats both as Citi citations.
+        body = "Citibank research +0.42% on April CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert len(pairs) == 1
+        assert pairs[0][0].startswith("Citi")
+        assert pairs[0][1] == "+0.42%"
+
+    def test_citi_matches_when_standalone(self) -> None:
+        body = "Citi +0.42% on April CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert pairs == [("Citi", "+0.42%")]
+
+    def test_citibank_matches_as_citi_alias(self) -> None:
+        # CM prose often writes "Citibank analysts forecast +0.42%" or
+        # "Citigroup +0.42%" — these are the same institution as "Citi"
+        # in the playbook list. The validator must catch all three so a
+        # CM citation under any form triggers the read-back rule.
+        body = "Citibank analysts forecast +0.42% on April CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert len(pairs) == 1
+        # The canonical-form returned is "Citibank" (the literal match);
+        # downstream consumers only need to know SOME cited evidence
+        # exists.
+        source, value = pairs[0]
+        assert source.startswith("Citi")
+        assert value == "+0.42%"
+
+    def test_citigroup_matches_as_citi_alias(self) -> None:
+        body = "Citigroup +0.50% on April CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert len(pairs) == 1
+        source, value = pairs[0]
+        assert source.startswith("Citi")
+        assert value == "+0.50%"
+
+    def test_aggregator_match_fxstreet(self) -> None:
+        body = "FXStreet aggregate +0.55% on April headline CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert pairs == [("FXStreet", "+0.55%")]
+
+    def test_jpmorgan_full_name(self) -> None:
+        body = "JPMorgan estimates +0.47% on April CPI MoM."
+        pairs = extract_cited_evidence(body)
+        assert pairs == [("JPMorgan", "+0.47%")]
+
+
+class TestValidate:
+    def test_reject_cited_bank_with_value_and_stale_template(self) -> None:
+        ok, err = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=C1407_STALE,
+            decision_body=CM_DECISION_WITH_BARCLAYS,
+        )
+        assert ok is False
+        assert err is not None
+        assert "Barclays" in err or "Wells Fargo" in err
+        # Error message must reference both issue numbers for
+        # actionability.
+        assert "#577" in err
+        assert "#614" in err
+
+    def test_allow_cm_silent_on_banks(self) -> None:
+        # Vacuous case: CM cites no banks → nothing to contradict.
+        ok, err = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=C1407_STALE,
+            decision_body=CM_DECISION_NO_BANKS,
+        )
+        assert ok is True
+        assert err is None
+
+    def test_allow_ticker_not_in_economic_category(self) -> None:
+        # KXSPX is an equity index — out of validator scope.
+        ok, err = validate(
+            ticker="KXSPX-26MAY-T5000",
+            observation_body=C1407_STALE,
+            decision_body=CM_DECISION_WITH_BARCLAYS,
+        )
+        assert ok is True
+        assert err is None
+
+    def test_allow_no_prior_decision(self) -> None:
+        # Position with no prior CM decision note yet.
+        ok, err = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=C1407_STALE,
+            decision_body=None,
+        )
+        assert ok is True
+        assert err is None
+
+    def test_allow_bank_named_without_numeric_value(self) -> None:
+        body = (
+            "Decision: HOLD.\n"
+            "Reasoning: Barclays research mentioned but no forecast"
+            " quantified."
+        )
+        ok, err = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=C1407_STALE,
+            decision_body=body,
+        )
+        # No quantitative claim → nothing to contradict.
+        assert ok is True
+        assert err is None
+
+    def test_allow_observation_without_stale_phrase(self) -> None:
+        # Observation surfaces Barclays correctly — passes regardless of
+        # what CM cited.
+        obs = "Barclays +0.55% confirmed this cycle (FXStreet, 2026-05-08)."
+        ok, err = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=obs,
+            decision_body=CM_DECISION_WITH_BARCLAYS,
+        )
+        assert ok is True
+        assert err is None
+
+    def test_case_insensitive_stale_phrase_still_rejects(self) -> None:
+        ok, _ = validate(
+            ticker="KXCPI-26APR-T0.5",
+            observation_body=C1407_STALE.upper(),
+            decision_body=CM_DECISION_WITH_BARCLAYS,
+        )
+        assert ok is False
+
+
+class TestConstantsSyncWithMonitorMd:
+    """Drift-guard: hard-coded constants in observation_validator.py
+    must stay in sync with .claude/agents/monitor.md's playbook lists.
+    Validator works without parsing monitor.md at runtime (avoids
+    install-path fragility), but this test catches drift."""
+
+    def _monitor_md(self) -> str:
+        from pathlib import Path
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / ".claude"
+            / "agents"
+            / "monitor.md"
+        )
+        return path.read_text()
+
+    def test_banks_match_monitor_playbook(self) -> None:
+        text = self._monitor_md()
+        for bank in NAMED_BANKS:
+            assert bank in text, (
+                f"NAMED_BANKS contains {bank!r} but monitor.md does not"
+                f" mention it. Constants drift — sync the playbook."
+            )
+
+    def test_aggregators_match_monitor_playbook(self) -> None:
+        text = self._monitor_md()
+        for source in AGGREGATORS:
+            assert source in text, (
+                f"AGGREGATORS contains {source!r} but monitor.md does"
+                f" not mention it. Constants drift."
+            )
+
+    def test_economic_categories_match_monitor_playbook(self) -> None:
+        text = self._monitor_md()
+        for prefix in ECONOMIC_CATEGORIES:
+            # Word-boundary check so KXCPI doesn't accidentally match
+            # KXCPICORE (which is also in the list — both must appear).
+            assert re.search(rf"\b{re.escape(prefix)}\b", text), (
+                f"ECONOMIC_CATEGORIES contains {prefix!r} but"
+                f" monitor.md's playbook does not list it. Constants"
+                f" drift."
+            )
+
+    def test_stale_template_phrase_is_lowercase(self) -> None:
+        # Documented contract: the phrase is stored lowercase so the
+        # matcher can compare with `body.lower()` (case-insensitive).
+        assert STALE_TEMPLATE_PHRASE == STALE_TEMPLATE_PHRASE.lower()
+
+    def test_stale_template_phrase_appears_in_monitor_md(self) -> None:
+        """If monitor.md ever changes the canonical stale-template
+        phrase, the validator silently misses every future c1407-class
+        regression. Pin the phrase against monitor.md so a rename in
+        the prompt forces a corresponding validator update."""
+        text = self._monitor_md().lower()
+        assert STALE_TEMPLATE_PHRASE in text, (
+            f"STALE_TEMPLATE_PHRASE {STALE_TEMPLATE_PHRASE!r} is not"
+            f" present in monitor.md. The validator must pin the same"
+            f" canonical phrase that monitor.md's FORBIDDEN clause"
+            f" forbids. Update one or the other to re-align (#614)."
+        )

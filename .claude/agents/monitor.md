@@ -96,6 +96,8 @@ If a bank returned no result in your search, log that explicitly in the observat
 
 **When the CM decision is silent on named sources** (e.g., a HOLD with no source citations, or a decision written before this rule existed), the read-back step (2-3 above) is vacuously satisfied — but the full playbook enumeration for fundamental-economic-trigger positions is REQUIRED regardless. A silent CM decision does NOT exempt Monitor from the bank-by-bank and aggregator-by-aggregator search; it only removes the inheritance obligation. The playbook always runs when category matches.
 
+**Runtime enforcement (#614).** This contract is enforced at the CLI: `gimmes position-note --type observation` rejects observation writes that contain the canonical stale-template phrase ("No named major Wall Street bank has published") when the most-recent CM `decision` note for the same ticker cites a named bank or aggregator with a numeric percentage value. **On validator rejection: re-write the observation with the surfaced citations and retry. Do NOT use `--force` to bypass** — that flag is reserved for backfill scripts; autonomous Monitor cycles MUST fix the body, not bypass the check. Bypassing the validator constitutes the same regression #577/#614 are designed to prevent.
+
 After reading `position-context` and completing your analysis, write a **delta observation** — what changed since the prior observation, not a full re-assessment. If no prior observation exists (first cycle for this position), write a full observation.
 
 Use the `--body-file` variant via a single-quoted heredoc so dollar-prefixed prices like `$0.41` survive verbatim (#589). The quoted delimiter `<<'GIMMES_EOF'` is load-bearing — it suppresses ALL parameter expansion inside the body:
