@@ -405,7 +405,10 @@ def test_caddie_master_forbids_uncited_source_fabrication(
     """The derivation rule prevents agents from satisfying the Cited
     sources field by fabricating citations. A source is only allowed
     if it appears in the input CM actually consulted this cycle (#617)."""
-    assert "Derivation rule (REQUIRED — guards against fabricated citations)" in caddie_master_text, (
+    derivation_marker = (
+        "Derivation rule (REQUIRED — guards against fabricated citations)"
+    )
+    assert derivation_marker in caddie_master_text, (
         "Cited sources section MUST include a derivation rule that"
         " forbids citing sources not present in the input consulted"
         " this cycle. Without it, an agent can satisfy the field with"
