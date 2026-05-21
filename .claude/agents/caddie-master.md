@@ -92,7 +92,7 @@ The em-dash in Form B is a literal U+2014 character (`—`), not a hyphen-minus.
 
 You MAY cite a source that appears in a prior `position-context` note (e.g., the most-recent observation) — that constitutes inheritance. You MAY NOT introduce a source that does not appear in any input you actually consulted this cycle. If your decision was based on price action + thesis only (no named-source input), use Form B.
 
-**Step 4c edge-pre-filter REJECT path** (the immediate-reject branch that skips Caddie conferral): use Form B by default — there's no Caddie memo to draw on. If you read `gimmes candidates` output and a named source appears there, you MAY cite it.
+**Step 4c edge-pre-filter REJECT path** (the immediate-reject branch that skips Caddie conferral): use Form B by default — the Caddie conferral memo is unavailable. The `gimmes candidates --ticker TICKER` output and `gimmes market-info TICKER` output ARE both already read at this point (sub-steps 1-2 of Step 4c), so if a named source appears in either of those outputs, you MAY cite it via Form A.
 
 This rule applies regardless of ticker category. For fundamental-economic-trigger tickers (see Monitor's `## Fundamental-Economic-Trigger Source Playbook`), Form A with multiple bullets is expected when CM reviewed flags carrying bank/aggregator forecasts; Form B is acceptable when the decision genuinely turned only on price + thesis.
 

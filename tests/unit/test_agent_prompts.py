@@ -348,16 +348,67 @@ def test_caddie_master_decision_templates_all_require_cited_sources(
     caddie_master_text: str,
 ) -> None:
     """Each of the 4 decision-note templates (HOLD/CLOSE, SIZE UP,
-    APPROVE, REJECT) MUST end with a `Cited sources:` line. Without it,
-    Monitor's read-back assertion (#577) is vacuously satisfied on most
-    decisions and the structural defense against stale-template
-    regressions is defanged (#617)."""
-    occurrences = caddie_master_text.count("Cited sources:")
-    assert occurrences >= 5, (
-        f"Expected >= 5 occurrences of 'Cited sources:' in"
-        f" caddie-master.md (4 templates + 1 in the shared rule"
-        f" block), found {occurrences}. Every decision template MUST"
-        " end with the Cited sources field (#617)."
+    APPROVE, REJECT) MUST end with a `Cited sources:` line inside its
+    own heredoc body. Scoped per-template rather than substring-counted
+    so a future field-rename can't satisfy the count spuriously (#617)."""
+    import re
+
+    # Each decision-note template lives inside a `<<'GIMMES_EOF' ...
+    # GIMMES_EOF` block whose body contains `Decision:`. Require the
+    # opening delimiter to be followed by a newline (i.e. a REAL heredoc
+    # opener) so inline backtick mentions of the delimiter literal in
+    # explanatory prose don't false-match (`<<'GIMMES_EOF'\n` is a real
+    # opener; `<<'GIMMES_EOF'` inside backticks is prose).
+    heredoc_pattern = re.compile(
+        r"<<'GIMMES_EOF'\n(.*?)\n\s*GIMMES_EOF\b",
+        flags=re.DOTALL,
+    )
+    decision_heredocs = [
+        m.group(1) for m in heredoc_pattern.finditer(caddie_master_text)
+        if "Decision:" in m.group(1)
+    ]
+    assert len(decision_heredocs) >= 4, (
+        f"Expected >= 4 decision-note heredoc blocks in caddie-master.md"
+        f" (HOLD/CLOSE, SIZE UP, APPROVE, REJECT); found"
+        f" {len(decision_heredocs)}. A template-block dropout would"
+        " silently bypass the cited-sources contract (#617)."
+    )
+    missing = [
+        i for i, body in enumerate(decision_heredocs)
+        if "Cited sources:" not in body
+    ]
+    assert not missing, (
+        f"Decision-note heredoc blocks at index {missing} are missing"
+        " the `Cited sources:` field. Every decision template MUST"
+        " end with the field — Monitor's read-back assertion (#577)"
+        " is defanged otherwise (#617)."
+    )
+
+
+def test_caddie_master_edge_pre_filter_reject_path_uses_form_b(
+    caddie_master_text: str,
+) -> None:
+    """Step 4c's edge-pre-filter REJECT branch skips Caddie conferral but
+    DOES read `gimmes candidates` and `gimmes market-info`. The rule must
+    explicitly explain how to populate Cited sources in this branch —
+    without that guidance, agents either default to Form B silently
+    (losing valid citations) or fabricate sources (#617)."""
+    assert "Step 4c edge-pre-filter REJECT path" in caddie_master_text, (
+        "Cited-sources rule MUST explicitly call out the Step 4c"
+        " edge-pre-filter REJECT branch — it's a third context (along"
+        " with Step 2 and Step 4c regular APPROVE/REJECT) and skipping"
+        " it leaves the immediate-reject branch with no citation"
+        " guidance (#617)."
+    )
+    # The carve-out must mention BOTH candidates output and market-info
+    # are still available, even though Caddie conferral memo isn't.
+    assert "gimmes candidates" in caddie_master_text, (
+        "Edge-pre-filter REJECT rule must reference `gimmes candidates`"
+        " as a still-available source of citations in this branch."
+    )
+    assert "gimmes market-info" in caddie_master_text, (
+        "Edge-pre-filter REJECT rule must reference `gimmes market-info`"
+        " as a still-available source of citations in this branch."
     )
 
 
