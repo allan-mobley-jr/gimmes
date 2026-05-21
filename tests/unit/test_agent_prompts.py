@@ -399,6 +399,326 @@ def test_monitor_stop_loss_flag_carries_thesis_and_time(
 
 
 # ---------------------------------------------------------------------------
+# Monitor fundamental-economic-trigger source playbook (#577)
+# ---------------------------------------------------------------------------
+
+
+def _playbook_block(monitor_text: str) -> str:
+    import re
+
+    # Anchor on line-start so inline cross-references (which contain the
+    # literal `## Fundamental-Economic-Trigger Source Playbook` inside a
+    # backtick span) don't false-match. The real section header is the
+    # only line that starts with `## `.
+    match = re.search(
+        r"^## Fundamental-Economic-Trigger Source Playbook.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, (
+        "Monitor MUST have a `## Fundamental-Economic-Trigger Source"
+        " Playbook` top-level section between Trigger Conditions and"
+        " Writing Observations (#577)."
+    )
+    return match.group(0)
+
+
+def test_monitor_source_playbook_pins_named_banks(monitor_text: str) -> None:
+    """The 9 named banks are the audit vocabulary for #577. They MUST appear
+    verbatim in the playbook AND the playbook MUST require individual
+    queries (not batched), which is the precise #577 root-cause fix."""
+    block = _playbook_block(monitor_text)
+    required_banks = [
+        "Goldman Sachs",
+        "JPMorgan",
+        "Morgan Stanley",
+        "Bank of America",
+        "Citi",
+        "Barclays",
+        "Wells Fargo",
+        "Deutsche Bank",
+        "UBS",
+    ]
+    missing = [b for b in required_banks if b not in block]
+    assert not missing, (
+        f"Playbook missing named banks: {missing}. All 9 must appear so"
+        " Monitor enumerates each individually rather than batching into"
+        " a single 'Wall Street CPI' query (#577)."
+    )
+    # The batching prohibition IS the #577 fix — pin it explicitly so a
+    # future edit that kept the names but deleted the instruction would
+    # fail the test.
+    assert "Search EACH of these banks individually" in block, (
+        "Playbook MUST instruct Monitor to search EACH bank"
+        " individually. Without this, an LLM batching all 9 banks into"
+        " one search is what produced #577 c1391-c1405."
+    )
+    assert "Do NOT batch them" in block, (
+        "Playbook MUST explicitly forbid batching the bank list into a"
+        " single 'Wall Street CPI forecasts' query (#577)."
+    )
+
+
+def test_monitor_source_playbook_pins_aggregator_sources(
+    monitor_text: str,
+) -> None:
+    """FXStreet was the aggregator Monitor missed in the c1391-c1405 window
+    (#577). Pin the 4 aggregator sources verbatim AND the per-aggregator
+    enumeration instruction."""
+    block = _playbook_block(monitor_text)
+    required_sources = ["FXStreet", "MarketWatch", "Reuters", "Bloomberg"]
+    missing = [s for s in required_sources if s not in block]
+    assert not missing, (
+        f"Playbook missing aggregator sources: {missing}. FXStreet"
+        " specifically was the missed source in #577."
+    )
+    assert "Query EACH of these aggregator sources by name" in block, (
+        "Playbook MUST instruct Monitor to query EACH aggregator by"
+        " name in search terms. A general 'check aggregators'"
+        " instruction is what allowed FXStreet to be missed (#577)."
+    )
+
+
+def test_monitor_source_playbook_lists_economic_categories(
+    monitor_text: str,
+) -> None:
+    """The playbook must list the Kalshi category prefixes that trigger
+    bank/aggregator enumeration. Pin the minimal subset overlapping with
+    Caddie's Sanity-Check Mode list (caddie.md:55)."""
+    block = _playbook_block(monitor_text)
+    required_categories = [
+        "KXCPI",
+        "KXCPICORE",
+        "KXCPIYOY",
+        "KXPAYROLLS",
+        "KXJOBLESSCLAIMS",
+        "KXADP",
+        "KXGDP",
+    ]
+    missing = [c for c in required_categories if c not in block]
+    assert not missing, (
+        f"Playbook missing economic categories: {missing}. These overlap"
+        " with caddie.md's Sanity-Check Mode list and MUST trigger"
+        " Monitor's source-enumeration playbook (#577)."
+    )
+
+
+def test_monitor_48h_staleness_rule_pinned(monitor_text: str) -> None:
+    """The 48-hour CM-decision staleness rule is the core defense against
+    a stale baseline observation persisting across cycles (#577)."""
+    import re
+
+    dedup_match = re.search(
+        r"\*\*Flag deduplication rules.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL,
+    )
+    assert dedup_match is not None, "Flag deduplication block must exist"
+    block = dedup_match.group(0)
+    assert "48 hours" in block, (
+        "Dedup block must include the exact phrase `48 hours` so the"
+        " staleness threshold is unambiguous (#577)."
+    )
+    assert "most recent CM `decision`-type note" in block, (
+        "Staleness rule must anchor on the CM decision-note timestamp,"
+        " not the prior observation timestamp (which Monitor controls"
+        " and can refresh by writing a stale-template observation)"
+        " (#577)."
+    )
+    assert "48h forces a re-search, NOT a flag" in block, (
+        "The 48h rule must clarify that re-search is required but flag"
+        " suppression still applies if the re-search confirms no change."
+    )
+
+
+def test_monitor_48h_does_not_bypass_no_material_change_rule(
+    monitor_text: str,
+) -> None:
+    """The existing 'No material change → no flag' bullet must remain
+    AFTER the 48h staleness bullet, so 48h forces a re-search but doesn't
+    cause spurious flags when the re-search confirms no change (#577)."""
+    idx_48h = monitor_text.find(
+        "48-hour staleness re-search rule (REQUIRED — #577)",
+    )
+    idx_no_change = monitor_text.find(
+        'If the delta observation says "No material change," do NOT write',
+    )
+    assert idx_48h != -1, "48h staleness bullet not found (#577)"
+    assert idx_no_change != -1, "No-material-change bullet not found (#577)"
+    assert idx_48h < idx_no_change, (
+        "48h staleness bullet must come BEFORE the No-material-change"
+        " bullet so the dedup ordering is: check staleness first, then"
+        " skip flag if no material change. Inverting this ordering"
+        " breaks the dedup contract."
+    )
+
+
+def test_monitor_read_back_assertion_in_observation_template(
+    monitor_text: str,
+) -> None:
+    """The read-back assertion closes the c1407 regression where Monitor
+    reverted to a stale template even after CM cited the missing data
+    (#577)."""
+    import re
+
+    obs_match = re.search(
+        r"## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL,
+    )
+    assert obs_match is not None, "Writing Observations section must exist"
+    block = obs_match.group(0)
+    assert "Read-back assertion" in block, (
+        "Writing Observations must open with a `Read-back assertion`"
+        " block that requires Monitor to surface CM-cited sources in"
+        " its observation (#577)."
+    )
+    assert "FORBIDDEN" in block, (
+        "Read-back assertion must use the uppercase token `FORBIDDEN`"
+        " to flag template assertions that contradict cited evidence."
+    )
+    assert "contradict cited evidence" in block, (
+        "FORBIDDEN clause must reference `contradict cited evidence` so"
+        " future prompts can't soften the contract via paraphrase."
+    )
+    assert "#577" in block, (
+        "Read-back assertion must cite #577 inline so the rationale is"
+        " preserved when the prompt is read in isolation."
+    )
+    # The (a) freshly searched OR (b) inherited enumeration is the
+    # behaviorally specific piece of the rule. Without it, a watered-down
+    # version of the read-back ("just check the CM decision") still
+    # passes — but doesn't force surfaceable per-source evidence.
+    assert "freshly search" in block.lower(), (
+        "Read-back must require option (a): freshly searched this cycle"
+        " for each CM-cited source (#577)."
+    )
+    assert "inherit" in block.lower() and "citation" in block.lower(), (
+        "Read-back must require option (b): explicitly inherit the prior"
+        " observation's finding with citation. Without (b) Monitor has"
+        " no audit-friendly way to handle sources it can't re-search"
+        " this cycle (#577)."
+    )
+
+
+def test_monitor_playbook_positioned_between_triggers_and_observations(
+    monitor_text: str,
+) -> None:
+    """Playbook section MUST sit between `## What You Look For (Trigger
+    Conditions)` and `## Writing Observations` — the read-back assertion
+    references the playbook by name, so the playbook has to load first.
+    Reordering would break the implicit forward-reference (#577).
+
+    Anchored on `\\n## ` (line-start) so inline cross-references inside
+    backtick spans (which contain the literal heading text) don't
+    false-match before the real section header."""
+    triggers_idx = monitor_text.find(
+        "\n## What You Look For (Trigger Conditions)",
+    )
+    playbook_idx = monitor_text.find(
+        "\n## Fundamental-Economic-Trigger Source Playbook",
+    )
+    observations_idx = monitor_text.find("\n## Writing Observations")
+    assert triggers_idx != -1, "Trigger Conditions section must exist"
+    assert playbook_idx != -1, "Playbook section must exist"
+    assert observations_idx != -1, "Writing Observations section must exist"
+    assert triggers_idx < playbook_idx < observations_idx, (
+        "Playbook MUST be positioned between Trigger Conditions and"
+        " Writing Observations sections. The read-back assertion"
+        " forward-references the playbook by name (#577)."
+    )
+
+
+def test_monitor_playbook_pins_query_phrasing_variation(
+    monitor_text: str,
+) -> None:
+    """The cache-mitigation rule (playbook §3) is one of three numbered
+    MUSTs in the playbook. Without it, tool-level caching could re-create
+    the c1391-c1405 stuck-result pattern (#577)."""
+    block = _playbook_block(monitor_text)
+    assert "Query-phrasing variation" in block, (
+        "Playbook MUST contain a `Query-phrasing variation` rule against"
+        " tool-level caching of identical search queries (#577)."
+    )
+    assert "Do NOT repeat" in block, (
+        "Query-phrasing variation rule MUST explicitly forbid repeating"
+        " the exact query string used in the prior observation (#577)."
+    )
+
+
+def test_monitor_playbook_pins_surfacing_format(monitor_text: str) -> None:
+    """When a bank/aggregator forecast is found, the observation MUST
+    surface it with bank name, forecast value, source, and publication
+    date — the four fields needed for CM audit. Vague surfacing is what
+    let c1407 revert to a stale template (#577)."""
+    block = _playbook_block(monitor_text)
+    assert "bank name" in block, (
+        "Surfacing rule MUST require the bank name field (#577)."
+    )
+    assert "forecast value" in block, (
+        "Surfacing rule MUST require the forecast value field (#577)."
+    )
+    assert "source" in block and "publication date" in block, (
+        "Surfacing rule MUST require source and publication date so CM"
+        " can audit which aggregator surfaced the forecast and when"
+        " (#577)."
+    )
+
+
+def test_monitor_playbook_pins_no_result_logging(monitor_text: str) -> None:
+    """Silent omission (no log entry when a bank search returned empty)
+    was the c1391-c1405 failure mode — Monitor never said 'Barclays:
+    not found' so CM couldn't tell whether the search ran (#577)."""
+    block = _playbook_block(monitor_text)
+    assert "no" in block.lower() and "found this cycle" in block, (
+        "Playbook MUST require Monitor to explicitly log when a bank"
+        " returned no result in its search this cycle. Silent omission"
+        " is what produced #577."
+    )
+
+
+def test_caddie_and_monitor_economic_category_lists_stay_in_sync(
+    monitor_text: str,
+    caddie_text: str,
+) -> None:
+    """Monitor's playbook must contain every fundamental-economic-trigger
+    category from Caddie's Sanity-Check Mode list. Equity-index categories
+    (KXINX S&P 500, KXNASDAQ100) are tracked by Caddie but legitimately
+    out of scope for Monitor's bank-enumeration playbook — there are no
+    "Goldman April S&P 500 forecast" sources to enumerate. The test pins
+    the economic overlap and explicitly excludes index categories so
+    drift in either direction (Caddie or Monitor) is caught (#577)."""
+    import re
+
+    block = _playbook_block(monitor_text)
+    sanity_match = re.search(
+        r"backtested gimme categories \(([^)]+)\)",
+        caddie_text,
+    )
+    assert sanity_match is not None, (
+        "caddie.md must contain the `backtested gimme categories"
+        " (...)` line for sanity-check fast-track (this test depends"
+        " on it)."
+    )
+    caddie_cats = [c.strip() for c in sanity_match.group(1).split(",")]
+    # Equity indices use intraday price moves, not economist forecasts;
+    # bank enumeration does not apply.
+    non_economic = {"KXINX", "KXNASDAQ100"}
+    economic_caddie_cats = [
+        c for c in caddie_cats if c and c not in non_economic
+    ]
+    missing_from_monitor = [
+        c for c in economic_caddie_cats if c not in block
+    ]
+    assert not missing_from_monitor, (
+        f"Caddie's fundamental-economic sanity-check categories not in"
+        f" Monitor's playbook: {missing_from_monitor}. Monitor MUST"
+        " cover everything Caddie fast-tracks in the economic-trigger"
+        " space (#577)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Groundskeeper GitHub dedup pre-flight (#600)
 # ---------------------------------------------------------------------------
 
