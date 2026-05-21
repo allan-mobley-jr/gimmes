@@ -338,6 +338,132 @@ def test_caddie_master_4c_lockout_requires_both_markers(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caddie Master: Cited sources field (#617 — closes the gap that defangs
+# Monitor's read-back assertion from #577)
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_decision_templates_all_require_cited_sources(
+    caddie_master_text: str,
+) -> None:
+    """Each of the 4 decision-note templates (HOLD/CLOSE, SIZE UP,
+    APPROVE, REJECT) MUST end with a `Cited sources:` line. Without it,
+    Monitor's read-back assertion (#577) is vacuously satisfied on most
+    decisions and the structural defense against stale-template
+    regressions is defanged (#617)."""
+    occurrences = caddie_master_text.count("Cited sources:")
+    assert occurrences >= 5, (
+        f"Expected >= 5 occurrences of 'Cited sources:' in"
+        f" caddie-master.md (4 templates + 1 in the shared rule"
+        f" block), found {occurrences}. Every decision template MUST"
+        " end with the Cited sources field (#617)."
+    )
+
+
+def test_caddie_master_cited_sources_allows_none_carveout(
+    caddie_master_text: str,
+) -> None:
+    """When a decision turns purely on price + thesis (no named-source
+    input), Form B 'None — decision based on price + thesis only' is
+    the allowed empty case. The em-dash is U+2014, not a hyphen-minus
+    — pin the exact byte (#617)."""
+    assert "None — decision based on price + thesis only" in caddie_master_text, (
+        "Cited sources rule must include the literal 'None — decision"
+        " based on price + thesis only' carve-out (Form B). Em-dash"
+        " is U+2014, not a hyphen-minus — this exact byte sequence is"
+        " what the drift-guard pins."
+    )
+
+
+def test_caddie_master_cited_sources_format_matches_monitor_surfacing(
+    caddie_master_text: str,
+) -> None:
+    """The example bullet format must match Monitor's playbook surfacing
+    format (#577) so a single regex can parse citations from both CM
+    decisions and Monitor observations (#617)."""
+    # Monitor's exemplar (monitor.md:78-79):
+    # `Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)`
+    # CM's exemplar must follow the same shape — pin the bracketed
+    # `(publisher, YYYY-MM-DD)` portion specifically since that's the
+    # parser-relevant structure.
+    assert "(FXStreet, 2026-05-08)" in caddie_master_text, (
+        "Cited sources rule must show an example bullet using the"
+        " same `(publisher, YYYY-MM-DD)` format as Monitor's"
+        " surfacing rule. Mismatched formats break read-back"
+        " parseability (#617)."
+    )
+    assert "Barclays April headline CPI MoM +0.55%" in caddie_master_text, (
+        "Cited sources example must reproduce Monitor's exemplar"
+        " verbatim so the two prompts can't drift on format (#617)."
+    )
+
+
+def test_caddie_master_forbids_uncited_source_fabrication(
+    caddie_master_text: str,
+) -> None:
+    """The derivation rule prevents agents from satisfying the Cited
+    sources field by fabricating citations. A source is only allowed
+    if it appears in the input CM actually consulted this cycle (#617)."""
+    assert "Derivation rule (REQUIRED — guards against fabricated citations)" in caddie_master_text, (
+        "Cited sources section MUST include a derivation rule that"
+        " forbids citing sources not present in the input consulted"
+        " this cycle. Without it, an agent can satisfy the field with"
+        " plausible-looking fabrications (#617)."
+    )
+    assert "MUST appear in Monitor's flag body" in caddie_master_text, (
+        "Derivation rule MUST anchor Step 2 citations on Monitor's"
+        " flag body — that's where the bank/aggregator forecasts CM"
+        " relied on are written (#617)."
+    )
+    assert (
+        "MUST appear in Caddie's research memo" in caddie_master_text
+        or "appear in Caddie's research memo" in caddie_master_text
+    ), (
+        "Derivation rule MUST anchor Step 4c citations on Caddie's"
+        " research memo or market-info output — that's where the"
+        " sources CM relied on for APPROVE/REJECT are written (#617)."
+    )
+
+
+def test_caddie_master_cited_sources_references_monitor_playbook(
+    caddie_master_text: str,
+    monitor_text: str,
+) -> None:
+    """Cross-file invariant: CM's cited-sources rule must reference
+    Monitor's `Fundamental-Economic-Trigger Source Playbook` by name
+    so future playbook additions (new bank, new aggregator) are
+    naturally covered by CM's derivation rule (#617)."""
+    assert "Fundamental-Economic-Trigger Source Playbook" in caddie_master_text, (
+        "Caddie Master's cited-sources rule MUST reference Monitor's"
+        " `Fundamental-Economic-Trigger Source Playbook` section by"
+        " name. Without the cross-reference, a future addition to"
+        " Monitor's bank list (e.g., HSBC) would require a separate"
+        " CM edit — guaranteed drift (#617)."
+    )
+    # And the playbook section itself must still exist in monitor.md
+    # (regression pin against accidentally deleting it from monitor).
+    assert "## Fundamental-Economic-Trigger Source Playbook" in monitor_text, (
+        "monitor.md MUST still have the playbook section that CM's"
+        " cross-reference points at (#577)."
+    )
+
+
+def test_monitor_readback_vacuous_clause_still_present(
+    monitor_text: str,
+) -> None:
+    """Regression pin: #617 must NOT inadvertently break Monitor's
+    backward-compatibility clause for pre-existing decision notes that
+    lack a Cited sources field. The 'vacuously satisfied' clause covers
+    pre-#617 decisions during the migration window (#617)."""
+    assert "vacuously satisfied" in monitor_text, (
+        "monitor.md's read-back assertion must retain the 'vacuously"
+        " satisfied' clause so pre-#617 decision notes (which lack"
+        " Cited sources) don't trip the FORBIDDEN rule during the"
+        " migration window (#577 + #617)."
+    )
+
+
 def test_monitor_template_body_carries_conditional_fields(
     monitor_text: str,
 ) -> None:
