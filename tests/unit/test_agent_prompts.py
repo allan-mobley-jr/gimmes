@@ -383,6 +383,20 @@ def test_caddie_master_decision_templates_all_require_cited_sources(
         " end with the field — Monitor's read-back assertion (#577)"
         " is defanged otherwise (#617)."
     )
+    # Order check: `Cited sources:` MUST appear AFTER `Decision:` in
+    # each body — i.e., it's positioned as the closing field, not
+    # interleaved with the leading fields. Catches drift where the
+    # field is moved earlier and other fields drop below it.
+    out_of_order = [
+        i for i, body in enumerate(decision_heredocs)
+        if body.find("Cited sources:") <= body.find("Decision:")
+    ]
+    assert not out_of_order, (
+        f"Decision-note heredoc blocks at index {out_of_order} have"
+        " `Cited sources:` appearing BEFORE the `Decision:` line."
+        " The field must be the closing audit footer, not"
+        " interleaved (#617)."
+    )
 
 
 def test_caddie_master_edge_pre_filter_reject_path_uses_form_b(

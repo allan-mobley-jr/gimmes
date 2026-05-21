@@ -71,7 +71,7 @@ Every `decision`-type note you write in Steps 2c, 2d, 4c (APPROVE), and 4c (REJE
 
 **Format (one of these two forms, exact):**
 
-Form A — bulleted list of sources. Each bullet matches Monitor's playbook surfacing format at the same shape:
+Form A — bulleted list of sources. Each bullet matches Monitor's playbook surfacing format in the same shape:
 ```
 Cited sources:
 - Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)
@@ -173,7 +173,9 @@ After Monitor returns, review its report. For each position Monitor flagged:
    Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?].
    Re-evaluate if: [for HOLD only — specific condition, e.g. 'price moves another 8pp adverse' or 'after next CPI release Apr 10' or 'thesis-changing news emerges'].
    Expiry: [for HOLD only — REQUIRED cycle number to reconsider regardless, use current cycle + 10].
-   Cited sources: [bulleted list per "Decision-note required field: Cited sources" rule above, or "None — decision based on price + thesis only"]
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -213,7 +215,9 @@ If Monitor flags a position where the current edge has *increased* since entry (
    Decision: SIZE UP.
    Reasoning: [specific reasoning referencing original thesis and Monitor's flag].
    Edge assessment: [entry edge vs current edge].
-   Cited sources: [bulleted list per "Decision-note required field: Cited sources" rule above, or "None — decision based on price + thesis only"]
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -377,7 +381,9 @@ For each PROCEED candidate:
    Signal independence: [confirmed independent or not — explain].
    Portfolio correlation: [none, or describe overlap with existing positions].
    Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — pass.
-   Cited sources: [bulleted list per "Decision-note required field: Cited sources" rule above, or "None — decision based on price + thesis only"]
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -394,7 +400,9 @@ For each PROCEED candidate:
    Reasoning: [specific reasoning — what failed scrutiny].
    Key concern: [the issue that could not be resolved in conferral].
    Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — [pass/fail].
-   Cited sources: [bulleted list per "Decision-note required field: Cited sources" rule above, or "None — decision based on price + thesis only"]
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
