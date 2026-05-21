@@ -163,19 +163,134 @@ async def upsert_position(db: Database, pos: Position) -> None:
     await db.conn.commit()
 
 
-async def _sync_positions_rows(db: Database, positions: list[Position]) -> None:
-    """Core position sync SQL. Caller manages the transaction."""
+async def _sync_positions_rows(
+    db: Database, positions: list[Position],
+) -> list[Position]:
+    """Core position sync SQL. Caller manages the transaction.
+
+    Returns the list of `Position` objects that were REMOVED from the
+    DB (positions present in the DB but absent from the new sync set).
+    Callers use this to log synthetic close trades for reconcile drift
+    (#609) — without that, the removed ticker drops out of
+    `known_markets` and Caddie Master's #586 lockout query passes
+    silently with no lockout in effect.
+    """
     current_tickers = {p.ticker for p in positions}
-    # Remove positions that no longer exist
-    cursor = await db.conn.execute("SELECT ticker FROM positions")
-    for row in await cursor.fetchall():
+    cursor = await db.conn.execute("SELECT * FROM positions")
+    rows = await cursor.fetchall()
+    removed: list[Position] = []
+    for row in rows:
         if row["ticker"] not in current_tickers:
+            close_time_val = (
+                row["close_time"] if "close_time" in row.keys() else None
+            )
+            close_time_dt = None
+            if close_time_val:
+                try:
+                    close_time_dt = datetime.fromisoformat(close_time_val)
+                except (ValueError, TypeError):
+                    pass
+            removed.append(
+                Position(
+                    ticker=row["ticker"],
+                    title=row["title"],
+                    side=row["side"],
+                    count=row["count"],
+                    avg_price=row["avg_price"],
+                    market_price=row["market_price"],
+                    cost_basis=row["cost_basis"],
+                    market_value=row["market_value"],
+                    unrealized_pnl=row["unrealized_pnl"],
+                    realized_pnl=row["realized_pnl"],
+                    close_time=close_time_dt,
+                )
+            )
             await db.conn.execute(
                 "DELETE FROM positions WHERE ticker = ?", (row["ticker"],)
             )
-    # Upsert current positions
     for pos in positions:
         await db.conn.execute(_UPSERT_POSITION_SQL, _position_params(pos))
+    return removed
+
+
+async def _log_reconcile_closes(
+    db: Database,
+    removed: list[Position],
+    *,
+    exclude_ticker: str | None = None,
+) -> None:
+    """Write a synthetic close trade + decision note for each removed
+    position (#609 — reconcile-driven drift).
+
+    Without these synthetic rows, a position closed off-CLI (manual
+    Kalshi UI close, broker liquidation, settlement, API divergence
+    corrected by reconcile) drops out of `known_markets` and Caddie
+    Master's #586 stop-loss reopen lockout cannot resolve the ticker —
+    legitimate stop-loss closes would be silently un-locked.
+
+    The synthetic decision note uses `Trigger: Reconcile-divergence`
+    (NOT `Trigger: Stop-loss breach`), so the #586 lockout query
+    correctly does NOT fire on reconcile-driven closes — allowing
+    legitimate re-entry after broker drift.
+
+    Caller MUST invoke inside an active transaction. The synthetic
+    rows use commit-less helpers so they participate in the caller's
+    transaction.
+    """
+    import os
+
+    cycle_env = os.environ.get("GIMMES_CYCLE", "0")
+    try:
+        cycle = int(cycle_env or 0)
+    except ValueError:
+        cycle = 0
+
+    for pos in removed:
+        if exclude_ticker and pos.ticker == exclude_ticker:
+            continue
+        # Use last-known mark (market_price or avg_price) as the close
+        # price rather than 0.0 — keeps `get_daily_pnl`'s realized-P&L
+        # math honest. Documented in the rationale so audit can see
+        # this isn't a broker-confirmed fill.
+        close_price = pos.market_price if pos.market_price else pos.avg_price
+        synth = TradeDecision(
+            ticker=pos.ticker,
+            action=TradeDecision.Action.CLOSE,
+            side=pos.side,
+            count=pos.count,
+            price=close_price,
+            rationale=(
+                "reconcile drift — broker removed position without local"
+                " close; price is last-known mark, not broker-confirmed"
+                " fill (#609)"
+            ),
+            agent="reconcile",
+        )
+        await _insert_trade_row(db, synth)
+
+        # IMPORTANT: this body MUST NOT contain the literal string
+        # `Trigger: Stop-loss breach` anywhere — not even in explanatory
+        # text — because Caddie Master's #586 lockout query is a
+        # substring match. Quoting the forbidden phrase here would
+        # silently lock out legitimate re-entry after reconcile drift.
+        body = (
+            f"Decision: CLOSE\n"
+            f"Trigger: Reconcile-divergence\n"
+            f"Side: {pos.side}\n"
+            f"Count: {pos.count}\n"
+            f"Last-known mark: {close_price}\n"
+            f"Rationale: broker reported position absent during reconcile;"
+            f" local DB had it open. This is broker-divergence drift,"
+            f" not an adverse price event. The #586 reopen lockout does"
+            f" NOT apply to this close — re-entry is allowed on the next"
+            f" cycle."
+        )
+        await db.conn.execute(
+            "INSERT INTO position_notes"
+            " (ticker, cycle, agent, note_type, body)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (pos.ticker, cycle, "reconcile", "decision", body),
+        )
 
 
 async def sync_positions(db: Database, positions: list[Position]) -> None:
@@ -183,9 +298,12 @@ async def sync_positions(db: Database, positions: list[Position]) -> None:
 
     Runs as a single atomic transaction — clears stale positions and upserts
     current ones so the local DB always reflects the API/broker state.
+    Removed positions get a synthetic close trade + reconcile-divergence
+    decision note so they remain resolvable via `known_markets` (#609).
     """
     async with db.transaction():
-        await _sync_positions_rows(db, positions)
+        removed = await _sync_positions_rows(db, positions)
+        await _log_reconcile_closes(db, removed)
 
 
 async def sync_positions_with_trade(
@@ -195,9 +313,17 @@ async def sync_positions_with_trade(
 
     Ensures position state and trade log are always consistent — if either
     operation fails, both are rolled back.  Returns the trade row ID.
+
+    If OTHER tickers are also being removed (multi-ticker drift in the
+    same sync), they get synthetic close trades + reconcile-divergence
+    decision notes via `_log_reconcile_closes`. The caller's trade
+    ticker is excluded — it gets logged explicitly below.
     """
     async with db.transaction():
-        await _sync_positions_rows(db, positions)
+        removed = await _sync_positions_rows(db, positions)
+        await _log_reconcile_closes(
+            db, removed, exclude_ticker=trade.ticker,
+        )
         return await _insert_trade_row(db, trade)
 
 
