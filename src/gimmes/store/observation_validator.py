@@ -127,9 +127,13 @@ def extract_cited_evidence(decision_body: str) -> list[tuple[str, str]]:
 
 
 def contains_stale_template(observation_body: str) -> bool:
-    """Case-insensitive substring match for the c1407 stale-template
-    phrase. Whitespace inside the phrase is tolerant (the phrase has
-    spaces that real prose preserves)."""
+    """Case-insensitive plain substring match for the c1407 stale-
+    template phrase. The phrase must appear with its exact internal
+    spacing — variants with embedded newlines or collapsed whitespace
+    will NOT match. This is a tight pin against the verbatim c1407
+    regression; broader matching risks rejecting legitimate
+    "no result this cycle" entries that the playbook explicitly
+    requires."""
     if not observation_body:
         return False
     return STALE_TEMPLATE_PHRASE in observation_body.lower()

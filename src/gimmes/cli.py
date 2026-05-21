@@ -2282,12 +2282,24 @@ def position_note(
                 # `KXCPI-26APR-T0.5` would silently miss a CM decision
                 # logged under `KXCPI-26APR-T0.50` (or any other
                 # canonical-form drift), defeating the entire validator.
+                # Ambiguous prefix matches are a hard error: silently
+                # writing the note under an un-resolved prefix would
+                # create an unreachable journal entry — the same class
+                # of bug the validator exists to prevent.
                 resolved_ticker = ticker
                 matches = await resolve_ticker(
                     db, ticker, source="known_markets",
                 )
+                if len(matches) > 1:
+                    _print_ambiguous_ticker(ticker, matches)
+                    raise typer.Exit(1)
                 if len(matches) == 1:
                     resolved_ticker = matches[0]
+                # If matches == [], the ticker is unknown to the
+                # system (no positions/candidates/trades on file). The
+                # validator's "no prior decision" branch handles this
+                # — we use the raw ticker as-passed and the read-back
+                # is vacuously satisfied.
                 prior = await get_position_notes(
                     db, resolved_ticker, note_type="decision", limit=1,
                 )

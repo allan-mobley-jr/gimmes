@@ -23,7 +23,11 @@ from typer.testing import CliRunner
 from gimmes import cli as cli_module
 from gimmes.cli import app
 from gimmes.store.database import Database
-from gimmes.store.queries import get_position_notes, insert_position_note
+from gimmes.store.queries import (
+    get_position_notes,
+    insert_candidate,
+    insert_position_note,
+)
 
 C1407_STALE = (
     "No named major Wall Street bank has published April CPI MoM"
@@ -235,6 +239,55 @@ def test_flag_type_skips_validator(
     flag_notes = _read_notes(db_path, "KXCPI-26APR-T0.5", note_type="flag")
     assert len(flag_notes) == 1, flag_notes
     assert C1407_STALE in flag_notes[0]["body"]
+
+
+def test_ambiguous_prefix_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ambiguous prefix tickers (e.g., "KXCPI" matching multiple
+    contracts) are a hard error rather than silently writing under
+    the un-resolved prefix. Mirrors position-notes / position-context
+    behavior and prevents creating unreachable journal entries — the
+    same class of bug the validator exists to prevent (#614)."""
+    db_path = tmp_path / "test.db"
+    # Seed two candidates under different canonical tickers that share
+    # the prefix "KXCPI". resolve_ticker(source="known_markets") will
+    # return both → ambiguous. (Seeding via candidates rather than
+    # position_notes because known_markets reads from
+    # positions/candidates/trades, not position_notes.)
+    _seed_decision(db_path, "KXCPI-26APR-T0.5", CM_DECISION_WITH_BARCLAYS)
+    _seed_decision(db_path, "KXCPI-26MAY-T0.5", CM_DECISION_WITH_BARCLAYS)
+
+    async def _seed_candidates() -> None:
+        db = Database(db_path)
+        await db.connect()
+        try:
+            await insert_candidate(
+                db, "KXCPI-26APR-T0.5", "April CPI", 0.5, 0.6, 0.1, 70, "",
+            )
+            await insert_candidate(
+                db, "KXCPI-26MAY-T0.5", "May CPI", 0.5, 0.6, 0.1, 70, "",
+            )
+        finally:
+            await db.close()
+
+    asyncio.run(_seed_candidates())
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI",  # ambiguous prefix
+        "--cycle", "1407",
+        "--agent", "monitor",
+        "--type", "observation",
+        "--body", "Some observation body.",
+    ])
+    assert result.exit_code == 1, result.output
+    assert "Ambiguous" in result.output or "ambiguous" in result.output
+
+    # Verify no note was inserted under the prefix.
+    notes = _read_notes(db_path, "KXCPI")
+    assert notes == []
 
 
 def test_observation_allowed_when_surfacing_evidence(
