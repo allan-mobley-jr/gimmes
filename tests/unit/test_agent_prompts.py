@@ -338,6 +338,200 @@ def test_caddie_master_4c_lockout_requires_both_markers(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caddie Master: Cited sources field (#617 — closes the gap that defangs
+# Monitor's read-back assertion from #577)
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_decision_templates_all_require_cited_sources(
+    caddie_master_text: str,
+) -> None:
+    """Each of the 4 decision-note templates (HOLD/CLOSE, SIZE UP,
+    APPROVE, REJECT) MUST end with a `Cited sources:` line inside its
+    own heredoc body. Scoped per-template rather than substring-counted
+    so a future field-rename can't satisfy the count spuriously (#617)."""
+    import re
+
+    # Each decision-note template lives inside a `<<'GIMMES_EOF' ...
+    # GIMMES_EOF` block whose body contains `Decision:`. Require the
+    # opening delimiter to be followed by a newline (i.e. a REAL heredoc
+    # opener) so inline backtick mentions of the delimiter literal in
+    # explanatory prose don't false-match (`<<'GIMMES_EOF'\n` is a real
+    # opener; `<<'GIMMES_EOF'` inside backticks is prose).
+    heredoc_pattern = re.compile(
+        r"<<'GIMMES_EOF'\n(.*?)\n\s*GIMMES_EOF\b",
+        flags=re.DOTALL,
+    )
+    decision_heredocs = [
+        m.group(1) for m in heredoc_pattern.finditer(caddie_master_text)
+        if "Decision:" in m.group(1)
+    ]
+    assert len(decision_heredocs) >= 4, (
+        f"Expected >= 4 decision-note heredoc blocks in caddie-master.md"
+        f" (HOLD/CLOSE, SIZE UP, APPROVE, REJECT); found"
+        f" {len(decision_heredocs)}. A template-block dropout would"
+        " silently bypass the cited-sources contract (#617)."
+    )
+    missing = [
+        i for i, body in enumerate(decision_heredocs)
+        if "Cited sources:" not in body
+    ]
+    assert not missing, (
+        f"Decision-note heredoc blocks at index {missing} are missing"
+        " the `Cited sources:` field. Every decision template MUST"
+        " end with the field — Monitor's read-back assertion (#577)"
+        " is defanged otherwise (#617)."
+    )
+    # Order check: `Cited sources:` MUST appear AFTER `Decision:` in
+    # each body — i.e., it's positioned as the closing field, not
+    # interleaved with the leading fields. Catches drift where the
+    # field is moved earlier and other fields drop below it.
+    out_of_order = [
+        i for i, body in enumerate(decision_heredocs)
+        if body.find("Cited sources:") <= body.find("Decision:")
+    ]
+    assert not out_of_order, (
+        f"Decision-note heredoc blocks at index {out_of_order} have"
+        " `Cited sources:` appearing BEFORE the `Decision:` line."
+        " The field must be the closing audit footer, not"
+        " interleaved (#617)."
+    )
+
+
+def test_caddie_master_edge_pre_filter_reject_path_uses_form_b(
+    caddie_master_text: str,
+) -> None:
+    """Step 4c's edge-pre-filter REJECT branch skips Caddie conferral but
+    DOES read `gimmes candidates` and `gimmes market-info`. The rule must
+    explicitly explain how to populate Cited sources in this branch —
+    without that guidance, agents either default to Form B silently
+    (losing valid citations) or fabricate sources (#617)."""
+    assert "Step 4c edge-pre-filter REJECT path" in caddie_master_text, (
+        "Cited-sources rule MUST explicitly call out the Step 4c"
+        " edge-pre-filter REJECT branch — it's a third context (along"
+        " with Step 2 and Step 4c regular APPROVE/REJECT) and skipping"
+        " it leaves the immediate-reject branch with no citation"
+        " guidance (#617)."
+    )
+    # The carve-out must mention BOTH candidates output and market-info
+    # are still available, even though Caddie conferral memo isn't.
+    assert "gimmes candidates" in caddie_master_text, (
+        "Edge-pre-filter REJECT rule must reference `gimmes candidates`"
+        " as a still-available source of citations in this branch."
+    )
+    assert "gimmes market-info" in caddie_master_text, (
+        "Edge-pre-filter REJECT rule must reference `gimmes market-info`"
+        " as a still-available source of citations in this branch."
+    )
+
+
+def test_caddie_master_cited_sources_allows_none_carveout(
+    caddie_master_text: str,
+) -> None:
+    """When a decision turns purely on price + thesis (no named-source
+    input), Form B 'None — decision based on price + thesis only' is
+    the allowed empty case. The em-dash is U+2014, not a hyphen-minus
+    — pin the exact byte (#617)."""
+    assert "None — decision based on price + thesis only" in caddie_master_text, (
+        "Cited sources rule must include the literal 'None — decision"
+        " based on price + thesis only' carve-out (Form B). Em-dash"
+        " is U+2014, not a hyphen-minus — this exact byte sequence is"
+        " what the drift-guard pins."
+    )
+
+
+def test_caddie_master_cited_sources_format_matches_monitor_surfacing(
+    caddie_master_text: str,
+) -> None:
+    """The example bullet format must match Monitor's playbook surfacing
+    format (#577) so a single regex can parse citations from both CM
+    decisions and Monitor observations (#617)."""
+    # Monitor's exemplar (monitor.md:78-79):
+    # `Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)`
+    # CM's exemplar must follow the same shape — pin the bracketed
+    # `(publisher, YYYY-MM-DD)` portion specifically since that's the
+    # parser-relevant structure.
+    assert "(FXStreet, 2026-05-08)" in caddie_master_text, (
+        "Cited sources rule must show an example bullet using the"
+        " same `(publisher, YYYY-MM-DD)` format as Monitor's"
+        " surfacing rule. Mismatched formats break read-back"
+        " parseability (#617)."
+    )
+    assert "Barclays April headline CPI MoM +0.55%" in caddie_master_text, (
+        "Cited sources example must reproduce Monitor's exemplar"
+        " verbatim so the two prompts can't drift on format (#617)."
+    )
+
+
+def test_caddie_master_forbids_uncited_source_fabrication(
+    caddie_master_text: str,
+) -> None:
+    """The derivation rule prevents agents from satisfying the Cited
+    sources field by fabricating citations. A source is only allowed
+    if it appears in the input CM actually consulted this cycle (#617)."""
+    derivation_marker = (
+        "Derivation rule (REQUIRED — guards against fabricated citations)"
+    )
+    assert derivation_marker in caddie_master_text, (
+        "Cited sources section MUST include a derivation rule that"
+        " forbids citing sources not present in the input consulted"
+        " this cycle. Without it, an agent can satisfy the field with"
+        " plausible-looking fabrications (#617)."
+    )
+    assert "MUST appear in Monitor's flag body" in caddie_master_text, (
+        "Derivation rule MUST anchor Step 2 citations on Monitor's"
+        " flag body — that's where the bank/aggregator forecasts CM"
+        " relied on are written (#617)."
+    )
+    assert (
+        "MUST appear in Caddie's research memo" in caddie_master_text
+        or "appear in Caddie's research memo" in caddie_master_text
+    ), (
+        "Derivation rule MUST anchor Step 4c citations on Caddie's"
+        " research memo or market-info output — that's where the"
+        " sources CM relied on for APPROVE/REJECT are written (#617)."
+    )
+
+
+def test_caddie_master_cited_sources_references_monitor_playbook(
+    caddie_master_text: str,
+    monitor_text: str,
+) -> None:
+    """Cross-file invariant: CM's cited-sources rule must reference
+    Monitor's `Fundamental-Economic-Trigger Source Playbook` by name
+    so future playbook additions (new bank, new aggregator) are
+    naturally covered by CM's derivation rule (#617)."""
+    assert "Fundamental-Economic-Trigger Source Playbook" in caddie_master_text, (
+        "Caddie Master's cited-sources rule MUST reference Monitor's"
+        " `Fundamental-Economic-Trigger Source Playbook` section by"
+        " name. Without the cross-reference, a future addition to"
+        " Monitor's bank list (e.g., HSBC) would require a separate"
+        " CM edit — guaranteed drift (#617)."
+    )
+    # And the playbook section itself must still exist in monitor.md
+    # (regression pin against accidentally deleting it from monitor).
+    assert "## Fundamental-Economic-Trigger Source Playbook" in monitor_text, (
+        "monitor.md MUST still have the playbook section that CM's"
+        " cross-reference points at (#577)."
+    )
+
+
+def test_monitor_readback_vacuous_clause_still_present(
+    monitor_text: str,
+) -> None:
+    """Regression pin: #617 must NOT inadvertently break Monitor's
+    backward-compatibility clause for pre-existing decision notes that
+    lack a Cited sources field. The 'vacuously satisfied' clause covers
+    pre-#617 decisions during the migration window (#617)."""
+    assert "vacuously satisfied" in monitor_text, (
+        "monitor.md's read-back assertion must retain the 'vacuously"
+        " satisfied' clause so pre-#617 decision notes (which lack"
+        " Cited sources) don't trip the FORBIDDEN rule during the"
+        " migration window (#577 + #617)."
+    )
+
+
 def test_monitor_template_body_carries_conditional_fields(
     monitor_text: str,
 ) -> None:

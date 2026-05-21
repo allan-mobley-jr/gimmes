@@ -65,6 +65,37 @@ gimmes positions
   If the command fails, note the failure in your output and continue. Do not retry.
 - Otherwise → proceed with full cycle.
 
+### Decision-note required field: Cited sources (REQUIRED — closes #617)
+
+Every `decision`-type note you write in Steps 2c, 2d, 4c (APPROVE), and 4c (REJECT) MUST end with a `Cited sources:` field. This field exists so Monitor's read-back assertion (introduced in #577) can verify that subsequent observations either inherit or contradict the sources you actually relied on — without this field, the read-back rule is "vacuously satisfied" on most decisions and the structural defense against stale-template regressions is defanged.
+
+**Format (one of these two forms, exact):**
+
+Form A — bulleted list of sources. Each bullet matches Monitor's playbook surfacing format in the same shape:
+```
+Cited sources:
+- Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)
+- Wells Fargo April headline CPI MoM +0.63% (FXStreet, 2026-05-08)
+```
+
+Form B — explicit empty case:
+```
+Cited sources:
+None — decision based on price + thesis only
+```
+
+The em-dash in Form B is a literal U+2014 character (`—`), not a hyphen-minus. The drift-guard test pins the exact byte.
+
+**Derivation rule (REQUIRED — guards against fabricated citations).** A source is only allowed in `Cited sources:` if it appears verbatim in the input you relied on for THIS decision:
+- For Step 2c HOLD/CLOSE and Step 2d SIZE UP: the source MUST appear in Monitor's flag body (which you read via `gimmes position-context TICKER`).
+- For Step 4c APPROVE and Step 4c REJECT: the source MUST appear in Caddie's research memo (read via `gimmes candidates --ticker TICKER --limit 1`) OR in `gimmes market-info TICKER` output.
+
+You MAY cite a source that appears in a prior `position-context` note (e.g., the most-recent observation) — that constitutes inheritance. You MAY NOT introduce a source that does not appear in any input you actually consulted this cycle. If your decision was based on price action + thesis only (no named-source input), use Form B.
+
+**Step 4c edge-pre-filter REJECT path** (the immediate-reject branch that skips Caddie conferral): use Form B by default — the Caddie conferral memo is unavailable. The `gimmes candidates --ticker TICKER` output and `gimmes market-info TICKER` output ARE both already read at this point (sub-steps 1-2 of Step 4c), so if a named source appears in either of those outputs, you MAY cite it via Form A.
+
+This rule applies regardless of ticker category. For fundamental-economic-trigger tickers (see Monitor's `## Fundamental-Economic-Trigger Source Playbook`), Form A with multiple bullets is expected when CM reviewed flags carrying bank/aggregator forecasts; Form B is acceptable when the decision genuinely turned only on price + thesis.
+
 ### Step 2: Monitor Review (if positions exist)
 
 **If there are no open positions, skip to Step 3.**
@@ -142,6 +173,9 @@ After Monitor returns, review its report. For each position Monitor flagged:
    Thesis assessment: [was the new information already in the thesis, or does it genuinely change the picture?].
    Re-evaluate if: [for HOLD only — specific condition, e.g. 'price moves another 8pp adverse' or 'after next CPI release Apr 10' or 'thesis-changing news emerges'].
    Expiry: [for HOLD only — REQUIRED cycle number to reconsider regardless, use current cycle + 10].
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -181,6 +215,9 @@ If Monitor flags a position where the current edge has *increased* since entry (
    Decision: SIZE UP.
    Reasoning: [specific reasoning referencing original thesis and Monitor's flag].
    Edge assessment: [entry edge vs current edge].
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -344,6 +381,9 @@ For each PROCEED candidate:
    Signal independence: [confirmed independent or not — explain].
    Portfolio correlation: [none, or describe overlap with existing positions].
    Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — pass.
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
@@ -360,6 +400,9 @@ For each PROCEED candidate:
    Reasoning: [specific reasoning — what failed scrutiny].
    Key concern: [the issue that could not be resolved in conferral].
    Edge vs CM floor: net edge [X.Xpp] vs cm_min_edge_after_fees [Y.Ypp] — [pass/fail].
+   Cited sources:
+   [Form A: a bulleted list of "- Source — metric value (publisher, YYYY-MM-DD)" lines, OR
+    Form B (literal): None — decision based on price + thesis only]
    GIMMES_EOF
    gimmes position-note TICKER \
      --cycle $GIMMES_CYCLE \
