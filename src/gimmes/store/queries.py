@@ -588,6 +588,14 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
     on the same ticker that occurred before the close, then computes:
     (close_price - open_price) * count.
 
+    Synthetic reconcile-divergence close trades (agent='reconcile', written
+    by `_log_reconcile_closes` per #609) are EXCLUDED from daily P&L because
+    they represent broker-side drift, not intentional realized trading P&L.
+    Including them distorts the daily-loss-limit trigger that the autonomous
+    loop reads from this value — a reconcile-driven close at the last-known
+    mark would show as realized loss/gain the operator did not actually
+    take (#622).
+
     Args:
         db: Database connection.
         today: Optional date string (YYYY-MM-DD) to use instead of 'now'.
@@ -605,6 +613,7 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
         ), 0) as daily_pnl
         FROM trades c
         WHERE c.action = 'close'
+          AND c.agent != 'reconcile'
           AND date(c.timestamp) = date(?)""",
         ("now" if today is None else today,),
     )

@@ -154,3 +154,108 @@ class TestGetDailyPnl:
         # Cycle 2: (0.65 - 0.60) * 5 = 0.25
         # Total: 1.25
         assert pnl == pytest.approx(1.25)
+
+
+class TestGetDailyPnlExcludesReconcileCloses:
+    """Synthetic reconcile-divergence closes (#609) are broker-side
+    drift, not intentional trading P&L. Including them in daily P&L
+    would distort the autonomous-loop's daily-loss-limit trigger —
+    the operator would see a "loss" they did not actually take
+    (#622)."""
+
+    async def test_reconcile_close_excluded_from_pnl(
+        self, db: Database,
+    ) -> None:
+        """A reconcile-driven close trade must NOT contribute to
+        daily P&L. Without the agent filter, the synthetic close at
+        last-known mark would show up as realized P&L."""
+        now = datetime.now(UTC)
+        # Open at 0.40
+        await insert_trade(db, _trade(
+            action="open", price=0.40, count=10, timestamp=now,
+        ))
+        # Reconcile drops the position — synthetic close at the last
+        # mark of 0.60, agent='reconcile'. Without the filter, this
+        # would show as 0.20 * 10 = $2 of realized P&L.
+        reconcile_trade = TradeDecision(
+            ticker="KXTEST",
+            action=TradeDecision.Action.CLOSE,
+            price=0.60,
+            count=10,
+            edge=0.0,
+            agent="reconcile",
+            rationale="reconcile drift — broker removed position (#609)",
+            timestamp=now,
+        )
+        await insert_trade(db, reconcile_trade)
+
+        pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
+        assert pnl == 0.0, (
+            f"Expected 0.0 (reconcile close excluded), got {pnl}"
+        )
+
+    async def test_real_close_still_included_alongside_reconcile(
+        self, db: Database,
+    ) -> None:
+        """A real Closer-driven close in the same day as a reconcile
+        close should still contribute to daily P&L — only reconcile
+        rows are filtered."""
+        now = datetime.now(UTC)
+
+        # Real trade pair: open + closer-driven close → +$1 P&L
+        await insert_trade(db, _trade(
+            ticker="REAL-TICKER", action="open", price=0.40,
+            count=10, timestamp=now,
+        ))
+        await insert_trade(db, _trade(
+            ticker="REAL-TICKER", action="close", price=0.50,
+            count=10, timestamp=now,
+        ))
+
+        # Reconcile drift on a different ticker — must NOT contribute.
+        await insert_trade(db, _trade(
+            ticker="DRIFT-TICKER", action="open", price=0.40,
+            count=10, timestamp=now,
+        ))
+        reconcile_trade = TradeDecision(
+            ticker="DRIFT-TICKER",
+            action=TradeDecision.Action.CLOSE,
+            price=0.99,  # large drift "gain" if not filtered
+            count=10,
+            edge=0.0,
+            agent="reconcile",
+            timestamp=now,
+        )
+        await insert_trade(db, reconcile_trade)
+
+        pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
+        # Only the real close counts: (0.50 - 0.40) * 10 = 1.0
+        # If the filter were broken, the DRIFT-TICKER reconcile would
+        # add (0.99 - 0.40) * 10 = 5.9 for a misleading total of 6.9.
+        assert pnl == pytest.approx(1.0), (
+            f"Expected 1.0 (real close only), got {pnl}"
+        )
+
+    async def test_multiple_reconcile_closes_all_excluded(
+        self, db: Database,
+    ) -> None:
+        """Multi-ticker reconcile drift in one day — all synthetic
+        rows excluded from P&L."""
+        now = datetime.now(UTC)
+        for ticker in ("A", "B", "C"):
+            await insert_trade(db, _trade(
+                ticker=ticker, action="open", price=0.30,
+                count=5, timestamp=now,
+            ))
+            await insert_trade(db, TradeDecision(
+                ticker=ticker,
+                action=TradeDecision.Action.CLOSE,
+                price=0.80,
+                count=5,
+                edge=0.0,
+                agent="reconcile",
+                timestamp=now,
+            ))
+
+        pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
+        assert pnl == 0.0
