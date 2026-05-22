@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.7] - 2026-05-22
+
+Three follow-ups to the v0.8.5 stack (#577 / #609). Restart `driving_range` after `gimmes update` so the autonomous loop loads the new Monitor prompt.
+
+### Fixed
+- `get_daily_pnl` now excludes synthetic reconcile-divergence close trades (`agent='reconcile'`) from the daily realized P&L aggregate. Without the filter, the synthetic closes written by `_log_reconcile_closes` (introduced in #609) would distort the autonomous-loop's daily-loss-limit trigger — an operator could see a "realized loss" from broker-side drift that they did not actually take. Three new tests in `TestGetDailyPnlExcludesReconcileCloses` lock in the invariant: pure-reconcile day → 0 P&L; real close + reconcile close → only the real close counts; multi-ticker reconcile drift → all excluded. (#622)
+
+### Changed
+- Monitor's observation template now requires a `Playbook sources checked this cycle:` audit footer for fundamental-economic-trigger tickers, enumerating every named bank (Goldman Sachs, JPMorgan, Morgan Stanley, BofA, Citi, Barclays, Wells Fargo, Deutsche Bank, UBS) and aggregator (FXStreet, MarketWatch, Reuters, Bloomberg) with one of three explicit outcomes per source: a freshly-searched value, an inherited prior result with citation, or `no result this cycle`. Without this footer, an operator auditing `gimmes position-notes` couldn't distinguish "Monitor ran the playbook, found no signal" from "Monitor skipped the playbook entirely" — the silent-failure path the 48h staleness rule (#577) was designed to defend against. For tickers NOT in the playbook category list (equity indices), the footer is OMITTED entirely via an inline annotation on the header line so an agent copy-pasting the template sees the omission rule immediately. Four drift-guard tests pin the footer block, full source enumeration (so partial-row drop-out is detected via count), the three allowed per-source outcomes, and the OMIT annotation on the header line specifically. (#615)
+
+### Tests
+- New `tests/unit/test_paper_reconcile_drift.py` (3 tests, no code change) — confirms paper-mode reconcile is already covered by #609's fix. Reviewer concern on PR #624 was based on misreading the reconcile path; `cli.reconcile()` routes paper mode through `sync_positions` (which #609 fixed), so the synthetic close + reconcile-divergence decision note are written uniformly across paper and championship modes. Tests exercise the canonical scenario (settle paper position → next reconcile writes synthetic close), multi-ticker drift, and an end-to-end CLI-level invocation via Typer's `CliRunner`. The CLI-level test would catch a future refactor that diverged paper-mode's reconcile path from championship's. (#623)
+
 ## [0.8.6] - 2026-05-22
 
 ### Added
