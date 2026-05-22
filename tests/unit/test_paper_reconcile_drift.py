@@ -2,14 +2,18 @@
 
 The silent-failure-hunter on PR #624 (#609) claimed paper-mode reconcile
 bypasses `sync_positions` and therefore doesn't get the synthetic close
-trade. Reading the code, `cli.reconcile` actually DOES route paper mode
-through `sync_positions(db, broker.get_positions())` at cli.py:1742-1750,
-so #609's fix should cover paper mode automatically.
+trade. Reading the code, `cli.reconcile()` actually DOES route paper
+mode through `sync_positions(db, broker.get_positions())`, so #609's
+fix should cover paper mode automatically.
 
-These tests prove it: settle a paper position via `PaperBroker.settle()`
-(the most common path that zeros out `paper_positions.count` outside of
-reconcile), then run the reconcile flow and assert the synthetic close +
-reconcile-divergence decision note are written.
+These tests prove it from two angles:
+- Unit-level: settle a paper position via `PaperBroker.settle()` (the
+  most common path that zeros `paper_positions.count` outside reconcile),
+  then directly call `sync_positions(db, broker.get_positions())` and
+  assert the synthetic close + reconcile-divergence note are written.
+- CLI-level: invoke `gimmes reconcile` via the Typer CliRunner against
+  a real DB + real PaperBroker, so a future refactor that diverged the
+  CLI's paper-mode path from `sync_positions` would fail loudly.
 
 If these tests pass without any code change, #623 is resolved by #609.
 """
@@ -187,3 +191,98 @@ class TestPaperReconcileDriftCoveredBy609:
         assert "KXCPI-26APR-T0.5" not in remaining_tickers
         assert "KXPAYROLLS-26APR" in remaining_tickers
         assert "KXFED-26MAY" in remaining_tickers
+
+
+def test_cli_reconcile_paper_mode_writes_synthetic_close(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """End-to-end through the actual `cli.reconcile()` Typer command —
+    catches a future refactor that diverged paper-mode's reconcile path
+    from championship's. Without this, the unit tests above would still
+    pass even if `cli.reconcile()` stopped calling sync_positions in
+    paper mode (the exact regression #623 was guarding against).
+
+    Synchronous test using asyncio.run() for setup so CliRunner's
+    asyncio.run() inside the Typer command doesn't nest event loops.
+    """
+    import asyncio
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock
+
+    from typer.testing import CliRunner
+
+    from gimmes import cli as cli_module
+    from gimmes.cli import app
+
+    db_path = tmp_path / "test.db"
+
+    async def _setup() -> None:
+        db = Database(db_path)
+        await db.connect()
+        broker = PaperBroker(db, _paper_config().paper)
+        await broker.initialize()
+        await _seed_position(
+            db, broker, ticker="KXCPI-26APR-T0.5",
+        )
+        await broker.settle("KXCPI-26APR-T0.5", result="no")
+        await db.close()
+
+    asyncio.run(_setup())
+
+    # Patch load_config to point at our temp DB and force paper mode.
+    cfg = MagicMock()
+    cfg.db_path = db_path
+    cfg.is_championship = False
+    cfg.paper = _paper_config().paper
+    monkeypatch.setattr(cli_module, "load_config", lambda: cfg)
+
+    # Patch trading_context to skip KalshiClient (no network) and yield
+    # a real PaperBroker + real DB so the CLI exercises the actual
+    # reconcile branch (paper-mode: broker.get_positions() →
+    # sync_positions). A divergence between the CLI and our unit tests
+    # would surface as a test failure here.
+    @asynccontextmanager
+    async def _ctx(_config):  # type: ignore[no-untyped-def]
+        db = Database(db_path)
+        await db.connect()
+        try:
+            broker = PaperBroker(db, _paper_config().paper)
+            await broker.initialize()
+            yield None, broker, db
+        finally:
+            await db.close()
+
+    monkeypatch.setattr(cli_module, "trading_context", _ctx)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0, result.output
+
+    # Verify the actual CLI path produced the synthetic close.
+    async def _check() -> None:
+        db = Database(db_path)
+        await db.connect()
+        try:
+            trades = await get_trades(db)
+            reconcile_trades = [
+                t for t in trades if t.get("agent") == "reconcile"
+            ]
+            assert len(reconcile_trades) == 1, (
+                f"Expected one reconcile-agent trade after CLI"
+                f" reconcile, got {len(reconcile_trades)}:"
+                f" {reconcile_trades}"
+            )
+            assert reconcile_trades[0]["ticker"] == "KXCPI-26APR-T0.5"
+            assert reconcile_trades[0]["action"] == "close"
+
+            notes = await get_position_notes(
+                db, "KXCPI-26APR-T0.5", note_type="decision",
+            )
+            assert len(notes) == 1
+            body = notes[0]["body"]
+            assert "Trigger: Reconcile-divergence" in body
+            assert "Trigger: Stop-loss breach" not in body
+        finally:
+            await db.close()
+
+    asyncio.run(_check())
