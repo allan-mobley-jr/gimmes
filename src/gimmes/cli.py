@@ -8,6 +8,7 @@ import re
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TypeVar
 
 import click
 import typer
@@ -4242,6 +4243,34 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
     return json_bytes
 
 
+_BudgetCapT = TypeVar("_BudgetCapT", int, float)
+
+
+def _resolve_budget_cap(
+    *,
+    cli_value: _BudgetCapT | None,
+    config_value: _BudgetCapT | None,
+    default: _BudgetCapT,
+) -> _BudgetCapT:
+    """Resolve a budget-cap value via CLI > config > hardcoded default.
+
+    CLI flag wins when present (non-None) so operators can override on
+    a per-run basis. When the CLI flag is None, fall back to the
+    config-provided value if set; otherwise return the hardcoded
+    default from `gimmes.budget`. Lets `gimmes config set
+    budget.max_daily_cost_usd 50` persist across restarts without
+    requiring the operator to remember the CLI flag every time.
+
+    A value of 0 (from CLI or config) explicitly means "unlimited" and
+    is preserved — distinct from None which means "no override."
+    """
+    if cli_value is not None:
+        return cli_value
+    if config_value is not None:
+        return config_value
+    return default
+
+
 def _wrap_stream_json(raw: bytes) -> bytes:
     """Wrap newline-delimited JSON events into a JSON array.
 
@@ -4392,18 +4421,25 @@ def _autonomous_loop(
     )
     from gimmes.config import GIMMES_HOME
 
+    # Resolve daily caps via three-tier precedence: CLI flag wins; if
+    # absent, fall back to `budget.max_*` config; if both absent, use
+    # the hardcoded DEFAULT_MAX_* constants. Lets operators raise the
+    # caps once via `gimmes config set` without having to remember the
+    # CLI flags on every restart.
+    resolved_max_sessions = _resolve_budget_cap(
+        cli_value=max_sessions_per_day,
+        config_value=config.budget.max_sessions_per_day,
+        default=DEFAULT_MAX_SESSIONS,
+    )
+    resolved_max_cost = _resolve_budget_cap(
+        cli_value=max_daily_cost_usd,
+        config_value=config.budget.max_daily_cost_usd,
+        default=DEFAULT_MAX_USD,
+    )
     budget_tracker = BudgetTracker(
         path=GIMMES_HOME / "budget.json",
-        max_sessions=(
-            DEFAULT_MAX_SESSIONS
-            if max_sessions_per_day is None
-            else max_sessions_per_day
-        ),
-        max_cost_usd=(
-            DEFAULT_MAX_USD
-            if max_daily_cost_usd is None
-            else max_daily_cost_usd
-        ),
+        max_sessions=resolved_max_sessions,
+        max_cost_usd=resolved_max_cost,
     )
     # Persist the live caps immediately so `gimmes budget` shows the
     # operator's actual limits even if the loop blocks before the first
