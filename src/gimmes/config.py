@@ -945,6 +945,64 @@ class ModelConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Budget caps (persistent overrides for the autonomous-loop daily caps)
+# ---------------------------------------------------------------------------
+
+
+class BudgetConfig(BaseModel):
+    """Persistent overrides for the autonomous-loop daily Claude API caps.
+
+    The autonomous loop accepts CLI flags ``--max-daily-cost-usd`` and
+    ``--max-sessions-per-day`` at startup. Setting them here lets you
+    raise (or lower) the caps once and forget — every restart picks up
+    the config value without having to remember the flags. CLI flags
+    still win when both are present.
+
+    ``None`` (the default) means "use the hardcoded ``DEFAULT_MAX_USD``
+    and ``DEFAULT_MAX_SESSIONS`` from ``gimmes/budget.py``." Set to
+    ``0`` to make the cap unlimited (matches the CLI-flag semantics).
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "section_name": "Budget Caps",
+            "section_description": (
+                "Persistent daily caps for the autonomous loop.\n"
+                "CLI flags --max-daily-cost-usd / --max-sessions-per-day\n"
+                "override these when both are present."
+            ),
+            "section_order": 9,
+        },
+    )
+
+    max_daily_cost_usd: float | None = Field(
+        default=None,
+        ge=0.0,
+        json_schema_extra={
+            "display_name": "Max daily Claude API cost (USD)",
+            "description": (
+                "Hard cap on Claude API spend per UTC day. The loop"
+                " sleeps until UTC midnight when this is reached."
+                " None = hardcoded default ($25). 0 = unlimited."
+            ),
+        },
+    )
+
+    max_sessions_per_day: int | None = Field(
+        default=None,
+        ge=0,
+        json_schema_extra={
+            "display_name": "Max Claude sessions per day",
+            "description": (
+                "Hard cap on Claude Code sessions started per UTC"
+                " day. None = hardcoded default (80). 0 = unlimited."
+            ),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main config
 # ---------------------------------------------------------------------------
 
@@ -970,6 +1028,7 @@ class GimmesConfig(BaseModel):
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
 
     # Database
     db_path: Path = Field(default_factory=lambda: GIMMES_HOME / "gimmes.db")
@@ -1059,6 +1118,7 @@ CONFIG_SECTIONS: list[tuple[str, type[BaseModel]]] = [
     ("scanner", ScannerConfig),
     ("scoring", ScoringConfig),
     ("model", ModelConfig),
+    ("budget", BudgetConfig),
 ]
 
 

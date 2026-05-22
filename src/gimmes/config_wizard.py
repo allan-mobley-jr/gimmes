@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import get_origin
+from types import UnionType
+from typing import Union, get_args, get_origin
 
 import typer
 from pydantic import BaseModel
@@ -51,15 +52,32 @@ class Setting:
 
 
 def _field_type_str(field_info: FieldInfo) -> str:
-    """Derive the wizard type string from a Pydantic field's annotation."""
+    """Derive the wizard type string from a Pydantic field's annotation.
+
+    Unwraps `T | None` / `Optional[T]` to T so nullable fields (e.g.
+    `budget.max_daily_cost_usd: float | None`) get the right wizard
+    type rather than falling through to "str". Without this, a `0`
+    value would be stored as the literal string "0" and skip range
+    validation.
+    """
     ann = field_info.annotation
+    # Unwrap Optional[T] / T | None → T. Pydantic stores Union[T, None]
+    # in `annotation`; get_args yields (T, NoneType).
+    from types import NoneType
+
+    origin = get_origin(ann)
+    if origin in (UnionType, Union):
+        args = [a for a in get_args(ann) if a is not NoneType]
+        if len(args) == 1:
+            ann = args[0]
+            origin = get_origin(ann)
+
     if ann is int:
         return "int"
     if ann is float:
         return "float"
     if ann is str:
         return "str"
-    origin = get_origin(ann)
     if origin is list:
         return "list"
     # Check if it's a BaseModel subclass (nested model like ScoringWeights)
