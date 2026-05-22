@@ -986,6 +986,11 @@ class BudgetConfig(BaseModel):
                 " sleeps until UTC midnight when this is reached."
                 " None = hardcoded default ($25). 0 = unlimited."
             ),
+            # Mirror Pydantic's ge=0.0 into the wizard's range check so
+            # `gimmes config set budget.max_daily_cost_usd -1` is
+            # rejected at entry time, not later when the loaded config
+            # tries to construct BudgetConfig.
+            "min_val": 0.0,
         },
     )
 
@@ -998,6 +1003,7 @@ class BudgetConfig(BaseModel):
                 "Hard cap on Claude Code sessions started per UTC"
                 " day. None = hardcoded default (80). 0 = unlimited."
             ),
+            "min_val": 0,
         },
     )
 
@@ -1246,4 +1252,5 @@ def load_config(db_path: Path | None = None) -> GimmesConfig:
         scanner=ScannerConfig(**overrides.get("scanner", {})),
         scoring=ScoringConfig(**overrides.get("scoring", {})),
         model=ModelConfig(**overrides.get("model", {})),
+        budget=BudgetConfig(**overrides.get("budget", {})),
     )

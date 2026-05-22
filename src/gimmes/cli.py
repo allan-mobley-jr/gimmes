@@ -8,6 +8,7 @@ import re
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TypeVar
 
 import click
 import typer
@@ -4242,12 +4243,15 @@ def _extract_terminal_text(json_bytes: bytes) -> bytes:
     return json_bytes
 
 
+_BudgetCapT = TypeVar("_BudgetCapT", int, float)
+
+
 def _resolve_budget_cap(
     *,
-    cli_value: float | int | None,
-    config_value: float | int | None,
-    default: float | int,
-) -> float | int:
+    cli_value: _BudgetCapT | None,
+    config_value: _BudgetCapT | None,
+    default: _BudgetCapT,
+) -> _BudgetCapT:
     """Resolve a budget-cap value via CLI > config > hardcoded default.
 
     CLI flag wins when present (non-None) so operators can override on

@@ -178,3 +178,67 @@ class TestBudgetConfigCLIIntegration:
         sessions_field = BudgetConfig.model_fields["max_sessions_per_day"]
         assert _field_type_str(cost_field) == "float"
         assert _field_type_str(sessions_field) == "int"
+
+    def test_load_config_wires_budget_sub_config(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """load_config() MUST pass `budget=BudgetConfig(...)` when
+        constructing GimmesConfig — otherwise values saved via
+        `gimmes config set budget.*` are persisted to the DB but
+        never reach the runtime config object, and _autonomous_loop
+        always sees defaults. Found by Copilot review on PR #626."""
+        import sqlite3
+
+        from gimmes.config import load_config
+        from gimmes.store.database import Database
+
+        # Build a DB with a budget override in the config table.
+        db_path = tmp_path / "test.db"
+        import asyncio
+
+        async def _setup() -> None:
+            db = Database(db_path)
+            await db.connect()
+            await db.close()
+
+        asyncio.run(_setup())
+
+        # Insert the budget override directly (schema is created by
+        # Database.connect via migrations).
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                ("budget.max_daily_cost_usd", "50.0"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                ("budget.max_sessions_per_day", "120"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        cfg = load_config(db_path=db_path)
+        # If load_config doesn't wire budget, both values would be
+        # None (BudgetConfig's default) regardless of what's in the DB.
+        assert cfg.budget.max_daily_cost_usd == 50.0
+        assert cfg.budget.max_sessions_per_day == 120
+
+    def test_min_val_in_json_schema_extra(self) -> None:
+        """Pydantic's `ge=0.0` rejects negatives at model construction
+        time, but `gimmes config set` validates ranges using
+        `json_schema_extra['min_val']`. Without `min_val: 0`, a user
+        could save `-1` to the DB and only see the error later when
+        the loaded config tried to construct BudgetConfig — a
+        confusing UX. Found by Copilot review on PR #626."""
+        from gimmes.config import BudgetConfig
+
+        cost_extra = (
+            BudgetConfig.model_fields["max_daily_cost_usd"].json_schema_extra
+            or {}
+        )
+        sessions_extra = (
+            BudgetConfig.model_fields["max_sessions_per_day"].json_schema_extra
+            or {}
+        )
+        assert cost_extra.get("min_val") == 0.0
+        assert sessions_extra.get("min_val") == 0
