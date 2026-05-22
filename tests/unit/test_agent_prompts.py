@@ -669,10 +669,10 @@ def test_monitor_audit_footer_enumerates_full_playbook_list(
 def test_monitor_audit_footer_allows_no_result_and_inheritance(
     monitor_text: str,
 ) -> None:
-    """Each source row supports three outcomes: a fresh search result,
-    an inherited prior result with citation, or 'no result this cycle'.
-    Without these explicit affordances, Monitor would have no way to
-    record absent sources without fabricating data (#615)."""
+    """Each source row MUST carry the explicit three-outcome grammar
+    inline. Without per-row grammar, agents may fill the `[...]`
+    placeholders inconsistently and the audit value erodes — Copilot's
+    review of #615 caught this exact vacuous-coverage path (#615)."""
     import re
 
     obs_match = re.search(
@@ -682,15 +682,29 @@ def test_monitor_audit_footer_allows_no_result_and_inheritance(
     )
     assert obs_match is not None
     block = obs_match.group(0)
-    assert "no result this cycle" in block, (
-        "Footer template must allow `no result this cycle` as an"
-        " explicit per-source value so absent forecasts can be"
-        " recorded without fabrication (#615)."
+    # Find the footer template specifically.
+    footer_match = re.search(
+        r"Playbook sources checked this cycle.*?GIMMES_EOF",
+        block,
+        flags=re.DOTALL,
     )
-    assert "inherited" in block, (
-        "Footer template must allow inheritance from a prior"
-        " observation's cited finding — matches the (b) branch of"
-        " the read-back assertion (#577/#615)."
+    assert footer_match is not None
+    footer = footer_match.group(0)
+
+    # Every enumerated source line MUST carry the full grammar.
+    # Counting occurrences of the grammar string against the count
+    # of source bullets ensures partial-row drift is caught.
+    grammar = (
+        "[value (publisher, YYYY-MM-DD) OR 'no result this cycle'"
+        " OR 'inherited: <prior cite>']"
+    )
+    grammar_count = footer.count(grammar)
+    assert grammar_count >= 13, (
+        f"Footer template must repeat the full three-outcome grammar"
+        f" on every source row (13 sources: 9 banks + 4 aggregators)."
+        f" Found grammar on {grammar_count} rows. Bare `[...]`"
+        f" placeholders let agents fill inconsistently and erode"
+        f" audit value (#615)."
     )
 
 
@@ -721,6 +735,23 @@ def test_monitor_audit_footer_omitted_for_non_economic_tickers(
         "Footer-omission rule must use the uppercase token `OMIT`"
         " (matching the existing prompt's emphasis convention) so"
         " agents reading the rule treat it as a hard instruction."
+    )
+    # The omission rule must be inline on the footer header itself
+    # (not just in surrounding prose) so an agent copy-pasting the
+    # template sees the rule immediately. Copilot's review of #615
+    # flagged the unconditional-template / omission-rule mismatch.
+    footer_header_match = re.search(
+        r"Playbook sources checked this cycle[^\n]*",
+        block,
+    )
+    assert footer_header_match is not None
+    footer_header = footer_header_match.group(0)
+    assert "OMIT" in footer_header, (
+        "The `Playbook sources checked this cycle:` header line MUST"
+        " contain an inline omission annotation (e.g.,"
+        " `OMIT this entire block for non-playbook tickers`) so an"
+        " agent copy-pasting the template sees the omission rule"
+        " right there, not just in surrounding prose (#615)."
     )
 
 

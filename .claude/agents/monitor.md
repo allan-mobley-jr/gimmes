@@ -114,20 +114,20 @@ Thesis delta: [any change in thesis assessment, or 'Unchanged'].
 Trigger conditions: [NEW triggers only — not triggers already flagged and decided on].
 Overall: [Material change / No material change].
 
-Playbook sources checked this cycle (#615):
+Playbook sources checked this cycle (#615 — OMIT this entire block for non-playbook tickers; see Footer-omission rule below):
 - Goldman Sachs: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
 - JPMorgan: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Morgan Stanley: [...]
-- Bank of America: [...]
-- Citi: [...]
-- Barclays: [...]
-- Wells Fargo: [...]
-- Deutsche Bank: [...]
-- UBS: [...]
-- FXStreet: [...]
-- MarketWatch: [...]
-- Reuters: [...]
-- Bloomberg: [...]
+- Morgan Stanley: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Bank of America: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Citi: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Barclays: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Wells Fargo: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Deutsche Bank: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- UBS: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- FXStreet: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- MarketWatch: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Reuters: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Bloomberg: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
 GIMMES_EOF
 gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
