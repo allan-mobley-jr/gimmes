@@ -593,6 +593,138 @@ def test_monitor_stop_loss_flag_carries_thesis_and_time(
 
 
 # ---------------------------------------------------------------------------
+# Monitor playbook audit footer (#615)
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_observation_template_includes_playbook_audit_footer(
+    monitor_text: str,
+) -> None:
+    """The observation template must include a `Playbook sources
+    checked this cycle:` block so an operator auditing position-notes
+    can distinguish 'Monitor ran the playbook' from 'Monitor skipped
+    the playbook entirely' — the silent-failure path the 48h
+    staleness rule was added to defend against (#615)."""
+    import re
+
+    obs_match = re.search(
+        r"^## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert obs_match is not None, "Writing Observations section must exist"
+    block = obs_match.group(0)
+    assert "Playbook sources checked this cycle" in block, (
+        "Observation template MUST include a `Playbook sources checked"
+        " this cycle:` audit footer for fundamental-economic-trigger"
+        " tickers (#615). Without it, operators can't tell whether"
+        " Monitor actually ran the playbook this cycle."
+    )
+    assert "#615" in block, (
+        "Audit footer must cite #615 inline so the rationale is"
+        " preserved when the prompt is read in isolation."
+    )
+
+
+def test_monitor_audit_footer_enumerates_full_playbook_list(
+    monitor_text: str,
+) -> None:
+    """The footer template must enumerate every named bank AND every
+    aggregator from the playbook list — partial enumeration would
+    let Monitor silently drop sources from cycle to cycle (#615)."""
+    import re
+
+    obs_match = re.search(
+        r"^## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert obs_match is not None
+    block = obs_match.group(0)
+
+    # Locate just the footer template (between "Playbook sources
+    # checked this cycle" header and the GIMMES_EOF terminator).
+    footer_match = re.search(
+        r"Playbook sources checked this cycle.*?GIMMES_EOF",
+        block,
+        flags=re.DOTALL,
+    )
+    assert footer_match is not None
+    footer = footer_match.group(0)
+
+    required = [
+        "Goldman Sachs", "JPMorgan", "Morgan Stanley", "Bank of America",
+        "Citi", "Barclays", "Wells Fargo", "Deutsche Bank", "UBS",
+        "FXStreet", "MarketWatch", "Reuters", "Bloomberg",
+    ]
+    missing = [name for name in required if name not in footer]
+    assert not missing, (
+        f"Audit footer template missing playbook sources: {missing}."
+        f" Every bank and aggregator in the playbook MUST be enumerated"
+        f" in the footer template so partial enumeration can't drop"
+        f" sources silently (#615)."
+    )
+
+
+def test_monitor_audit_footer_allows_no_result_and_inheritance(
+    monitor_text: str,
+) -> None:
+    """Each source row supports three outcomes: a fresh search result,
+    an inherited prior result with citation, or 'no result this cycle'.
+    Without these explicit affordances, Monitor would have no way to
+    record absent sources without fabricating data (#615)."""
+    import re
+
+    obs_match = re.search(
+        r"^## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert obs_match is not None
+    block = obs_match.group(0)
+    assert "no result this cycle" in block, (
+        "Footer template must allow `no result this cycle` as an"
+        " explicit per-source value so absent forecasts can be"
+        " recorded without fabrication (#615)."
+    )
+    assert "inherited" in block, (
+        "Footer template must allow inheritance from a prior"
+        " observation's cited finding — matches the (b) branch of"
+        " the read-back assertion (#577/#615)."
+    )
+
+
+def test_monitor_audit_footer_omitted_for_non_economic_tickers(
+    monitor_text: str,
+) -> None:
+    """The footer MUST be explicitly scoped to fundamental-economic-
+    trigger tickers — equity indices (KXINX, KXNASDAQ100, KXSPX) have
+    no bank-forecast vocabulary; synthesizing a footer for them would
+    mislead audit (#615)."""
+    import re
+
+    obs_match = re.search(
+        r"^## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert obs_match is not None
+    block = obs_match.group(0)
+    # The "Footer-omission rule" callout must exist and explicitly
+    # name equity-index categories OR the broader exclusion.
+    assert "Footer-omission rule" in block, (
+        "Observation template must contain a `Footer-omission rule`"
+        " callout that scopes the footer requirement to fundamental-"
+        " economic-trigger tickers (#615)."
+    )
+    assert "OMIT" in block, (
+        "Footer-omission rule must use the uppercase token `OMIT`"
+        " (matching the existing prompt's emphasis convention) so"
+        " agents reading the rule treat it as a hard instruction."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Monitor fundamental-economic-trigger source playbook (#577)
 # ---------------------------------------------------------------------------
 

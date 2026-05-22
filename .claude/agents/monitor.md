@@ -100,6 +100,8 @@ If a bank returned no result in your search, log that explicitly in the observat
 
 After reading `position-context` and completing your analysis, write a **delta observation** — what changed since the prior observation, not a full re-assessment. If no prior observation exists (first cycle for this position), write a full observation.
 
+**Playbook audit footer (REQUIRED for fundamental-economic-trigger tickers — closes #615).** For positions whose ticker matches any category in the `## Fundamental-Economic-Trigger Source Playbook` (KXCPI, KXPAYROLLS, KXJOBLESSCLAIMS, etc.), every observation MUST end with a structured footer enumerating every named bank and aggregator from the playbook list, with one of three outcomes per source: a freshly-searched result, an explicitly-inherited prior result with citation, or `no result this cycle`. Without this footer, an operator auditing `gimmes position-notes` cannot distinguish "Monitor ran the playbook, found no change" from "Monitor skipped the playbook entirely" — the silent-failure path the 48-hour staleness rule was added to defend against. The footer makes the playbook execution machine-auditable in the position-notes history. For tickers NOT in the playbook category list (equity indices, etc.) the footer is OMITTED entirely.
+
 Use the `--body-file` variant via a single-quoted heredoc so dollar-prefixed prices like `$0.41` survive verbatim (#589). The quoted delimiter `<<'GIMMES_EOF'` is load-bearing — it suppresses ALL parameter expansion inside the body:
 
 ```bash
@@ -111,6 +113,21 @@ News delta: [new developments since last observation, or 'No new developments'].
 Thesis delta: [any change in thesis assessment, or 'Unchanged'].
 Trigger conditions: [NEW triggers only — not triggers already flagged and decided on].
 Overall: [Material change / No material change].
+
+Playbook sources checked this cycle (#615):
+- Goldman Sachs: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- JPMorgan: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Morgan Stanley: [...]
+- Bank of America: [...]
+- Citi: [...]
+- Barclays: [...]
+- Wells Fargo: [...]
+- Deutsche Bank: [...]
+- UBS: [...]
+- FXStreet: [...]
+- MarketWatch: [...]
+- Reuters: [...]
+- Bloomberg: [...]
 GIMMES_EOF
 gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
@@ -119,6 +136,8 @@ gimmes position-note TICKER \
   --body-file "$BODY_FILE"
 rm -f "$BODY_FILE"
 ```
+
+**Footer-omission rule:** for tickers NOT matching the playbook category list (e.g., KXINX, KXNASDAQ100, KXSPX equity indices), OMIT the `Playbook sources checked this cycle:` block entirely. The bank/aggregator playbook does not apply to equity-index forecasts and synthesizing it would mislead audit.
 
 If the command fails, note the failure in your output and continue. Do not retry. If `mktemp` or the heredoc write itself fails, treat as a logging failure and skip — never fall back to inline `--body`.
 
