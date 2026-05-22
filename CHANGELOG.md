@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.6] - 2026-05-22
+
+### Added
+- Budget caps (`budget.max_daily_cost_usd`, `budget.max_sessions_per_day`) are now config-settable and persist across loop restarts via `gimmes config set budget.max_daily_cost_usd 50`. Previously the only override was the `--max-daily-cost-usd` CLI flag at startup, which had to be remembered every time. CLI flags still win when both are present; if neither is set, the hardcoded defaults ($25 / 80) apply. `0` (from either source) means "unlimited"; `None` means "no override at this layer." Config changes do NOT live-apply to a running loop — the loop reads config once at startup and constructs `BudgetTracker` with fixed caps. Restart `driving_range` / `championship` after `gimmes config set budget.*` to pick up new values. (#626)
+
 ## [0.8.5] - 2026-05-21
 
 Four fixes that close stale-template regressions in Monitor's observation writes (#577, #617, #614) and the reconcile-driven silent-bypass of the #586 stop-loss reopen lockout (#609). Restart `driving_range` after `gimmes update` so the autonomous loop loads the new agent prompts and CLI helpers.
