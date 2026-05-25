@@ -1003,6 +1003,45 @@ def test_monitor_playbook_pins_query_phrasing_variation(
     )
 
 
+def test_monitor_playbook_cache_bust_dos_and_donts_pinned(
+    monitor_text: str,
+) -> None:
+    """The empirically-validated cache-bust DOs and DON'Ts (#618) must
+    appear in the playbook. The #618 investigation proved that
+    appending a date suffix to an otherwise-identical query does NOT
+    bypass the cache — the backend normalizes the date token away.
+    Token-level rewording IS effective. The agent must be explicitly
+    warned against ineffective cache-bust patterns so it doesn't
+    waste cycles on strategies that look defensive but aren't."""
+    block = _playbook_block(monitor_text)
+    assert "Cache-bust DOs and DON'Ts" in block, (
+        "Playbook §3 MUST contain a `Cache-bust DOs and DON'Ts` block"
+        " documenting the empirically-validated guidance (#618)."
+    )
+    assert "#618" in block, (
+        "Cache-bust block must cite #618 inline so the rationale is"
+        " preserved when the prompt is read in isolation."
+    )
+    # The ineffective patterns MUST be explicitly forbidden — agents
+    # would otherwise reach for them as obvious cache-busts.
+    assert "DON'T" in block and "date suffix" in block, (
+        "Cache-bust DON'Ts MUST explicitly call out `date suffix` as"
+        " ineffective. The #618 investigation tested this directly:"
+        " appending `2026-05-22` returned the IDENTICAL cached result"
+        " set."
+    )
+    assert "random salt" in block, (
+        "Cache-bust DON'Ts MUST forbid random-salt suffixes too. Same"
+        " failure mode as the date-suffix attempt (#618)."
+    )
+    # The effective patterns MUST be explicitly endorsed.
+    assert "DO" in block and "vary content tokens" in block, (
+        "Cache-bust DOs MUST endorse content-token variation"
+        " (different word order, synonyms, alternate forms) — the"
+        " empirically-effective cache-bust method (#618)."
+    )
+
+
 def test_monitor_playbook_pins_surfacing_format(monitor_text: str) -> None:
     """When a bank/aggregator forecast is found, the observation MUST
     surface it with bank name, forecast value, source, and publication
