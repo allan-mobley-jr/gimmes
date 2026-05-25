@@ -75,13 +75,13 @@ For each position in these categories, MUST:
 
 **3. Query-phrasing variation (defense against tool-level caching).** Do NOT repeat verbatim the exact query strings you can see referenced in the prior observation note for this position. Rotate which bank leads the query, alternate phrasings (`"Barclays April CPI forecast"` vs `"Barclays headline CPI April 2026"`), and vary the aggregator term.
 
-**Cache-bust DOs and DON'Ts (empirically validated 2026-05-22 — #618):** The WebSearch tool's result list IS cached, with a TTL of at least several minutes (likely much longer). The cache key is semantic, not lexical — the backend tokenizes and normalizes queries before lookup.
+**Cache-bust DOs and DON'Ts (empirically validated 2026-05-22 — #618):** The WebSearch tool's result list IS cached, with a TTL of at least several minutes (likely much longer). What the backend uses as the cache key is not fully known, but the #618 tests narrowed it: content-token changes hit different cache entries; suffix-only additions do not. Treat the rules below as empirical observations, not a model of the backend.
 
-- **DO** vary content tokens: different word order, different synonyms, alternate bank-name forms (`Goldman` vs `Goldman Sachs`), substitute related terms (`forecast` vs `estimate` vs `nowcast`). Reordering the meaningful words changes the cache key.
+- **DO** substitute or add content tokens: synonyms (`forecast` vs `estimate` vs `nowcast`), alternate bank-name forms (`Goldman` vs `Goldman Sachs`), or additional descriptive terms. Test 2 of the investigation confirmed that swapping `"forecast Wall Street banks"` for `"estimates"` returned a different URL set.
 - **DON'T** append a date suffix (`"... 2026-05-22"`), a cycle number, or a random salt to an otherwise-identical query. The backend normalizes these tokens away — Test 5 of the #618 investigation confirmed `"... 2026-05-22"` returned the IDENTICAL cached result list as the unmodified query.
 - **DON'T** rely on quote/punctuation changes (`"Barclays CPI"` vs `Barclays CPI`) — likely normalized away too. Add quotes for ranking precision, not for cache-bust.
 
-The c1391–c1407 failure (where Monitor missed Barclays' +0.55% across 15 cycles) is now empirically explained: a single batched-and-cached query returned the consensus aggregate every cycle. The per-bank individual queries in §1 PLUS the content-token variation here are the two-layered defense.
+The c1391–c1405 failure (where Monitor missed Barclays' +0.55% across 15 cycles, and c1407 regressed even after c1406 surfaced the data) is now empirically explained: a single batched-and-cached query returned the consensus aggregate every cycle. The per-bank individual queries in §1 PLUS the content-token variation here are the two-layered defense.
 
 **4. Surfacing.** When you find a named-bank or aggregator forecast, the observation body MUST include the bank name, the forecast value, the source, and the publication date, e.g.:
 `Barclays April headline CPI MoM +0.55% (FXStreet, 2026-05-08)`

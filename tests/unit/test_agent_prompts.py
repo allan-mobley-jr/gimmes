@@ -1035,10 +1035,16 @@ def test_monitor_playbook_cache_bust_dos_and_donts_pinned(
         " failure mode as the date-suffix attempt (#618)."
     )
     # The effective patterns MUST be explicitly endorsed.
-    assert "DO" in block and "vary content tokens" in block, (
-        "Cache-bust DOs MUST endorse content-token variation"
-        " (different word order, synonyms, alternate forms) — the"
+    assert "DO" in block and "content tokens" in block, (
+        "Cache-bust DOs MUST endorse content-token substitution"
+        " (synonyms, alternate forms, descriptive terms) — the"
         " empirically-effective cache-bust method (#618)."
+    )
+    # Pin the synonym examples so a future edit can't drop them.
+    assert "synonyms" in block, (
+        "Cache-bust DOs MUST cite synonyms as the concrete mechanism"
+        " agents should reach for. Without a worked example, the"
+        " rule devolves into vague advice (#618)."
     )
 
 
