@@ -65,6 +65,7 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 
 2. **Settlement clarity check**: Is the contract settlement language unambiguous?
    - Read the contract rules from `market-info` output
+   - For threshold markets, also state the YES/NO win conditions derived from the `Rules (primary)` row ("YES wins when <metric> <comparator> <threshold>; NO wins when <complement>") before scoring — do NOT derive them from the title's directional wording alone; if `Rules (primary)` shows `—` (empty), treat settlement language as unclear → PASS with rationale (#641)
    - Red flags: "discretion", "carveout", "may determine", "at sole discretion"
    - If red flags → PASS with rationale
 
@@ -107,6 +108,7 @@ For candidates NOT in gimme categories, investigate all of these:
 
 **Threshold-arithmetic primacy rule (MUST follow):** When the Caddie has computed a threshold-specific probability via mechanical arithmetic (e.g., "MoM must be ≥ X% for YoY to exceed T%"), web forecasts MUST be used to validate the MoM/input estimate — NEVER to override the threshold probability directly.
 
+- **Threshold-semantics grounding (REQUIRED — #641):** before deriving ANY probability, read the settlement sentence verbatim from the `Rules (primary)` row of `gimmes market-info` and state: "YES wins when <metric> <comparator> <threshold>; NO wins when <complement>." NEVER derive YES/NO semantics from the title's directional wording alone. If `Rules (primary)` shows `—` (empty), settlement semantics are unverifiable — treat as a settlement red flag, not as license to use the title. Negative thresholds are the known trap (double negative): "Will CPI rise more than -0.1%?" settles YES = CPI MoM > -0.1% (flat or positive), NO = CPI MoM <= -0.1% (deflation) — every note in the KXCPI-26JUN-T-0.1 chain described this backwards (#641).
 - A consensus point forecast of "3.6% YoY" does NOT mean P(YoY > 3.6%) ≈ 50%. Point estimates reflect the distribution's center; threshold probability depends on the distribution's width. For CPI MoM, historical σ ≈ 0.15pp — a point estimate 0.2pp above a threshold implies P(exceed) is high, not a coin flip.
 - Quarterly/annualized rates (e.g., Cleveland Fed CPI nowcast "5.5% annualized") MUST be converted to the contract's units (YoY or MoM) before comparison. Do not compare annualized quarterly rates to YoY thresholds.
 - When arithmetic and web forecasts disagree, show BOTH in the research memo and explain the discrepancy. Do not silently discard the arithmetic result.

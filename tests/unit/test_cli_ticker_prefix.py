@@ -375,6 +375,7 @@ def _stub_market(ticker: str) -> MagicMock:
     m.volume_24h = 50
     m.open_interest = 30
     m.close_time = "2026-05-14"
+    m.subtitle = ""
     m.rules_primary = ""
     return m
 
@@ -450,6 +451,115 @@ class TestMarketInfo:
             result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
         assert result.exit_code == 0, result.output
         assert get_market.await_args.args[1] == "KXCPI-26APR-T0.5"
+
+    def test_market_info_displays_settlement_rules(
+        self, seeded_db: Path,
+    ) -> None:
+        """market-info must show the verbatim settlement sentence and
+        subtitle so agents can ground YES/NO threshold semantics —
+        without these rows the #641 semantics-grounding prompt rules
+        are unimplementable (agents have no other way to read
+        rules_primary)."""
+        market = _stub_market("KXCPI-26APR-T0.5")
+        market.subtitle = "0.5% or above"
+        # Bracketed clause included deliberately: Rich parses [word
+        # groups] as style tags and silently deletes them unless the
+        # value is markup-escaped — the settlement sentence must
+        # survive verbatim (#641).
+        market.rules_primary = (
+            "If the Consumer Price Index [as reported by the BLS]"
+            " increases by more than 0.5%"
+            " in April 2026, the market resolves to Yes."
+        )
+        get_market = AsyncMock(return_value=market)
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
+        assert result.exit_code == 0, result.output
+        assert "Rules (primary)" in result.output
+        assert "Subtitle" in result.output
+        assert "0.5% or above" in result.output
+        # The settlement sentence must appear (Rich may wrap it across
+        # lines, so assert on fragments short enough to survive
+        # wrapping).
+        assert "resolves to" in result.output
+        # The bracketed clause must survive — without markup escaping,
+        # Rich eats "[as reported by the BLS]" as a style tag (#641).
+        assert "as reported" in result.output
+
+    def test_market_info_settlement_risk_flags_survive_markup(
+        self, seeded_db: Path,
+    ) -> None:
+        """With red flags present, SettlementRisk.summary reads
+        `found [discretion, ...]` — the bracketed flag list must be
+        markup-escaped inside the color tags or Rich eats it exactly
+        when the warning matters most (#641 Copilot review)."""
+        market = _stub_market("KXCPI-26APR-T0.5")
+        # Bracketed lowercase segment in the title: Rich parses table
+        # titles for markup too, so unescaped titles lose it (#641).
+        market.title = "CPI [preliminary] April 2026"
+        market.rules_primary = (
+            "The market may be settled at the sole discretion of the"
+            " exchange."
+        )
+        get_market = AsyncMock(return_value=market)
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
+        assert result.exit_code == 0, result.output
+        # Assert on bracket-adjacent fragments: the bare word
+        # "discretion" also appears in the verbatim Rules (primary)
+        # row, so it cannot distinguish the two rows — only the
+        # Settlement Risk flag list contains "[sole" / "discretion]",
+        # and both vanish if the escape is reverted (mutation-verified
+        # in review). The fragments have no internal spaces, so Rich
+        # word-wrap cannot split them.
+        assert "[sole" in result.output, (
+            "The bracketed red-flag list must render verbatim — without"
+            " escaping, Rich eats '[sole discretion]' as a style tag"
+            " and the Settlement Risk row silently truncates at"
+            " 'found' (#641)."
+        )
+        assert "discretion]" in result.output
+        assert "[preliminary]" in result.output, (
+            "The market title must render verbatim as the table title —"
+            " Rich markup-parses string titles, eating lowercase-start"
+            " bracketed segments unless escaped (#641)."
+        )
+
+    def test_market_info_em_dash_fallback_for_missing_fields(
+        self, seeded_db: Path,
+    ) -> None:
+        """Missing subtitle/rules must render the em-dash fallback,
+        never `None` — an agent reading `Rules (primary): None` is the
+        precise semantics-grounding failure #641 exists to stop."""
+        market = _stub_market("KXCPI-26APR-T0.5")
+        market.subtitle = None
+        market.rules_primary = ""
+        get_market = AsyncMock(return_value=market)
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        assert any("Subtitle" in ln and "—" in ln for ln in lines), (
+            "Subtitle row must fall back to em-dash when the field is"
+            " None (#641)."
+        )
+        assert any("Rules (primary)" in ln and "—" in ln for ln in lines), (
+            "Rules (primary) row must fall back to em-dash when the"
+            " field is empty (#641)."
+        )
+        assert "None" not in result.output
 
 
 def _read_error_log(db_path: Path) -> list[dict]:
