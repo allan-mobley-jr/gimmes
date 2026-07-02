@@ -98,7 +98,8 @@ If a bank returned no result in your search, log that explicitly in the observat
 
 3. For each name identified, your observation this cycle MUST either:
    (a) reference a freshly searched result for that named source this cycle (with value, source, and date), OR
-   (b) explicitly inherit the prior observation's finding for that source with citation.
+   (b) explicitly inherit the prior observation's finding for that source with citation, OR
+   (c) mark the prior finding `SUPERSEDED (pre-<event>, <date>) — refresh required` when a regime-change event postdates it (see Supersession rule below — #641). A superseded CM-cited source satisfies the read-back by naming the supersession; it MUST NOT be silently inherited.
 
 **FORBIDDEN**: writing an observation whose assertions contradict cited evidence in the most-recent CM decision note. Example of a forbidden observation — writing "No named major Wall Street bank has published April CPI MoM strictly above 0.5%" when the most-recent CM decision body cites "Barclays +0.55% (FXStreet, 2026-05-08)". If your search this cycle disagrees with the CM-decision-cited evidence, you MUST surface the disagreement explicitly in the observation body — do NOT silently revert to a template assertion that contradicts cited evidence.
 
@@ -106,9 +107,11 @@ If a bank returned no result in your search, log that explicitly in the observat
 
 **Runtime enforcement (#614).** This contract is enforced at the CLI: `gimmes position-note --type observation` rejects observation writes that contain the canonical stale-template phrase ("No named major Wall Street bank has published") when the most-recent CM `decision` note for the same ticker cites a named bank or aggregator with a numeric percentage value. **On validator rejection: re-write the observation with the surfaced citations and retry. Do NOT use `--force` to bypass** — that flag is reserved for backfill scripts; autonomous Monitor cycles MUST fix the body, not bypass the check. Bypassing the validator constitutes the same regression #577/#614 are designed to prevent.
 
+**Threshold-semantics grounding (REQUIRED — #641).** Before analyzing any threshold market ("Will X be above / below / rise more than T?"), read the settlement sentence verbatim from the `Rules (primary)` row of `gimmes market-info TICKER` and state in your own analysis: "YES wins when <metric> <comparator> <threshold>; NO wins when <complement>." NEVER derive YES/NO semantics from the title's directional wording alone. Negative thresholds are the known trap (double negative): "Will CPI rise more than -0.1%?" settles YES = CPI MoM > -0.1% (flat or positive), NO = CPI MoM <= -0.1% (deflation) — every note in the KXCPI-26JUN-T-0.1 chain described this backwards (#641). If the semantics you derive contradict a prior note's YES/NO description, surface the correction explicitly in the observation body. If `Rules (primary)` shows `—` (empty), semantics are UNVERIFIABLE: say so in the observation and flag the position for Caddie Master review — do NOT fall back to title-derived semantics.
+
 After reading `position-context` and completing your analysis, write a **delta observation** — what changed since the prior observation, not a full re-assessment. If no prior observation exists (first cycle for this position), write a full observation.
 
-**Playbook audit footer (REQUIRED for fundamental-economic-trigger tickers — closes #615).** For positions whose ticker matches any category in the `## Fundamental-Economic-Trigger Source Playbook` (KXCPI, KXPAYROLLS, KXJOBLESSCLAIMS, etc.), every observation MUST end with a structured footer enumerating every named bank and aggregator from the playbook list, with one of three outcomes per source: a freshly-searched result, an explicitly-inherited prior result with citation, or `no result this cycle`. Without this footer, an operator auditing `gimmes position-notes` cannot distinguish "Monitor ran the playbook, found no change" from "Monitor skipped the playbook entirely" — the silent-failure path the 48-hour staleness rule was added to defend against. The footer makes the playbook execution machine-auditable in the position-notes history. For tickers NOT in the playbook category list (equity indices, etc.) the footer is OMITTED entirely.
+**Playbook audit footer (REQUIRED for fundamental-economic-trigger tickers — closes #615).** For positions whose ticker matches any category in the `## Fundamental-Economic-Trigger Source Playbook` (KXCPI, KXPAYROLLS, KXJOBLESSCLAIMS, etc.), every observation MUST end with a structured footer enumerating every named bank and aggregator from the playbook list, with one of four outcomes per source: a freshly-searched result, an explicitly-inherited prior result with citation, `no result this cycle`, or a superseded prior result requiring refresh (see Supersession rule below). Without this footer, an operator auditing `gimmes position-notes` cannot distinguish "Monitor ran the playbook, found no change" from "Monitor skipped the playbook entirely" — the silent-failure path the 48-hour staleness rule was added to defend against. The footer makes the playbook execution machine-auditable in the position-notes history. For tickers NOT in the playbook category list (equity indices, etc.) the footer is OMITTED entirely.
 
 Use the `--body-file` variant via a single-quoted heredoc so dollar-prefixed prices like `$0.41` survive verbatim (#589). The quoted delimiter `<<'GIMMES_EOF'` is load-bearing — it suppresses ALL parameter expansion inside the body:
 
@@ -117,25 +120,26 @@ BODY_FILE=$(mktemp -t gimmes-body.XXXXXX)
 cat > "$BODY_FILE" <<'GIMMES_EOF'
 Delta since cycle [N from prior observation note]:
 Price: $X.XX (was $X.XX, moved +/-Npp since last observation).
+Semantics: [threshold markets only (#641) — YES wins when <metric> <comparator> <threshold>; NO wins when <complement>, derived from the Rules (primary) row of market-info; OMIT for non-threshold markets]
 News delta: [new developments since last observation, or 'No new developments'].
 Thesis delta: [any change in thesis assessment, or 'Unchanged'].
 Trigger conditions: [NEW triggers only — not triggers already flagged and decided on].
 Overall: [Material change / No material change].
 
 Playbook sources checked this cycle (#615 — OMIT this entire block for non-playbook tickers; see Footer-omission rule below):
-- Goldman Sachs: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- JPMorgan: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Morgan Stanley: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Bank of America: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Citi: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Barclays: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Wells Fargo: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Deutsche Bank: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- UBS: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- FXStreet: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- MarketWatch: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Reuters: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
-- Bloomberg: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>']
+- Goldman Sachs: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- JPMorgan: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Morgan Stanley: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Bank of America: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Citi: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Barclays: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Wells Fargo: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Deutsche Bank: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- UBS: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- FXStreet: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- MarketWatch: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Reuters: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
+- Bloomberg: [value (publisher, YYYY-MM-DD) OR 'no result this cycle' OR 'inherited: <prior cite>' OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']
 GIMMES_EOF
 gimmes position-note TICKER \
   --cycle $GIMMES_CYCLE \
@@ -146,6 +150,10 @@ rm -f "$BODY_FILE"
 ```
 
 **Footer-omission rule:** for tickers NOT matching the playbook category list (e.g., KXINX, KXNASDAQ100, KXSPX equity indices), OMIT the `Playbook sources checked this cycle:` block entirely. The bank/aggregator playbook does not apply to equity-index forecasts and synthesizing it would mislead audit.
+
+**Freshness rule (#641 — fresh means newly published, not re-found):** a source row may use the bare `value (publisher, YYYY-MM-DD)` form ONLY when its publication date is strictly newer than the date in that source's most recent prior cite for this position, or when no prior cite exists for that source (first-time findings are fresh by definition). Re-discovering the same dated note this cycle confirms *existence*, not *currency* — write it as `inherited: <prior cite>`. FORBIDDEN: describing an inherited or re-found result as "freshly confirmed" or "confirmed this cycle". The KXCPI-26JUN-T-0.1 incident (#641) rode Jun 11–18 bank notes through Jul 1 cycles as "freshly confirmed" while actual consensus had moved 40+bp — because re-finding the old notes was miscounted as confirmation.
+
+**Supersession rule (#641):** if this cycle's news delta identifies a regime-change event affecting this ticker's metric (large commodity/energy move, geopolitical resolution, major data release) dated AFTER a source's publication date, that source row MUST read `SUPERSEDED (pre-<event>, <date>) — refresh required` — not `inherited`. Example: `Wells Fargo: SUPERSEDED (pre-Hormuz-reopening, 2026-06-11) — refresh required`. A SUPERSEDED forecast is not evidence of current consensus; surface the supersession in the observation body so Caddie Master does not renew a HOLD on it. Supersession is sticky: a source once marked SUPERSEDED stays SUPERSEDED in every subsequent cycle — it MUST NOT revert to `inherited` — until a publication strictly newer than the event date is found (which makes it fresh again).
 
 If the command fails, note the failure in your output and continue. Do not retry. If `mktemp` or the heredoc write itself fails, treat as a logging failure and skip — never fall back to inline `--body`.
 

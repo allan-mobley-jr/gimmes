@@ -669,10 +669,11 @@ def test_monitor_audit_footer_enumerates_full_playbook_list(
 def test_monitor_audit_footer_allows_no_result_and_inheritance(
     monitor_text: str,
 ) -> None:
-    """Each source row MUST carry the explicit three-outcome grammar
+    """Each source row MUST carry the explicit four-outcome grammar
     inline. Without per-row grammar, agents may fill the `[...]`
     placeholders inconsistently and the audit value erodes — Copilot's
-    review of #615 caught this exact vacuous-coverage path (#615)."""
+    review of #615 caught this exact vacuous-coverage path (#615).
+    The fourth outcome (SUPERSEDED) was added by #641."""
     import re
 
     obs_match = re.search(
@@ -696,15 +697,16 @@ def test_monitor_audit_footer_allows_no_result_and_inheritance(
     # of source bullets ensures partial-row drift is caught.
     grammar = (
         "[value (publisher, YYYY-MM-DD) OR 'no result this cycle'"
-        " OR 'inherited: <prior cite>']"
+        " OR 'inherited: <prior cite>'"
+        " OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']"
     )
     grammar_count = footer.count(grammar)
     assert grammar_count >= 13, (
-        f"Footer template must repeat the full three-outcome grammar"
+        f"Footer template must repeat the full four-outcome grammar"
         f" on every source row (13 sources: 9 banks + 4 aggregators)."
         f" Found grammar on {grammar_count} rows. Bare `[...]`"
         f" placeholders let agents fill inconsistently and erode"
-        f" audit value (#615)."
+        f" audit value (#615, #641)."
     )
 
 
@@ -753,6 +755,276 @@ def test_monitor_audit_footer_omitted_for_non_economic_tickers(
         " agent copy-pasting the template sees the omission rule"
         " right there, not just in surrounding prose (#615)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Threshold semantics + forecast supersession (#641)
+# ---------------------------------------------------------------------------
+
+
+def _writing_observations_block(monitor_text: str) -> str:
+    """Extract monitor.md's `## Writing Observations` section (same
+    anchoring convention as `_playbook_block` below)."""
+    import re
+
+    match = re.search(
+        r"^## Writing Observations.*?(?=\n## )",
+        monitor_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, "Writing Observations section must exist"
+    return match.group(0)
+
+
+def _observation_rule(monitor_text: str, name: str) -> str:
+    """Extract the bold `**<name>...**` rule paragraph from the Writing
+    Observations section, asserting the rule exists."""
+    import re
+
+    match = re.search(
+        rf"\*\*{re.escape(name)}.*?(?=\n\n)",
+        _writing_observations_block(monitor_text),
+        flags=re.DOTALL,
+    )
+    assert match is not None, (
+        f"Writing Observations must contain the `{name}` paragraph"
+        f" (#641)."
+    )
+    return match.group(0)
+
+
+def test_monitor_threshold_semantics_rule_pinned(monitor_text: str) -> None:
+    """Monitor MUST ground YES/NO semantics in the settlement sentence
+    (`Rules (primary)` row of market-info), never the title's
+    directional wording — the KXCPI-26JUN-T-0.1 chain described a
+    negative-threshold market backwards in every note (#641)."""
+    import re
+
+    rule = _observation_rule(monitor_text, "Threshold-semantics grounding")
+    for needle in (
+        "YES wins when",
+        "NO wins when",
+        "Rules (primary)",
+        "KXCPI-26JUN-T-0.1",
+        "#641",
+    ):
+        assert needle in rule, (
+            f"Threshold-semantics grounding rule must contain"
+            f" {needle!r} — the rule loses its teeth without the"
+            f" verbatim-quote requirement and the canonical trap"
+            f" exemplar (#641)."
+        )
+    assert re.search(r"negative threshold", rule, flags=re.IGNORECASE), (
+        "The rule must call out negative thresholds (double negative)"
+        " as the known trap (#641)."
+    )
+
+
+def test_monitor_observation_template_carries_semantics_line(
+    monitor_text: str,
+) -> None:
+    """The observation heredoc must carry a `Semantics:` line for
+    threshold markets with an inline OMIT annotation for non-threshold
+    markets — same inline-annotation convention as the #615 footer
+    header (#641)."""
+    import re
+
+    block = _writing_observations_block(monitor_text)
+    sem_match = re.search(r"^Semantics: \[[^\n]*", block, flags=re.MULTILINE)
+    assert sem_match is not None, (
+        "Observation template must include a `Semantics:` line so"
+        " threshold win conditions are stated in every observation"
+        " (#641)."
+    )
+    sem_line = sem_match.group(0)
+    for needle in ("YES wins", "NO wins", "OMIT", "#641"):
+        assert needle in sem_line, (
+            f"`Semantics:` template line must carry {needle!r} inline"
+            f" — the annotation must live on the line itself so a"
+            f" copy-pasting agent sees it (#641)."
+        )
+
+
+def test_monitor_footer_freshness_rule_pinned(monitor_text: str) -> None:
+    """`fresh` means newly published, not re-found: re-discovering the
+    same dated note must be written as inherited, and describing it as
+    'freshly confirmed' is FORBIDDEN. This is the exact miscount that
+    rode Jun 11-18 bank notes through Jul 1 cycles on
+    KXCPI-26JUN-T-0.1 (#641)."""
+    rule = _observation_rule(monitor_text, "Freshness rule")
+    for needle in (
+        "strictly newer",
+        "FORBIDDEN",
+        "freshly confirmed",
+        "inherited: <prior cite>",
+        "#641",
+    ):
+        assert needle in rule, (
+            f"Freshness rule must contain {needle!r} — without the"
+            f" strict-date requirement and the FORBIDDEN phrase, a"
+            f" re-found stale note can still masquerade as fresh"
+            f" (#641)."
+        )
+
+
+def test_monitor_footer_supersession_rule_pinned(monitor_text: str) -> None:
+    """A forecast predating a regime-change event must be marked
+    SUPERSEDED — not inherited — and cannot support HOLD continuation
+    on its own (#641)."""
+    rule = _observation_rule(monitor_text, "Supersession rule")
+    for needle in (
+        "regime-change",
+        "SUPERSEDED (pre-<event>, <date>) — refresh required",
+        "Hormuz",
+        "HOLD",
+        "#641",
+        "MUST NOT revert to",
+    ):
+        assert needle in rule, (
+            f"Supersession rule must contain {needle!r} — the exact"
+            f" SUPERSEDED grammar (em-dash included), the exemplar,"
+            f" the HOLD prohibition, and stickiness across cycles are"
+            f" all load-bearing (#641)."
+        )
+
+
+def test_monitor_footer_spec_declares_four_outcomes(
+    monitor_text: str,
+) -> None:
+    """The footer spec paragraph must agree with the row grammar: four
+    outcomes, including superseded. Prose reverting to 'three
+    outcomes' would contradict the 13 pinned rows (#641)."""
+    assert "one of four outcomes" in monitor_text, (
+        "Footer spec paragraph must declare `one of four outcomes`"
+        " (#641 added SUPERSEDED as the fourth)."
+    )
+    assert "one of three outcomes" not in monitor_text, (
+        "Stale `one of three outcomes` prose contradicts the 4-outcome"
+        " row grammar (#641)."
+    )
+    assert "superseded" in monitor_text.lower(), (
+        "Footer spec must mention the superseded outcome (#641)."
+    )
+
+
+def test_caddie_threshold_semantics_in_arithmetic_primacy(
+    caddie_text: str,
+) -> None:
+    """Caddie must state YES/NO win conditions from `Rules (primary)`
+    before deriving any probability (deep research), and in
+    Sanity-Check Mode's settlement clarity check (fast-track) —
+    covering both research paths (#641)."""
+    import re
+
+    # Scope to the grounding bullet itself so relocation out of the
+    # arithmetic-primacy block fails loudly.
+    grounding_match = re.search(
+        r"\*\*Threshold-semantics grounding.*?(?=\n- |\n\n)",
+        caddie_text,
+        flags=re.DOTALL,
+    )
+    assert grounding_match is not None, (
+        "Caddie's threshold-arithmetic primacy block must contain the"
+        " `Threshold-semantics grounding` bullet (#641)."
+    )
+    grounding = grounding_match.group(0)
+    for needle in (
+        "YES wins when",
+        "NO wins when",
+        "Rules (primary)",
+        "KXCPI-26JUN-T-0.1",
+    ):
+        assert needle in grounding, (
+            f"Caddie semantics grounding bullet must contain"
+            f" {needle!r} (#641)."
+        )
+    # Fast-track path: the settlement clarity check must also state
+    # win conditions, since gimme-category candidates skip deep
+    # research entirely.
+    clarity_match = re.search(
+        r"\*\*Settlement clarity check\*\*.*?(?=\n\n|\n3\.)",
+        caddie_text,
+        flags=re.DOTALL,
+    )
+    assert clarity_match is not None
+    clarity = clarity_match.group(0)
+    assert "Rules (primary)" in clarity and "#641" in clarity, (
+        "Sanity-Check Mode's settlement clarity check must require"
+        " stating YES/NO win conditions from `Rules (primary)` —"
+        " fast-track candidates never reach the deep-research rule"
+        " (#641)."
+    )
+
+
+def test_caddie_master_verifies_semantics_and_superseded(
+    caddie_master_text: str,
+) -> None:
+    """Caddie Master is the last line of defense: it must verify
+    Monitor's/Caddie's YES/NO descriptions against `Rules (primary)`
+    at both decision points (Step 2c flag review, Step 4c candidate
+    review), and must not renew a HOLD on SUPERSEDED sources (#641).
+    Each duty is anchored to its own section so neither clause can be
+    deleted and compensated for by a mention elsewhere."""
+    import re
+
+    # Step 2c: the flag-review sub-step itself must carry the check.
+    flag_review_match = re.search(
+        r"Review Monitor's flag note[^\n]*", caddie_master_text
+    )
+    assert flag_review_match is not None
+    flag_review = flag_review_match.group(0)
+    assert "Rules (primary)" in flag_review and "#641" in flag_review, (
+        "Step 2c's `Review Monitor's flag note` line must require"
+        " verifying Monitor's YES/NO description against"
+        " `Rules (primary)` (#641)."
+    )
+    # Step 4c: the candidate-review verification must live between the
+    # independent-research read and the Caddie conferral.
+    research_idx = caddie_master_text.find("Read the research independently")
+    confer_idx = caddie_master_text.find("Confer with Caddie using SendMessage")
+    assert research_idx != -1 and confer_idx != -1
+    candidate_review = caddie_master_text[research_idx:confer_idx]
+    assert "Rules (primary)" in candidate_review, (
+        "Step 4c must verify YES/NO win conditions against"
+        " `Rules (primary)` before APPROVE/REJECT (#641)."
+    )
+    assert "directional description" in candidate_review, (
+        "Step 4c must forbid accepting Caddie's directional"
+        " description of the contract unverified (#641)."
+    )
+    # HOLD bullet: SUPERSEDED prohibition.
+    assert "SUPERSEDED" in caddie_master_text, (
+        "Caddie Master's HOLD rule must reference SUPERSEDED sources"
+        " (#641)."
+    )
+    hold_idx = caddie_master_text.find("MUST NOT rest on sources marked")
+    assert hold_idx != -1, (
+        "HOLD bullet must contain the SUPERSEDED prohibition: a HOLD"
+        " `MUST NOT rest on sources marked` SUPERSEDED (#641)."
+    )
+    assert caddie_master_text.count("#641") >= 3, (
+        "Each #641 verification duty must cite the issue inline"
+        " (2c review, HOLD bullet, 4c review)."
+    )
+
+
+def test_threshold_semantics_exemplar_shared_across_agents(
+    monitor_text: str, caddie_text: str,
+) -> None:
+    """The canonical negative-threshold trap exemplar
+    (KXCPI-26JUN-T-0.1) must be pinned in BOTH monitor.md and
+    caddie.md so the two agents' semantics rules stay anchored to the
+    same incident — same cross-file convention as the economic-
+    category list sync test (#641)."""
+    for text, name in ((monitor_text, "monitor.md"), (caddie_text, "caddie.md")):
+        assert "KXCPI-26JUN-T-0.1" in text, (
+            f"{name} must pin the KXCPI-26JUN-T-0.1 exemplar (#641)."
+        )
+        assert 'Will CPI rise more than -0.1%?' in text, (
+            f"{name} must spell out the double-negative trap title"
+            f" verbatim so the worked example survives prompt edits"
+            f" (#641)."
+        )
 
 
 # ---------------------------------------------------------------------------

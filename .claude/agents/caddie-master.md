@@ -139,7 +139,7 @@ After Monitor returns, review its report. For each position Monitor flagged:
    gimmes position-notes TICKER
    ```
 
-2. Review Monitor's flag note. Understand specifically: what changed, and whether it was already in the original thesis.
+2. Review Monitor's flag note. Understand specifically: what changed, and whether it was already in the original thesis. For threshold markets, run `gimmes market-info TICKER` and verify the YES/NO description in Monitor's notes against the `Rules (primary)` row — if inverted, state the corrected semantics in your decision note rather than propagate the inversion; if the row shows `—` (empty), treat the YES/NO description as unverified and decide conservatively (#641).
 
 3. **Confer with Monitor using SendMessage if you need deeper analysis.** Use this when:
    - You want Monitor to clarify whether a data point was already present in the original thesis.
@@ -149,7 +149,7 @@ After Monitor returns, review its report. For each position Monitor flagged:
    You may go back and forth as many times as needed. Wait for each Monitor response before asking the next question. When you have enough information to make a judgment call, proceed to step 4.
 
 4. Make your own deliberate decision — **HOLD**, **CLOSE**, or **SIZE UP**:
-   - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding. When choosing HOLD, you MUST specify a re-evaluation condition so Monitor knows when to re-flag (prevents the flag-HOLD-re-flag-HOLD loop).
+   - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding. When choosing HOLD, you MUST specify a re-evaluation condition so Monitor knows when to re-flag (prevents the flag-HOLD-re-flag-HOLD loop). A HOLD MUST NOT rest on sources marked `SUPERSEDED` in Monitor's most-recent playbook audit footer (#641) — if the surviving current evidence is insufficient, confer with Monitor via SendMessage for a fresh playbook search before deciding.
    - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, a stop-loss flag fires AND the thesis is degraded (see stop-loss rule below), or a profit-taking flag indicates the position has captured most of its available edge.
    - **SIZE UP**: Price moved adversely while the original thesis remains fully intact, resulting in a larger edge than at entry. Proceed to Step 2d.
 
@@ -344,6 +344,8 @@ For each PROCEED candidate:
    gimmes position-context TICKER
    ```
    If any of these commands fail, REJECT the candidate — you cannot review without the data.
+
+   For threshold markets, verify the YES/NO win conditions against the `Rules (primary)` row of `market-info` before APPROVE/REJECT — do NOT accept Caddie's directional description of the contract without this check; if the row shows `—` (empty), settlement is unverifiable → REJECT (#641).
 
    **Edge pre-filter.** If the candidate's net edge after fees is already below `cm_min_edge_after_fees`, REJECT immediately without conferring — the candidate cannot clear the CM floor no matter how the conferral goes. Log the REJECT note with the numeric citation and move on. Skip to sub-step 6 (log rejected candidates as skips).
 

@@ -174,8 +174,10 @@ def validate(
         f" {source} {value}, but this observation contains the"
         f" stale-template phrase \"{STALE_TEMPLATE_PHRASE}\"."
         f" Re-write the observation to either reference a freshly"
-        f" searched result OR explicitly inherit the prior CM-cited"
-        f" finding with citation. Do NOT use --force to bypass — that"
+        f" searched result, explicitly inherit the prior CM-cited"
+        f" finding with citation, or — if a regime-change event"
+        f" postdates that finding — mark it SUPERSEDED with the event"
+        f" and date (#641). Do NOT use --force to bypass — that"
         f" is reserved for backfill scripts."
     )
     return (False, err)

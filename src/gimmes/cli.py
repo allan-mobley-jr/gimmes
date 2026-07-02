@@ -13,6 +13,7 @@ from typing import TypeVar
 import click
 import typer
 from rich.console import Console
+from rich.markup import escape as rich_escape
 
 from gimmes.config import GIMMES_HOME, GimmesConfig, load_config
 
@@ -1919,9 +1920,16 @@ def market_info(
             risk_color = {"low": "green", "medium": "yellow", "high": "red"}.get(
                 settlement.risk_level, "white"
             )
+            def verbatim(value: str | None) -> str:
+                # #641: markup-escape so bracketed clauses in Kalshi text
+                # aren't eaten as Rich style tags — verbatim means verbatim;
+                # em-dash when the field is empty.
+                return rich_escape(value) if value else "—"
+
             table = format_kv_table(market.title, [
                 ("Ticker", market.ticker),
                 ("Event", market.event_ticker),
+                ("Subtitle", verbatim(market.subtitle)),
                 ("Status", market.status.value),
                 ("YES Bid", f"${market.yes_bid:.2f}"),
                 ("YES Ask", f"${market.yes_ask:.2f}"),
@@ -1935,6 +1943,9 @@ def market_info(
                 ("Best YES Ask", str(orderbook.best_yes_ask)),
                 ("Depth (YES bids)", f"{len(orderbook.yes_bids)} levels"),
                 ("Settlement Risk", f"[{risk_color}]{settlement.summary}[/{risk_color}]"),
+                # #641: verbatim settlement language so agents can ground YES/NO
+                # threshold semantics — deliberately untruncated (Rich wraps).
+                ("Rules (primary)", verbatim(market.rules_primary)),
             ])
             console.print(table)
 

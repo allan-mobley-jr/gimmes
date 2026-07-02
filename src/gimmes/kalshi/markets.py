@@ -31,7 +31,7 @@ def parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         event_ticker=data.get("event_ticker", ""),
         series_ticker=data.get("series_ticker", ""),
         title=data.get("title", ""),
-        subtitle=data.get("subtitle", ""),
+        subtitle=data.get("subtitle") or "",  # explicit null → "" (#641, same class as #574)
         status=MarketStatus(data.get("status", "active")),
         yes_bid=_dollars_field(data, "yes_bid"),
         yes_ask=_dollars_field(data, "yes_ask"),
@@ -44,7 +44,7 @@ def parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         close_time=data.get("close_time"),
         expiration_time=data.get("expiration_time"),
         result=data.get("result", ""),
-        rules_primary=data.get("rules_primary", ""),
+        rules_primary=data.get("rules_primary") or "",  # explicit null → "" (#641)
     )
 
 
