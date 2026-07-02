@@ -1926,7 +1926,8 @@ def market_info(
                 # em-dash when the field is empty.
                 return rich_escape(value) if value else "—"
 
-            table = format_kv_table(market.title, [
+            # rich_escape: table titles are markup-parsed too (#641 review).
+            table = format_kv_table(rich_escape(market.title), [
                 ("Ticker", market.ticker),
                 ("Event", market.event_ticker),
                 ("Subtitle", verbatim(market.subtitle)),
@@ -1942,7 +1943,11 @@ def market_info(
                 ("Best YES Bid", str(orderbook.best_yes_bid)),
                 ("Best YES Ask", str(orderbook.best_yes_ask)),
                 ("Depth (YES bids)", f"{len(orderbook.yes_bids)} levels"),
-                ("Settlement Risk", f"[{risk_color}]{settlement.summary}[/{risk_color}]"),
+                # Escape the summary inside the color tags: with red flags
+                # present it reads "found [discretion, ...]" and Rich would
+                # eat the bracketed list as a style tag (#641 review).
+                ("Settlement Risk",
+                 f"[{risk_color}]{rich_escape(settlement.summary)}[/{risk_color}]"),
                 # #641: verbatim settlement language so agents can ground YES/NO
                 # threshold semantics — deliberately untruncated (Rich wraps).
                 ("Rules (primary)", verbatim(market.rules_primary)),

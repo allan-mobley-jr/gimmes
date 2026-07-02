@@ -490,6 +490,49 @@ class TestMarketInfo:
         # Rich eats "[as reported by the BLS]" as a style tag (#641).
         assert "as reported" in result.output
 
+    def test_market_info_settlement_risk_flags_survive_markup(
+        self, seeded_db: Path,
+    ) -> None:
+        """With red flags present, SettlementRisk.summary reads
+        `found [discretion, ...]` — the bracketed flag list must be
+        markup-escaped inside the color tags or Rich eats it exactly
+        when the warning matters most (#641 Copilot review)."""
+        market = _stub_market("KXCPI-26APR-T0.5")
+        # Bracketed lowercase segment in the title: Rich parses table
+        # titles for markup too, so unescaped titles lose it (#641).
+        market.title = "CPI [preliminary] April 2026"
+        market.rules_primary = (
+            "The market may be settled at the sole discretion of the"
+            " exchange."
+        )
+        get_market = AsyncMock(return_value=market)
+        get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", "KXCPI-26APR-T0.5"])
+        assert result.exit_code == 0, result.output
+        # Assert on bracket-adjacent fragments: the bare word
+        # "discretion" also appears in the verbatim Rules (primary)
+        # row, so it cannot distinguish the two rows — only the
+        # Settlement Risk flag list contains "[sole" / "discretion]",
+        # and both vanish if the escape is reverted (mutation-verified
+        # in review). The fragments have no internal spaces, so Rich
+        # word-wrap cannot split them.
+        assert "[sole" in result.output, (
+            "The bracketed red-flag list must render verbatim — without"
+            " escaping, Rich eats '[sole discretion]' as a style tag"
+            " and the Settlement Risk row silently truncates at"
+            " 'found' (#641)."
+        )
+        assert "discretion]" in result.output
+        assert "[preliminary]" in result.output, (
+            "The market title must render verbatim as the table title —"
+            " Rich markup-parses string titles, eating lowercase-start"
+            " bracketed segments unless escaped (#641)."
+        )
+
     def test_market_info_em_dash_fallback_for_missing_fields(
         self, seeded_db: Path,
     ) -> None:
