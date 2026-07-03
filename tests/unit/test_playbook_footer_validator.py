@@ -429,3 +429,19 @@ class TestFirstDateExtractionAndRowForms:
         rows = parse_playbook_footer(body)
         assert rows is not None
         assert rows["Bloomberg"].pub_date == "2026-07-01"
+
+    def test_citi_alias_duplicate_rows_warn(self) -> None:
+        """`- Citi:` plus `- Citigroup:` normalize to the same parsed
+        row (last silently wins) — the duplicate warning must count
+        aliases together (#649 review)."""
+        footer = (
+            make_footer()
+            + "\n- Citigroup: +0.2% (Reuters, 2026-07-01)"
+        )
+        errors, warnings = validate_playbook_footer(
+            ticker=TICKER, observation_body=make_observation(footer),
+            prior_observation_body=None,
+        )
+        assert any(
+            "Citi" in w and "2 times" in w for w in warnings
+        ), warnings

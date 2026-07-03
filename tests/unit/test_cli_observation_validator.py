@@ -560,3 +560,35 @@ def test_force_bypasses_643_validators(
     ])
     assert result.exit_code == 0, result.output
     assert "#643" in result.output  # audit line names both validators
+
+
+def test_validator_messages_survive_rich_markup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejection messages embed settlement-language snippets with
+    bracketed clauses — they must print with markup disabled or Rich
+    eats them (#649 review). The incident rules contain
+    '(single-decimal)' but the INVERTED SEMANTICS message quotes the
+    raw rules text; use a bracketed rules variant to pin survival."""
+    db_path = tmp_path / "test.db"
+    rules = (
+        "If the Consumer Price Index [as reported by the BLS]"
+        " increases by more than -0.1% in June 2026, the market"
+        " resolves to Yes."
+    )
+    _seed_position_with_rules(db_path, "KXCPI-26JUN-T-0.1", rules)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", _obs_with_semantics(
+            "Semantics: YES wins when CPI MoM <= -0.1%;"
+            " NO wins when CPI MoM > -0.1%",
+        ),
+    ])
+    assert result.exit_code == 1, result.output
+    # The bracketed clause from the quoted rules must survive verbatim
+    # in the rejection output.
+    assert "[as reported" in result.output

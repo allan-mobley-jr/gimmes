@@ -78,6 +78,11 @@ ECONOMIC_CATEGORIES: tuple[str, ...] = (
 _NUMERIC_VALUE_RE = re.compile(r"[-+]?\d+(?:\.\d+)?\s?%")
 
 
+# Citi's institutional aliases — used by both the evidence extractor and
+# the footer duplicate-row counter; keep in one place so they can't drift.
+_CITI_ALIAS = "Citi(?:bank|group)?"
+
+
 def _named_source_regex() -> re.Pattern[str]:
     # Citi is special-cased: CM prose frequently writes "Citibank" or
     # "Citigroup" as the same institution. Treating those as Citi
@@ -85,7 +90,7 @@ def _named_source_regex() -> re.Pattern[str]:
     # +0.42%" wouldn't trigger the validator. Other banks don't have
     # comparable widely-used aliases that conflict with the simple
     # word-boundary form.
-    citi_alias = "Citi(?:bank|group)?"
+    citi_alias = _CITI_ALIAS
     other_banks = [b for b in NAMED_BANKS if b != "Citi"]
     sources = other_banks + list(AGGREGATORS)
     # Sort by length desc so longer names match before substrings
@@ -591,8 +596,14 @@ def validate_playbook_footer(
     # discarding the first — surface it so a dated fresh claim can't
     # vanish behind a later duplicate.
     for source in PLAYBOOK_SOURCES:
+        # Citi aliases normalize to the same parsed row, so count them
+        # together — `- Citi:` plus `- Citigroup:` is a duplicate too
+        # (#649 review).
+        name_pattern = (
+            _CITI_ALIAS if source == "Citi" else re.escape(source)
+        )
         row_count = len(re.findall(
-            rf"(?m)^[-\u2013\u2014\u2022*]\s*{re.escape(source)}\s*:",
+            rf"(?m)^[-\u2013\u2014\u2022*]\s*{name_pattern}\s*:",
             observation_body,
         ))
         if row_count > 1:

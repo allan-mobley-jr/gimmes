@@ -2381,11 +2381,21 @@ def position_note(
                     prior_observation_body=prior_observation_body,
                     rules_primary=rules_primary,
                 )
+                # markup=False: validator messages embed settlement-
+                # language snippets whose bracketed clauses Rich would
+                # eat as style tags — the #641 bug class, inside the
+                # very messages meant to fix it (#649 review).
                 for warning in warnings:
-                    console.print(f"[yellow]{warning}[/yellow]")
+                    console.print(
+                        warning, style="yellow",
+                        markup=False, highlight=False,
+                    )
                 if not ok:
                     for err in errors:
-                        console.print(f"[red]{err}[/red]")
+                        console.print(
+                            err, style="red",
+                            markup=False, highlight=False,
+                        )
                     raise typer.Exit(1)
             if force and note_type == "observation":
                 console.print(
