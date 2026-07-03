@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import math
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
 from gimmes.reporting.metrics import (
     calculate_max_drawdown,
     calculate_metrics,
-    calculate_sharpe,
+    calculate_sharpe_from_curve,
 )
 
 
@@ -38,29 +43,103 @@ class TestMaxDrawdown:
         assert abs(dd_pct - 0.6) < 0.001
 
 
-class TestSharpe:
-    def test_positive_returns(self) -> None:
-        returns = [0.01, 0.02, 0.01, 0.015, 0.005]
-        sharpe = calculate_sharpe(returns)
+def _daily_curve(values: list[float]) -> list[tuple[str, float]]:
+    """Timestamped daily curve for Sharpe tests."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    return [
+        ((start + timedelta(days=i)).isoformat(), v)
+        for i, v in enumerate(values)
+    ]
+
+
+class TestSharpeFromCurve:
+    def test_steady_growth_positive(self) -> None:
+        # Compounding growth with slight alternation so std > 0.
+        values, v = [], 1000.0
+        for i in range(20):
+            v *= 1.02 if i % 2 == 0 else 1.005
+            values.append(v)
+        sharpe = calculate_sharpe_from_curve(_daily_curve([1000.0, *values]))
         assert sharpe > 0
 
-    def test_zero_returns(self) -> None:
-        returns = [0.0, 0.0, 0.0]
-        sharpe = calculate_sharpe(returns)
-        assert sharpe == 0.0
-
-    def test_single_return(self) -> None:
-        sharpe = calculate_sharpe([0.05])
-        assert sharpe == 0.0
-
-    def test_empty_returns(self) -> None:
-        sharpe = calculate_sharpe([])
-        assert sharpe == 0.0
-
-    def test_negative_returns(self) -> None:
-        returns = [-0.01, -0.02, -0.01, -0.015]
-        sharpe = calculate_sharpe(returns)
+    def test_variance_drag_shape_is_negative(self) -> None:
+        """The #654 headline regression pin: alternating +30%/-25%
+        compounds to a LOSS (1.3 * 0.75 = 0.975 per pair) while the
+        arithmetic mean of simple returns is +2.5% — the old
+        simple-returns Sharpe reported this POSITIVE."""
+        values, v = [1000.0], 1000.0
+        for i in range(30):
+            v *= 1.30 if i % 2 == 0 else 0.75
+            values.append(v)
+        assert values[-1] < values[0]  # compounded loss
+        sharpe = calculate_sharpe_from_curve(_daily_curve(values))
         assert sharpe < 0
+
+    def test_annualization_uses_observed_frequency(self) -> None:
+        """The core #654 defect pin: identical per-step returns spaced
+        DAILY vs WEEKLY must annualize differently — by sqrt(7) — since
+        the weekly series has 7x fewer periods per year. The old code
+        applied sqrt(252) to both, treating a sparse settlement curve
+        as if it were daily and inflating its Sharpe."""
+        values, v = [1000.0], 1000.0
+        for i in range(20):
+            v *= 1.02 if i % 2 == 0 else 1.005
+            values.append(v)
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        daily = _daily_curve(values)
+        weekly = [
+            ((start + timedelta(days=7 * i)).isoformat(), val)
+            for i, val in enumerate(values)
+        ]
+        s_daily = calculate_sharpe_from_curve(daily)
+        s_weekly = calculate_sharpe_from_curve(weekly)
+        assert s_daily > 0 and s_weekly > 0
+        assert s_daily / s_weekly == pytest.approx(math.sqrt(7), rel=1e-9)
+
+    def test_hand_computed_value(self) -> None:
+        """Exactly two log returns, hand-computable end to end.
+        Asymmetric so the mean is nonzero — a symmetric curve pins
+        nothing (mean 0 zeroes out annualization and variance terms;
+        #654 review found the first version let a ddof mutation
+        survive)."""
+        curve = _daily_curve([1000.0, 1100.0, 1050.0])  # 3 points, 2 days
+        r1, r2 = math.log(1.1), math.log(1050.0 / 1100.0)
+        mean = (r1 + r2) / 2
+        var = ((r1 - mean) ** 2 + (r2 - mean) ** 2) / 1
+        periods_per_year = 2 / (2 / 365.25)
+        expected = mean / math.sqrt(var) * math.sqrt(periods_per_year)
+        assert calculate_sharpe_from_curve(curve) == pytest.approx(expected)
+
+    def test_empty_and_single_point(self) -> None:
+        assert calculate_sharpe_from_curve([]) == 0.0
+        assert calculate_sharpe_from_curve(
+            [("2026-01-01T00:00:00+00:00", 1000.0)],
+        ) == 0.0
+
+    def test_constant_equity_zero_variance(self) -> None:
+        assert calculate_sharpe_from_curve(
+            _daily_curve([1000.0] * 5),
+        ) == 0.0
+
+    def test_zero_equity_points_skipped(self) -> None:
+        """Pairs touching a 0.0 equity point are dropped; the two
+        surviving returns (1000->1010, 1010->1000) compute normally."""
+        curve = _daily_curve([1000.0, 0.0, 1000.0, 1010.0, 1000.0])
+        r1, r2 = math.log(1.01), math.log(1000.0 / 1010.0)
+        mean = (r1 + r2) / 2
+        var = ((r1 - mean) ** 2 + (r2 - mean) ** 2) / 1
+        periods_per_year = 2 / (4 / 365.25)
+        expected = mean / math.sqrt(var) * math.sqrt(periods_per_year)
+        assert calculate_sharpe_from_curve(curve) == pytest.approx(expected)
+
+    def test_unparseable_timestamps_return_zero(self) -> None:
+        curve = [("", 1000.0), ("", 1100.0), ("not-a-ts", 1050.0)]
+        assert calculate_sharpe_from_curve(curve) == 0.0
+
+    def test_zero_time_span_returns_zero(self) -> None:
+        ts = "2026-01-01T00:00:00+00:00"
+        curve = [(ts, 1000.0), (ts, 1100.0), (ts, 1050.0)]
+        assert calculate_sharpe_from_curve(curve) == 0.0
 
 
 class TestCalculateMetrics:

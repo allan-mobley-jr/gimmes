@@ -28,7 +28,7 @@ These metrics MUST appear — omit NONE:
 - **Total Trades**: Count of all open+close actions
 - **Win Rate**: wins / (wins + losses), where win = close P&L > 0
 - **Net P&L**: Gross P&L minus fees, in dollars
-- **Sharpe Ratio**: Annualized as (mean daily excess return / std daily return) * sqrt(252). Report "N/A — insufficient data" if fewer than 2 equity snapshots exist.
+- **Sharpe Ratio**: Annualized Sharpe computed on LOG returns of the equity curve, with the annualization factor derived from the curve's OBSERVED frequency (periods per year over its actual time span) — not an assumed 252 trading days (#654). Its sign matches the compounded total return whenever all equity points are positive (pairs touching non-positive equity are dropped). Report "N/A — insufficient data" if fewer than 2 equity snapshots exist. Note: values are systematically lower than pre-#654 readings, which were inflated by frequency mismatch — historical scorecards are not comparable.
 - **Max Drawdown**: In dollars and as percent of peak equity
 - **Edge Accuracy**: avg realized edge / avg predicted edge. Report as ratio (e.g., 0.85 = realized 85% of predicted edge)
 - **Risk Utilization**: Current daily loss / configured daily loss limit AND position count / configured max positions (from `risk-check` output)

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, time
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from gimmes.backtest.engine import BacktestResult
-from gimmes.reporting.metrics import calculate_max_drawdown, calculate_sharpe
+from gimmes.reporting.metrics import (
+    calculate_max_drawdown,
+    calculate_sharpe_from_curve,
+)
 
 
 @dataclass
@@ -39,14 +43,15 @@ def _compute_summary(result: BacktestResult) -> _Summary:
 
     equity_values = [starting] + [e for _, e in result.equity_curve]
     max_dd, max_dd_pct = calculate_max_drawdown(equity_values)
-    returns = []
-    for i in range(1, len(equity_values)):
-        if equity_values[i - 1] > 0:
-            returns.append(
-                (equity_values[i] - equity_values[i - 1])
-                / equity_values[i - 1]
-            )
-    sharpe = calculate_sharpe(returns)
+    # #654: time-aware Sharpe on the timestamped curve — the starting
+    # balance is prepended at the configured start date so the span
+    # (and therefore the annualization frequency) is real.
+    start_ts = datetime.combine(
+        result.config.start_date, time.min, tzinfo=UTC,
+    ).isoformat()
+    sharpe = calculate_sharpe_from_curve(
+        [(start_ts, starting), *result.equity_curve],
+    )
 
     return _Summary(
         wins=wins, losses=losses, total=total, win_rate=win_rate,

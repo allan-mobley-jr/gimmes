@@ -170,3 +170,25 @@ class TestTruncationInJson:
         result = _make_result()
         data = backtest_result_to_json(result)
         assert data["funnel"]["truncated_chunks"] == []
+
+
+class TestSharpeSignMatchesRoi:
+    """#654: under log-return Sharpe, sign(sharpe) == sign(total
+    compounded return) is an identity — a losing backtest can never
+    again report a positive Sharpe (the +1.11-on-minus-14% headline)."""
+
+    def test_losing_backtest_negative_sharpe(self) -> None:
+        result = _make_result()  # final 9,996.70 < 10,000 start
+        data = backtest_result_to_json(result)
+        assert data["summary"]["net_pnl"] < 0
+        assert data["summary"]["sharpe"] < 0
+
+    def test_winning_backtest_positive_sharpe(self) -> None:
+        result = _make_result()
+        result.final_balance = 10_006.50
+        result.equity_curve = [
+            ("2025-03-15T00:00:00+00:00", 9_996.80),
+            ("2025-03-20T00:00:00+00:00", 10_006.50),
+        ]
+        data = backtest_result_to_json(result)
+        assert data["summary"]["sharpe"] > 0
