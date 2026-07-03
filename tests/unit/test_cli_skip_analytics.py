@@ -250,6 +250,26 @@ def test_unknown_reason_rejected(
     assert result.exit_code != 0
 
 
+def test_reason_rejected_on_non_skip_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--reason is a skip cause — an open/close carrying one would be
+    semantically invalid data (#657 review)."""
+    db_path = tmp_path / "test.db"
+    _bare_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    for action in ("open", "close"):
+        result = runner.invoke(app, [
+            "log-trade", TICKER, "--action", action,
+            "--price", "0.6", "--prob", "0.8",
+            "--rationale", "test", "--reason", "cooldown",
+        ])
+        assert result.exit_code != 0, action
+    assert _trade_rows(db_path, "open") == []
+    assert _trade_rows(db_path, "close") == []
+
+
 def test_open_with_zero_args_does_not_backfill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

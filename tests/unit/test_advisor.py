@@ -498,6 +498,31 @@ class TestMissedOpportunities:
         )
         assert rec is None
 
+    def test_non_entry_reason_skips_excluded_despite_analytics(
+        self, config: GimmesConfig,
+    ) -> None:
+        """A failed close is never a missed ENTRY — no_position and
+        close_failed skips stay out of the audit even when the row
+        carries full analytics (#657 review)."""
+        non_entry = [{
+            "ticker": f"CLOSEFAIL-{i}", "action": "skip",
+            "gimme_score": 90, "edge": 0.30, "price": 0.65,
+            "model_probability": 0.95,
+            "reason": "close_failed" if i % 2 else "no_position",
+            "timestamp": f"2026-06-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(10)]
+        clean = analyze_missed_opportunities(self._real_skips(), config)
+        polluted = analyze_missed_opportunities(
+            self._real_skips() + non_entry, config,
+        )
+        assert clean is not None
+        assert polluted is not None
+        data = json.loads(polluted.supporting_data)
+        # The phantom "missed entries" (edge 0.30) did not inflate
+        # missed_wins or the denominator.
+        assert data["false_negative_rate"] == pytest.approx(0.6)
+        assert data["excluded_non_entry"] == 10
+
     def test_degenerate_skips_alone_are_insufficient(
         self, config: GimmesConfig,
     ) -> None:

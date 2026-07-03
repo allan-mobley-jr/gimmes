@@ -2085,6 +2085,11 @@ def log_trade(
             f" {', '.join(sorted(_SKIP_REASONS))}",
             param_hint="--reason",
         )
+    if reason and action != "skip":
+        raise typer.BadParameter(
+            f"--reason is a skip cause; not valid with --action {action}",
+            param_hint="--reason",
+        )
     rationale_val = _resolve_prose_arg(
         rationale, rationale_file, "--rationale", "--rationale-file",
     )
