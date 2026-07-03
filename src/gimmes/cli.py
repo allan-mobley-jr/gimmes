@@ -1166,9 +1166,24 @@ def order(
                         trade_action is TradeDecision.Action.CLOSE
                         and probability is None
                     ):
-                        entry = (
-                            await get_entry_analytics(db, ticker, side) or {}
-                        )
+                        # Best-effort enrichment: a failed read must
+                        # not surface as "position sync failed" and
+                        # drop the trade row after a confirmed fill.
+                        # Log-only degrade (the #643 snapshot
+                        # precedent) — no insert_error row, since the
+                        # DB just failed a read.
+                        try:
+                            entry = (
+                                await get_entry_analytics(db, ticker, side)
+                                or {}
+                            )
+                        except sqlite3.Error:
+                            logger.error(
+                                "Entry-analytics fetch failed for %s;"
+                                " recording close with zeroed"
+                                " analytics (#656)",
+                                ticker, exc_info=True,
+                            )
                     trade = TradeDecision(
                         ticker=ticker,
                         action=trade_action,

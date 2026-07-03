@@ -262,8 +262,10 @@ def analyze_edge_decay(
             f"Consider raising min_edge_after_fees to filter weaker opportunities."
         ),
         supporting_data=json.dumps({
-            "first_half_avg_edge": round(avg_first, 4),
-            "second_half_avg_edge": round(avg_second, 4),
+            # Per-contract realized returns since #656 (were entry
+            # edges) — keys named for what they now carry.
+            "first_half_avg_return": round(avg_first, 4),
+            "second_half_avg_return": round(avg_second, 4),
             "decay_pct": round(decay_pct, 3),
             "sample_size": len(paired),
         }),

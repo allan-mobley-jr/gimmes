@@ -989,3 +989,21 @@ class TestCloseInheritsEntryAnalytics:
         assert t.model_probability == 0.55
         assert t.gimme_score == 0.0
         entry_mock.assert_not_awaited()
+
+    def test_entry_fetch_failure_still_records_close(self) -> None:
+        """A transient DB error in the best-effort analytics fetch must
+        not become 'position sync failed' — the close records with
+        zeroed analytics (#656 Copilot review)."""
+        broker = self._broker_with_position()
+        captured, sync = self._capture()
+        entry_mock = AsyncMock(side_effect=sqlite3.OperationalError("locked"))
+        with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
+            result, mock_console, _ = _run_order_cli(
+                broker, sync_side_effect=sync, cli_args=_SELL_CLI_ARGS,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        t = captured["trade"]
+        assert t.action is TradeDecision.Action.CLOSE
+        assert t.model_probability == 0.0
+        assert t.edge == 0.0
+        assert "position sync failed" not in _printed(mock_console).lower()
