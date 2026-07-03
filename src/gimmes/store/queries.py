@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import TypedDict
 
@@ -273,16 +274,23 @@ async def _log_reconcile_closes(
     rows use commit-less helpers so they participate in the caller's
     transaction.
     """
-    import os
-
-    cycle_env = os.environ.get("GIMMES_CYCLE", "0")
-    try:
-        cycle = int(cycle_env or 0)
-    except ValueError:
-        cycle = 0
+    cycle = _cycle_from_env()
 
     for pos in removed:
         if exclude_ticker and pos.ticker == exclude_ticker:
+            continue
+        # #653 guard: if the ticker/side's closes already cover its
+        # opens (residual <= 0 — e.g. the paper broker just wrote a
+        # settlement close in this same sync window), do NOT write a
+        # duplicate drift close — that was how mark-priced phantom
+        # rows were born. Quantity-based, not timestamp-based: a
+        # partial close must NOT suppress the drift close for the
+        # remaining contracts (#653 review).
+        opened, closed = await count_opened_closed(db, pos.ticker, pos.side)
+        if opened > 0 and closed >= opened:
+            # Recorded closes already cover the recorded opens — a
+            # position with NO trade history (opened == 0) still gets
+            # its drift close (pre-#609 DBs, seeded positions).
             continue
         # Use last-known mark (market_price or avg_price) as the close
         # price rather than 0.0 — keeps `get_daily_pnl`'s realized-P&L
@@ -327,6 +335,145 @@ async def _log_reconcile_closes(
             " VALUES (?, ?, ?, ?, ?)",
             (pos.ticker, cycle, "reconcile", "decision", body),
         )
+
+
+def _cycle_from_env() -> int:
+    """Current cycle number from GIMMES_CYCLE (0 if unset or invalid)."""
+    try:
+        return int(os.environ.get("GIMMES_CYCLE", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def settlement_outcome(side: str, won: bool) -> str:
+    """Resolution outcome implied by a settlement result (#653).
+
+    A winning YES position means the market resolved yes; a losing
+    YES position means it resolved no; and vice versa for NO.
+    """
+    if won:
+        return side
+    return "no" if side == "yes" else "yes"
+
+
+async def count_opened_closed(
+    db: Database, ticker: str, side: str
+) -> tuple[int, int]:
+    """Contract counts (opened, closed) for a ticker/side in the trades log.
+
+    Opened sums `open` + `size_up` rows; closed sums `close` rows.
+    Used by the #653 reconcile dup-guard and the backfill residual.
+    """
+    cursor = await db.conn.execute(
+        """SELECT
+             COALESCE(SUM(CASE WHEN action IN ('open','size_up')
+               THEN count END), 0) AS opened,
+             COALESCE(SUM(CASE WHEN action = 'close'
+               THEN count END), 0) AS closed
+           FROM trades WHERE ticker = ? AND side = ?
+             AND action IN ('open','size_up','close')""",
+        (ticker, side),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return 0, 0
+    return int(row["opened"] or 0), int(row["closed"] or 0)
+
+
+async def fill_resolved_outcome(
+    db: Database, ticker: str, outcome: str
+) -> None:
+    """Set `resolved_outcome` on a ticker's trade rows — filling NULLs
+    AND overwriting conflicting values.
+
+    Settlement is the authoritative resolution source: an already-
+    populated but WRONG outcome (Monitor's log-outcome was proven
+    wrong at least once — the KXUE-UK26FEB-5.1 case) must be corrected,
+    or read-time repricing would trust the stale outcome over the
+    settlement truth. Idempotent when already correct (#653 review).
+
+    Commit-less — the caller manages the transaction.
+    """
+    await db.conn.execute(
+        "UPDATE trades SET resolved_outcome = ?"
+        " WHERE ticker = ?"
+        " AND (resolved_outcome IS NULL OR resolved_outcome != ?)",
+        (outcome, ticker, outcome),
+    )
+
+
+async def log_settlement_close(
+    db: Database,
+    *,
+    ticker: str,
+    side: str,
+    count: int,
+    won: bool,
+    timestamp: datetime | None = None,
+    rationale: str | None = None,
+) -> int:
+    """Write a settlement close trade + decision note (#653).
+
+    Settlements are broker-confirmed outcomes — priced at exactly 1.0
+    (win) or 0.0 (loss), fee-free (Kalshi charges no settlement fee;
+    `calculate_fee` returns 0 outside 0<price<1 automatically), and
+    tagged `agent='settlement'` so they are distinguishable from both
+    intentional agent closes and reconcile drift. Settlement closes
+    COUNT toward daily P&L (unlike `agent='reconcile'` drift, #622): a
+    settlement loss is real realized money lost that day.
+
+    Also sets `resolved_outcome` on the ticker's trade rows — filling
+    NULLs AND correcting conflicting values, since settlement IS the
+    authoritative resolution event (Monitor's log-outcome has been
+    wrong before) and the scorecard must not depend on its timing.
+
+    Commit-less: caller manages the transaction. Returns the trade
+    row id.
+    """
+    cycle = _cycle_from_env()
+
+    price = 1.0 if won else 0.0
+    synth = TradeDecision(
+        ticker=ticker,
+        action=TradeDecision.Action.CLOSE,
+        side=side,
+        count=count,
+        price=price,
+        rationale=rationale or (
+            "market settled — broker-confirmed outcome; close at"
+            " settlement value (#653)"
+        ),
+        agent="settlement",
+    )
+    if timestamp is not None:
+        synth.timestamp = timestamp
+    row_id = await _insert_trade_row(db, synth)
+
+    # resolved_outcome is derivable from the settlement itself:
+    # a winning YES position means the market resolved yes, etc.
+    outcome = settlement_outcome(side, won)
+    await fill_resolved_outcome(db, ticker, outcome)
+
+    # IMPORTANT: this body MUST NOT contain the literal string
+    # `Trigger: Stop-loss breach` (the #586 lockout query is a
+    # substring match — see _log_reconcile_closes above).
+    body = (
+        f"Decision: CLOSE\n"
+        f"Trigger: Settlement\n"
+        f"Side: {side}\n"
+        f"Count: {count}\n"
+        f"Settlement value: {price}\n"
+        f"Rationale: market resolved {outcome}; position settled by the"
+        f" broker at {price}. This is a settlement outcome, not an"
+        f" adverse price event — the #586 reopen lockout does NOT apply."
+    )
+    await db.conn.execute(
+        "INSERT INTO position_notes"
+        " (ticker, cycle, agent, note_type, body)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (ticker, cycle, "settlement", "decision", body),
+    )
+    return row_id
 
 
 async def sync_positions(db: Database, positions: list[Position]) -> None:
@@ -627,6 +774,9 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
     Synthetic reconcile-divergence close trades (agent='reconcile', written
     by `_log_reconcile_closes` per #609) are EXCLUDED from daily P&L because
     they represent broker-side drift, not intentional realized trading P&L.
+    Settlement closes (agent='settlement', #653) ARE included: a settlement
+    loss is real realized money lost that day and the daily-loss trigger
+    should see it.
     Including them distorts the daily-loss-limit trigger that the autonomous
     loop reads from this value — a reconcile-driven close at the last-known
     mark would show as realized loss/gain the operator did not actually

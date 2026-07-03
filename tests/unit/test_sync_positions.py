@@ -418,3 +418,77 @@ def test_caddie_master_lockout_query_does_not_match_reconcile_body() -> None:
         " explanatory rationale text) would silently lock out"
         " legitimate re-entry after reconcile drift (#609)."
     )
+
+
+def _guard_trade(
+    ticker: str, action: str, count: int, price: float,
+    agent: str = "closer",
+) -> TradeDecision:
+    return TradeDecision(
+        ticker=ticker, action=TradeDecision.Action(action),
+        side="yes", count=count, price=price, agent=agent,
+    )
+
+
+class TestReconcileDuplicateGuard:
+    """#653: the drift-close duplicate guard in _log_reconcile_closes —
+    mutation testing showed it previously had zero kill coverage."""
+
+    async def test_guard_suppresses_when_closes_cover_opens(self, db):
+        """Settlement close exists but the mirror row survived (the
+        race the guard exists for): sync must NOT write a duplicate
+        reconcile drift close."""
+        await insert_trade(db, _guard_trade("KX1", "open", 10, 0.6))
+        await insert_trade(db, _guard_trade(
+            "KX1", "close", 10, 1.0, agent="settlement",
+        ))
+        await upsert_position(db, _pos("KX1", count=10))
+
+        await sync_positions(db, [])  # ticker removed
+
+        trades = await get_trades(db, ticker="KX1")
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1
+        assert closes[0]["agent"] == "settlement"
+
+    async def test_guard_allows_drift_close_after_reopen(self, db):
+        """close -> reopen -> drift: the reopened contracts are not
+        covered by the old close, so the drift close MUST be written
+        (a timestamp-based guard would wrongly suppress it)."""
+        await insert_trade(db, _guard_trade("KX2", "open", 100, 0.6))
+        await insert_trade(db, _guard_trade("KX2", "close", 100, 0.8))
+        await insert_trade(db, _guard_trade("KX2", "open", 100, 0.55))
+        await upsert_position(db, _pos("KX2", count=100))
+
+        await sync_positions(db, [])
+
+        trades = await get_trades(db, ticker="KX2")
+        reconcile = [t for t in trades if t.get("agent") == "reconcile"]
+        assert len(reconcile) == 1
+
+    async def test_guard_allows_drift_close_after_partial_close(self, db):
+        """open 10, close 4, drift removes the rest: the residual 6
+        must still get a drift close."""
+        await insert_trade(db, _guard_trade("KX3", "open", 10, 0.6))
+        await insert_trade(db, _guard_trade("KX3", "close", 4, 0.7))
+        await upsert_position(db, _pos("KX3", count=6))
+
+        await sync_positions(db, [])
+
+        trades = await get_trades(db, ticker="KX3")
+        reconcile = [t for t in trades if t.get("agent") == "reconcile"]
+        assert len(reconcile) == 1
+        assert reconcile[0]["count"] == 6
+
+    async def test_guard_allows_drift_close_with_no_trade_history(
+        self, db,
+    ):
+        """A position with no recorded opens (pre-#609 DB, seeded)
+        still gets its drift close."""
+        await upsert_position(db, _pos("KX4", count=5))
+
+        await sync_positions(db, [])
+
+        trades = await get_trades(db, ticker="KX4")
+        reconcile = [t for t in trades if t.get("agent") == "reconcile"]
+        assert len(reconcile) == 1

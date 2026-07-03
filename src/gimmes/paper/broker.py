@@ -598,6 +598,8 @@ class PaperBroker:
         if not rows:
             return
 
+        from gimmes.store.queries import log_settlement_close
+
         async with self._db.transaction():
             for row in rows:
                 count = int(row["count"])
@@ -617,6 +619,22 @@ class PaperBroker:
                        WHERE ticker = ? AND side = ?""",
                     (1.0 if won else 0.0, realized_pnl, ticker, side),
                 )
+
+                # #653: settlements are real outcomes — write the close
+                # trade at settlement value so the lifetime scorecard
+                # sees the W/L (previously only the balance knew).
+                await log_settlement_close(
+                    self._db, ticker=ticker, side=side,
+                    count=count, won=won,
+                )
+
+            # #653: remove the mirror row in the main positions table
+            # inside the SAME transaction — otherwise the next
+            # sync_positions sees the ticker vanish from the broker and
+            # writes a duplicate mark-priced reconcile drift close.
+            await self._conn.execute(
+                "DELETE FROM positions WHERE ticker = ?", (ticker,)
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers

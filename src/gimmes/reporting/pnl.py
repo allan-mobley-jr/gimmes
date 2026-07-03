@@ -15,6 +15,7 @@ class PnLSummary:
     """Profit and loss summary."""
 
     total_trades: int = 0
+    open_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
     scratch_trades: int = 0
@@ -64,10 +65,36 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
         remaining = 0
         avg_cost = 0.0
 
+        # #653: resolution outcome propagated across the group — the
+        # outcome is usually recorded on the OPEN row (Monitor's
+        # log-outcome ran before any drift close existed), never on the
+        # reconcile close itself.
+        group_outcome = next(
+            (
+                e.get("resolved_outcome")
+                for e in events
+                if e.get("resolved_outcome") in ("yes", "no")
+            ),
+            None,
+        )
+
         for e in events:
             action = e["action"]
             count = int(e.get("count", 0) or 0)
             price = float(e.get("price", 0.0) or 0.0)
+
+            # #653: a reconcile drift close is priced at the last-known
+            # mark, not the broker-confirmed outcome. When the market's
+            # resolution is known, reprice at settlement value — this is
+            # how championship-mode settlements (which arrive as drift)
+            # enter the scorecard correctly. Without a known outcome the
+            # mark stands (genuine non-settlement drift).
+            if (
+                action == "close"
+                and e.get("agent") == "reconcile"
+                and group_outcome is not None
+            ):
+                price = 1.0 if side == group_outcome else 0.0
 
             if action in ("open", "size_up"):
                 if count <= 0:
@@ -117,8 +144,11 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
 
         # Still-open residual: count once per (ticker, side) with carry, so
         # the prior open-only test (test_open_only_counted) keeps passing.
+        # open_trades makes the summary internally consistent:
+        # total = wins + losses + scratch + open (#653).
         if remaining > 0:
             summary.total_trades += 1
+            summary.open_trades += 1
 
     summary.net_pnl = summary.gross_pnl - summary.total_fees
     return summary

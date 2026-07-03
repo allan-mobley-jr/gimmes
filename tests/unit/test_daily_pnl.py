@@ -259,3 +259,33 @@ class TestGetDailyPnlExcludesReconcileCloses:
 
         pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
         assert pnl == 0.0
+
+
+class TestGetDailyPnlIncludesSettlementCloses:
+    """#653: settlement closes (agent='settlement') ARE included in
+    daily P&L — a settlement loss is real realized money lost that day
+    and the daily-loss trigger should see it. Only reconcile DRIFT
+    (#622) is excluded."""
+
+    async def test_settlement_close_included_in_pnl(
+        self, db: Database,
+    ) -> None:
+        now = datetime.now(UTC)
+        await insert_trade(db, _trade(
+            action="open", price=0.40, count=10, timestamp=now,
+        ))
+        settlement_trade = TradeDecision(
+            ticker="KXTEST",
+            action=TradeDecision.Action.CLOSE,
+            price=0.0,  # settled as a loss
+            count=10,
+            edge=0.0,
+            agent="settlement",
+            rationale="market settled (#653)",
+            timestamp=now,
+        )
+        await insert_trade(db, settlement_trade)
+
+        pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
+        # (0.0 - 0.40) * 10 = -$4.00 — the settlement loss IS visible.
+        assert pnl == pytest.approx(-4.0)
