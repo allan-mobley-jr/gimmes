@@ -357,3 +357,60 @@ class TestValidateTrade:
         )
         assert result.approved is True
         assert any("bankroll ok" in c.lower() for c in result.checks)
+
+
+class TestPriceBoundGate:
+    """#658: within one tick of a bound the edge formula collapses to
+    prob - 0 — the validator must reject, not print 'Edge OK (88%)'
+    for an unfillable order. Prices drift to the bound between Caddie
+    research and Closer execution, so the live check is the backstop."""
+
+    def test_no_side_floor_rejected(self, config: GimmesConfig) -> None:
+        config.strategy.side = "no"
+        market = _make_market(yes_bid=1.0, yes_ask=1.0, last_price=1.0)
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.88,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is False
+        assert any("Price at bound" in f for f in result.failures)
+        assert not any("Edge OK" in c for c in result.checks)
+
+    def test_yes_side_ceiling_rejected(self, config: GimmesConfig) -> None:
+        config.strategy.side = "yes"
+        market = _make_market(yes_bid=0.99, yes_ask=0.99, last_price=0.99)
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.999,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is False
+        assert any("Price at bound" in f for f in result.failures)
+
+    def test_mid_range_edge_check_unchanged(
+        self, config: GimmesConfig,
+    ) -> None:
+        market = _make_market()  # midpoint 0.70
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=0.90,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert not any("Price at bound" in f for f in result.failures)
+        assert any("Edge" in c for c in result.checks)

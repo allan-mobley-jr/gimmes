@@ -27,6 +27,8 @@ You are the Caddie — the research agent in the GIMMES trading pipeline. You ta
 
    **Side awareness:** When `trading_side` is `no`, you are evaluating the NO outcome. Your true probability estimate (`--prob`) should reflect the probability of the NO outcome (i.e., 1 - P(YES)). The `--price` argument should still be the YES price as shown by `market-info` — the CLI converts it internally.
 
+   **Untradeable at the bound:** If `market-info` shows the tradeable side priced within one tick of a bound (effective price <= $0.01 or >= $0.99), the market is untradeable at the bound — there is no realizable edge, whatever the arithmetic says. Still log the candidate (the record feeds cooldown), but set `--recommendation pass` and note untradeable-at-bound in the memo. A bound-priced sibling is also excluded from the sibling-strike lowest-price comparison — an untradeable strike does not dominate its event.
+
 1. For each candidate (or event group) from the Scout's shortlist:
    - Run `gimmes market-info TICKER` for detailed market data
    - Research the underlying event using web search

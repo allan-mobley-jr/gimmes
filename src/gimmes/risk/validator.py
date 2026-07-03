@@ -16,7 +16,7 @@ from gimmes.risk.limits import (
 )
 from gimmes.risk.settlement import scan_settlement_rules
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
-from gimmes.strategy.scanner import effective_price
+from gimmes.strategy.scanner import effective_price, price_at_bound
 
 
 @dataclass
@@ -165,12 +165,23 @@ def validate_trade(
     if true_probability is not None:
         raw_price = market.midpoint if market.midpoint > 0 else market.last_price
         price = effective_price(raw_price, config.strategy.side)
-        edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
-        min_edge = config.strategy.min_edge_after_fees
-        if edge >= min_edge:
-            checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
+        # #658: within one tick of a bound the edge formula collapses
+        # to `prob - 0` — a fabricated "Edge OK (88%)" would wave an
+        # unfillable order through the last pre-capital gate. The
+        # price can drift to the bound between Caddie research and
+        # Closer execution, so the live check must catch it.
+        if price_at_bound(price):
+            failures.append(
+                f"Price at bound: effective price ${price:.2f} is"
+                f" untradeable — no realizable edge (#658)"
+            )
         else:
-            failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
+            edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
+            min_edge = config.strategy.min_edge_after_fees
+            if edge >= min_edge:
+                checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
+            else:
+                failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
     else:
         checks.append("Edge check skipped (no probability provided)")
 

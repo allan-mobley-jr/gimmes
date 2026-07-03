@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -19,6 +20,11 @@ from gimmes.store.queries import (
     insert_trade,
     update_trade_outcome,
 )
+
+if TYPE_CHECKING:
+    from unittest.mock import AsyncMock
+
+    from click.testing import Result
 
 
 @pytest.fixture
@@ -289,6 +295,62 @@ class TestLogCandidateCommand:
         _, ticker, title, price, prob, edge, score, memo = mock_insert.call_args[0]
         assert ticker == "EDGE-TEST"
         assert abs(edge - 0.20) < 1e-9
+
+    @staticmethod
+    def _invoke_no_side(
+        tmp_path: Path, argv: list[str],
+    ) -> tuple[Result, AsyncMock]:
+        """Run a log-candidate argv with the strategy side pinned to a
+        real 'no' literal and insert_candidate mocked (#658 harness)."""
+        from unittest.mock import AsyncMock, patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        mock_insert = AsyncMock(return_value=1)
+        runner = CliRunner()
+
+        with (
+            patch("gimmes.cli.load_config") as mock_cfg,
+            patch("gimmes.store.queries.insert_candidate", mock_insert),
+        ):
+            mock_cfg.return_value.db_path = tmp_path / "test.db"
+            mock_cfg.return_value.strategy.side = "no"
+            result = runner.invoke(app, argv)
+        return result, mock_insert
+
+    def test_bound_price_clamps_edge_to_zero(self, tmp_path: Path) -> None:
+        """#658: YES $1.00 on a BUY NO strategy is untradeable (NO
+        costs $0.00) — the stored edge must be 0, not prob - 0 = +88%.
+        A zero edge auto-fails Caddie Master's cm_min_edge_after_fees
+        pre-filter."""
+        result, mock_insert = self._invoke_no_side(tmp_path, [
+            "log-candidate", "KXCPIYOY-26JUL-T3.7",
+            "--price", "1.00", "--prob", "0.88", "--score", "80",
+            "--memo", "bound test",
+        ])
+
+        assert result.exit_code == 0
+        _, _, _, price, prob, edge, _, _ = mock_insert.call_args[0]
+        assert price == 1.00
+        assert prob == 0.88
+        assert edge == 0.0
+
+    def test_no_side_mid_range_edge(self, tmp_path: Path) -> None:
+        """Side plumbing through log-candidate with a real 'no'
+        literal at a NON-bound price: edge = prob - (1 - price).
+        (The pre-existing test's MagicMock side pins neither literal;
+        a double-conversion mutant survived it — #658 review.)"""
+        result, mock_insert = self._invoke_no_side(tmp_path, [
+            "log-candidate", "MIDRANGE-NO",
+            "--price", "0.70", "--prob", "0.85", "--score", "80",
+            "--memo", "mid-range no side",
+        ])
+
+        assert result.exit_code == 0
+        edge = mock_insert.call_args[0][5]
+        assert abs(edge - 0.55) < 1e-9  # 0.85 - (1 - 0.70)
 
     def test_memo_file_preserves_dollar_zero(self, tmp_path: Path) -> None:
         """Regression test for #589: --memo-file content with `$0.41` reaches
