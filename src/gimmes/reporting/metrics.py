@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -46,26 +47,79 @@ def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, float]:
     return max_dd, max_dd_pct
 
 
-def calculate_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float:
-    """Calculate annualized Sharpe ratio from daily returns.
+def calculate_sharpe_from_curve(
+    curve: list[tuple[str, float]],
+    risk_free_rate: float = 0.0,
+) -> float:
+    """Annualized Sharpe ratio from a timestamped equity curve (#654).
+
+    Computed on LOG returns of consecutive equity points, annualized by
+    the OBSERVED frequency (periods per year derived from the curve's
+    actual time span) — never an assumed 252 trading days. Two
+    properties this buys over the old daily-assuming simple-returns
+    version:
+
+    - The sign matches the compounded total return (mean log return
+      telescopes to ln(final/initial)/N), so a strategy that lost
+      money can never report a positive Sharpe via variance drag —
+      the exact #654 symptom (+1.11 on a -14% backtest). Caveat: the
+      telescoping (and hence the sign identity) only holds when every
+      consecutive pair of equity points is positive; pairs touching a
+      non-positive value are dropped, not bridged, so a curve that
+      dips to zero or below can break the identity.
+    - Sampling frequency doesn't inflate the value: per-settlement
+      curves (dozens of events over months) annualize by their real
+      cadence, not sqrt(252).
+
+    Irregular event spacing is approximated as evenly spaced at the
+    span's average frequency; a daily-resampled upgrade path exists if
+    that ever matters.
 
     Args:
-        returns: List of daily returns (e.g., [0.01, -0.005, 0.02]).
-        risk_free_rate: Daily risk-free rate.
+        curve: (ISO timestamp, equity) points, chronological.
+        risk_free_rate: ANNUAL risk-free rate (converted per-period
+            internally as a simple division; exact treatment would use
+            ln(1+rf) — immaterial at realistic rates, zero by default).
+
+    Returns 0.0 when undefined: fewer than 2 usable log returns,
+    zero variance, non-positive equity pairs, unparseable timestamps,
+    or a non-positive time span.
     """
-    if len(returns) < 2:
+    if len(curve) < 2:
         return 0.0
 
-    excess = [r - risk_free_rate for r in returns]
+    log_returns: list[float] = []
+    for (_, prev), (_, cur) in zip(curve, curve[1:], strict=False):
+        if prev > 0 and cur > 0:
+            log_returns.append(math.log(cur / prev))
+    if len(log_returns) < 2:
+        return 0.0
+
+    try:
+        t0 = datetime.fromisoformat(curve[0][0])
+        t1 = datetime.fromisoformat(curve[-1][0])
+        # Normalize naive timestamps to UTC — a naive/aware mix would
+        # TypeError on subtraction (#654 review; Market.close_time can
+        # arrive naive in principle).
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=UTC)
+        if t1.tzinfo is None:
+            t1 = t1.replace(tzinfo=UTC)
+        years = (t1 - t0).total_seconds() / (365.25 * 24 * 3600)
+    except (ValueError, TypeError):
+        return 0.0
+    if years <= 0:
+        return 0.0
+    periods_per_year = len(log_returns) / years
+
+    rf_per_period = risk_free_rate / periods_per_year
+    excess = [r - rf_per_period for r in log_returns]
     mean = sum(excess) / len(excess)
     variance = sum((r - mean) ** 2 for r in excess) / (len(excess) - 1)
-    std = math.sqrt(variance) if variance > 0 else 0.0
-
-    if std == 0:
+    if variance <= 0:
         return 0.0
 
-    # Annualize (assuming ~252 trading days)
-    return (mean / std) * math.sqrt(252)
+    return (mean / math.sqrt(variance)) * math.sqrt(periods_per_year)
 
 
 def _equity_curve_from_trades(
@@ -102,12 +156,11 @@ def _apply_equity_curve(
         metrics.total_return = equity_values[-1] - initial_bankroll
         metrics.total_return_pct = metrics.total_return / initial_bankroll
     if len(equity_values) >= 2:
-        daily_returns = [
-            (equity_values[i] - equity_values[i - 1]) / equity_values[i - 1]
-            for i in range(1, len(equity_values))
-            if equity_values[i - 1] > 0
-        ]
-        metrics.sharpe_ratio = calculate_sharpe(daily_returns)
+        # #654: time-aware Sharpe — snapshot cadence, not assumed daily.
+        metrics.sharpe_ratio = calculate_sharpe_from_curve([
+            (str(pt.get("timestamp", "")), float(pt["equity"]))
+            for pt in curve
+        ])
     metrics.equity_curve = curve
 
 
