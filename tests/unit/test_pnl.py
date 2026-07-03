@@ -188,3 +188,91 @@ class TestCalculatePnlWeightedAverage:
         summary = calculate_pnl(trades)
         assert summary.total_trades == 1
         assert summary.gross_pnl == 0.0
+
+
+class TestReconcileRepricing:
+    """#653: reconcile drift closes reprice at settlement value when
+    the group's resolution outcome is known (typically recorded on the
+    OPEN row by Monitor's log-outcome, never on the drift close)."""
+
+    def _group(self, *, close_agent, close_price, outcome_on_open):
+        return [
+            {
+                "ticker": "KX1", "side": "no", "action": "open",
+                "count": 100, "price": 0.63, "timestamp": "2026-04-20",
+                "agent": "closer", "resolved_outcome": outcome_on_open,
+            },
+            {
+                "ticker": "KX1", "side": "no", "action": "close",
+                "count": 100, "price": close_price, "timestamp": "2026-04-25",
+                "agent": close_agent, "resolved_outcome": None,
+            },
+        ]
+
+    def test_reconcile_close_repriced_to_loss(self) -> None:
+        # NO position; market resolved yes → NO lost → settlement 0.0,
+        # even though the drift row carries mark 0.705.
+        summary = calculate_pnl(self._group(
+            close_agent="reconcile", close_price=0.705,
+            outcome_on_open="yes",
+        ))
+        assert summary.losing_trades == 1
+        assert summary.gross_pnl == pytest.approx((0.0 - 0.63) * 100)
+
+    def test_reconcile_close_repriced_to_win(self) -> None:
+        summary = calculate_pnl(self._group(
+            close_agent="reconcile", close_price=0.705,
+            outcome_on_open="no",
+        ))
+        assert summary.winning_trades == 1
+        assert summary.gross_pnl == pytest.approx((1.0 - 0.63) * 100)
+
+    def test_reconcile_close_without_outcome_stays_at_mark(self) -> None:
+        """Genuine non-settlement drift (no known outcome) keeps the
+        last-known mark."""
+        summary = calculate_pnl(self._group(
+            close_agent="reconcile", close_price=0.705,
+            outcome_on_open=None,
+        ))
+        assert summary.gross_pnl == pytest.approx((0.705 - 0.63) * 100)
+
+    def test_non_reconcile_close_never_repriced(self) -> None:
+        """An intentional closer close keeps its actual fill price even
+        when the outcome is known — repricing is drift-only."""
+        summary = calculate_pnl(self._group(
+            close_agent="closer", close_price=0.705,
+            outcome_on_open="yes",
+        ))
+        assert summary.gross_pnl == pytest.approx((0.705 - 0.63) * 100)
+
+    def test_settlement_price_close_has_no_close_fee(self) -> None:
+        """Settlement closes at 1.0/0.0 are fee-free automatically via
+        calculate_fee's price-range guard; open-leg fee remains."""
+        summary = calculate_pnl(self._group(
+            close_agent="reconcile", close_price=0.705,
+            outcome_on_open="no",  # repriced to 1.0
+        ))
+        from gimmes.strategy.fees import fee_for_order
+
+        assert summary.total_fees == pytest.approx(
+            fee_for_order(100, 0.63),
+        )
+
+
+class TestOpenTradesField:
+    def test_total_equals_closed_plus_open(self) -> None:
+        trades = [
+            {"ticker": "KX1", "side": "no", "action": "open",
+             "count": 100, "price": 0.6, "timestamp": "1"},
+            {"ticker": "KX1", "side": "no", "action": "close",
+             "count": 100, "price": 0.8, "timestamp": "2"},
+            {"ticker": "KX2", "side": "yes", "action": "open",
+             "count": 50, "price": 0.4, "timestamp": "1"},
+        ]
+        summary = calculate_pnl(trades)
+        assert summary.open_trades == 1
+        closed = (
+            summary.winning_trades + summary.losing_trades
+            + summary.scratch_trades
+        )
+        assert summary.total_trades == closed + summary.open_trades

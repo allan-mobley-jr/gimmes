@@ -946,3 +946,111 @@ class TestNegativeBalanceGuard:
 
         balance = await broker.get_balance()
         assert balance == 10_000.00
+
+
+class TestSettlementCloseTrade:
+    """#653: settle() writes the settlement close trade and removes the
+    positions mirror row so reconcile can't write a duplicate."""
+
+    async def _buy(self, broker, orderbook, side, count=10) -> None:
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=side,
+            count=count,
+            yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+
+    @pytest.mark.asyncio
+    async def test_settle_writes_settlement_close_win(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook, OrderSide.YES)
+        await broker.settle("TEST-MKT", "yes")  # YES won
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1
+        assert closes[0]["agent"] == "settlement"
+        assert closes[0]["price"] == 1.0
+        assert closes[0]["count"] == 10
+        assert closes[0]["resolved_outcome"] == "yes"
+
+    @pytest.mark.asyncio
+    async def test_settle_writes_settlement_close_loss(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook, OrderSide.YES)
+        await broker.settle("TEST-MKT", "no")  # YES lost
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1
+        assert closes[0]["price"] == 0.0
+        assert closes[0]["resolved_outcome"] == "no"
+
+    @pytest.mark.asyncio
+    async def test_settle_deletes_positions_mirror_row(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        from gimmes.models.portfolio import Position
+        from gimmes.store.queries import get_positions, upsert_position
+
+        await self._buy(broker, orderbook, OrderSide.YES)
+        # Mirror the position into the main positions table the way a
+        # cycle's sync would.
+        await upsert_position(broker._db, Position(
+            ticker="TEST-MKT", side="yes", count=10, avg_price=0.70,
+        ))
+        await broker.settle("TEST-MKT", "yes")
+
+        remaining = {p.ticker for p in await get_positions(broker._db)}
+        assert "TEST-MKT" not in remaining
+
+    @pytest.mark.asyncio
+    async def test_settle_nonexistent_writes_no_trade(
+        self, broker: PaperBroker,
+    ) -> None:
+        from gimmes.store.queries import get_trades
+
+        await broker.settle("KXT-GHOST", "yes")
+        assert await get_trades(broker._db, ticker="KXT-GHOST") == []
+
+
+class TestPartialSellThenSettleCloseRow:
+    """#653 gap 4: settle() after a partial sell must write the
+    settlement close for the RESIDUAL count only."""
+
+    @pytest.mark.asyncio
+    async def test_settlement_close_counts_residual_only(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        from gimmes.store.queries import get_trades
+
+        buy = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY,
+            side=OrderSide.YES, count=10, yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(buy, orderbook)
+        sell = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.SELL,
+            side=OrderSide.YES, count=5, yes_price=0.68,
+            post_only=True,
+        )
+        await broker.create_order(sell, orderbook)
+        await broker.settle("TEST-MKT", "yes")
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        settlement = [
+            t for t in trades if t.get("agent") == "settlement"
+        ]
+        assert len(settlement) == 1
+        assert settlement[0]["count"] == 5
+        assert settlement[0]["price"] == 1.0

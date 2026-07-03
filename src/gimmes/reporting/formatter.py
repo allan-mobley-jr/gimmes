@@ -48,6 +48,15 @@ def format_pnl_summary(summary: PnLSummary) -> None:
     table.add_column("Value", style="white", justify="right")
 
     table.add_row("Total Trades", str(summary.total_trades))
+    # #653: total = closed (W+L+scratch) + open — show the split so the
+    # table is internally consistent instead of leaving readers to
+    # wonder where total - W - L - S trades went.
+    closed = (
+        summary.winning_trades + summary.losing_trades
+        + summary.scratch_trades
+    )
+    table.add_row("Closed", str(closed))
+    table.add_row("Open Positions", str(summary.open_trades))
     table.add_row("Winning", str(summary.winning_trades))
     table.add_row("Losing", str(summary.losing_trades))
     table.add_row("Scratch", str(summary.scratch_trades))

@@ -129,20 +129,24 @@ class TestPaperReconcileDriftCoveredBy609:
         # sync_positions. This is what cli.py:1750 does.
         await sync_positions(db, positions_after)
 
-        # ASSERT #609 fired in paper mode:
-        # 1. Synthetic close trade with agent='reconcile'.
+        # #653: settle() itself wrote the ONE close — at settlement
+        # value, agent='settlement' — and deleted the positions mirror
+        # row, so reconcile must NOT write a duplicate mark-priced
+        # drift close (that was how phantom rows were born).
         trades = await get_trades(db)
-        reconcile_trades = [
-            t for t in trades if t.get("agent") == "reconcile"
-        ]
-        assert len(reconcile_trades) == 1, (
-            f"Expected 1 reconcile-agent trade, got {reconcile_trades}"
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1, (
+            f"Expected exactly 1 close after settle+reconcile,"
+            f" got {closes}"
         )
-        t = reconcile_trades[0]
+        t = closes[0]
+        assert t["agent"] == "settlement"
         assert t["ticker"] == "KXCPI-26APR-T0.5"
-        assert t["action"] == "close"
+        # YES position + result 'no' → lost → settlement value 0.0.
+        assert t["price"] == 0.0
+        assert t["resolved_outcome"] == "no"
 
-        # 2. Decision note with Trigger: Reconcile-divergence (NOT
+        # 2. Decision note with Trigger: Settlement (NOT
         #    Trigger: Stop-loss breach).
         notes = await get_position_notes(
             db, "KXCPI-26APR-T0.5", note_type="decision",
@@ -150,9 +154,9 @@ class TestPaperReconcileDriftCoveredBy609:
         assert len(notes) == 1
         body = notes[0]["body"]
         assert "Decision: CLOSE" in body
-        assert "Trigger: Reconcile-divergence" in body
+        assert "Trigger: Settlement" in body
         assert "Trigger: Stop-loss breach" not in body
-        assert notes[0]["agent"] == "reconcile"
+        assert notes[0]["agent"] == "settlement"
 
         # 3. known_markets resolver finds the closed ticker (closes
         #    the #586 lockout-resolver gap that #623 was filed to fix).
@@ -176,13 +180,14 @@ class TestPaperReconcileDriftCoveredBy609:
         fresh = await broker.get_positions()
         await sync_positions(db, fresh)
 
-        # Exactly one synthetic close, for the settled ticker.
+        # #653: exactly one close for the settled ticker — written by
+        # settle() at settlement value — and no reconcile duplicate.
         trades = await get_trades(db)
-        reconcile_trades = [
-            t for t in trades if t.get("agent") == "reconcile"
-        ]
-        assert len(reconcile_trades) == 1
-        assert reconcile_trades[0]["ticker"] == "KXCPI-26APR-T0.5"
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1
+        assert closes[0]["ticker"] == "KXCPI-26APR-T0.5"
+        assert closes[0]["agent"] == "settlement"
+        assert not any(t.get("agent") == "reconcile" for t in trades)
 
         # The other two positions are unchanged.
         from gimmes.store.queries import get_positions
@@ -258,29 +263,28 @@ def test_cli_reconcile_paper_mode_writes_synthetic_close(  # type: ignore[no-unt
     result = runner.invoke(app, ["reconcile"])
     assert result.exit_code == 0, result.output
 
-    # Verify the actual CLI path produced the synthetic close.
+    # Verify the actual CLI path: settle() already wrote the ONE
+    # settlement close; the CLI reconcile must not add a duplicate
+    # drift close (#653).
     async def _check() -> None:
         db = Database(db_path)
         await db.connect()
         try:
             trades = await get_trades(db)
-            reconcile_trades = [
-                t for t in trades if t.get("agent") == "reconcile"
-            ]
-            assert len(reconcile_trades) == 1, (
-                f"Expected one reconcile-agent trade after CLI"
-                f" reconcile, got {len(reconcile_trades)}:"
-                f" {reconcile_trades}"
+            closes = [t for t in trades if t["action"] == "close"]
+            assert len(closes) == 1, (
+                f"Expected exactly one close after CLI reconcile,"
+                f" got {len(closes)}: {closes}"
             )
-            assert reconcile_trades[0]["ticker"] == "KXCPI-26APR-T0.5"
-            assert reconcile_trades[0]["action"] == "close"
+            assert closes[0]["ticker"] == "KXCPI-26APR-T0.5"
+            assert closes[0]["agent"] == "settlement"
 
             notes = await get_position_notes(
                 db, "KXCPI-26APR-T0.5", note_type="decision",
             )
             assert len(notes) == 1
             body = notes[0]["body"]
-            assert "Trigger: Reconcile-divergence" in body
+            assert "Trigger: Settlement" in body
             assert "Trigger: Stop-loss breach" not in body
         finally:
             await db.close()

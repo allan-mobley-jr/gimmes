@@ -2109,6 +2109,206 @@ def log_candidate(
     _run(_log())
 
 
+@app.command(name="backfill-settlements", hidden=True)
+def backfill_settlements(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would change without writing",
+    ),
+) -> None:
+    """One-time #653 correction: write missing settlement close trades
+    for paper positions the broker settled without a trade row, and
+    repair mark-priced reconcile drift closes to settlement value.
+
+    Idempotent: residual-count guard skips tickers whose closes already
+    cover their opens; the drift repair is a no-op once prices match
+    settlement values. Historical timestamps keep backfilled P&L out of
+    today's daily-loss trigger.
+    """
+    config = load_config()
+
+    class _DryRunRollbackError(Exception):
+        """Raised to abort the transaction on --dry-run."""
+
+    async def _backfill() -> None:
+        from gimmes.store.database import Database
+
+        inserted: list[tuple[str, str, int, float]] = []
+        repaired: list[tuple[str, float, float]] = []
+        conflicts: list[tuple[str, str, str]] = []
+
+        async with Database(config.db_path) as db:
+            try:
+                await _apply(db, inserted, repaired, conflicts)
+            except _DryRunRollbackError:
+                console.print("[dim]Dry run — no changes written.[/dim]")
+        _print_summary(inserted, repaired, conflicts, dry_run)
+
+    async def _apply(db, inserted, repaired, conflicts) -> None:  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+
+        from gimmes.store.queries import (
+            count_opened_closed,
+            fill_resolved_outcome,
+            log_settlement_close,
+            settlement_outcome,
+        )
+
+        async with db.transaction():
+            # paper_positions is created by PaperBroker, not the main
+            # schema — championship-only DBs won't have it.
+            cursor = await db.conn.execute(
+                "SELECT name FROM sqlite_master"
+                " WHERE type='table' AND name='paper_positions'",
+            )
+            if await cursor.fetchone() is None:
+                console.print(
+                    "[yellow]No paper_positions table — nothing to"
+                    " backfill (#653 applies to paper-mode"
+                    " settlements).[/yellow]"
+                )
+                return
+            cursor = await db.conn.execute(
+                "SELECT ticker, side, avg_price, cost_basis,"
+                " market_price, updated_at"
+                " FROM paper_positions"
+                " WHERE count = 0 AND market_price IN (0.0, 1.0)",
+            )
+            settled = [dict(r) for r in await cursor.fetchall()]
+
+            for row in settled:
+                ticker, side = row["ticker"], row["side"]
+                won = row["market_price"] == 1.0
+                # Residual = opens+size_ups minus closes. <= 0 means
+                # closes already cover the position (idempotency, and
+                # skips fully-sold rows with real close records).
+                opened, closed = await count_opened_closed(db, ticker, side)
+                residual = opened - closed
+                if residual <= 0:
+                    continue
+
+                # Cross-checks (warn-only): trades-derived residual is
+                # authoritative for the close count.
+                if row["avg_price"]:
+                    implied = round(row["cost_basis"] / row["avg_price"])
+                    if abs(implied - residual) > 1:
+                        console.print(
+                            f"[yellow]{ticker}: residual {residual}"
+                            f" differs from cost-basis-implied"
+                            f" {implied} — using trades-derived"
+                            f" residual (#653)[/yellow]"
+                        )
+
+                ts = None
+                if row["updated_at"]:
+                    try:
+                        ts = datetime.fromisoformat(
+                            row["updated_at"],
+                        ).replace(tzinfo=UTC)
+                    except ValueError:
+                        ts = None
+                if ts is None:
+                    console.print(
+                        f"[yellow]{ticker}: no usable settle"
+                        f" timestamp — the backfilled close will"
+                        f" be stamped NOW and count toward"
+                        f" today's daily P&L / loss trigger"
+                        f" (#653).[/yellow]"
+                    )
+                outcome = settlement_outcome(side, won)
+                # Detect resolved_outcome conflicts BEFORE the helper
+                # fills NULLs: paper truth (the broker moved the
+                # balance on this outcome) wins over log-outcome.
+                cursor = await db.conn.execute(
+                    "SELECT DISTINCT resolved_outcome FROM trades"
+                    " WHERE ticker = ? AND resolved_outcome IS NOT NULL",
+                    (ticker,),
+                )
+                existing = [r[0] for r in await cursor.fetchall()]
+                if existing and any(o != outcome for o in existing):
+                    conflicts.append((ticker, str(existing), outcome))
+                    await db.conn.execute(
+                        "UPDATE trades SET resolved_outcome = ?"
+                        " WHERE ticker = ?", (outcome, ticker),
+                    )
+                await log_settlement_close(
+                    db, ticker=ticker, side=side, count=residual,
+                    won=won, timestamp=ts,
+                    rationale=(
+                        "settlement backfill (#653) — close"
+                        " reconstructed from paper_positions settle"
+                        " state"
+                    ),
+                )
+                inserted.append(
+                    (ticker, side, residual, 1.0 if won else 0.0),
+                )
+
+            # Phase 2: repair mark-priced reconcile drift rows whose
+            # market actually settled.
+            cursor = await db.conn.execute(
+                """SELECT t.id, t.ticker, t.side, t.price,
+                          p.market_price
+                   FROM trades t
+                   JOIN paper_positions p
+                     ON p.ticker = t.ticker AND p.side = t.side
+                   WHERE t.action = 'close' AND t.agent = 'reconcile'
+                     AND p.count = 0
+                     AND p.market_price IN (0.0, 1.0)
+                     AND t.price != p.market_price""",
+            )
+            drift_rows = [dict(r) for r in await cursor.fetchall()]
+            for row in drift_rows:
+                settlement_value = row["market_price"]
+                await db.conn.execute(
+                    """UPDATE trades SET price = ?, rationale =
+                         rationale ||
+                         ' — price corrected to settlement value'
+                         || ' (#653 backfill)'
+                       WHERE id = ?""",
+                    (settlement_value, row["id"]),
+                )
+                won = settlement_value == 1.0
+                outcome = settlement_outcome(row["side"], won)
+                await fill_resolved_outcome(db, row["ticker"], outcome)
+                repaired.append(
+                    (row["ticker"], row["price"], settlement_value),
+                )
+
+            if dry_run:
+                raise _DryRunRollbackError
+
+    def _print_summary(inserted, repaired, conflicts, dry: bool) -> None:  # type: ignore[no-untyped-def]
+        verb = "Would insert" if dry else "Inserted"
+        console.print(
+            f"[bold]{verb} {len(inserted)} settlement close(s);"
+            f" {'would repair' if dry else 'repaired'}"
+            f" {len(repaired)} drift row(s).[/bold]"
+        )
+        for ticker, side, count, price in inserted:
+            console.print(
+                f"  + {ticker} {side} x{count} @ settlement {price}",
+                markup=False,
+            )
+        for ticker, old, new in repaired:
+            console.print(
+                f"  ~ {ticker} price {old} -> {new}", markup=False,
+            )
+        for ticker, existing, truth in conflicts:
+            console.print(
+                f"  ! {ticker}: resolved_outcome {existing} conflicted"
+                f" with paper truth '{truth}' — paper truth applied",
+                markup=False,
+            )
+        if not dry:
+            console.print(
+                "[yellow]Scorecard now reflects settlement outcomes —"
+                " the net P&L change is a CORRECTION of previously"
+                " unrecorded settlements, not a new loss (#653).[/yellow]"
+            )
+
+    _run(_backfill())
+
+
 @app.command(name="log-outcome", hidden=True)
 def log_outcome(
     ticker: str = typer.Argument(..., help="Market ticker"),
