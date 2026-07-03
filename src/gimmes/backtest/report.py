@@ -106,7 +106,7 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         )
     if result.skipped_no_candle > 0:
         funnel.add_row(
-            "Skipped (no entry-day candle)",
+            "Skipped (no usable entry-day candle)",
             str(result.skipped_no_candle),
         )
     if result.skipped_entry_gates > 0:
@@ -120,9 +120,10 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         and result.skipped_no_candle > 0.5 * result.markets_scored
     ):
         console.print(
-            "[yellow]Caution: candle history unavailable for most"
-            " candidates — results cover a subset of the scored"
-            " markets (#655).[/yellow]"
+            "[yellow]Caution: entry-day candle data missing or"
+            " unusable (e.g. one-sided quotes) for most candidates —"
+            " results cover a subset of the scored markets"
+            " (#655).[/yellow]"
         )
     if result.truncated_chunks:
         console.print(
