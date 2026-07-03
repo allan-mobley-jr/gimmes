@@ -12,6 +12,7 @@ the Kalshi client for ``market-info``, and invokes the CLI through
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -88,20 +89,24 @@ def _config(db_path: Path) -> MagicMock:
     return c
 
 
-def _ticker_column_text(output: str) -> str:
-    """Concatenate the first (Ticker) column's content across every
-    body row of a Rich table, including fold-continuation rows. Lets
-    tests assert a full ticker appears even when Rich wraps it across
-    cell rows (#567)."""
+def _column_text(output: str, index: int) -> str:
+    """Concatenate one column's content across every body row of a
+    Rich table, including fold-continuation rows. Lets tests assert a
+    cell value appears even when Rich wraps it across rows (#567)."""
     parts: list[str] = []
     for line in output.splitlines():
         if not line.startswith("│"):
             continue
         segments = line.split("│")
-        if len(segments) < 3:
+        if len(segments) <= index + 1:
             continue
-        parts.append(segments[1].strip())
+        parts.append(segments[index].strip())
     return "".join(parts)
+
+
+def _ticker_column_text(output: str) -> str:
+    """First (Ticker) column's concatenated content."""
+    return _column_text(output, 1)
 
 
 class TestPositionContext:
@@ -258,6 +263,42 @@ class TestTradesCommand:
         # (KXCPI-26APR-T0.5 is NOT a prefix of KXCPI-26MAY-T0.6, so
         #  the natural behavior excludes it.)
         assert "KXCPI-26MAY-T0.6" not in ticker_col
+
+    def test_prob_and_outcome_columns(self, seeded_db: Path) -> None:
+        """#656: the trades table exposes the entry probability and
+        the market's resolution so calibration audits (entry prob vs
+        resolved outcome) work through the CLI."""
+
+        async def _resolve() -> None:
+            db = Database(seeded_db)
+            await db.connect()
+            try:
+                # side is 'yes' in the fixture — 'no' means it lost.
+                # 'no' is also unambiguous in the rendered table (the
+                # Side cells all say 'yes'; 'yes' would be vacuous).
+                await db.conn.execute(
+                    "UPDATE trades SET resolved_outcome = 'no'"
+                    " WHERE ticker = 'KXCPI-26APR-T0.5'",
+                )
+                await db.conn.commit()
+            finally:
+                await db.close()
+
+        asyncio.run(_resolve())
+        # 10 columns don't fit an 80-col terminal — headers get
+        # crushed to nothing. Widen so every header renders.
+        with patch("gimmes.config.GIMMES_HOME", seeded_db.parent), \
+                patch.dict(os.environ, {"COLUMNS": "200"}):
+            result = runner.invoke(app, ["trades", "-n", "10"])
+        assert result.exit_code == 0, result.output
+        assert "Prob" in result.output
+        assert "Outcome" in result.output
+        # Fixture trades carry model_probability=0.6 → rendered 60.0%
+        assert "60.0%" in result.output
+        outcome_col = _column_text(result.output, 9)
+        assert "no" in outcome_col
+        # Unresolved rows render a blank Outcome, not "None"
+        assert "None" not in outcome_col
 
     def test_wildcard_in_input_is_rejected(self, seeded_db: Path) -> None:
         # ``trades`` must apply the same wildcard guard as the other
