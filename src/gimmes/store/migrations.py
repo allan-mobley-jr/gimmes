@@ -100,6 +100,15 @@ _V16_COLUMNS: list[str] = [
     "ALTER TABLE positions ADD COLUMN close_time TEXT DEFAULT NULL",
 ]
 
+# Version 17 (#643): settlement-language snapshot captured at position-open
+# so the offline position-note write path can ground YES/NO semantics
+# without a network call. Deliberately NOT part of the position upsert —
+# sync/reconcile paths never touch it, so it can't be wiped by a sync
+# that lacks market data.
+_V17_COLUMNS: list[str] = [
+    "ALTER TABLE positions ADD COLUMN rules_primary TEXT NOT NULL DEFAULT ''",
+]
+
 
 
 async def get_schema_version(db: Database) -> int:
@@ -322,5 +331,14 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 16
+
+    # Version 17 (#643): rules_primary snapshot column on positions.
+    if current < 17:
+        await _run_alter_columns(db, _V17_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (17,)
+        )
+        await db.conn.commit()
+        current = 17
 
     return current

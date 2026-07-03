@@ -163,6 +163,42 @@ async def upsert_position(db: Database, pos: Position) -> None:
     await db.conn.commit()
 
 
+async def set_position_rules_snapshot(
+    db: Database, *, ticker: str, rules_primary: str,
+) -> bool:
+    """Persist the market's settlement language on an existing position
+    row (#643). UPDATE-only by design: never inserts a stub row (a
+    count=0 stub would be swept by the next position sync and generate
+    a bogus synthetic close via reconcile), and the column is not part
+    of the position upsert, so syncs without market data can't wipe it.
+
+    Returns True when a row was updated; False when ``rules_primary``
+    is empty or no position row exists (e.g. a resting order that
+    hasn't filled).
+    """
+    if not rules_primary:
+        return False
+    cursor = await db.conn.execute(
+        "UPDATE positions SET rules_primary = ? WHERE ticker = ?",
+        (rules_primary, ticker),
+    )
+    await db.conn.commit()
+    return cursor.rowcount > 0
+
+
+async def get_position_rules_snapshot(db: Database, ticker: str) -> str | None:
+    """Read the settlement-language snapshot for a position (#643).
+
+    Returns None when no position row exists; empty string when the
+    row exists but no snapshot was captured.
+    """
+    cursor = await db.conn.execute(
+        "SELECT rules_primary FROM positions WHERE ticker = ?", (ticker,),
+    )
+    row = await cursor.fetchone()
+    return None if row is None else row["rules_primary"]
+
+
 async def _sync_positions_rows(
     db: Database, positions: list[Position],
 ) -> list[Position]:

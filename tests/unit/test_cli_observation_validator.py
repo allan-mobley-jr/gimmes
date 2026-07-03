@@ -22,11 +22,15 @@ from typer.testing import CliRunner
 
 from gimmes import cli as cli_module
 from gimmes.cli import app
+from gimmes.models.portfolio import Position
 from gimmes.store.database import Database
+from gimmes.store.observation_validator import PLAYBOOK_SOURCES
 from gimmes.store.queries import (
     get_position_notes,
     insert_candidate,
     insert_position_note,
+    set_position_rules_snapshot,
+    upsert_position,
 )
 
 C1407_STALE = (
@@ -41,8 +45,11 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     monkeypatch.setattr(cli_module, "load_config", lambda: cfg)
 
 
-def _seed_decision(db_path: Path, ticker: str, body: str) -> None:
-    """Synchronously seed a CM decision note via asyncio.run()."""
+def _seed_note(
+    db_path: Path, ticker: str, body: str, *,
+    cycle: int, agent: str, note_type: str,
+) -> None:
+    """Synchronously seed a position note via asyncio.run()."""
 
     async def _seed() -> None:
         db = Database(db_path)
@@ -51,15 +58,22 @@ def _seed_decision(db_path: Path, ticker: str, body: str) -> None:
             await insert_position_note(
                 db,
                 ticker=ticker,
-                cycle=1391,
-                agent="caddie-master",
-                note_type="decision",
+                cycle=cycle,
+                agent=agent,
+                note_type=note_type,
                 body=body,
             )
         finally:
             await db.close()
 
     asyncio.run(_seed())
+
+
+def _seed_decision(db_path: Path, ticker: str, body: str) -> None:
+    _seed_note(
+        db_path, ticker, body,
+        cycle=1391, agent="caddie-master", note_type="decision",
+    )
 
 
 def _seed_empty_db(db_path: Path) -> None:
@@ -87,6 +101,17 @@ def _read_notes(
             await db.close()
 
     return asyncio.run(_read())
+
+
+
+# #643: economic-category observation writes now also require the
+# playbook audit footer. A minimal conforming footer keeps these #614
+# tests exercising their original read-back intent.
+def _full_footer() -> str:
+    return "\n".join(
+        ["Playbook sources checked this cycle (#615):"]
+        + [f"- {source}: no result this cycle" for source in PLAYBOOK_SOURCES]
+    )
 
 
 CM_DECISION_WITH_BARCLAYS = (
@@ -146,7 +171,7 @@ def test_observation_allowed_when_cm_silent_on_sources(
         "--cycle", "1407",
         "--agent", "monitor",
         "--type", "observation",
-        "--body", C1407_STALE,
+        "--body", C1407_STALE + "\n\n" + _full_footer(),
     ])
     assert result.exit_code == 0, result.output
 
@@ -165,7 +190,7 @@ def test_observation_allowed_when_no_prior_decision(
         "--cycle", "1407",
         "--agent", "monitor",
         "--type", "observation",
-        "--body", C1407_STALE,
+        "--body", C1407_STALE + "\n\n" + _full_footer(),
     ])
     assert result.exit_code == 0, result.output
 
@@ -306,6 +331,232 @@ def test_observation_allowed_when_surfacing_evidence(
         "--agent", "monitor",
         "--type", "observation",
         "--body",
-        "Barclays +0.55% confirmed this cycle (FXStreet, 2026-05-08).",
+        "Barclays +0.55% confirmed this cycle (FXStreet, 2026-05-08)."
+        "\n\n" + _full_footer(),
     ])
     assert result.exit_code == 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# #643: semantics guard + footer audit, end-to-end through the CLI
+# ---------------------------------------------------------------------------
+
+INCIDENT_RULES = (
+    "If the Consumer Price Index (CPI) increases by more than -0.1%"
+    " (single-decimal) in June 2026, the market resolves to Yes."
+)
+
+
+def _seed_position_with_rules(
+    db_path: Path, ticker: str, rules_primary: str,
+) -> None:
+    """Seed a positions row and its settlement-language snapshot."""
+
+    async def _seed() -> None:
+        db = Database(db_path)
+        await db.connect()
+        try:
+            await upsert_position(db, Position(
+                ticker=ticker, side="no", count=100, avg_price=0.63,
+                market_price=0.90, cost_basis=63.0,
+            ))
+            assert await set_position_rules_snapshot(
+                db, ticker=ticker, rules_primary=rules_primary,
+            )
+        finally:
+            await db.close()
+
+    asyncio.run(_seed())
+
+
+def _seed_observation(db_path: Path, ticker: str, body: str) -> None:
+    _seed_note(
+        db_path, ticker, body,
+        cycle=1700, agent="monitor", note_type="observation",
+    )
+
+
+def _obs_with_semantics(semantics_line: str) -> str:
+    return (
+        "Delta since cycle 1700:\n"
+        "Price: $0.90.\n"
+        f"{semantics_line}\n"
+        "Overall: no material change.\n\n"
+        + _full_footer()
+    )
+
+
+def test_inverted_semantics_rejected_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #641 incident shape rejects at the CLI: position carries a
+    rules snapshot; the observation restates the threshold with the
+    inverted comparator."""
+    db_path = tmp_path / "test.db"
+    _seed_position_with_rules(db_path, "KXCPI-26JUN-T-0.1", INCIDENT_RULES)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", _obs_with_semantics(
+            "Semantics: YES wins when CPI MoM <= -0.1%;"
+            " NO wins when CPI MoM > -0.1%",
+        ),
+    ])
+    assert result.exit_code == 1, result.output
+    assert "INVERTED SEMANTICS" in result.output
+    notes = _read_notes(
+        db_path, "KXCPI-26JUN-T-0.1", note_type="observation",
+    )
+    assert notes == []
+
+
+def test_correct_semantics_accepted_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "test.db"
+    _seed_position_with_rules(db_path, "KXCPI-26JUN-T-0.1", INCIDENT_RULES)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", _obs_with_semantics(
+            "Semantics: YES wins when CPI MoM > -0.1%;"
+            " NO wins when CPI MoM <= -0.1%",
+        ),
+    ])
+    assert result.exit_code == 0, result.output
+
+
+def test_no_snapshot_passes_without_semantics_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No positions row / no snapshot → semantics guard dormant; the
+    footer is still required."""
+    db_path = tmp_path / "test.db"
+    _seed_empty_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", "Delta: nothing new.\n\n" + _full_footer(),
+    ])
+    assert result.exit_code == 0, result.output
+
+
+def test_missing_footer_rejected_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "test.db"
+    _seed_empty_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", "Delta: nothing new this cycle.",
+    ])
+    assert result.exit_code == 1, result.output
+    assert "Playbook sources checked this cycle" in result.output
+
+
+def test_refound_stale_cite_rejected_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding-2 incident: prior cycle cited 2026-06-18; this cycle
+    re-finds the same dated note and writes it as fresh."""
+    db_path = tmp_path / "test.db"
+    footer = _full_footer().replace(
+        "- Bank of America: no result this cycle",
+        "- Bank of America: +0.30% (Investing.com, 2026-06-18)",
+    )
+    _seed_observation(
+        db_path, "KXCPI-26JUN-T-0.1", "Delta: baseline.\n\n" + footer,
+    )
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", "Delta: re-checked banks.\n\n" + footer,
+    ])
+    assert result.exit_code == 1, result.output
+    assert "NEWLY PUBLISHED" in result.output
+    # Prior observation remains the only one on file.
+    notes = _read_notes(
+        db_path, "KXCPI-26JUN-T-0.1", note_type="observation",
+    )
+    assert len(notes) == 1
+
+
+def test_warnings_print_but_do_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown footer source warns (yellow) but the write succeeds."""
+    db_path = tmp_path / "test.db"
+    _seed_empty_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", (
+            "Delta: nothing new.\n\n" + _full_footer()
+            + "\n- Nomura: +0.1% (FXStreet, 2026-07-01)"
+        ),
+    ])
+    assert result.exit_code == 0, result.output
+    assert "Nomura" in result.output  # warning surfaced
+
+
+def test_multiple_errors_reported_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Semantics inversion AND a footer violation surface in ONE
+    rejection so the agent fixes everything in a single rewrite."""
+    db_path = tmp_path / "test.db"
+    _seed_position_with_rules(db_path, "KXCPI-26JUN-T-0.1", INCIDENT_RULES)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--body", (
+            "Delta since cycle 1700:\n"
+            "Semantics: YES wins when CPI MoM <= -0.1%;"
+            " NO wins when CPI MoM > -0.1%\n"
+            "Overall: ok.\n"
+            # no footer at all
+        ),
+    ])
+    assert result.exit_code == 1, result.output
+    assert "INVERTED SEMANTICS" in result.output
+    assert "Playbook sources checked this cycle" in result.output
+
+
+def test_force_bypasses_643_validators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "test.db"
+    _seed_position_with_rules(db_path, "KXCPI-26JUN-T-0.1", INCIDENT_RULES)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26JUN-T-0.1",
+        "--cycle", "1701", "--agent", "monitor", "--type", "observation",
+        "--force",
+        "--body", "Inverted and footerless — backfill only.",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "#643" in result.output  # audit line names both validators

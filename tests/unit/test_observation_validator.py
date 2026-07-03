@@ -7,17 +7,35 @@ live in test_cli_observation_validator.py.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from gimmes.store.observation_validator import (
     AGGREGATORS,
     ECONOMIC_CATEGORIES,
     NAMED_BANKS,
+    PLAYBOOK_SOURCES,
     STALE_TEMPLATE_PHRASE,
     contains_stale_template,
     extract_cited_evidence,
+    parse_playbook_footer,
     ticker_in_economic_category,
     validate,
+    validate_playbook_footer,
+    validate_semantics,
 )
+
+
+def _monitor_md() -> str:
+    """monitor.md, read fresh — the drift-guard classes below pin the
+    validator's hard-coded constants and grammar against it."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / ".claude"
+        / "agents"
+        / "monitor.md"
+    )
+    return path.read_text()
+
 
 C1407_STALE = (
     "No named major Wall Street bank has published April CPI MoM"
@@ -261,19 +279,8 @@ class TestConstantsSyncWithMonitorMd:
     Validator works without parsing monitor.md at runtime (avoids
     install-path fragility), but this test catches drift."""
 
-    def _monitor_md(self) -> str:
-        from pathlib import Path
-
-        path = (
-            Path(__file__).resolve().parents[2]
-            / ".claude"
-            / "agents"
-            / "monitor.md"
-        )
-        return path.read_text()
-
     def test_banks_match_monitor_playbook(self) -> None:
-        text = self._monitor_md()
+        text = _monitor_md()
         for bank in NAMED_BANKS:
             assert bank in text, (
                 f"NAMED_BANKS contains {bank!r} but monitor.md does not"
@@ -281,7 +288,7 @@ class TestConstantsSyncWithMonitorMd:
             )
 
     def test_aggregators_match_monitor_playbook(self) -> None:
-        text = self._monitor_md()
+        text = _monitor_md()
         for source in AGGREGATORS:
             assert source in text, (
                 f"AGGREGATORS contains {source!r} but monitor.md does"
@@ -289,7 +296,7 @@ class TestConstantsSyncWithMonitorMd:
             )
 
     def test_economic_categories_match_monitor_playbook(self) -> None:
-        text = self._monitor_md()
+        text = _monitor_md()
         for prefix in ECONOMIC_CATEGORIES:
             # Word-boundary check so KXCPI doesn't accidentally match
             # KXCPICORE (which is also in the list — both must appear).
@@ -309,10 +316,121 @@ class TestConstantsSyncWithMonitorMd:
         phrase, the validator silently misses every future c1407-class
         regression. Pin the phrase against monitor.md so a rename in
         the prompt forces a corresponding validator update."""
-        text = self._monitor_md().lower()
+        text = _monitor_md().lower()
         assert STALE_TEMPLATE_PHRASE in text, (
             f"STALE_TEMPLATE_PHRASE {STALE_TEMPLATE_PHRASE!r} is not"
             f" present in monitor.md. The validator must pin the same"
             f" canonical phrase that monitor.md's FORBIDDEN clause"
             f" forbids. Update one or the other to re-align (#614)."
         )
+
+
+class TestSyncWith643Rules:
+    """Drift-guard for the #643 validators: the grammar literals the
+    footer audit parses and the enforcement paragraphs must exist in
+    monitor.md, and the footer template must enumerate exactly the
+    PLAYBOOK_SOURCES the validator requires — in the same order."""
+
+    def _footer_template_block(self) -> str:
+        """The heredoc footer template in monitor.md, header through
+        the GIMMES_EOF terminator."""
+        match = re.search(
+            r"Playbook sources checked this cycle.*?GIMMES_EOF",
+            _monitor_md(),
+            flags=re.DOTALL,
+        )
+        assert match is not None
+        return match.group(0)
+
+    def test_outcome_grammar_literals_in_monitor_md(self) -> None:
+        text = _monitor_md()
+        for literal in (
+            "no result this cycle",
+            "inherited: <prior cite>",
+            "SUPERSEDED (pre-<event>, <date>) — refresh required",
+            "Semantics:",
+        ):
+            assert literal in text, (
+                f"Footer/semantics grammar literal {literal!r} missing"
+                f" from monitor.md — the #643 validator parses notes"
+                f" written to that template; sync them."
+            )
+
+    def test_footer_template_enumerates_playbook_sources_in_order(
+        self,
+    ) -> None:
+        footer = self._footer_template_block()
+        positions = [footer.find(f"- {s}:") for s in PLAYBOOK_SOURCES]
+        assert all(p != -1 for p in positions), (
+            "Footer template missing a PLAYBOOK_SOURCES entry —"
+            " the #643 enumeration check would reject every"
+            " template-conformant write."
+        )
+        assert positions == sorted(positions), (
+            "Footer template source order differs from"
+            " PLAYBOOK_SOURCES — keep them aligned."
+        )
+
+    def test_enforcement_paragraphs_reference_643(self) -> None:
+        text = _monitor_md()
+        count = text.count("Runtime enforcement (#643)")
+        assert count >= 2, (
+            f"monitor.md must carry the two `Runtime enforcement"
+            f" (#643)` paragraphs (semantics + footer); found {count}."
+        )
+
+    def test_template_footer_round_trips_through_validator(self) -> None:
+        """Render monitor.md's own heredoc footer with each of the four
+        canonical outcome forms and prove the validator accepts it —
+        the template and the parser must never drift apart (#643)."""
+        block = self._footer_template_block().rsplit("GIMMES_EOF", 1)[0]
+        forms = {
+            "Goldman Sachs": "+0.3% (Reuters, 2026-07-01)",
+            "JPMorgan": "no result this cycle",
+            "Citi": "inherited: +0.2% (FXStreet, 2026-06-18)",
+            "Wells Fargo": (
+                "SUPERSEDED (pre-Hormuz-reopening, 2026-06-11)"
+                " — refresh required"
+            ),
+        }
+        rendered = re.sub(
+            r"^- ([^:]+): \[.*$",
+            lambda m: (
+                f"- {m.group(1)}:"
+                f" {forms.get(m.group(1), 'no result this cycle')}"
+            ),
+            block,
+            flags=re.M,
+        )
+        errors, warnings = validate_playbook_footer(
+            ticker="KXCPI-26JUN-T-0.1",
+            observation_body=rendered,
+            prior_observation_body=None,
+        )
+        assert errors == [], errors
+        assert warnings == [], warnings
+        rows = parse_playbook_footer(rendered)
+        assert rows is not None
+        assert {
+            rows["Goldman Sachs"].kind, rows["JPMorgan"].kind,
+            rows["Citi"].kind, rows["Wells Fargo"].kind,
+        } == {"fresh", "no_result", "inherited", "superseded"}
+
+    def test_monitor_md_canonical_semantics_example_passes(self) -> None:
+        """The worked example in monitor.md's #641 grounding rule must
+        itself pass the semantics guard against the incident rules."""
+        body = (
+            "Semantics: YES wins when CPI MoM > -0.1%;"
+            " NO wins when CPI MoM <= -0.1%"
+        )
+        rules = (
+            "If the Consumer Price Index (CPI) increases by more than"
+            " -0.1% (single-decimal) in June 2026, the market resolves"
+            " to Yes."
+        )
+        errors, warnings = validate_semantics(
+            ticker="KXCPI-26JUN-T-0.1",
+            observation_body=body,
+            rules_primary=rules,
+        )
+        assert errors == [] and warnings == []
