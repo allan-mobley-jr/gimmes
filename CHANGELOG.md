@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.8] - 2026-07-03
+
+Runtime enforcement of the #641 note-quality rules plus the close-out of the Rich markup-eating bug class. Restart `driving_range` after `gimmes update` so the autonomous loop loads the new agent prompts.
+
+### Added
+- Runtime validators enforcing the #641 rules at the `position-note` write path (#643): a **semantics guard** cross-checks YES/NO directional claims in observation notes against the market's settlement language (snapshotted at position-open into `positions.rules_primary`, migration v17 — additive and idempotent), and a **playbook footer audit** enforces the four-outcome footer grammar, 13-source enumeration, publication-date freshness (fresh means newly published, not re-found), and SUPERSEDED stickiness. **Observation writes that violate these rules now exit 1 where they previously succeeded**; `--force` remains the audit-visible bypass (prints a warning naming #614 and #643) and is reserved for backfill scripts. Warnings (unparseable clauses, threshold mismatches, duplicate footer rows) print but never block, and parser uncertainty always passes silently — the guard hard-rejects only high-confidence violations. Validated observations now insert under the canonical resolved ticker so next-cycle prior-footer lookups can't silently miss. Follow-ups: #646 (coverage telemetry), #647 (reconcile-time snapshot backfill), #648 (strictness escalations).
+- `market-info` now displays the market Subtitle and verbatim settlement language (`Rules (primary)`) so agents can ground threshold semantics; an empty rules row means UNVERIFIABLE — Monitor flags, Caddie PASSes, Caddie Master REJECTs rather than falling back to title-derived semantics (#641).
+
+### Fixed
+- Rich markup no longer eats bracketed text from external data across the CLI: market titles, settlement rules, validation failure lists, discover/candidates tables, validator rejection messages, and the errors table — where a stray closing tag in logged error text could previously crash the render. Title escaping is now central in `format_kv_table` (callers must not pre-escape); remaining low-priority sites tracked in #650. (#641, #643, #644)
+- Kalshi API explicit nulls for `subtitle`/`rules_primary` no longer crash `market-info` with an unlogged traceback (#641).
+- Agent prompts: threshold-semantics grounding ("YES wins when X / NO wins when Y" derived from settlement language, never the title — negative thresholds are the documented trap), forecast freshness/supersession rules for the playbook audit footer, and empirically-validated web-search cache-bust DOs and DON'Ts (#618, #641).
+
 ## [0.8.7] - 2026-05-22
 
 Three follow-ups to the v0.8.5 stack (#577 / #609). Restart `driving_range` after `gimmes update` so the autonomous loop loads the new Monitor prompt.
