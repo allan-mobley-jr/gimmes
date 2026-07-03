@@ -1054,3 +1054,46 @@ class TestPartialSellThenSettleCloseRow:
         assert len(settlement) == 1
         assert settlement[0]["count"] == 5
         assert settlement[0]["price"] == 1.0
+
+
+class TestSettlementOverridesWrongOutcome:
+    """#664 review: settlement is authoritative — a pre-existing WRONG
+    resolved_outcome (bad log-outcome) must be corrected at settle
+    time, or read-time repricing trusts the stale outcome."""
+
+    @pytest.mark.asyncio
+    async def test_settle_corrects_conflicting_outcome(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        from gimmes.store.queries import get_trades
+
+        params = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY,
+            side=OrderSide.YES, count=10, yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+        # The paper broker itself writes no trades rows — seed the open
+        # row an agent's decision logging would have written, carrying
+        # a WRONG outcome from an earlier bad log-outcome (the KXUE
+        # case). Without a real row here the wrong-outcome setup is a
+        # no-op and the test is vacuous (mutation-proven in review).
+        from gimmes.models.trade import TradeDecision
+        from gimmes.store.queries import insert_trade
+
+        await insert_trade(broker._db, TradeDecision(
+            ticker="TEST-MKT", action=TradeDecision.Action.OPEN,
+            side="yes", count=10, price=0.70,
+        ))
+        await broker._conn.execute(
+            "UPDATE trades SET resolved_outcome = 'no'"
+            " WHERE ticker = 'TEST-MKT'",
+        )
+        await broker._db.conn.commit()
+
+        await broker.settle("TEST-MKT", "yes")  # market actually: yes
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        assert all(
+            t["resolved_outcome"] == "yes" for t in trades
+        ), trades

@@ -2215,9 +2215,10 @@ def backfill_settlements(
                         f" (#653).[/yellow]"
                     )
                 outcome = settlement_outcome(side, won)
-                # Detect resolved_outcome conflicts BEFORE the helper
-                # fills NULLs: paper truth (the broker moved the
-                # balance on this outcome) wins over log-outcome.
+                # Detect resolved_outcome conflicts for the WARNING
+                # (the authoritative helper corrects them either way):
+                # paper truth — the broker moved the balance on this
+                # outcome — wins over log-outcome.
                 cursor = await db.conn.execute(
                     "SELECT DISTINCT resolved_outcome FROM trades"
                     " WHERE ticker = ? AND resolved_outcome IS NOT NULL",

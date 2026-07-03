@@ -383,15 +383,22 @@ async def count_opened_closed(
 async def fill_resolved_outcome(
     db: Database, ticker: str, outcome: str
 ) -> None:
-    """Fill `resolved_outcome` (where NULL) on a ticker's trade rows.
+    """Set `resolved_outcome` on a ticker's trade rows — filling NULLs
+    AND overwriting conflicting values.
 
-    Commit-less variant of `update_trade_outcome` — the caller manages
-    the transaction (#653).
+    Settlement is the authoritative resolution source: an already-
+    populated but WRONG outcome (Monitor's log-outcome was proven
+    wrong at least once — the KXUE-UK26FEB-5.1 case) must be corrected,
+    or read-time repricing would trust the stale outcome over the
+    settlement truth. Idempotent when already correct (#653 review).
+
+    Commit-less — the caller manages the transaction.
     """
     await db.conn.execute(
         "UPDATE trades SET resolved_outcome = ?"
-        " WHERE ticker = ? AND resolved_outcome IS NULL",
-        (outcome, ticker),
+        " WHERE ticker = ?"
+        " AND (resolved_outcome IS NULL OR resolved_outcome != ?)",
+        (outcome, ticker, outcome),
     )
 
 
@@ -415,9 +422,10 @@ async def log_settlement_close(
     COUNT toward daily P&L (unlike `agent='reconcile'` drift, #622): a
     settlement loss is real realized money lost that day.
 
-    Also fills `resolved_outcome` (where NULL) on the ticker's trade
-    rows — settlement IS the resolution event, so the scorecard does
-    not depend on Monitor's log-outcome timing.
+    Also sets `resolved_outcome` on the ticker's trade rows — filling
+    NULLs AND correcting conflicting values, since settlement IS the
+    authoritative resolution event (Monitor's log-outcome has been
+    wrong before) and the scorecard must not depend on its timing.
 
     Commit-less: caller manages the transaction. Returns the trade
     row id.
