@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from gimmes.config import GimmesConfig, Mode, StrategyConfig
 from gimmes.models.market import Market, MarketStatus
-from gimmes.strategy.scanner import effective_price, filter_markets
+from gimmes.strategy.scanner import (
+    effective_price,
+    filter_markets,
+    tradeable_edge,
+)
 from gimmes.strategy.scorer import quick_score
 
 # ---------------------------------------------------------------------------
@@ -34,6 +40,46 @@ class TestEffectivePrice:
         # 1 - 0.333 = 0.667 — should round to 4 decimal places
         result = effective_price(0.333, "no")
         assert result == 0.667
+
+    def test_no_side_at_one_dollar(self) -> None:
+        # YES at $1.00 → NO costs $0.00 (the #658 bound)
+        assert effective_price(1.00, "no") == 0.0
+
+    def test_no_side_at_zero(self) -> None:
+        assert effective_price(0.0, "no") == 1.0
+
+
+class TestTradeableEdge:
+    """#658: edge is 0 when the tradeable side sits at/within one
+    tick of a price bound — `prob - effective_price` collapses to
+    `prob` there (edge +88% at YES $1.00 on the NO side), an
+    unfillable order with a fabricated edge."""
+
+    def test_no_side_at_one_dollar_clamps(self) -> None:
+        # The KXCPIYOY-26JUL-T3.7 shape: prob 0.88 at YES $1.00
+        assert tradeable_edge(0.88, 1.00, "no") == 0.0
+
+    def test_no_side_at_floor_tick_clamps(self) -> None:
+        # YES 0.99 → NO eff 0.01, exactly one tick — clamped
+        assert tradeable_edge(0.88, 0.99, "no") == 0.0
+
+    def test_no_side_at_ceiling_clamps(self) -> None:
+        # YES 0.00 → NO eff 1.00 — mirror bound
+        assert tradeable_edge(0.88, 0.00, "no") == 0.0
+
+    def test_yes_side_bounds_clamp(self) -> None:
+        assert tradeable_edge(0.90, 0.01, "yes") == 0.0
+        assert tradeable_edge(0.90, 0.99, "yes") == 0.0
+
+    def test_one_tick_inside_is_real_edge(self) -> None:
+        # YES 0.98 → NO eff 0.02 — thin but placeable; arithmetic
+        # stands (documented residual: the $0.97 case is 3 ticks in)
+        assert tradeable_edge(0.88, 0.98, "no") == pytest.approx(0.86)
+
+    def test_mid_range_unchanged(self) -> None:
+        # NO at YES 0.70 → eff 0.30
+        assert tradeable_edge(0.85, 0.70, "no") == pytest.approx(0.55)
+        assert tradeable_edge(0.90, 0.70, "yes") == pytest.approx(0.20)
 
 
 # ---------------------------------------------------------------------------

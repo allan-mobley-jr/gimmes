@@ -2105,10 +2105,9 @@ def log_trade(
             get_entry_analytics,
             insert_trade,
         )
-        from gimmes.strategy.scanner import effective_price
+        from gimmes.strategy.scanner import tradeable_edge
 
         resolved_side = side if side else config.strategy.side
-        eff = effective_price(price_val, resolved_side)
         trade = TradeDecision(
             ticker=ticker,
             action=TradeDecision.Action(action),
@@ -2117,7 +2116,11 @@ def log_trade(
             price=price_val,
             model_probability=0.0 if prob is None else prob,
             gimme_score=score_val,
-            edge=(prob - eff) if prob is not None else 0.0,
+            edge=(
+                tradeable_edge(prob, price_val, resolved_side)
+                if prob is not None
+                else 0.0
+            ),
             rationale=rationale_val,
             reason=reason,
             agent=agent,
@@ -2178,10 +2181,10 @@ def log_trade(
                 # with prob 0 it is the degenerate -effective_price
                 # (the price - 100% signature this fix exists to
                 # kill). Unknown probability -> unknown edge, not a
-                # fabricated one.
+                # fabricated one. tradeable_edge additionally clamps
+                # bound-priced markets to 0 (#658).
                 trade.edge = (
-                    trade.model_probability
-                    - effective_price(trade.price, resolved_side)
+                    tradeable_edge(trade.model_probability, trade.price, resolved_side)
                     if trade.model_probability > 0 and trade.price > 0
                     else 0.0
                 )
@@ -2227,10 +2230,12 @@ def log_candidate(
     async def _log() -> None:
         from gimmes.store.database import Database
         from gimmes.store.queries import insert_candidate as _insert
-        from gimmes.strategy.scanner import effective_price
+        from gimmes.strategy.scanner import tradeable_edge
 
-        eff = effective_price(price_val, config.strategy.side)
-        edge = prob - eff
+        # #658: edge on the side actually bought, clamped to 0 when
+        # that side is priced within one tick of a bound (unfillable;
+        # prob - 0 would fabricate an edge equal to the probability).
+        edge = tradeable_edge(prob, price_val, config.strategy.side)
 
         async with Database(config.db_path) as db:
             row_id = await _insert(

@@ -368,3 +368,72 @@ def test_migration_v18_adds_reason_column(tmp_path: Path) -> None:
     version, cols = _db_run(tmp_path / "test.db", _check)
     assert version >= 18
     assert "reason" in cols
+
+
+def test_bound_price_candidate_backfills_zero_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#658: a candidate stuck at YES $1.00 (NO side costs $0.00)
+    backfills its price onto the skip, but the edge clamps to 0 —
+    prob - effective_price would fabricate edge = prob there."""
+    db_path = tmp_path / "test.db"
+
+    async def _insert(db: Database) -> None:
+        await insert_candidate(
+            db, TICKER, "CPI YoY", 1.00, 0.88, 0.88, 80.0, "memo",
+        )
+
+    _db_run(db_path, _insert)
+    _patch_config(monkeypatch, db_path)
+
+    result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+
+    s = _skip_row(db_path)
+    assert s["price"] == 1.00
+    assert s["model_probability"] == 0.88
+    assert s["edge"] == 0.0
+
+
+def test_bound_price_open_records_zero_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """log-trade opens at a bound price record edge 0 too (#658)."""
+    db_path = tmp_path / "test.db"
+    _bare_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, [
+        "log-trade", TICKER, "--action", "open",
+        "--price", "1.00", "--prob", "0.88",
+        "--rationale", "bound open",
+    ])
+    assert result.exit_code == 0, result.output
+
+    [o] = _trade_rows(db_path, "open")
+    assert o["model_probability"] == 0.88  # explicit prob untouched
+    assert o["edge"] == 0.0
+
+
+def test_bound_price_close_with_explicit_prob_records_zero_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documented behavior change (#658): a manually logged close at a
+    bound price with explicit --prob records edge 0, not prob - eff —
+    a settlement-priced close has no fabricated edge either. (No
+    production writer takes this path; settlement/reconcile closes
+    copy entry analytics in queries.py.)"""
+    db_path = tmp_path / "test.db"
+    _bare_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, [
+        "log-trade", TICKER, "--action", "close",
+        "--price", "1.00", "--prob", "0.9",
+        "--rationale", "bound close",
+    ])
+    assert result.exit_code == 0, result.output
+
+    [c] = _trade_rows(db_path, "close")
+    assert c["model_probability"] == 0.9
+    assert c["edge"] == 0.0

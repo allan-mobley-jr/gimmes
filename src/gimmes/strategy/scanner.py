@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from gimmes.config import GimmesConfig
@@ -17,6 +18,35 @@ def effective_price(yes_price: float, side: str) -> float:
     if side == "no":
         return round(1.0 - yes_price, 4)
     return yes_price
+
+
+# Kalshi's cent tick. A side priced within one tick of a bound is
+# untradeable in practice (at $0.00 an order isn't even placeable).
+BOUND_TICK = 0.01
+
+
+def price_at_bound(price: float) -> bool:
+    """True when a price sits at or within one tick of $0.00 / $1.00."""
+    return price <= BOUND_TICK or price >= 1.0 - BOUND_TICK
+
+
+def tradeable_edge(prob: float, yes_price: float, side: str) -> float:
+    """Edge on the side actually being bought, 0.0 at the price bounds.
+
+    ``prob - effective_price`` degenerates when the tradeable side sits
+    at or within one tick of a bound: at YES $1.00 the NO side costs
+    $0.00 and the formula collapses to ``prob`` — a meaningless +88%
+    "edge" on an unfillable order that inflates every aggregate edge
+    statistic (#658). Bound-priced markets have no realizable edge.
+    """
+    eff = effective_price(yes_price, side)
+    if price_at_bound(eff):
+        logging.getLogger(__name__).debug(
+            "edge clamped to 0: %s side priced at bound"
+            " (yes %.2f -> eff %.2f) (#658)", side, yes_price, eff,
+        )
+        return 0.0
+    return prob - eff
 
 
 def days_until(dt: datetime | None) -> float | None:

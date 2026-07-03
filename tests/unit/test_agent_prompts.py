@@ -1895,3 +1895,12 @@ def test_scout_and_caddie_skip_templates_keep_real_analytics(
         assert "--price 0.XX --prob 0.XX --score NN" in text, (
             f"{name} skip template no longer passes real analytics"
         )
+
+
+def test_caddie_untradeable_at_bound_rule(caddie_text: str) -> None:
+    """#658: Caddie must recognize bound-priced markets as untradeable
+    and log them with recommendation pass (record feeds cooldown)."""
+    assert "Untradeable at the bound" in caddie_text
+    assert "within one tick of a bound" in caddie_text
+    assert "--recommendation pass" in caddie_text
+    assert "sibling-strike" in caddie_text  # bound strikes don't dominate
