@@ -141,6 +141,27 @@ def test_ghost_settlement_gets_close_at_historical_timestamp(
     assert c["timestamp"].startswith("2026-04-24")
 
 
+def test_backfill_close_carries_entry_analytics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#656: the settlement close inherits the open row's analytics
+    (seeded prob 0.8 / score 70 / edge 0.1 / kelly 0.02) instead of
+    TradeDecision's 0.0 defaults — calibration audits read entry vs
+    outcome off the close row directly."""
+    db_path = tmp_path / "test.db"
+    _seed(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, ["backfill-settlements"])
+    assert result.exit_code == 0, result.output
+
+    [c] = _closes(db_path)
+    assert c["model_probability"] == 0.8
+    assert c["gimme_score"] == 70.0
+    assert c["edge"] == 0.1
+    assert c["kelly_fraction"] == 0.02
+
+
 def test_second_run_is_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

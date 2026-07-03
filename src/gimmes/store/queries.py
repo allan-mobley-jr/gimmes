@@ -297,12 +297,19 @@ async def _log_reconcile_closes(
         # math honest. Documented in the rationale so audit can see
         # this isn't a broker-confirmed fill.
         close_price = pos.market_price if pos.market_price else pos.avg_price
+        # #656: carry the entry decision's analytics onto the synthetic
+        # close so the trades table isn't blind to its own reasoning.
+        entry = await get_entry_analytics(db, pos.ticker, pos.side) or {}
         synth = TradeDecision(
             ticker=pos.ticker,
             action=TradeDecision.Action.CLOSE,
             side=pos.side,
             count=pos.count,
             price=close_price,
+            model_probability=entry.get("model_probability", 0.0),
+            gimme_score=entry.get("gimme_score", 0.0),
+            edge=entry.get("edge", 0.0),
+            kelly_fraction=entry.get("kelly_fraction", 0.0),
             rationale=(
                 "reconcile drift — broker removed position without local"
                 " close; price is last-known mark, not broker-confirmed"
@@ -433,12 +440,28 @@ async def log_settlement_close(
     cycle = _cycle_from_env()
 
     price = 1.0 if won else 0.0
+    # #656: carry the entry decision's analytics onto the settlement
+    # close so calibration audits can read entry vs outcome per row.
+    entry = await get_entry_analytics(db, ticker, side)
+    if entry is None:
+        # No entry on record (pre-#653 data, seeded positions) — the
+        # close keeps honest zeros, but log it so a calibration gap is
+        # traceable to missing history rather than a broken writer.
+        logging.getLogger(__name__).debug(
+            "settlement close for %s/%s found no entry row —"
+            " analytics default to 0 (#656)", ticker, side,
+        )
+        entry = {}
     synth = TradeDecision(
         ticker=ticker,
         action=TradeDecision.Action.CLOSE,
         side=side,
         count=count,
         price=price,
+        model_probability=entry.get("model_probability", 0.0),
+        gimme_score=entry.get("gimme_score", 0.0),
+        edge=entry.get("edge", 0.0),
+        kelly_fraction=entry.get("kelly_fraction", 0.0),
         rationale=rationale or (
             "market settled — broker-confirmed outcome; close at"
             " settlement value (#653)"
@@ -914,6 +937,30 @@ async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  
         "SELECT * FROM trades WHERE ticker = ? AND action = 'open'"
         " ORDER BY timestamp DESC LIMIT 1",
         (ticker,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def get_entry_analytics(
+    db: Database, ticker: str, side: str,
+) -> dict | None:  # type: ignore[type-arg]
+    """Return the latest open/size_up row's analytics for a ticker/side.
+
+    Carries entry-time analytics (model probability, score, edge, kelly
+    fraction) onto close rows so `gimmes trades` and calibration audits
+    see the entry decision that produced the close (#656). Synthetic
+    closes otherwise inherit TradeDecision's 0.0 defaults, which left
+    the trades table blind to its own entry reasoning.
+
+    Commit-less: safe inside a caller's transaction.
+    """
+    cursor = await db.conn.execute(
+        "SELECT model_probability, gimme_score, edge, kelly_fraction"
+        " FROM trades WHERE ticker = ? AND side = ?"
+        " AND action IN ('open', 'size_up')"
+        " ORDER BY timestamp DESC, id DESC LIMIT 1",
+        (ticker, side),
     )
     row = await cursor.fetchone()
     return dict(row) if row else None

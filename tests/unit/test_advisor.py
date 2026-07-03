@@ -15,6 +15,7 @@ from gimmes.store.queries import (
     update_recommendation_status,
 )
 from gimmes.strategy.advisor import (
+    _pair_closes,
     analyze_edge_decay,
     analyze_kelly_optimization,
     analyze_missed_opportunities,
@@ -40,7 +41,14 @@ def _make_trades(
     win_price: float = 0.70,
     loss_price: float = 0.65,
 ) -> list[dict]:
-    """Generate synthetic trade data for testing."""
+    """Generate production-shaped trade data.
+
+    Close rows carry ZERO analytics — exactly how synthetic closes
+    (settlement, reconcile) were written historically (#656). Outcome
+    is expressed only through prices: win closes above the open price,
+    loss closes below. Analyses must derive wins by pairing, never
+    from close-row edge.
+    """
     trades: list[dict] = []
     for i in range(n_wins):
         ticker = f"WIN-{i}"
@@ -52,9 +60,9 @@ def _make_trades(
         })
         trades.append({
             "ticker": ticker, "action": "close", "side": "yes", "count": 10,
-            "price": win_price + win_edge, "model_probability": 0.90,
-            "gimme_score": win_score, "edge": win_edge, "rationale": "settled",
-            "agent": "closer",
+            "price": win_price + win_edge, "model_probability": 0.0,
+            "gimme_score": 0.0, "edge": 0.0, "rationale": "settled",
+            "agent": "settlement",
             "timestamp": f"2026-01-{(i % 28) + 1:02d}T18:00:00",
         })
     for i in range(n_losses):
@@ -67,9 +75,9 @@ def _make_trades(
         })
         trades.append({
             "ticker": ticker, "action": "close", "side": "yes", "count": 10,
-            "price": loss_price + loss_edge, "model_probability": 0.85,
-            "gimme_score": loss_score, "edge": loss_edge, "rationale": "settled",
-            "agent": "closer",
+            "price": loss_price + loss_edge, "model_probability": 0.0,
+            "gimme_score": 0.0, "edge": 0.0, "rationale": "settled",
+            "agent": "settlement",
             "timestamp": f"2026-02-{(i % 28) + 1:02d}T18:00:00",
         })
     return trades
@@ -113,6 +121,152 @@ class TestRecommendationModel:
 
 
 # ---------------------------------------------------------------------------
+# Pairing tests (#656)
+# ---------------------------------------------------------------------------
+
+
+def _pair_group(
+    *,
+    ticker: str = "KXCPI-26APR-T0.5",
+    side: str = "yes",
+    open_price: float = 0.60,
+    close_price: float = 0.75,
+    agent: str = "closer",
+    resolved_outcome: str | None = None,
+    score: float = 80.0,
+) -> list[dict]:
+    """One open + one close with optional resolution on the OPEN row
+    (where Monitor's log-outcome lands, per pnl.py)."""
+    return [
+        {
+            "ticker": ticker, "action": "open", "side": side, "count": 10,
+            "price": open_price, "gimme_score": score, "edge": 0.15,
+            "resolved_outcome": resolved_outcome, "agent": "closer",
+            "timestamp": "2026-01-01T10:00:00",
+        },
+        {
+            "ticker": ticker, "action": "close", "side": side, "count": 10,
+            "price": close_price, "gimme_score": 0.0, "edge": 0.0,
+            "resolved_outcome": None, "agent": agent,
+            "timestamp": "2026-01-02T10:00:00",
+        },
+    ]
+
+
+class TestPairCloses:
+    def test_pnl_fallback_win_and_loss(self) -> None:
+        trades = (
+            _pair_group(ticker="A", open_price=0.60, close_price=0.75)
+            + _pair_group(ticker="B", open_price=0.60, close_price=0.40)
+        )
+        paired = {r["ticker"]: r for r in _pair_closes(trades)}
+        assert paired["A"]["won"] is True
+        assert paired["A"]["realized_return"] == pytest.approx(0.15)
+        assert paired["B"]["won"] is False
+        assert paired["B"]["realized_return"] == pytest.approx(-0.20)
+
+    def test_resolution_beats_realized_sign(self) -> None:
+        """A stop-loss close at a paper loss on a market that resolved
+        our way is still a WON prediction — resolution-first."""
+        trades = _pair_group(
+            open_price=0.60, close_price=0.40, resolved_outcome="yes",
+        )
+        [r] = _pair_closes(trades)
+        assert r["won"] is True
+        assert r["realized_return"] == pytest.approx(-0.20)
+
+    def test_resolution_against_us_beats_positive_entry_edge(self) -> None:
+        """Anti-inversion (#656): the close row carrying copied POSITIVE
+        entry edge must not classify as a win when the market resolved
+        against the side."""
+        trades = _pair_group(
+            open_price=0.60, close_price=0.75, resolved_outcome="no",
+        )
+        trades[1]["edge"] = 0.15  # entry edge copied onto the close
+        [r] = _pair_closes(trades)
+        assert r["won"] is False
+
+    def test_reconcile_close_repriced_at_settlement(self) -> None:
+        """Reconcile drift priced at a stale mark is repriced 1.0/0.0
+        when the group's resolution is known (#653 semantics)."""
+        trades = _pair_group(
+            open_price=0.63, close_price=0.705, agent="reconcile",
+            resolved_outcome="no",  # yes side lost
+        )
+        [r] = _pair_closes(trades)
+        assert r["won"] is False
+        assert r["realized_return"] == pytest.approx(-0.63)
+
+    def test_orphan_close_dropped(self) -> None:
+        trades = [{
+            "ticker": "GHOST", "action": "close", "side": "yes",
+            "count": 10, "price": 0.9, "timestamp": "2026-01-01T10:00:00",
+        }]
+        assert _pair_closes(trades) == []
+
+    def test_size_up_rolls_into_avg_cost(self) -> None:
+        trades = [
+            {
+                "ticker": "S", "action": "open", "side": "yes", "count": 10,
+                "price": 0.50, "gimme_score": 70.0,
+                "timestamp": "2026-01-01T10:00:00",
+            },
+            {
+                "ticker": "S", "action": "size_up", "side": "yes",
+                "count": 10, "price": 0.70, "gimme_score": 72.0,
+                "timestamp": "2026-01-02T10:00:00",
+            },
+            {
+                "ticker": "S", "action": "close", "side": "yes", "count": 20,
+                "price": 0.55, "timestamp": "2026-01-03T10:00:00",
+            },
+        ]
+        [r] = _pair_closes(trades)
+        # avg cost (0.50*10 + 0.70*10)/20 = 0.60 → realized −0.05
+        assert r["realized_return"] == pytest.approx(-0.05)
+        assert r["won"] is False
+        assert r["entry_score"] == 72.0
+
+    def test_entry_analytics_captured(self) -> None:
+        [r] = _pair_closes(_pair_group(score=85.0, open_price=0.62))
+        assert r["entry_score"] == 85.0
+        assert r["entry_price"] == 0.62
+
+
+class TestLessonNotBlind:
+    """The dead-loop regression (#656): production-shaped data — close
+    rows with zeroed analytics — must still produce recommendations."""
+
+    def test_run_all_analyses_produces_a_recommendation(
+        self, config: GimmesConfig,
+    ) -> None:
+        # Wins score 70 (below default threshold 75), losses score 85:
+        # the sweep must discover the better threshold from PAIRED
+        # outcomes despite every close row carrying edge=0/score=0.
+        trades = _make_trades(
+            n_wins=25, n_losses=10, win_score=70, loss_score=85,
+        )
+        recs = run_all_analyses(trades, [], config)
+        assert len(recs) >= 1
+        # Pin the specific analyses (all four fire on this data) so a
+        # single-analysis regression can't hide behind the others.
+        types = {r.analysis_type for r in recs}
+        assert AnalysisType.THRESHOLD_SWEEP in types
+        assert AnalysisType.KELLY_OPTIMIZATION in types
+        assert AnalysisType.SCANNER_REVIEW in types
+
+    def test_not_all_losses_under_zeroed_close_edge(
+        self, config: GimmesConfig,
+    ) -> None:
+        """The original bug: close-row `edge > 0` classified every
+        trade a loss. Pairing must see the actual mix."""
+        paired = _pair_closes(_make_trades(n_wins=20, n_losses=10))
+        wins = sum(1 for r in paired if r["won"])
+        assert wins == 20
+        assert len(paired) - wins == 10
+
+
+# ---------------------------------------------------------------------------
 # Analysis tests
 # ---------------------------------------------------------------------------
 
@@ -124,13 +278,14 @@ class TestThresholdSweep:
 
     def test_finds_better_threshold(self, config: GimmesConfig) -> None:
         # Wins have score 70 (below default threshold of 75)
-        # so lowering threshold should capture more wins
+        # so lowering threshold should capture more wins. Hard assert:
+        # an `if rec is not None` guard let a per-analysis revert to
+        # close-row edge classification survive (#656 review).
         trades = _make_trades(n_wins=25, n_losses=5, win_score=70, loss_score=85)
         rec = analyze_threshold_sweep(trades, config)
-        # Should recommend lowering threshold
-        if rec is not None:
-            assert rec.parameter_path == "strategy.gimme_threshold"
-            assert rec.analysis_type == AnalysisType.THRESHOLD_SWEEP
+        assert rec is not None
+        assert rec.parameter_path == "strategy.gimme_threshold"
+        assert rec.analysis_type == AnalysisType.THRESHOLD_SWEEP
 
     def test_no_change_needed(self, config: GimmesConfig) -> None:
         # All trades at exactly the threshold — no improvement possible
@@ -145,32 +300,45 @@ class TestEdgeDecay:
         trades = _make_trades(n_wins=5, n_losses=2)
         assert analyze_edge_decay(trades, config) is None
 
-    def test_detects_decay(self, config: GimmesConfig) -> None:
-        # First half has good edge, second half has poor edge
+    @staticmethod
+    def _paired_trades(
+        prefix: str, n: int, month: int, realized: float,
+    ) -> list[dict]:
+        """n open/close pairs whose per-contract realized return is
+        `realized` — decay must be visible from PAIRED returns, not
+        close-row edge (which is zeroed in production, #656)."""
         trades: list[dict] = []
-        for i in range(20):
+        for i in range(n):
+            day = (i % 28) + 1
             trades.append({
-                "ticker": f"EARLY-{i}", "action": "close", "edge": 0.20,
-                "timestamp": f"2026-01-{(i % 28) + 1:02d}T10:00:00",
+                "ticker": f"{prefix}-{i}", "action": "open", "side": "yes",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "timestamp": f"2026-{month:02d}-{day:02d}T10:00:00",
             })
-        for i in range(20):
             trades.append({
-                "ticker": f"LATE-{i}", "action": "close", "edge": 0.05,
-                "timestamp": f"2026-03-{(i % 28) + 1:02d}T10:00:00",
+                "ticker": f"{prefix}-{i}", "action": "close", "side": "yes",
+                "count": 10, "price": 0.50 + realized, "edge": 0.0,
+                "timestamp": f"2026-{month:02d}-{day:02d}T18:00:00",
             })
+        return trades
+
+    def test_detects_decay(self, config: GimmesConfig) -> None:
+        # First half realizes +0.20/contract, second half +0.05
+        trades = (
+            self._paired_trades("EARLY", 20, 1, 0.20)
+            + self._paired_trades("LATE", 20, 3, 0.05)
+        )
         rec = analyze_edge_decay(trades, config)
         assert rec is not None
         assert rec.analysis_type == AnalysisType.EDGE_DECAY
         assert "decaying" in rec.rationale.lower()
 
     def test_no_decay(self, config: GimmesConfig) -> None:
-        # Consistent edge across both halves — no decay
-        trades: list[dict] = []
-        for i in range(40):
-            trades.append({
-                "ticker": f"CONSISTENT-{i}", "action": "close", "edge": 0.15,
-                "timestamp": f"2026-0{(i // 28) + 1}-{(i % 28) + 1:02d}T10:00:00",
-            })
+        # Consistent realized return across both halves — no decay
+        trades = (
+            self._paired_trades("CONSISTENT", 20, 1, 0.15)
+            + self._paired_trades("STEADY", 20, 2, 0.15)
+        )
         rec = analyze_edge_decay(trades, config)
         assert rec is None
 
@@ -181,14 +349,15 @@ class TestKellyOptimization:
         assert analyze_kelly_optimization(trades, config) is None
 
     def test_recommends_adjustment(self, config: GimmesConfig) -> None:
-        # High win rate with good payoff ratio should suggest higher Kelly
+        # High win rate with good payoff ratio should suggest higher
+        # Kelly. Hard assert — see TestThresholdSweep note (#656).
         trades = _make_trades(n_wins=25, n_losses=5, win_edge=0.20, loss_edge=-0.05)
         rec = analyze_kelly_optimization(trades, config)
-        if rec is not None:
-            assert rec.parameter_path == "sizing.kelly_fraction"
-            assert rec.analysis_type == AnalysisType.KELLY_OPTIMIZATION
-            assert float(rec.recommended_value) > 0
-            assert float(rec.recommended_value) <= 0.50
+        assert rec is not None
+        assert rec.parameter_path == "sizing.kelly_fraction"
+        assert rec.analysis_type == AnalysisType.KELLY_OPTIMIZATION
+        assert float(rec.recommended_value) > 0
+        assert float(rec.recommended_value) <= 0.50
 
     def test_no_wins(self, config: GimmesConfig) -> None:
         trades = _make_trades(n_wins=0, n_losses=25)
@@ -205,10 +374,11 @@ class TestScannerParameters:
             n_wins=20, n_losses=15,
             win_price=0.72, loss_price=0.58,
         )
+        # Hard assert — see TestThresholdSweep note (#656).
         rec = analyze_scanner_parameters(trades, config)
-        if rec is not None:
-            assert rec.analysis_type == AnalysisType.SCANNER_REVIEW
-            assert "strategy.m" in rec.parameter_path
+        assert rec is not None
+        assert rec.analysis_type == AnalysisType.SCANNER_REVIEW
+        assert "strategy.m" in rec.parameter_path
 
 
 class TestScoringCorrelation:

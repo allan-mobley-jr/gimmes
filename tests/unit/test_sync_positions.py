@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from gimmes.models.portfolio import Position
 from gimmes.models.trade import TradeDecision
 from gimmes.store.database import Database
 from gimmes.store.queries import (
+    get_entry_analytics,
     get_positions,
     get_trades,
     insert_trade,
@@ -331,6 +334,109 @@ class TestReconcileDriftLogsSyntheticClose:
         assert len(trades) == 1
         assert trades[0]["price"] == 0.0
         assert trades[0]["agent"] == "reconcile"
+
+
+def _open_trade(
+    ticker: str,
+    *,
+    action: str = "open",
+    prob: float = 0.9,
+    score: float = 82.0,
+    edge: float = 0.25,
+    kelly: float = 0.03,
+    ts: str = "2026-04-20T12:00:00+00:00",
+) -> TradeDecision:
+    t = TradeDecision(
+        ticker=ticker,
+        action=TradeDecision.Action(action),
+        side="yes",
+        count=10,
+        price=0.60,
+        model_probability=prob,
+        gimme_score=score,
+        edge=edge,
+        kelly_fraction=kelly,
+        rationale="entry",
+        agent="closer",
+    )
+    t.timestamp = datetime.fromisoformat(ts)
+    return t
+
+
+class TestReconcileCloseCarriesEntryAnalytics:
+    """#656: synthetic drift closes inherit the entry decision's
+    analytics instead of TradeDecision's 0.0 defaults."""
+
+    async def test_drift_close_inherits_entry_analytics(self, db):
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=0.42),
+        )
+
+        await sync_positions(db, [])
+
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        assert len(closes) == 1
+        c = closes[0]
+        assert c["agent"] == "reconcile"
+        assert c["model_probability"] == 0.9
+        assert c["gimme_score"] == 82.0
+        assert c["edge"] == 0.25
+        assert c["kelly_fraction"] == 0.03
+
+    async def test_drift_close_without_open_keeps_zeros(self, db):
+        """No entry on record (pre-#609 DBs, seeded positions) — the
+        drift close still writes, with honest zeros."""
+        await upsert_position(db, _pos("NO-HISTORY", count=10, price=0.42))
+
+        await sync_positions(db, [])
+
+        [c] = await get_trades(db)
+        assert c["action"] == "close"
+        assert c["model_probability"] == 0
+        assert c["gimme_score"] == 0
+        assert c["edge"] == 0
+
+
+class TestGetEntryAnalytics:
+    async def test_returns_latest_entry_row(self, db):
+        await insert_trade(db, _open_trade(
+            "T", prob=0.7, score=60.0, ts="2026-04-01T12:00:00+00:00",
+        ))
+        await insert_trade(db, _open_trade(
+            "T", action="size_up", prob=0.85, score=75.0, edge=0.18,
+            kelly=0.04, ts="2026-04-05T12:00:00+00:00",
+        ))
+
+        entry = await get_entry_analytics(db, "T", "yes")
+        assert entry == {
+            "model_probability": 0.85,
+            "gimme_score": 75.0,
+            "edge": 0.18,
+            "kelly_fraction": 0.04,
+        }
+
+    async def test_ignores_close_rows(self, db):
+        close = _open_trade("T", prob=0.0, score=0.0, edge=0.0, kelly=0.0,
+                            ts="2026-04-09T12:00:00+00:00")
+        close.action = TradeDecision.Action.CLOSE
+        await insert_trade(db, _open_trade(
+            "T", prob=0.9, ts="2026-04-01T12:00:00+00:00",
+        ))
+        await insert_trade(db, close)
+
+        entry = await get_entry_analytics(db, "T", "yes")
+        assert entry is not None
+        assert entry["model_probability"] == 0.9
+
+    async def test_none_when_no_entry(self, db):
+        assert await get_entry_analytics(db, "MISSING", "yes") is None
+
+    async def test_side_must_match(self, db):
+        await insert_trade(db, _open_trade("T"))  # side yes
+        assert await get_entry_analytics(db, "T", "no") is None
 
 
 def test_caddie_master_lockout_query_does_not_match_reconcile_body() -> None:

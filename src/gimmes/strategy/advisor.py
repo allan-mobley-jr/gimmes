@@ -12,14 +12,97 @@ from gimmes.models.recommendation import (
 )
 
 
-def _close_trades(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
-    """Filter to close trades only."""
-    return [t for t in trades if t.get("action") == "close"]
-
-
 def _open_trades(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
     """Filter to open trades only."""
     return [t for t in trades if t.get("action") == "open"]
+
+
+def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
+    """Pair each close row to its opens and classify it won/lost.
+
+    Close rows carry no reliable outcome signal of their own (#656):
+    synthetic closes (settlement, reconcile) historically defaulted
+    edge/score to 0, and even entry edge copied onto a close says
+    nothing about how the trade resolved — opens are min_edge-gated,
+    so close-row ``edge > 0`` would classify every trade a win.
+
+    Mirrors the ``calculate_pnl`` walk (reporting/pnl.py): group
+    ``open``/``size_up``/``close`` by (ticker, side), scan in timestamp
+    order with a running weighted-average cost, and reprice reconcile
+    drift closes at settlement value when the group's resolution is
+    known (#653). ``won`` is resolution-first (side == resolved_outcome
+    anywhere in the group), falling back to the realized return's sign.
+    Orphan closes (no matched open on record) are dropped — they have
+    no entry decision to learn from.
+
+    Returns one record per matched close: ``{ticker, side, timestamp,
+    won, realized_return, entry_score, entry_price}`` where
+    ``realized_return`` is per-contract (close price − avg cost) and
+    entry fields come from the most recent open/size_up before the
+    close.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}  # type: ignore[type-arg]
+    for t in trades:
+        if t.get("action") not in ("open", "close", "size_up"):
+            continue
+        key = (t.get("ticker", ""), t.get("side", "yes"))
+        groups.setdefault(key, []).append(t)
+
+    paired: list[dict] = []  # type: ignore[type-arg]
+    for (ticker, side), events in groups.items():
+        events.sort(key=lambda e: str(e.get("timestamp", "")))
+        group_outcome = next(
+            (
+                e.get("resolved_outcome")
+                for e in events
+                if e.get("resolved_outcome") in ("yes", "no")
+            ),
+            None,
+        )
+        remaining = 0
+        avg_cost = 0.0
+        entry_score = 0.0
+        entry_price = 0.0
+        for e in events:
+            action = e.get("action")
+            count = int(e.get("count", 0) or 0)
+            price = float(e.get("price", 0.0) or 0.0)
+            if count <= 0:
+                continue
+            if action in ("open", "size_up"):
+                total = remaining + count
+                avg_cost = (
+                    (avg_cost * remaining + price * count) / total
+                    if total
+                    else 0.0
+                )
+                remaining = total
+                entry_score = float(e.get("gimme_score", 0) or 0)
+                entry_price = price
+                continue
+            # action == "close"
+            matched = min(count, remaining)
+            remaining -= matched
+            if matched <= 0:
+                continue
+            if e.get("agent") == "reconcile" and group_outcome is not None:
+                price = 1.0 if side == group_outcome else 0.0
+            realized = price - avg_cost
+            won = (
+                side == group_outcome
+                if group_outcome is not None
+                else realized > 0
+            )
+            paired.append({
+                "ticker": ticker,
+                "side": side,
+                "timestamp": e.get("timestamp", ""),
+                "won": won,
+                "realized_return": realized,
+                "entry_score": entry_score,
+                "entry_price": entry_price,
+            })
+    return paired
 
 
 # ---------------------------------------------------------------------------
@@ -38,16 +121,14 @@ def analyze_threshold_sweep(
     Returns a recommendation if a better threshold is found, else None.
     """
     opens = _open_trades(trades)
-    closes = _close_trades(trades)
-    if len(closes) < MIN_TRADES_THRESHOLD:
+    paired = _pair_closes(trades)
+    if len(paired) < MIN_TRADES_THRESHOLD:
         return None
 
-    # Build outcome map: ticker -> won (True/False)
-    outcomes: dict[str, bool] = {}
-    for t in closes:
-        ticker = t.get("ticker", "")
-        edge = t.get("edge", 0)
-        outcomes[ticker] = edge > 0
+    # Build outcome map: ticker -> won (True/False). Resolution-first
+    # via _pair_closes — close-row edge is an entry artifact, not an
+    # outcome (#656).
+    outcomes: dict[str, bool] = {r["ticker"]: r["won"] for r in paired}
 
     # Build score map from opens
     scored: list[dict] = []  # type: ignore[type-arg]
@@ -134,15 +215,18 @@ def analyze_edge_decay(
 ) -> Recommendation | None:
     """Detect if realized edge is shrinking over time.
 
-    Compares the rolling edge of the most recent half of trades to the first half.
+    Compares the per-contract realized return of the most recent half
+    of paired closes to the first half. Close-row `edge` is an entry
+    artifact (zeroed on synthetic closes, min_edge-gated otherwise) and
+    cannot express realized decay (#656).
     """
-    closes = _close_trades(trades)
-    if len(closes) < MIN_TRADES_EDGE_DECAY:
+    paired = _pair_closes(trades)
+    if len(paired) < MIN_TRADES_EDGE_DECAY:
         return None
 
     # Sort by timestamp ascending
-    sorted_trades = sorted(closes, key=lambda t: t.get("timestamp", ""))
-    edges = [t.get("edge", 0) for t in sorted_trades]
+    sorted_trades = sorted(paired, key=lambda r: str(r.get("timestamp", "")))
+    edges = [r["realized_return"] for r in sorted_trades]
 
     mid = len(edges) // 2
     first_half = edges[:mid]
@@ -161,7 +245,7 @@ def analyze_edge_decay(
         return None
 
     confidence = Confidence.LOW
-    if decay_pct >= 0.30 and len(closes) >= 50:
+    if decay_pct >= 0.30 and len(paired) >= 50:
         confidence = Confidence.HIGH
     elif decay_pct >= 0.20:
         confidence = Confidence.MEDIUM
@@ -178,10 +262,12 @@ def analyze_edge_decay(
             f"Consider raising min_edge_after_fees to filter weaker opportunities."
         ),
         supporting_data=json.dumps({
-            "first_half_avg_edge": round(avg_first, 4),
-            "second_half_avg_edge": round(avg_second, 4),
+            # Per-contract realized returns since #656 (were entry
+            # edges) — keys named for what they now carry.
+            "first_half_avg_return": round(avg_first, 4),
+            "second_half_avg_return": round(avg_second, 4),
             "decay_pct": round(decay_pct, 3),
-            "sample_size": len(closes),
+            "sample_size": len(paired),
         }),
     )
 
@@ -231,20 +317,25 @@ def analyze_kelly_optimization(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
 ) -> Recommendation | None:
-    """Compute optimal Kelly fraction from realized win rate and payoffs."""
-    closes = _close_trades(trades)
-    if len(closes) < MIN_TRADES_KELLY:
+    """Compute optimal Kelly fraction from realized win rate and payoffs.
+
+    Wins/losses and payoff magnitudes come from per-contract realized
+    returns via _pair_closes — entry edge is identical on both legs of
+    a trade and would corrupt the payoff ratio (#656).
+    """
+    paired = _pair_closes(trades)
+    if len(paired) < MIN_TRADES_KELLY:
         return None
 
-    wins = [t for t in closes if t.get("edge", 0) > 0]
-    losses = [t for t in closes if t.get("edge", 0) < 0]
+    wins = [r for r in paired if r["realized_return"] > 0]
+    losses = [r for r in paired if r["realized_return"] < 0]
 
     if not wins or not losses:
         return None
 
-    win_rate = len(wins) / len(closes)
-    avg_win = sum(abs(t.get("edge", 0)) for t in wins) / len(wins)
-    avg_loss = sum(abs(t.get("edge", 0)) for t in losses) / len(losses)
+    win_rate = len(wins) / len(paired)
+    avg_win = sum(r["realized_return"] for r in wins) / len(wins)
+    avg_loss = sum(-r["realized_return"] for r in losses) / len(losses)
 
     if avg_loss == 0:
         return None
@@ -266,9 +357,9 @@ def analyze_kelly_optimization(
         return None
 
     confidence = Confidence.LOW
-    if len(closes) >= 50 and abs(recommended - current) >= 0.10:
+    if len(paired) >= 50 and abs(recommended - current) >= 0.10:
         confidence = Confidence.HIGH
-    elif len(closes) >= 30:
+    elif len(paired) >= 30:
         confidence = Confidence.MEDIUM
 
     return Recommendation(
@@ -289,7 +380,7 @@ def analyze_kelly_optimization(
             "payoff_ratio": round(b, 3),
             "full_kelly": round(full_kelly, 3),
             "recommended_fraction": recommended,
-            "sample_size": len(closes),
+            "sample_size": len(paired),
         }),
     )
 
@@ -306,15 +397,13 @@ def analyze_scanner_parameters(
     config: GimmesConfig,
 ) -> Recommendation | None:
     """Analyze price distribution of winners vs losers for price range tuning."""
-    closes = _close_trades(trades)
     opens = _open_trades(trades)
-    if len(closes) < MIN_TRADES_SCANNER:
+    paired = _pair_closes(trades)
+    if len(paired) < MIN_TRADES_SCANNER:
         return None
 
-    # Build outcome map
-    outcomes: dict[str, bool] = {}
-    for t in closes:
-        outcomes[t.get("ticker", "")] = t.get("edge", 0) > 0
+    # Build outcome map — resolution-first via _pair_closes (#656)
+    outcomes: dict[str, bool] = {r["ticker"]: r["won"] for r in paired}
 
     # Get prices from opens
     winner_prices: list[float] = []
@@ -358,7 +447,7 @@ def analyze_scanner_parameters(
         parameter_path=param,
         current_value=str(current),
         recommended_value=str(recommended),
-        confidence=Confidence.MEDIUM if len(closes) >= 50 else Confidence.LOW,
+        confidence=Confidence.MEDIUM if len(paired) >= 50 else Confidence.LOW,
         analysis_type=AnalysisType.SCANNER_REVIEW,
         rationale=(
             f"Winners avg price: {avg_winner_price:.2f} (n={len(winner_prices)}), "

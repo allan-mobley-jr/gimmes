@@ -1090,6 +1090,7 @@ def order(
                 if result.status in ("executed", "resting"):
                     from gimmes.models.trade import TradeDecision
                     from gimmes.store.queries import (
+                        get_entry_analytics,
                         get_open_trade_for_ticker,
                         get_thesis_for_ticker,
                         sync_positions_with_trade,
@@ -1155,18 +1156,52 @@ def order(
                     else:
                         trade_action = TradeDecision.Action.CLOSE
                         thesis = ""
+                    # #656: a close without an explicit --probability
+                    # inherits the entry decision's analytics — a close
+                    # row with zeroed prob/edge/score is blind to the
+                    # reasoning that opened it. An explicit probability
+                    # keeps close-time semantics (prob/edge as of now).
+                    entry: dict = {}
+                    if (
+                        trade_action is TradeDecision.Action.CLOSE
+                        and probability is None
+                    ):
+                        # Best-effort enrichment: a failed read must
+                        # not surface as "position sync failed" and
+                        # drop the trade row after a confirmed fill.
+                        # Log-only degrade (the #643 snapshot
+                        # precedent) — no insert_error row, since the
+                        # DB just failed a read.
+                        try:
+                            entry = (
+                                await get_entry_analytics(db, ticker, side)
+                                or {}
+                            )
+                        except sqlite3.Error:
+                            logger.error(
+                                "Entry-analytics fetch failed for %s;"
+                                " recording close with zeroed"
+                                " analytics (#656)",
+                                ticker, exc_info=True,
+                            )
                     trade = TradeDecision(
                         ticker=ticker,
                         action=trade_action,
                         side=side,
                         count=final_count,
                         price=final_price,
-                        model_probability=0.0 if probability is None else probability,
+                        model_probability=(
+                            entry.get("model_probability", 0.0)
+                            if probability is None
+                            else probability
+                        ),
+                        gimme_score=entry.get("gimme_score", 0.0),
                         edge=(
                             probability - final_price
                             if probability is not None
-                            else 0.0
+                            else entry.get("edge", 0.0)
                         ),
+                        kelly_fraction=entry.get("kelly_fraction", 0.0),
                         rationale=thesis or f"{agent} order",
                         thesis=thesis,
                         agent=agent,
@@ -1357,8 +1392,10 @@ def trades(
         table.add_column("Side")
         table.add_column("Count", justify="right")
         table.add_column("Price", justify="right")
+        table.add_column("Prob", justify="right")
         table.add_column("Edge", justify="right")
         table.add_column("Score", justify="right")
+        table.add_column("Outcome")
         table.add_column("Timestamp")
 
         for t in records:
@@ -1368,8 +1405,10 @@ def trades(
                 str(t.get("side", "")),
                 str(t.get("count", 0)),
                 f"${t.get('price', 0):.2f}",
+                f"{t.get('model_probability', 0):.1%}",
                 f"{t.get('edge', 0):.1%}",
                 f"{t.get('gimme_score', 0):.0f}",
+                str(t.get("resolved_outcome") or ""),
                 format_local_timestamp(str(t.get("timestamp", ""))),
             )
 
@@ -2028,7 +2067,7 @@ def log_trade(
     async def _log() -> None:
         from gimmes.models.trade import TradeDecision
         from gimmes.store.database import Database
-        from gimmes.store.queries import insert_trade
+        from gimmes.store.queries import get_entry_analytics, insert_trade
         from gimmes.strategy.scanner import effective_price
 
         resolved_side = side if side else config.strategy.side
@@ -2047,6 +2086,16 @@ def log_trade(
         )
 
         async with Database(config.db_path) as db:
+            # #656: a close logged without --prob inherits the entry
+            # decision's analytics; an explicit --prob or --score wins.
+            if trade.action is TradeDecision.Action.CLOSE and prob is None:
+                entry = await get_entry_analytics(db, ticker, resolved_side)
+                if entry:
+                    trade.model_probability = entry["model_probability"]
+                    trade.edge = entry["edge"]
+                    trade.kelly_fraction = entry["kelly_fraction"]
+                    if not score_val:
+                        trade.gimme_score = entry["gimme_score"]
             row_id = await insert_trade(db, trade)
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
 

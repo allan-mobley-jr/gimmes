@@ -8,10 +8,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from gimmes.models.error import ErrorCategory, ErrorSeverity
 from gimmes.models.order import Order, OrderAction, OrderSide
 from gimmes.models.portfolio import Position
+from gimmes.models.trade import TradeDecision
 
 _ORDER_CLI_ARGS = [
     "order", "TEST-TICKER",
@@ -91,7 +93,7 @@ def _stub_config():
 def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
     insert_error_side_effect=None, extra_args=None, market=None,
-    snapshot_mock=None, validation=None,
+    snapshot_mock=None, validation=None, cli_args=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -181,7 +183,8 @@ def _run_order_cli(
         from gimmes.cli import app
 
         runner = CliRunner()
-        cli_args = _ORDER_CLI_ARGS + (extra_args or [])
+        if cli_args is None:
+            cli_args = _ORDER_CLI_ARGS + (extra_args or [])
         result = runner.invoke(app, cli_args)
     finally:
         for p in patches:
@@ -884,3 +887,123 @@ class TestOrderValidationMarkupEscape:
         # Escaped markup contains the literal backslash-bracket form on
         # BOTH the summary line and the per-failure line.
         assert printed.count("\\[sole") >= 2, printed
+
+
+# ---------------------------------------------------------------------------
+# #656: order-close entry-analytics inheritance
+# ---------------------------------------------------------------------------
+
+_SELL_CLI_ARGS = [
+    "order", "TEST-TICKER", "--action", "sell",
+    "--side", "yes", "--count", "10", "--price", "40", "--yes",
+]
+
+_ENTRY = {
+    "model_probability": 0.9, "gimme_score": 82.0,
+    "edge": 0.25, "kelly_fraction": 0.03,
+}
+
+
+class TestCloseInheritsEntryAnalytics:
+    """#656: the capital-deployment close path. Without an explicit
+    --prob, the recorded close row inherits the entry decision's
+    analytics; with one, close-time semantics are preserved."""
+
+    @staticmethod
+    def _broker_with_position():
+        """Sell orders require an existing position to close."""
+        pos = Position(
+            ticker="TEST-TICKER", side="yes", count=100,
+            avg_price=0.60, market_price=0.60, cost_basis=60.0,
+        )
+        return _make_mock_broker(get_positions_side_effect=lambda: [pos])
+
+    @staticmethod
+    def _capture():
+        captured = {}
+
+        async def _sync(db, positions, trade):
+            captured["trade"] = trade
+
+        return captured, _sync
+
+    def test_close_without_prob_inherits_entry_analytics(self) -> None:
+        broker = self._broker_with_position()
+        captured, sync = self._capture()
+        entry_mock = AsyncMock(return_value=dict(_ENTRY))
+        with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
+            result, mock_console, _ = _run_order_cli(
+                broker, sync_side_effect=sync, cli_args=_SELL_CLI_ARGS,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        t = captured["trade"]
+        assert t.action is TradeDecision.Action.CLOSE
+        assert t.model_probability == 0.9
+        assert t.gimme_score == 82.0
+        assert t.edge == 0.25
+        assert t.kelly_fraction == 0.03
+        entry_mock.assert_awaited_once()
+
+    def test_close_with_explicit_prob_keeps_close_time_semantics(
+        self,
+    ) -> None:
+        broker = self._broker_with_position()
+        captured, sync = self._capture()
+        entry_mock = AsyncMock(return_value=dict(_ENTRY))
+        with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
+            result, mock_console, _ = _run_order_cli(
+                broker, sync_side_effect=sync,
+                cli_args=[*_SELL_CLI_ARGS, "--prob", "0.55"],
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        t = captured["trade"]
+        # Close-time prob/edge, no inherited analytics
+        assert t.model_probability == 0.55
+        assert t.edge == pytest.approx(0.55 - t.price)
+        assert t.gimme_score == 0.0
+        assert t.kelly_fraction == 0.0
+        entry_mock.assert_not_awaited()
+
+    def test_open_path_unchanged_no_entry_fetch(self) -> None:
+        broker = _make_mock_broker()
+        captured, sync = self._capture()
+        entry_mock = AsyncMock(return_value=dict(_ENTRY))
+        # The buy path fetches a thesis before building the trade —
+        # stub those DB lookups (they'd run against the mock DB).
+        with patch("gimmes.store.queries.get_entry_analytics", entry_mock), \
+                patch(
+                    "gimmes.store.queries.get_thesis_for_ticker",
+                    AsyncMock(return_value=""),
+                ), \
+                patch(
+                    "gimmes.store.queries.get_open_trade_for_ticker",
+                    AsyncMock(return_value=None),
+                ):
+            result, mock_console, _ = _run_order_cli(
+                broker, sync_side_effect=sync,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        t = captured["trade"]
+        assert t.action is TradeDecision.Action.OPEN
+        # _ORDER_CLI_ARGS pass --prob 0.55: open semantics untouched
+        assert t.model_probability == 0.55
+        assert t.gimme_score == 0.0
+        entry_mock.assert_not_awaited()
+
+    def test_entry_fetch_failure_still_records_close(self) -> None:
+        """A transient DB error in the best-effort analytics fetch must
+        not become 'position sync failed' — the close records with
+        zeroed analytics (#656 Copilot review)."""
+        broker = self._broker_with_position()
+        captured, sync = self._capture()
+        entry_mock = AsyncMock(side_effect=sqlite3.OperationalError("locked"))
+        with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
+            result, mock_console, _ = _run_order_cli(
+                broker, sync_side_effect=sync, cli_args=_SELL_CLI_ARGS,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        t = captured["trade"]
+        assert t.action is TradeDecision.Action.CLOSE
+        assert t.model_probability == 0.0
+        assert t.edge == 0.0
+        assert "position sync failed" not in _printed(mock_console).lower()
