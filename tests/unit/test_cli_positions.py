@@ -245,3 +245,40 @@ class TestRichDefaultBehaviorDocumentation:
         )
         assert LONG_TICKER in ticker_col
         assert ELLIPSIS not in ticker_col
+
+
+class TestScanResultsMarkupEscape:
+    @staticmethod
+    def _market(title: str) -> dict:
+        return {
+            "ticker": SHORTER_TICKER,
+            "event_ticker": "KXCPI-26APR",
+            "title": title,
+            "price": 0.65,
+            "volume_24h": 100,
+            "open_interest": 50,
+            "score": 80,
+        }
+
+    def test_bracketed_title_cell_survives_markup(
+        self, narrow_console: StringIO,
+    ) -> None:
+        """Market titles from the Kalshi API can carry bracketed
+        segments — the Title cell must render them verbatim (#644).
+        The fragment fits inside the column's 20-char cap."""
+        from gimmes.reporting.formatter import format_scan_results
+
+        format_scan_results([self._market("CPI [prelim] Apr")])
+        out = narrow_console.getvalue()
+        assert "[prelim]" in out
+
+    def test_bracketed_title_param_survives_markup(
+        self, narrow_console: StringIO,
+    ) -> None:
+        """The title parameter is public — bracketed callers must
+        render verbatim (#644)."""
+        from gimmes.reporting.formatter import format_scan_results
+
+        format_scan_results([self._market("CPI")], title="Scan [draft]")
+        out = narrow_console.getvalue()
+        assert "[draft]" in out

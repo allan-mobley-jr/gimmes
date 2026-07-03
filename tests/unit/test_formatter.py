@@ -5,10 +5,22 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Iterator
+from io import StringIO
 
 import pytest
+from rich.console import Console
+from rich.table import Table
 
 from gimmes.reporting.formatter import format_kv_table, format_local_timestamp
+
+
+def _render_table(table: Table) -> str:
+    """Render a table to text at a fixed 100-col width — wide enough
+    that Rich wraps titles at the TABLE width, not the console width
+    (a narrow console would split the asserted fragments)."""
+    buf = StringIO()
+    Console(file=buf, width=100).print(table)
+    return buf.getvalue()
 
 
 class TestFormatKvTable:
@@ -25,6 +37,31 @@ class TestFormatKvTable:
     def test_no_header(self) -> None:
         table = format_kv_table("T", [("k", "v")])
         assert table.show_header is False
+
+    def test_title_with_brackets_survives_render(self) -> None:
+        """Bracketed external text in the title must render verbatim
+        (#644): the positive fragment catches markup-eating, the
+        negative catches double-escaping (a pre-escaping caller would
+        render a literal backslash — invisible to the positive check).
+        """
+        # Wide row: Rich wraps the title to the TABLE width, not
+        # the console width — a narrow table would split the fragment.
+        table = format_kv_table(
+            "CPI [preliminary] April 2026",
+            [("key", "value " * 8)],
+        )
+        out = _render_table(table)
+        assert "[preliminary]" in out
+        assert "\\[preliminary]" not in out
+
+    def test_values_still_support_markup(self) -> None:
+        """Row VALUES stay markup-parsed by contract (#644) — callers
+        pass deliberate color tags (e.g. the Settlement Risk cell). A
+        future blanket value-escape must fail here loudly."""
+        table = format_kv_table("T", [("k", "[bold]42[/bold]")])
+        out = _render_table(table)
+        assert "42" in out
+        assert "[bold]" not in out
 
 
 @pytest.fixture()

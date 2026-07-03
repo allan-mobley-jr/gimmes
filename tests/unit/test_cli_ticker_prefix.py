@@ -532,6 +532,10 @@ class TestMarketInfo:
             " Rich markup-parses string titles, eating lowercase-start"
             " bracketed segments unless escaped (#641)."
         )
+        # #644: title escaping moved INTO format_kv_table — a caller
+        # that pre-escapes now double-escapes, rendering a literal
+        # backslash that the positive assertion above cannot see.
+        assert "\\[preliminary]" not in result.output
 
     def test_market_info_em_dash_fallback_for_missing_fields(
         self, seeded_db: Path,

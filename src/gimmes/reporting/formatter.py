@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -123,7 +124,7 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
 
     has_side = any(m.get("side") for m in markets)
 
-    table = Table(title=title)
+    table = Table(title=rich_escape(title))  # #644: title param is open to callers
     table.add_column("Ticker", style="cyan", overflow="fold")
     if has_side:
         table.add_column("Side", style="bold")
@@ -143,7 +144,7 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
             row.append(m.get("side", "").upper())
         row.extend([
             evt_label,
-            m.get("title", "")[:20],
+            rich_escape(m.get("title", "")[:20]),  # #644
             f"${m.get('price', 0):.2f}",
             str(m.get("volume_24h", 0)),
             str(m.get("open_interest", 0)),
@@ -155,8 +156,16 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
 
 
 def format_kv_table(title: str, rows: list[tuple[str, str]]) -> Table:
-    """Build a two-column Rich table for key-value display."""
-    table = Table(title=title, show_header=False)
+    """Build a two-column Rich table for key-value display.
+
+    The title is markup-escaped here — callers must NOT pre-escape it
+    (double-escaping renders a literal backslash). Row VALUES are still
+    markup-parsed: wrap external text in rich_escape() at the call
+    site, or pass deliberate markup like color tags (#641/#644). If a
+    styled title is ever genuinely needed, add an escape hatch then —
+    today every caller passes plain text.
+    """
+    table = Table(title=rich_escape(title), show_header=False)
     table.add_column("Key", style="cyan")
     table.add_column("Value", style="white", justify="right")
     for key, value in rows:

@@ -703,16 +703,17 @@ def validate(
                 series_exposure=series_exp,
             )
 
-            console.print(f"\n[bold]Validation: {ticker}[/bold]")
-            if result.approved:
-                console.print(f"[green bold]{result.summary}[/green bold]")
-            else:
-                console.print(f"[red bold]{result.summary}[/red bold]")
+            # #644: summaries/failures embed settlement text with
+            # literal bracketed flag lists — escape external fragments
+            # so Rich renders them verbatim inside the styled lines.
+            console.print(f"\n[bold]Validation: {rich_escape(ticker)}[/bold]")
+            style = "green bold" if result.approved else "red bold"
+            console.print(f"[{style}]{rich_escape(result.summary)}[/{style}]")
 
             for check in result.checks:
-                console.print(f"  [green]✓[/green] {check}")
+                console.print(f"  [green]✓[/green] {rich_escape(check)}")
             for fail in result.failures:
-                console.print(f"  [red]✗[/red] {fail}")
+                console.print(f"  [red]✗[/red] {rich_escape(fail)}")
 
             if not result.approved:
                 raise typer.Exit(1)
@@ -925,12 +926,14 @@ def order(
                 )
 
                 if not validation.approved:
+                    # #644: summary/failures embed settlement text with
+                    # literal bracketed flag lists — escape.
                     console.print(
-                        f"\n[red bold]{validation.summary}"
+                        f"\n[red bold]{rich_escape(validation.summary)}"
                         f"[/red bold]"
                     )
                     for fail in validation.failures:
-                        console.print(f"  [red]✗[/red] {fail}")
+                        console.print(f"  [red]✗[/red] {rich_escape(fail)}")
                     if force:
                         console.print(
                             "[yellow bold]--force: Overriding"
@@ -1408,7 +1411,10 @@ def candidates(
             console.print("[dim]No candidate records found[/dim]")
             return
 
-        title = f"Candidates for {ticker}" if ticker else f"Candidates (last {limit})"
+        title = (
+            f"Candidates for {rich_escape(ticker)}"  # #644
+            if ticker else f"Candidates (last {limit})"
+        )
         table = Table(title=title)
         table.add_column("Ticker", overflow="fold")
         table.add_column("Score", justify="right")
@@ -1704,7 +1710,10 @@ def risk_check() -> None:
                 if check.passed:
                     console.print(f"  [green]✓[/green] {label}: OK")
                 else:
-                    console.print(f"  [red]✗[/red] {label}: {check.reason}")
+                    console.print(
+                        f"  [red]✗[/red] {label}:"
+                        f" {rich_escape(check.reason)}"  # #644
+                    )
 
     _run(_check())
 
@@ -1956,8 +1965,10 @@ def market_info(
                 # em-dash when the field is empty.
                 return rich_escape(value) if value else "—"
 
-            # rich_escape: table titles are markup-parsed too (#641 review).
-            table = format_kv_table(rich_escape(market.title), [
+            # Title escaping is central in format_kv_table (#644) —
+            # do NOT pre-escape here (double-escape renders a literal
+            # backslash).
+            table = format_kv_table(market.title, [
                 ("Ticker", market.ticker),
                 ("Event", market.event_ticker),
                 ("Subtitle", verbatim(market.subtitle)),
@@ -2953,8 +2964,11 @@ def errors(
                         format_local_timestamp(str(row["timestamp"])),
                         f"[{sev_color}]{sev}[/{sev_color}]",
                         row["category"],
-                        row.get("error_code", ""),
-                        row["message"][:50],
+                        rich_escape(row.get("error_code", "")),
+                        # #644: logged error text is the most bracket-
+                        # prone data in the system — a stray closing tag
+                        # would even crash the render. Truncate first.
+                        rich_escape(row["message"][:50]),
                         resolved,
                     )
                 console.print(table)
@@ -3290,14 +3304,20 @@ def discover(
 
         async with KalshiClient(config) as client:
             series_list = await list_series(client, category=category)
-            console.print(f"Found {len(series_list)} series in [bold]{category}[/bold]")
+            console.print(
+                f"Found {len(series_list)} series"
+                f" in [bold]{rich_escape(category)}[/bold]"  # #644
+            )
 
-            table = Table(title=f"{category} Series")
+            table = Table(title=f"{rich_escape(category)} Series")  # #644
             table.add_column("Ticker", style="cyan", overflow="fold")
             table.add_column("Title")
 
             for s in sorted(series_list, key=lambda x: x.get("ticker", "")):
-                table.add_row(s.get("ticker", ""), s.get("title", ""))
+                table.add_row(
+                    s.get("ticker", ""),
+                    rich_escape(s.get("title", "")),  # #644: API series title
+                )
 
             console.print(table)
 

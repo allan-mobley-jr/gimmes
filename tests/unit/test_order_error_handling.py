@@ -91,7 +91,7 @@ def _stub_config():
 def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
     insert_error_side_effect=None, extra_args=None, market=None,
-    snapshot_mock=None,
+    snapshot_mock=None, validation=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -132,7 +132,10 @@ def _run_order_cli(
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
         patch(
             "gimmes.risk.validator.validate_trade",
-            MagicMock(return_value=MagicMock(approved=True, failures=[])),
+            MagicMock(
+                return_value=validation if validation is not None
+                else MagicMock(approved=True, failures=[]),
+            ),
         ),
         patch("gimmes.store.queries.get_daily_pnl", AsyncMock(return_value=0.0)),
         patch("gimmes.store.queries.get_deployed_cost_basis", AsyncMock(return_value=0.0)),
@@ -854,3 +857,30 @@ class TestRulesSnapshotWiring:
         result, snap_spy = self._run_with_snapshot_spy(snap_return=False)
         assert result.exit_code == 0, result.output
         snap_spy.assert_awaited_once()
+
+
+class TestOrderValidationMarkupEscape:
+    def test_rejection_display_escapes_bracketed_failures(self) -> None:
+        """Order-command rejection summary and per-failure lines embed
+        settlement red-flag lists — the escapes at both sites must
+        survive (console is mocked, so we pin the pre-render markup
+        directly: the escaped form contains a backslash-bracket)
+        (#644)."""
+        from gimmes.risk.validator import ValidationResult
+
+        broker = _make_mock_broker()
+        vr = ValidationResult(
+            approved=False,
+            checks=[],
+            failures=[
+                "Settlement risk HIGH: found [sole discretion]",
+            ],
+        )
+        result, mock_console, _ = _run_order_cli(broker, validation=vr)
+        printed = " ".join(
+            str(c.args[0]) for c in mock_console.print.call_args_list
+            if c.args
+        )
+        # Escaped markup contains the literal backslash-bracket form on
+        # BOTH the summary line and the per-failure line.
+        assert printed.count("\\[sole") >= 2, printed
