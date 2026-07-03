@@ -109,6 +109,13 @@ _V17_COLUMNS: list[str] = [
     "ALTER TABLE positions ADD COLUMN rules_primary TEXT NOT NULL DEFAULT ''",
 ]
 
+# Version 18 (#657): structured skip reason on trades — lets the Pro
+# agent and the advisor query WHY a skip happened (validation_failed,
+# cooldown, ...) instead of grepping prose rationales.
+_V18_COLUMNS: list[str] = [
+    "ALTER TABLE trades ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+]
+
 
 
 async def get_schema_version(db: Database) -> int:
@@ -340,5 +347,14 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 17
+
+    # Version 18 (#657): structured skip reason column on trades.
+    if current < 18:
+        await _run_alter_columns(db, _V18_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (18,)
+        )
+        await db.conn.commit()
+        current = 18
 
     return current

@@ -272,7 +272,7 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Cooldown: prior score SCORE (below cutoff), skipping re-research
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+   gimmes log-trade TICKER --action skip --reason cooldown \
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```
@@ -308,7 +308,7 @@ RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
 cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
 Caddie failed to research after retry
 GIMMES_EOF
-gimmes log-trade TICKER --action skip --price 0 --prob 0 --score 0 \
+gimmes log-trade TICKER --action skip --reason research_failed \
   --rationale-file "$RATIONALE_FILE" --agent caddie-master
 rm -f "$RATIONALE_FILE"
 ```
@@ -413,7 +413,7 @@ For each PROCEED candidate:
      --body-file "$BODY_FILE"
    rm -f "$BODY_FILE"
    ```
-   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate.
+   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with `--reason review_reject` and rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate.
 
 6. **Log rejected candidates as skips** so the decision is auditable (use the `--rationale-file` heredoc pattern, #589):
    ```bash
@@ -421,7 +421,7 @@ For each PROCEED candidate:
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Caddie Master review: REJECT — [brief reason]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --price 0 --prob P --score S \
+   gimmes log-trade TICKER --action skip --reason review_reject \
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```

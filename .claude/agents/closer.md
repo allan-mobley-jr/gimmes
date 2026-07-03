@@ -27,7 +27,7 @@ For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    [which check failed and why]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --prob P --score S --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason validation_failed --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
    If the command fails, note the failure in your output and continue. Do not retry.
@@ -51,7 +51,7 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    SIZE UP rejected: [which check failed]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --prob P --score 0 --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason validation_failed --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 
@@ -67,7 +67,7 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Close skipped: no open position found
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason no_position --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 2. **Cancel resting orders**: If any resting orders exist for TICKER, cancel them first with `gimmes cancel ORDER_ID --yes`.
@@ -79,7 +79,7 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Close order failed: [error from CLI output]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason close_failed --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
    If the command fails, note the failure in your output and continue. Do not retry.
@@ -106,7 +106,7 @@ If the order command fails (non-zero exit code or error output), MUST:
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Order failed: [error from CLI output]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --prob P --score S --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason order_failed --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 2. If the log-trade command itself fails, note the failure in your output and continue. Do not retry failed log commands.

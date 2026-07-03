@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -397,26 +398,115 @@ class TestMissedOpportunities:
         trades = _make_trades(n_wins=20, n_losses=10)
         assert analyze_missed_opportunities(trades, config) is None
 
-    def test_detects_false_negatives(self, config: GimmesConfig) -> None:
+    @staticmethod
+    def _real_skips(n_wins: int = 15, n_losses: int = 10) -> list[dict]:
+        """Production-shaped skips: price and prob recorded (#657)."""
         trades: list[dict] = []
         # Skips that would have won (score just below threshold of 75)
-        for i in range(15):
+        for i in range(n_wins):
             trades.append({
                 "ticker": f"SKIP-WIN-{i}", "action": "skip",
-                "gimme_score": 72, "edge": 0.15,
+                "gimme_score": 72, "edge": 0.15, "price": 0.65,
+                "model_probability": 0.85,
                 "timestamp": f"2026-01-{(i % 28) + 1:02d}T10:00:00",
             })
         # Skips that correctly lost
-        for i in range(10):
+        for i in range(n_losses):
             trades.append({
                 "ticker": f"SKIP-LOSS-{i}", "action": "skip",
-                "gimme_score": 60, "edge": -0.05,
+                "gimme_score": 60, "edge": -0.05, "price": 0.60,
+                "model_probability": 0.55,
                 "timestamp": f"2026-02-{(i % 28) + 1:02d}T10:00:00",
             })
-        rec = analyze_missed_opportunities(trades, config)
-        if rec is not None:
-            assert rec.analysis_type == AnalysisType.MISSED_OPPORTUNITY
-            assert int(rec.recommended_value) < 75
+        return trades
+
+    @staticmethod
+    def _degenerate_skips(n: int) -> list[dict]:
+        """The #657 rows: no probability, no price recorded."""
+        return [{
+            "ticker": f"DEGEN-{i}", "action": "skip",
+            "gimme_score": 0, "edge": 0.0, "price": 0.0,
+            "model_probability": 0.0,
+            "timestamp": f"2026-03-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(n)]
+
+    def test_detects_false_negatives(self, config: GimmesConfig) -> None:
+        # Hard assert — this data fires the analysis (25 skips, 60%
+        # false-negative rate, near-misses averaging 72).
+        rec = analyze_missed_opportunities(self._real_skips(), config)
+        assert rec is not None
+        assert rec.analysis_type == AnalysisType.MISSED_OPPORTUNITY
+        assert int(rec.recommended_value) < 75
+
+    def test_degenerate_skips_excluded_from_denominator(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#657: zero-prob/zero-price rows must not dilute the
+        false-negative rate or the sample gate — the analysis output
+        is identical with or without 40 degenerate rows mixed in,
+        and the exclusion is visible in supporting_data."""
+        clean = analyze_missed_opportunities(self._real_skips(), config)
+        polluted = analyze_missed_opportunities(
+            self._real_skips() + self._degenerate_skips(40), config,
+        )
+        assert clean is not None
+        assert polluted is not None
+        assert polluted.recommended_value == clean.recommended_value
+        clean_data = json.loads(clean.supporting_data)
+        polluted_data = json.loads(polluted.supporting_data)
+        # The 40 junk rows dilute the old code to fnr 15/65 = 0.231;
+        # excluded, the rate stays 0.6.
+        assert polluted_data["false_negative_rate"] == pytest.approx(0.6)
+        assert polluted_data["total_skips"] == clean_data["total_skips"]
+        # The exclusion is auditable, not silent (#668 lesson).
+        assert clean_data["excluded_degenerate"] == 0
+        assert polluted_data["excluded_degenerate"] == 40
+
+    def test_half_degenerate_rows_are_retained(
+        self, config: GimmesConfig,
+    ) -> None:
+        """A skip with EITHER a probability OR a price recorded still
+        carries signal — only rows missing both are excluded."""
+        prob_only = [{
+            "ticker": f"PROB-{i}", "action": "skip", "gimme_score": 72,
+            "edge": 0.15, "price": 0.0, "model_probability": 0.85,
+            "timestamp": f"2026-04-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(3)]
+        price_only = [{
+            "ticker": f"PRICE-{i}", "action": "skip", "gimme_score": 60,
+            "edge": -0.05, "price": 0.60, "model_probability": 0.0,
+            "timestamp": f"2026-05-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(3)]
+        rec = analyze_missed_opportunities(
+            self._real_skips() + prob_only + price_only, config,
+        )
+        assert rec is not None
+        data = json.loads(rec.supporting_data)
+        assert data["total_skips"] == 31  # 25 real + 3 + 3
+        assert data["excluded_degenerate"] == 0
+
+    def test_degenerate_rows_do_not_satisfy_the_gate(
+        self, config: GimmesConfig,
+    ) -> None:
+        """19 real skips + 40 degenerate: the old code passed the
+        MIN_SKIPS_AUDIT gate on the raw count (59 >= 20); after
+        exclusion the real sample (19) is honestly insufficient."""
+        rec = analyze_missed_opportunities(
+            self._real_skips(n_wins=12, n_losses=7)
+            + self._degenerate_skips(40),
+            config,
+        )
+        assert rec is None
+
+    def test_degenerate_skips_alone_are_insufficient(
+        self, config: GimmesConfig,
+    ) -> None:
+        """40 degenerate rows carry no signal — below the audit gate
+        after exclusion."""
+        rec = analyze_missed_opportunities(
+            self._degenerate_skips(40), config,
+        )
+        assert rec is None
 
 
 class TestRunAllAnalyses:
