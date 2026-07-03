@@ -1824,3 +1824,74 @@ def test_no_agent_uses_inline_memo_body_rationale_for_prose() -> None:
         " heredoc instead. Offending sites:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# #657: skip templates must not write degenerate analytics
+# ---------------------------------------------------------------------------
+
+_CLOSER = AGENTS_DIR / "closer.md"
+_SCOUT = AGENTS_DIR / "scout.md"
+
+
+def test_no_zeroed_skip_analytics_in_templates(
+    caddie_master_text: str,
+) -> None:
+    """The degenerate batches (#657) came from templates passing
+    explicit zeros. Skips now omit analytics flags — the CLI backfills
+    from the candidates table."""
+    import re
+
+    zero_flag = re.compile(r"--(?:prob|price|score) 0(?:\s|\\|$)")
+    closer_text = _CLOSER.read_text()
+    for text, name in (
+        (caddie_master_text, "caddie-master.md"),
+        (closer_text, "closer.md"),
+    ):
+        hits = [
+            line.strip() for line in text.splitlines()
+            if zero_flag.search(line)
+        ]
+        assert not hits, (
+            f"{name} passes explicit zero analytics to log-trade —"
+            f" that produced edge = price - 100% skip batches (#657):"
+            f" {hits}"
+        )
+
+
+def test_skip_templates_carry_structured_reason(
+    caddie_master_text: str,
+) -> None:
+    """Every skip template names a --reason so proceed→no-trade
+    conversions are queryable (#657)."""
+    closer_text = _CLOSER.read_text()
+    for fragment, text, name in (
+        ("--action skip --reason cooldown", caddie_master_text,
+         "caddie-master.md"),
+        ("--action skip --reason research_failed", caddie_master_text,
+         "caddie-master.md"),
+        ("--action skip --reason review_reject", caddie_master_text,
+         "caddie-master.md"),
+        ("--action skip --reason validation_failed", closer_text,
+         "closer.md"),
+        ("--action skip --reason order_failed", closer_text,
+         "closer.md"),
+        ("--action skip --reason close_failed", closer_text,
+         "closer.md"),
+        ("--action skip --reason no_position", closer_text,
+         "closer.md"),
+    ):
+        assert fragment in text, f"{name} lost the template: {fragment}"
+
+
+def test_scout_and_caddie_skip_templates_keep_real_analytics(
+    caddie_text: str,
+) -> None:
+    """Scout/Caddie skips happen at scan/research time when the agent
+    HAS the real values — their templates must keep passing them
+    (the CLI backfill is the fallback, not the primary path)."""
+    scout_text = _SCOUT.read_text()
+    for text, name in ((scout_text, "scout.md"), (caddie_text, "caddie.md")):
+        assert "--price 0.XX --prob 0.XX --score NN" in text, (
+            f"{name} skip template no longer passes real analytics"
+        )

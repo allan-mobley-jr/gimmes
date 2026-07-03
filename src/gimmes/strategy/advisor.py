@@ -479,7 +479,25 @@ def analyze_missed_opportunities(
 
     Requires skip logging to be in place (see issue #20).
     """
-    skips = [t for t in trades if t.get("action") == "skip"]
+    # #657: exclude degenerate skip rows (no probability AND no price
+    # recorded) — they carry no signal but inflate the denominator of
+    # false_negative_rate and the MIN_SKIPS_AUDIT gate, suppressing
+    # legitimate recommendations. Close-workflow skips (no_position,
+    # close_failed — cli._NON_ENTRY_REASONS) are excluded outright:
+    # a failed close is never a missed ENTRY, whatever analytics the
+    # row carries. Both exclusion counts are surfaced in
+    # supporting_data so an audit reconciles against the raw table.
+    all_skips = [t for t in trades if t.get("action") == "skip"]
+    entry_skips = [
+        t for t in all_skips
+        if t.get("reason", "") not in ("no_position", "close_failed")
+    ]
+    skips = [
+        t for t in entry_skips
+        if t.get("model_probability", 0) > 0 or t.get("price", 0) > 0
+    ]
+    excluded_non_entry = len(all_skips) - len(entry_skips)
+    excluded_degenerate = len(entry_skips) - len(skips)
     if len(skips) < MIN_SKIPS_AUDIT:
         return None
 
@@ -524,6 +542,8 @@ def analyze_missed_opportunities(
             "false_negative_rate": round(false_negative_rate, 3),
             "missed_wins": len(missed_wins),
             "total_skips": len(skips),
+            "excluded_degenerate": excluded_degenerate,
+            "excluded_non_entry": excluded_non_entry,
             "near_misses": len(near_misses),
             "avg_missed_score": round(avg_missed_score, 1),
         }),

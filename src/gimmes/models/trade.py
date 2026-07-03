@@ -29,6 +29,9 @@ class TradeDecision(BaseModel):
     kelly_fraction: float = 0.0
     rationale: str = ""
     thesis: str = ""
+    # Structured skip cause (#657) — machine-queryable, unlike the
+    # prose rationale. Empty for non-skip rows and legacy data.
+    reason: str = ""
     agent: str = ""  # Which agent made the decision
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC)

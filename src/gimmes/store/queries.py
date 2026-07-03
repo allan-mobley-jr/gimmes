@@ -44,8 +44,9 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
     cursor = await db.conn.execute(
         """INSERT INTO trades
            (ticker, action, side, count, price, model_probability,
-            gimme_score, edge, kelly_fraction, rationale, thesis, agent, order_id, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gimme_score, edge, kelly_fraction, rationale, thesis, reason,
+            agent, order_id, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             trade.ticker,
             trade.action.value,
@@ -58,6 +59,7 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
             trade.kelly_fraction,
             trade.rationale,
             trade.thesis,
+            trade.reason,
             trade.agent,
             trade.order_id,
             trade.timestamp.isoformat(),

@@ -2037,6 +2037,21 @@ def market_info(
     _run(_info())
 
 
+# #657: the closed vocabulary for `log-trade --reason`. A SQL-queryable
+# column beats prose rationales for the Pro agent's proceed-conversion
+# and skip audits.
+_SKIP_REASONS = frozenset({
+    "cooldown", "research_failed", "review_reject", "validation_failed",
+    "order_failed", "close_failed", "no_position", "price_moved",
+    "liquidity",
+})
+
+# Close-workflow skips carry no entry decision — backfilling scan-time
+# candidate analytics onto them would fabricate a "missed entry" the
+# advisor then audits (#657 review). They keep honest zeros instead.
+_NON_ENTRY_REASONS = frozenset({"no_position", "close_failed"})
+
+
 @app.command(name="log-trade", hidden=True)
 def log_trade(
     ticker: str = typer.Argument(..., help="Market ticker"),
@@ -2056,18 +2071,40 @@ def log_trade(
             " (#589)."
         ),
     ),
+    reason: str = typer.Option(
+        "", "--reason",
+        help="Structured skip cause (#657): " + "|".join(sorted(_SKIP_REASONS)),
+    ),
     agent: str = typer.Option("manual", "--agent"),
 ) -> None:
     """Log a trade decision to the database."""
     config = load_config()
+    if reason and reason not in _SKIP_REASONS:
+        raise typer.BadParameter(
+            f"unknown --reason {reason!r}; expected one of:"
+            f" {', '.join(sorted(_SKIP_REASONS))}",
+            param_hint="--reason",
+        )
+    if reason and action != "skip":
+        raise typer.BadParameter(
+            f"--reason is a skip cause; not valid with --action {action}",
+            param_hint="--reason",
+        )
     rationale_val = _resolve_prose_arg(
         rationale, rationale_file, "--rationale", "--rationale-file",
     )
 
     async def _log() -> None:
+        import logging
+        import sqlite3
+
         from gimmes.models.trade import TradeDecision
         from gimmes.store.database import Database
-        from gimmes.store.queries import get_entry_analytics, insert_trade
+        from gimmes.store.queries import (
+            get_candidate_for_ticker,
+            get_entry_analytics,
+            insert_trade,
+        )
         from gimmes.strategy.scanner import effective_price
 
         resolved_side = side if side else config.strategy.side
@@ -2082,6 +2119,7 @@ def log_trade(
             gimme_score=score_val,
             edge=(prob - eff) if prob is not None else 0.0,
             rationale=rationale_val,
+            reason=reason,
             agent=agent,
         )
 
@@ -2096,6 +2134,57 @@ def log_trade(
                     trade.kelly_fraction = entry["kelly_fraction"]
                     if not score_val:
                         trade.gimme_score = entry["gimme_score"]
+            # #657: a skip with missing/zeroed analytics inherits the
+            # latest candidate row's scan-time values — degenerate
+            # skips (prob 0 -> edge = price - 100%) were polluting the
+            # missed-opportunity audit. prob <= 0 counts as "unknown"
+            # HERE ONLY: a probability of 0 is never a meaningful
+            # model estimate for a skip. Do NOT extend that rule to
+            # open/size_up — prob=0 bypassing validation gates was
+            # bug #180. Explicit nonzero args win, field by field.
+            elif trade.action is TradeDecision.Action.SKIP and (
+                (prob_missing := prob is None or prob <= 0)
+                or price_val <= 0 or score_val <= 0
+            ) and reason not in _NON_ENTRY_REASONS:
+                # Best-effort: a failed read degrades to zeros — a
+                # degenerate skip row beats a missing one (log-trade
+                # is the agents' logger of last resort).
+                try:
+                    rows = await get_candidate_for_ticker(db, ticker)
+                except sqlite3.Error:
+                    logging.getLogger(__name__).error(
+                        "candidate lookup failed for %s skip;"
+                        " analytics default to 0 (#657)",
+                        ticker, exc_info=True,
+                    )
+                    rows = []
+                if rows:
+                    cand = rows[0]
+                    if prob_missing:
+                        trade.model_probability = (
+                            cand["model_probability"] or 0.0
+                        )
+                    if price_val <= 0:
+                        trade.price = cand["market_price"] or 0.0
+                    if score_val <= 0:
+                        trade.gimme_score = cand["gimme_score"] or 0.0
+                else:
+                    logging.getLogger(__name__).debug(
+                        "skip for %s found no candidate row —"
+                        " analytics default to 0 (#657)", ticker,
+                    )
+                # Normalize edge UNCONDITIONALLY: the constructor
+                # value was computed from the pre-backfill args, and
+                # with prob 0 it is the degenerate -effective_price
+                # (the price - 100% signature this fix exists to
+                # kill). Unknown probability -> unknown edge, not a
+                # fabricated one.
+                trade.edge = (
+                    trade.model_probability
+                    - effective_price(trade.price, resolved_side)
+                    if trade.model_probability > 0 and trade.price > 0
+                    else 0.0
+                )
             row_id = await insert_trade(db, trade)
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
 
