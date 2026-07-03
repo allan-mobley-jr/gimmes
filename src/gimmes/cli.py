@@ -1176,6 +1176,36 @@ def order(
                     from gimmes.store.queries import sync_positions
 
                     await sync_positions(db, positions_for_sync)
+                if is_buy:
+                    # #643: snapshot the settlement language on the freshly
+                    # synced position row so the offline position-note
+                    # validator can ground YES/NO semantics later. Best
+                    # effort: a resting order has no row yet (returns
+                    # False) — reconcile-time backfill is tracked in #647.
+                    # Own try/except: a snapshot failure must not surface
+                    # as "position sync failed" (the sync succeeded).
+                    try:
+                        from gimmes.store.queries import (
+                            set_position_rules_snapshot,
+                        )
+
+                        snapped = await set_position_rules_snapshot(
+                            db, ticker=ticker,
+                            rules_primary=market.rules_primary,
+                        )
+                        if not snapped:
+                            logger.warning(
+                                "rules snapshot not persisted for %s"
+                                " (empty rules or no position row —"
+                                " resting order?) (#643)", ticker,
+                            )
+                    except sqlite3.Error as snap_exc:
+                        logger.warning(
+                            "rules snapshot write failed for %s: %s"
+                            " — semantics guard dormant for this"
+                            " position until #647 backfill (#643)",
+                            ticker, snap_exc, exc_info=True,
+                        )
             except sqlite3.Error as exc:
                 logger.warning(
                     "Position sync failed (database): %s", exc, exc_info=True,
@@ -2279,14 +2309,22 @@ def position_note(
 
     async def _note() -> None:
         from gimmes.store.database import Database
-        from gimmes.store.observation_validator import validate
+        from gimmes.store.observation_validator import validate_observation
         from gimmes.store.queries import (
             get_position_notes,
+            get_position_rules_snapshot,
             insert_position_note,
         )
         from gimmes.store.ticker_resolver import resolve_ticker
 
         async with Database(config.db_path) as db:
+            # #643: notes are stored under `resolved_ticker` — the
+            # canonical form when the validation branch below runs,
+            # the raw ticker as-passed otherwise. Inserting a
+            # validated observation under the raw form would make the
+            # next cycle's prior-observation lookup (which resolves)
+            # miss this note and silently skip the freshness audit.
+            resolved_ticker = ticker
             if note_type == "observation" and not force:
                 # Read-back validator (#614): reject observation writes
                 # that contradict cited evidence in the most-recent CM
@@ -2303,7 +2341,6 @@ def position_note(
                 # writing the note under an un-resolved prefix would
                 # create an unreachable journal entry — the same class
                 # of bug the validator exists to prevent.
-                resolved_ticker = ticker
                 matches = await resolve_ticker(
                     db, ticker, source="known_markets",
                 )
@@ -2323,22 +2360,51 @@ def position_note(
                 decision_body = (
                     prior[0].get("body") if prior else None
                 )
-                ok, err = validate(
+                # #643 context: prior observation footer (for the
+                # freshness/supersession audit) and the settlement-
+                # language snapshot captured at position-open (for the
+                # semantics guard). Both are DB-local — the write path
+                # stays offline.
+                prior_obs = await get_position_notes(
+                    db, resolved_ticker, note_type="observation", limit=1,
+                )
+                prior_observation_body = (
+                    prior_obs[0].get("body") if prior_obs else None
+                )
+                rules_primary = await get_position_rules_snapshot(
+                    db, resolved_ticker,
+                )
+                ok, errors, warnings = validate_observation(
                     ticker=resolved_ticker,
                     observation_body=body_val,
                     decision_body=decision_body,
+                    prior_observation_body=prior_observation_body,
+                    rules_primary=rules_primary,
                 )
+                # markup=False: validator messages embed settlement-
+                # language snippets whose bracketed clauses Rich would
+                # eat as style tags — the #641 bug class, inside the
+                # very messages meant to fix it (#649 review).
+                for warning in warnings:
+                    console.print(
+                        warning, style="yellow",
+                        markup=False, highlight=False,
+                    )
                 if not ok:
-                    console.print(f"[red]{err}[/red]")
+                    for err in errors:
+                        console.print(
+                            err, style="red",
+                            markup=False, highlight=False,
+                        )
                     raise typer.Exit(1)
             if force and note_type == "observation":
                 console.print(
-                    "[yellow]--force bypassed the observation read-back"
-                    " validator (#614). This is an audit-visible"
-                    " bypass.[/yellow]"
+                    "[yellow]--force bypassed the observation validators"
+                    " (#614 read-back, #643 semantics + footer audit)."
+                    " This is an audit-visible bypass.[/yellow]"
                 )
             row_id = await insert_position_note(
-                db, ticker=ticker, cycle=cycle, agent=agent,
+                db, ticker=resolved_ticker, cycle=cycle, agent=agent,
                 note_type=note_type, body=body_val,
             )
         console.print(

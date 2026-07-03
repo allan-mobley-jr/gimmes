@@ -90,9 +90,15 @@ def _stub_config():
 
 def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
-    insert_error_side_effect=None, extra_args=None,
+    insert_error_side_effect=None, extra_args=None, market=None,
+    snapshot_mock=None,
 ):
-    """Invoke the order CLI command with a mocked broker."""
+    """Invoke the order CLI command with a mocked broker.
+
+    `market` overrides the stub market; `snapshot_mock` overrides the
+    #643 rules-snapshot patch (defaults to AsyncMock(return_value=True)
+    so the real helper never runs against the mocked DB).
+    """
     mock_console = MagicMock()
     mock_fees = MagicMock()
     mock_fees.taker_fee = 0.07
@@ -111,7 +117,17 @@ def _run_order_cli(
         patch("gimmes.cli.console", mock_console),
         patch("gimmes.cli._mode_banner"),
         patch("gimmes.cli._mark_positions_to_market", _passthrough_mtm),
-        patch("gimmes.kalshi.markets.get_market", AsyncMock(return_value=_stub_market())),
+        patch(
+            "gimmes.kalshi.markets.get_market",
+            AsyncMock(return_value=market if market is not None else _stub_market()),
+        ),
+        # #643: the snapshot helper would otherwise run for real against
+        # the mocked DB (MagicMock rowcount comparisons).
+        patch(
+            "gimmes.store.queries.set_position_rules_snapshot",
+            snapshot_mock if snapshot_mock is not None
+            else AsyncMock(return_value=True),
+        ),
         patch("gimmes.kalshi.markets.get_orderbook", AsyncMock(return_value=MagicMock())),
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
         patch(
@@ -783,3 +799,58 @@ class TestThesisFetchErrorLogging:
 
         assert result.exit_code == 0
         _assert_thesis_fetch_error(mock_insert)
+
+
+# ---------------------------------------------------------------------------
+# #643: settlement-language snapshot wiring on BUY orders
+# ---------------------------------------------------------------------------
+
+
+class TestRulesSnapshotWiring:
+    """The order command must snapshot market.rules_primary onto the
+    positions row after a successful BUY sync — if this wiring breaks,
+    the #643 semantics guard goes permanently dormant for every new
+    position (silent degradation)."""
+
+    RULES = (
+        "If the Consumer Price Index increases by more than 0.5% in"
+        " April 2026, the market resolves to Yes."
+    )
+
+    def _run_with_snapshot_spy(self, *, extra_args=None, snap_return=True):
+        broker = _make_mock_broker()
+        snap_spy = AsyncMock(return_value=snap_return)
+        market = _stub_market()
+        market.rules_primary = self.RULES
+
+        with patch(
+            "gimmes.store.queries.get_thesis_for_ticker",
+            AsyncMock(return_value="test thesis"),
+        ):
+            result, _, _ = _run_order_cli(
+                broker, extra_args=extra_args, market=market,
+                snapshot_mock=snap_spy, sync_side_effect=AsyncMock(),
+            )
+        return result, snap_spy
+
+    def test_buy_snapshots_rules_primary(self) -> None:
+        result, snap_spy = self._run_with_snapshot_spy()
+        assert result.exit_code == 0, result.output
+        snap_spy.assert_awaited_once()
+        kwargs = snap_spy.await_args.kwargs
+        assert kwargs["ticker"] == "TEST-TICKER"
+        assert kwargs["rules_primary"] == self.RULES
+
+    def test_sell_does_not_snapshot(self) -> None:
+        result, snap_spy = self._run_with_snapshot_spy(
+            extra_args=["--action", "sell"],
+        )
+        snap_spy.assert_not_awaited()
+
+    def test_snapshot_false_does_not_fail_order(self) -> None:
+        """A resting order (no position row yet) returns False from the
+        snapshot helper — the order must still succeed; backfill is
+        #647."""
+        result, snap_spy = self._run_with_snapshot_spy(snap_return=False)
+        assert result.exit_code == 0, result.output
+        snap_spy.assert_awaited_once()
