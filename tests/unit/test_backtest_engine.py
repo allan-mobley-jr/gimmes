@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from gimmes.backtest.engine import (
+    DEFAULT_FEE_MULTIPLIERS,
+    ENTRY_OFFSET_DAYS,
     BacktestLedger,
+    candle_midpoint,
+    entry_candle_at,
     monthly_chunks,
-    pick_entry_candle,
+    run_backtest,
     synthesize_orderbook,
     weekly_chunks,
 )
 from gimmes.kalshi.historical import Candle
+from gimmes.strategy.kelly import position_size
 
 
 def _make_candle(
@@ -145,35 +150,6 @@ class TestSynthesizeOrderbook:
         # NO bid = 1 - 0.72 = 0.28, so best YES ask = 1 - 0.28 = 0.72
         assert ob.best_yes_ask == 0.72
 
-
-class TestPickEntryCandle:
-    def test_picks_last_in_range(self) -> None:
-        candles = [
-            _make_candle(ts=1, price_close=0.50),
-            _make_candle(ts=2, price_close=0.65),
-            _make_candle(ts=3, price_close=0.70),
-            _make_candle(ts=4, price_close=0.90),  # Out of range
-        ]
-        result = pick_entry_candle(candles, 0.55, 0.85)
-        assert result is not None
-        assert result.end_period_ts == 3
-
-    def test_none_when_no_candle_in_range(self) -> None:
-        candles = [
-            _make_candle(ts=1, price_close=0.10),
-            _make_candle(ts=2, price_close=0.95),
-        ]
-        result = pick_entry_candle(candles, 0.55, 0.85)
-        assert result is None
-
-    def test_empty_candles(self) -> None:
-        assert pick_entry_candle([], 0.55, 0.85) is None
-
-    def test_single_candle_in_range(self) -> None:
-        candles = [_make_candle(ts=1, price_close=0.70)]
-        result = pick_entry_candle(candles, 0.55, 0.85)
-        assert result is not None
-        assert result.price_close == 0.70
 
 
 class TestConcurrentPositions:
@@ -411,6 +387,30 @@ class TestConcentrationLimits:
 _FIXED_CLOSE_TIME = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
 
 
+def _stub_settlement_candles(monkeypatch, markets) -> None:
+    """Patch the candle fetcher to return one entry-day candle per
+    ticker whose quotes MIRROR the market's settlement quotes — the
+    #655 entry-day pricing then equals the pre-#655 settlement pricing,
+    preserving each legacy test's intent unchanged."""
+    by_ticker = {m.ticker: m for m in markets}
+
+    async def _fake_candles(client, ticker, *, start_ts, end_ts, **kwargs):
+        m = by_ticker[ticker]
+        entry_ts = int(
+            (m.close_time - timedelta(days=ENTRY_OFFSET_DAYS)).timestamp(),
+        )
+        return [_make_candle(
+            ts=entry_ts,
+            yes_bid_close=m.yes_bid,
+            yes_ask_close=m.yes_ask,
+            price_close=(m.yes_bid + m.yes_ask) / 2,
+        )]
+
+    monkeypatch.setattr(
+        "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+    )
+
+
 def _settled_market(
     ticker: str, *, yes_bid: float, yes_ask: float, result: str = "no",
     close_time: datetime = _FIXED_CLOSE_TIME,
@@ -479,7 +479,6 @@ class TestStrategyFilters:
     async def test_min_true_probability_filter_reduces_trades(
         self, monkeypatch, yes_bid: float, yes_ask: float,
     ) -> None:
-        from gimmes.backtest.engine import run_backtest
         markets = [
             _settled_market(
                 f"KXCPI-26MAR-T0.{i}", yes_bid=yes_bid, yes_ask=yes_ask,
@@ -493,6 +492,7 @@ class TestStrategyFilters:
         monkeypatch.setattr(
             "gimmes.backtest.engine.list_all_markets", _fake_list,
         )
+        _stub_settlement_candles(monkeypatch, markets)
 
         permissive = await run_backtest(
             client=None,  # fetcher is stubbed
@@ -519,7 +519,6 @@ class TestStrategyFilters:
     async def test_min_edge_after_fees_filter_reduces_trades(
         self, monkeypatch, yes_bid: float, yes_ask: float,
     ) -> None:
-        from gimmes.backtest.engine import run_backtest
         markets = [
             _settled_market(
                 f"KXCPI-26MAR-T0.{i}", yes_bid=yes_bid, yes_ask=yes_ask,
@@ -533,6 +532,7 @@ class TestStrategyFilters:
         monkeypatch.setattr(
             "gimmes.backtest.engine.list_all_markets", _fake_list,
         )
+        _stub_settlement_candles(monkeypatch, markets)
 
         permissive = await run_backtest(
             client=None,
@@ -558,7 +558,6 @@ class TestStrategyFilters:
         # Regression-safety (#592 AC3): at live values
         # (min_true_probability=0.5, min_edge_after_fees=0.01), the
         # filter rejects nothing in the live-trade universe.
-        from gimmes.backtest.engine import run_backtest
         markets = [
             _settled_market(
                 f"KXCPI-26MAR-T0.{i}", yes_bid=0.50, yes_ask=0.55,
@@ -572,6 +571,7 @@ class TestStrategyFilters:
         monkeypatch.setattr(
             "gimmes.backtest.engine.list_all_markets", _fake_list,
         )
+        _stub_settlement_candles(monkeypatch, markets)
 
         live_defaults = await run_backtest(
             client=None,
@@ -588,3 +588,188 @@ class TestStrategyFilters:
             ),
         )
         assert len(live_defaults.trades) == len(permissive.trades)
+
+
+class TestEntryDayPricing:
+    """#655 regression suite: entries are priced, gated, and sized on
+    the ENTRY-DAY candle — settlement data reaches only the payout."""
+
+    def _markets(self):
+        # Settlement quotes 0.25/0.35 → NO eff at settlement = 0.70
+        # (inside the scanner band — selection still reads settlement
+        # data by design; only entry pricing/gating moved to the
+        # entry-day candle in #655).
+        return [_settled_market("KXCPI-26MAR-T0.5",
+                                yes_bid=0.25, yes_ask=0.35)]
+
+    def _entry_ts(self, m) -> int:
+        return int(
+            (m.close_time - timedelta(days=ENTRY_OFFSET_DAYS)).timestamp(),
+        )
+
+    def _stub(self, monkeypatch, markets, candles_by_ticker):
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        calls: list[dict] = []
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            calls.append({"ticker": ticker, "start_ts": start_ts,
+                          "end_ts": end_ts})
+            result = candles_by_ticker.get(ticker, [])
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+        return calls
+
+    def _permissive_config(self):
+        """Prob/edge gates neutralized so each test isolates the
+        entry-day pricing path."""
+        return _backtest_config_with_overrides(
+            min_true_probability=0.0, min_edge_after_fees=-1.0,
+        )
+
+    async def _run(self, config=None):
+        return await run_backtest(
+            client=None, config=config or self._permissive_config(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_entry_priced_from_candle_not_settlement(
+        self, monkeypatch,
+    ) -> None:
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        # Entry-day candle 0.30/0.40 → NO eff at entry = 0.65.
+        candles = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        calls = self._stub(monkeypatch, markets, candles)
+
+        result = await self._run()
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        assert t.entry_price == pytest.approx(0.65)
+        # Settlement-time NO eff was 0.70 — must NOT be the fill.
+        assert t.entry_price != pytest.approx(0.70)
+        # The fetch window must end AT entry time — future candles are
+        # structurally unreachable.
+        assert calls and all(c["end_ts"] == entry_ts for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_sizing_uses_entry_day_price(self, monkeypatch) -> None:
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m), yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+
+        config = self._permissive_config()
+        result = await self._run(config)
+        assert len(result.trades) == 1
+        side_cfg = config.gimmes_config.effective_config_for_side("no")
+        expected = position_size(
+            config.starting_balance, 0.65,
+            min(0.65 + config.assumed_edge, 0.99),
+            fraction=side_cfg.sizing.kelly_fraction,
+            max_position_pct=side_cfg.sizing.max_position_pct,
+            fees=DEFAULT_FEE_MULTIPLIERS,
+            mode=side_cfg.sizing.mode,
+        )
+        assert result.trades[0].count == expected
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_on_entry_day_dropped(
+        self, monkeypatch,
+    ) -> None:
+        markets = self._markets()
+        m = markets[0]
+        # Entry-day NO eff = 0.05 — far below min_market_price.
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m), yes_bid_close=0.90, yes_ask_close=1.00,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.skipped_entry_gates == 1
+
+    @pytest.mark.asyncio
+    async def test_no_candle_dropped(self, monkeypatch) -> None:
+        markets = self._markets()
+        self._stub(monkeypatch, markets, {markets[0].ticker: []})
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.skipped_no_candle == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_error_dropped_not_crashed(
+        self, monkeypatch,
+    ) -> None:
+        markets = self._markets()
+        self._stub(
+            monkeypatch, markets,
+            {markets[0].ticker: RuntimeError("api down")},
+        )
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.skipped_no_candle == 1
+
+    @pytest.mark.asyncio
+    async def test_degenerate_quote_dropped(self, monkeypatch) -> None:
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m), yes_bid_close=0.30, yes_ask_close=0.0,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.skipped_no_candle == 1
+
+    @pytest.mark.asyncio
+    async def test_future_candle_not_used(self, monkeypatch) -> None:
+        """A candle ending after entry_ts must be invisible even if the
+        (stubbed) fetcher leaks it."""
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m) + 3600,
+            yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.skipped_no_candle == 1
+
+
+class TestEntryCandleHelpers:
+    def test_candle_midpoint(self) -> None:
+        assert candle_midpoint(
+            _make_candle(yes_bid_close=0.30, yes_ask_close=0.40),
+        ) == pytest.approx(0.35)
+        assert candle_midpoint(
+            _make_candle(yes_bid_close=0.0, yes_ask_close=0.40),
+        ) == 0.0
+
+    def test_entry_candle_at_boundary_and_order(self) -> None:
+        c1 = _make_candle(ts=100)
+        c2 = _make_candle(ts=200)
+        c3 = _make_candle(ts=300)
+        assert entry_candle_at([c1, c2, c3], 200) is c2  # boundary ==
+        assert entry_candle_at([c1, c2, c3], 250) is c2
+        assert entry_candle_at([c1, c2, c3], 50) is None
+        assert entry_candle_at([], 100) is None
