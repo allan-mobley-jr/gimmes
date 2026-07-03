@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from gimmes.config import GimmesConfig
 from gimmes.kalshi.client import KalshiClient
-from gimmes.kalshi.historical import Candle
+from gimmes.kalshi.historical import Candle, get_candlesticks
 from gimmes.kalshi.markets import list_all_markets
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 from gimmes.risk.limits import (
@@ -26,6 +26,10 @@ from gimmes.strategy.fees import (
 from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
+
+ENTRY_OFFSET_DAYS = 1
+CANDLE_LOOKBACK_DAYS = 3
+
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,8 @@ class BacktestResult:
     markets_traded: int
     skipped_concentration: int = 0
     skipped_balance: int = 0
+    skipped_no_candle: int = 0
+    skipped_entry_gates: int = 0
     truncated_chunks: list[str] = field(default_factory=list)
 
 
@@ -230,20 +236,69 @@ def synthesize_orderbook(ticker: str, candle: Candle, depth: int = 100) -> Order
 # ---------------------------------------------------------------------------
 
 
-def pick_entry_candle(
-    candles: list[Candle],
-    min_price: float,
-    max_price: float,
-) -> Candle | None:
-    """Pick the last daily candle where the price falls in the target range.
+def candle_midpoint(candle: Candle) -> float:
+    """Bid/ask midpoint of a candle — the backtest analog of
+    Market.midpoint. Returns 0.0 unless both quote sides are positive
+    (a market with no two-sided quote could not have been maker-filled;
+    the candle's trade-price OHLC can be stale on thin days, so it is
+    deliberately NOT used as a fallback) (#655)."""
+    if candle.yes_bid_close > 0 and candle.yes_ask_close > 0:
+        return (candle.yes_bid_close + candle.yes_ask_close) / 2
+    return 0.0
 
-    This simulates "we would have entered the market on this day."
+
+def entry_candle_at(candles: list[Candle], entry_ts: int) -> Candle | None:
+    """Last candle ending at or before entry_ts — a fixed-offset rule,
+    NOT a search for an in-range day. Its predecessor pick_entry_candle
+    scanned history for the last in-range close, which conditions the
+    entry day on knowing the price path — a look-ahead of its own
+    (#655). Candles are sorted ascending by end_period_ts.
     """
-    for candle in reversed(candles):
-        price = candle.price_close
-        if min_price <= price <= max_price:
-            return candle
-    return None
+    chosen: Candle | None = None
+    for candle in candles:
+        if candle.end_period_ts <= entry_ts:
+            chosen = candle
+        else:
+            break
+    return chosen
+
+
+async def _entry_day_mid(
+    client: KalshiClient,
+    ticker: str,
+    entry_ts: int,
+    cache: dict[str, list[Candle]],
+) -> float:
+    """Entry-day candle midpoint for ticker, or 0.0 when no usable
+    candle exists. The fetch window ends AT entry_ts, so future data
+    structurally cannot leak into the engine (#655). The distinct
+    unusable cases (no history, fetch failure, one-sided quote) are
+    debug-logged so the residual can be audited (#666: one-sided
+    quotes late in life would bias the sample away from the strongest
+    gimmes)."""
+    if ticker not in cache:
+        try:
+            cache[ticker] = await get_candlesticks(
+                client, ticker,
+                start_ts=entry_ts - CANDLE_LOOKBACK_DAYS * 86400,
+                end_ts=entry_ts,
+                period_interval=1440,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("candle fetch failed for %s: %s", ticker, exc)
+            cache[ticker] = []
+    candle = entry_candle_at(cache[ticker], entry_ts)
+    mid = candle_midpoint(candle) if candle else 0.0
+    if mid <= 0:
+        logger.debug(
+            "no usable entry candle for %s: %s", ticker,
+            "no candles <= entry_ts" if candle is None
+            else (
+                f"one-sided quote (bid={candle.yes_bid_close}"
+                f" ask={candle.yes_ask_close})"
+            ),
+        )
+    return mid
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +488,9 @@ async def run_backtest(
     )
     original_by_ticker = {m.ticker: m for m in settled}
     pending: list[_PendingTrade] = []
+    candle_cache: dict[str, list[Candle]] = {}
+    skipped_no_candle = 0
+    skipped_entry_gates = 0
     seen_tickers: set[str] = set()
     total_passed = 0
     total_scored = 0
@@ -458,30 +516,15 @@ async def run_backtest(
         # min_true_probability + min_edge_after_fees (#592).
         min_true_prob = side_cfg.strategy.min_true_probability
         min_edge = side_cfg.strategy.min_edge_after_fees
-        scored: list[tuple[Market, Market, float, float, float]] = []
+        # #655: NO price/prob/edge gating here — those gates now run on
+        # the ENTRY-DAY candle price in pass 1, not the settlement-time
+        # snapshot. total_scored counts score-threshold passers.
+        scored: list[tuple[Market, Market, float]] = []
         for m in passed:
             s = quick_score(m, side_cfg)
             if s < side_threshold:
                 continue
-            orig = original_by_ticker[m.ticker]
-            raw_price = (
-                orig.midpoint if orig.midpoint > 0 else orig.last_price
-            )
-            if raw_price <= 0:
-                continue
-            eff_price = effective_price(raw_price, scan_side)
-            true_prob = min(eff_price + config.assumed_edge, 0.99)
-            true_prob = apply_base_rate_floor(
-                true_prob, orig.ticker, side=scan_side,
-            )
-            if true_prob < min_true_prob:
-                continue
-            edge = edge_after_fees(
-                eff_price, true_prob, is_taker=False, fees=fees,
-            )
-            if edge < min_edge:
-                continue
-            scored.append((m, orig, s, eff_price, true_prob))
+            scored.append((m, original_by_ticker[m.ticker], s))
         total_scored += len(scored)
 
         scored.sort(
@@ -491,15 +534,49 @@ async def run_backtest(
         )
 
         # --- 4. Pass 1: identify qualifying trades ---
-        for _, orig_m, _score, eff_price, true_prob in scored:
+        # #655: entry is priced, gated, and sized on the ENTRY-DAY
+        # candle — settlement data is used only for the payout.
+        for _, orig_m, _score in scored:
             if orig_m.ticker in seen_tickers:
                 continue
             if orig_m.close_time is None:
                 continue
 
+            entry_time = orig_m.close_time - timedelta(
+                days=ENTRY_OFFSET_DAYS,
+            )
+            entry_ts = int(entry_time.timestamp())
+            ticker = orig_m.ticker
+            mid = await _entry_day_mid(
+                client, ticker, entry_ts, candle_cache,
+            )
+            if mid <= 0:
+                skipped_no_candle += 1
+                continue
+            entry_eff = effective_price(mid, scan_side)
+            if not (
+                side_cfg.strategy.min_market_price
+                <= entry_eff
+                <= side_cfg.strategy.max_market_price
+            ):
+                skipped_entry_gates += 1
+                continue
+            true_prob = min(entry_eff + config.assumed_edge, 0.99)
+            true_prob = apply_base_rate_floor(
+                true_prob, ticker, side=scan_side,
+            )
+            if true_prob < min_true_prob:
+                skipped_entry_gates += 1
+                continue
+            if edge_after_fees(
+                entry_eff, true_prob, is_taker=False, fees=fees,
+            ) < min_edge:
+                skipped_entry_gates += 1
+                continue
+
             count = position_size(
                 config.starting_balance,
-                eff_price,
+                entry_eff,
                 true_prob,
                 fraction=side_cfg.sizing.kelly_fraction,
                 max_position_pct=side_cfg.sizing.max_position_pct,
@@ -510,17 +587,16 @@ async def run_backtest(
                 continue
 
             trade_fees = fee_for_order(
-                count, eff_price, is_taker=False, fees=fees,
+                count, entry_eff, is_taker=False, fees=fees,
             )
-            entry_time = orig_m.close_time - timedelta(days=1)
 
-            seen_tickers.add(orig_m.ticker)
+            seen_tickers.add(ticker)
             pending.append(_PendingTrade(
-                ticker=orig_m.ticker,
+                ticker=ticker,
                 title=orig_m.title,
                 side=scan_side,
                 count=count,
-                vwap=eff_price,
+                vwap=entry_eff,
                 fees=trade_fees,
                 entry_time=entry_time,
                 settle_time=orig_m.close_time,
@@ -615,6 +691,8 @@ async def run_backtest(
         markets_scored=total_scored,
         markets_traded=traded_count,
         skipped_concentration=skipped_concentration,
+        skipped_no_candle=skipped_no_candle,
+        skipped_entry_gates=skipped_entry_gates,
         skipped_balance=skipped_balance,
         truncated_chunks=truncated_chunks,
     )

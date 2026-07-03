@@ -34,6 +34,21 @@ class Candle:
     open_interest: int
 
 
+def _ohlc(group: dict, field: str) -> float:  # type: ignore[type-arg]
+    """Read an OHLC component, preferring the live API's `*_dollars`
+    string fields (e.g. `close_dollars: "0.3200"`, verified 2026-07-03)
+    over the legacy plain keys used by older fixtures."""
+    value = group.get(f"{field}_dollars", group.get(field, 0))
+    try:
+        # House convention (markets.py:_dollars_field): a plain-key INT
+        # is legacy integer cents — 34 means $0.34, not $34.00.
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value / 100
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _parse_candle(data: dict) -> Candle:  # type: ignore[type-arg]
     """Parse a candlestick from the Kalshi API response."""
     yes_bid = data.get("yes_bid", {})
@@ -41,20 +56,22 @@ def _parse_candle(data: dict) -> Candle:  # type: ignore[type-arg]
     price = data.get("price", {})
     return Candle(
         end_period_ts=int(data.get("end_period_ts", 0)),
-        yes_bid_open=float(yes_bid.get("open", 0)),
-        yes_bid_high=float(yes_bid.get("high", 0)),
-        yes_bid_low=float(yes_bid.get("low", 0)),
-        yes_bid_close=float(yes_bid.get("close", 0)),
-        yes_ask_open=float(yes_ask.get("open", 0)),
-        yes_ask_high=float(yes_ask.get("high", 0)),
-        yes_ask_low=float(yes_ask.get("low", 0)),
-        yes_ask_close=float(yes_ask.get("close", 0)),
-        price_open=float(price.get("open", 0)),
-        price_high=float(price.get("high", 0)),
-        price_low=float(price.get("low", 0)),
-        price_close=float(price.get("close", 0)),
-        volume=int(float(data.get("volume", 0))),
-        open_interest=int(float(data.get("open_interest", 0))),
+        yes_bid_open=_ohlc(yes_bid, "open"),
+        yes_bid_high=_ohlc(yes_bid, "high"),
+        yes_bid_low=_ohlc(yes_bid, "low"),
+        yes_bid_close=_ohlc(yes_bid, "close"),
+        yes_ask_open=_ohlc(yes_ask, "open"),
+        yes_ask_high=_ohlc(yes_ask, "high"),
+        yes_ask_low=_ohlc(yes_ask, "low"),
+        yes_ask_close=_ohlc(yes_ask, "close"),
+        price_open=_ohlc(price, "open"),
+        price_high=_ohlc(price, "high"),
+        price_low=_ohlc(price, "low"),
+        price_close=_ohlc(price, "close"),
+        volume=int(float(data.get("volume_fp", data.get("volume", 0)))),
+        open_interest=int(float(
+            data.get("open_interest_fp", data.get("open_interest", 0)),
+        )),
     )
 
 
@@ -174,8 +191,10 @@ async def get_candlesticks(
         "end_ts": end_ts,
         "period_interval": period_interval,
     }
+    series_ticker = ticker.split("-")[0]
     data = await client.get(
-        f"/historical/markets/{ticker}/candlesticks", params=params,
+        f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+        params=params,
     )
     candles = [_parse_candle(c) for c in data.get("candlesticks", [])]
     candles.sort(key=lambda c: c.end_period_ts)

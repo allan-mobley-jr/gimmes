@@ -104,7 +104,27 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
             "Skipped (balance)",
             str(result.skipped_balance),
         )
+    if result.skipped_no_candle > 0:
+        funnel.add_row(
+            "Skipped (no usable entry-day candle)",
+            str(result.skipped_no_candle),
+        )
+    if result.skipped_entry_gates > 0:
+        funnel.add_row(
+            "Skipped (entry-day price gates)",
+            str(result.skipped_entry_gates),
+        )
     console.print(funnel)
+    if (
+        result.markets_scored > 0
+        and result.skipped_no_candle > 0.5 * result.markets_scored
+    ):
+        console.print(
+            "[yellow]Caution: entry-day candle data missing or"
+            " unusable (e.g. one-sided quotes) for most candidates —"
+            " results cover a subset of the scored markets"
+            " (#655).[/yellow]"
+        )
     if result.truncated_chunks:
         console.print(
             f"[yellow]Warning: pagination limit reached for "
@@ -204,6 +224,8 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "markets_passed_filter": result.markets_passed_filter,
             "markets_scored": result.markets_scored,
             "markets_traded": result.markets_traded,
+            "skipped_no_candle": result.skipped_no_candle,
+            "skipped_entry_gates": result.skipped_entry_gates,
             "truncated_chunks": result.truncated_chunks,
         },
         "summary": {

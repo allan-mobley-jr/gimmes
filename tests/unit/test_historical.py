@@ -8,6 +8,7 @@ import pytest
 
 from gimmes.kalshi.historical import (
     Candle,
+    _parse_candle,
     get_candlesticks,
     list_all_historical_markets,
     list_historical_markets,
@@ -214,3 +215,52 @@ class TestListAllHistoricalMarketsFiltering:
         markets = await list_all_historical_markets(mock_client)
 
         assert len(markets) == 2
+
+
+class TestParseCandleLiveShape:
+    """#655: the live API serves nested `*_dollars` string OHLC and
+    `*_fp` counts (verified against the real endpoint 2026-07-03) —
+    the parser previously read only legacy plain keys and would have
+    produced all-zero candles."""
+
+    def test_dollars_fields_parsed(self) -> None:
+        c = _parse_candle({
+            "end_period_ts": 1776168000,
+            "yes_bid": {"open_dollars": "0.3400", "high_dollars": "0.3600",
+                        "low_dollars": "0.2900", "close_dollars": "0.3200"},
+            "yes_ask": {"open_dollars": "0.3600", "high_dollars": "0.3800",
+                        "low_dollars": "0.3100", "close_dollars": "0.3300"},
+            "price": {"open_dollars": "0.3500", "close_dollars": "0.3250"},
+            "volume_fp": "1200",
+            "open_interest_fp": "800",
+        })
+        assert c.yes_bid_close == 0.32
+        assert c.yes_ask_close == 0.33
+        assert c.price_close == 0.325
+        assert c.volume == 1200
+        assert c.open_interest == 800
+
+    def test_legacy_plain_keys_still_parse(self) -> None:
+        c = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": {"close": "0.63"},
+            "yes_ask": {"close": "0.70"},
+            "price": {},
+            "volume": 10,
+            "open_interest": 5,
+        })
+        assert c.yes_bid_close == 0.63
+        assert c.volume == 10
+
+    def test_legacy_int_cents_fallback(self) -> None:
+        """Plain-key INT values are legacy cents per the markets.py
+        convention — 34 means $0.34 (#655 review: a silent 100x
+        sizing error otherwise)."""
+        c = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": {"close": 34},
+            "yes_ask": {"close": 36},
+            "price": {},
+        })
+        assert c.yes_bid_close == 0.34
+        assert c.yes_ask_close == 0.36

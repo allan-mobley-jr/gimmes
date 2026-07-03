@@ -192,3 +192,40 @@ class TestSharpeSignMatchesRoi:
         ]
         data = backtest_result_to_json(result)
         assert data["summary"]["sharpe"] > 0
+
+
+class TestSkipCountersInReport:
+    """#655: the new funnel counters must reach the JSON output and the
+    coverage warning must fire when candle history is mostly missing."""
+
+    def test_json_carries_skip_counters(self) -> None:
+        result = _make_result()
+        result.skipped_no_candle = 3
+        result.skipped_entry_gates = 5
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["skipped_no_candle"] == 3
+        assert data["funnel"]["skipped_entry_gates"] == 5
+
+    def test_coverage_warning_fires_above_half(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.markets_scored = 10
+        result.skipped_no_candle = 6
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "Caution" in buf.getvalue()
+
+    def test_no_warning_at_or_below_half(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.markets_scored = 10
+        result.skipped_no_candle = 5
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "Caution" not in buf.getvalue()
