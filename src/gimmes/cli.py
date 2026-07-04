@@ -1465,7 +1465,7 @@ def candidates(
         table.add_column("Rec")
         table.add_column("Scanned")
 
-        flip_banners: list[str] = []
+        flip_tickers: dict[str, None] = {}  # ordered de-dup
         for c in records:
             flags = []
             if c.get("cap_blocked"):
@@ -1477,11 +1477,7 @@ def candidates(
             # non-TTY default agents read (the #659 lesson).
             if str(c.get("research_memo", "")).startswith(FLIP_WARNING_MARKER):
                 flags.append("[red]FLIP[/red]")
-                flip_banners.append(
-                    f"[red]{rich_escape(str(c.get('ticker', '')))} FLIP-WARN:"
-                    f" probability flipped against its own recent"
-                    f" scoring — resolve before approving (#660)[/red]"
-                )
+                flip_tickers[str(c.get("ticker", ""))] = None
             status = " ".join(flags)
             rec = str(c.get("recommendation", ""))
             table.add_row(
@@ -1496,8 +1492,14 @@ def candidates(
             )
 
         console.print(table)
-        for banner in flip_banners:
-            console.print(banner)
+        # One banner per ticker — multiple flagged rows for the same
+        # ticker would otherwise repeat identical lines.
+        for flip_ticker in flip_tickers:
+            console.print(
+                f"[red]{rich_escape(flip_ticker)} FLIP-WARN:"
+                f" probability flipped against its own recent scoring"
+                f" — resolve before approving (#660)[/red]"
+            )
 
     _run(_candidates())
 

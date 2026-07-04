@@ -859,15 +859,24 @@ def detect_candidate_flip(
     ):
         return []
     if prob_inverted:
+        # In the complement-price bypass case the raw delta is large
+        # BECAUSE the price was likely logged side-inverted too —
+        # "market moved only Nc" would contradict itself there.
+        price_desc = (
+            f"the logged price also sits at the prior's complement"
+            f" (${prior_price:.2f} -> ${new_price:.2f}) — likely"
+            f" logged side-inverted as well"
+            if price_delta > FLIP_PRICE_DELTA
+            else f"the market moved only {price_delta * 100:.0f}c"
+        )
         return [
             f"INVERSION SIGNATURE (#660/#641): new probability"
             f" {new_prob:.0%} is the complement of the prior"
-            f" {prior_prob:.0%} scored {age_hours:.0f}h ago while the"
-            f" market moved only {price_delta * 100:.0f}c — this is"
-            f" the negative-threshold side-convention flip class."
-            f" Re-derive YES/NO from Rules (primary) and state in the"
-            f" memo which convention is correct and why the prior"
-            f" scoring was wrong."
+            f" {prior_prob:.0%} scored {age_hours:.0f}h ago while"
+            f" {price_desc} — this is the negative-threshold"
+            f" side-convention flip class. Re-derive YES/NO from"
+            f" Rules (primary) and state in the memo which convention"
+            f" is correct and why the prior scoring was wrong."
         ]
     return [
         f"PROBABILITY INSTABILITY (#660): {prob_delta * 100:.0f}pp"

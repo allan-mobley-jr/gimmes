@@ -761,6 +761,42 @@ class TestDetectCandidateFlip:
             new_prob=0.35, new_price=0.60,
         ) == []
 
+    def test_complement_price_message_names_the_price_inversion(
+        self,
+    ) -> None:
+        """In the complement-price bypass the raw delta is large —
+        the message must not claim a small market move (#660
+        Copilot review)."""
+        [w] = self._detect(
+            prior_prob=0.98, prior_price=0.40,
+            new_prob=0.02, new_price=0.63,
+        )
+        assert "logged side-inverted" in w
+        assert "moved only" not in w
+
+    def test_banner_deduped_per_ticker(self, tmp_path) -> None:
+        """Three flagged rows for one ticker -> one banner."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        db_path = tmp_path / "gimmes.db"
+        guard = TestLogCandidateFlipGuard
+        guard._invoke(db_path, "0.41", "0.98")
+        guard._invoke(db_path, "0.40", "0.02")
+        guard._invoke(db_path, "0.41", "0.97")
+        guard._invoke(db_path, "0.40", "0.03")
+
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            result = CliRunner().invoke(app, [
+                "candidates", "--ticker", "KXCPI-26JUN-T-0.2",
+                "--limit", "10",
+            ])
+        assert result.exit_code == 0, result.output
+        assert result.output.count("FLIP-WARN:") == 1
+
     def test_zero_new_price_skipped(self) -> None:
         assert self._detect(new_price=0.0) == []
 
