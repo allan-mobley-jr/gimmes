@@ -669,3 +669,229 @@ class TestShellTokenizationE2E:
         stored_memo = row[0]
         assert "$0.41" in stored_memo, f"got: {stored_memo!r}"
         assert "/bin/zsh" not in stored_memo, f"got: {stored_memo!r}"
+
+
+class TestDetectCandidateFlip:
+    """#660: the probability-flip detector. The canonical case is
+    KXCPI-26JUN-T-0.2 rows 944 -> 947 (0.98 -> 0.02 on a 1c move)."""
+
+    @staticmethod
+    def _detect(
+        prior_prob=0.98, prior_price=0.41,
+        prior_scanned_at="2026-06-24 20:28:01",
+        new_prob=0.02, new_price=0.40,
+        now_iso="2026-06-24T22:55:00+00:00",
+    ):
+        from datetime import datetime
+
+        from gimmes.store.observation_validator import (
+            detect_candidate_flip,
+        )
+
+        return detect_candidate_flip(
+            prior_prob=prior_prob, prior_price=prior_price,
+            prior_scanned_at=prior_scanned_at,
+            new_prob=new_prob, new_price=new_price,
+            now=datetime.fromisoformat(now_iso),
+        )
+
+    def test_canonical_inversion_fires_with_signature(self) -> None:
+        [w] = self._detect()
+        assert "INVERSION SIGNATURE" in w
+        assert "#660" in w and "#641" in w
+        assert "Rules (primary)" in w
+
+    def test_big_price_move_is_legit_reassessment(self) -> None:
+        assert self._detect(
+            prior_prob=0.90, prior_price=0.85,
+            new_prob=0.30, new_price=0.30,
+        ) == []
+
+    def test_non_signature_flip_gets_generic_warning(self) -> None:
+        [w] = self._detect(prior_prob=0.95, new_prob=0.30)
+        assert "PROBABILITY INSTABILITY" in w
+        assert "INVERSION SIGNATURE" not in w
+
+    def test_stale_prior_skipped(self) -> None:
+        assert self._detect(
+            prior_scanned_at="2026-06-21 20:28:01",  # 73h+ old
+        ) == []
+
+    def test_degenerate_prior_skipped(self) -> None:
+        assert self._detect(prior_prob=0.0) == []
+        assert self._detect(prior_price=0.0) == []
+        assert self._detect(new_prob=0.0) == []
+
+    def test_unparseable_scanned_at_fails_open(self) -> None:
+        assert self._detect(prior_scanned_at="not-a-time") == []
+
+    def test_exactly_50pp_does_not_fire(self) -> None:
+        assert self._detect(prior_prob=0.80, new_prob=0.30) == []
+        assert self._detect(prior_prob=0.81, new_prob=0.30) != []
+
+    def test_complement_price_does_not_satisfy_the_price_gate(
+        self,
+    ) -> None:
+        """A confused agent logs the COMPLEMENT price alongside the
+        inverted probability (observed live: $0.40 -> $0.63) — that
+        is the inversion itself, not a market move (#660 review)."""
+        [w] = self._detect(
+            prior_prob=0.98, prior_price=0.40,
+            new_prob=0.02, new_price=0.63,
+        )
+        assert "INVERSION SIGNATURE" in w
+
+    def test_genuine_large_move_still_skips(self) -> None:
+        # Non-complement large price move stays a legit re-assessment
+        # (complement of 0.90 would be 0.10; 0.40 is 30c away from it)
+        assert self._detect(
+            prior_prob=0.90, prior_price=0.90,
+            new_prob=0.30, new_price=0.40,
+        ) == []
+
+    def test_genuine_move_near_complement_not_flagged(self) -> None:
+        """A real repricing that happens to land near the prior's
+        complement must not fire the complement bypass unless the
+        PROBABILITY also carries the inversion signature — else the
+        message misstates facts (#660 review)."""
+        # 25c genuine move; 0.60 sits 5c from complement 0.65, but
+        # prob 0.90 -> 0.35 is not the inversion signature (1-0.90=0.10)
+        assert self._detect(
+            prior_prob=0.90, prior_price=0.35,
+            new_prob=0.35, new_price=0.60,
+        ) == []
+
+    def test_complement_price_message_names_the_price_inversion(
+        self,
+    ) -> None:
+        """In the complement-price bypass the raw delta is large —
+        the message must not claim a small market move (#660
+        Copilot review)."""
+        [w] = self._detect(
+            prior_prob=0.98, prior_price=0.40,
+            new_prob=0.02, new_price=0.63,
+        )
+        assert "logged side-inverted" in w
+        assert "moved only" not in w
+
+    def test_banner_deduped_per_ticker(self, tmp_path) -> None:
+        """Three flagged rows for one ticker -> one banner."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        db_path = tmp_path / "gimmes.db"
+        guard = TestLogCandidateFlipGuard
+        guard._invoke(db_path, "0.41", "0.98")
+        guard._invoke(db_path, "0.40", "0.02")
+        guard._invoke(db_path, "0.41", "0.97")
+        guard._invoke(db_path, "0.40", "0.03")
+
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            result = CliRunner().invoke(app, [
+                "candidates", "--ticker", "KXCPI-26JUN-T-0.2",
+                "--limit", "10",
+            ])
+        assert result.exit_code == 0, result.output
+        assert result.output.count("FLIP-WARN:") == 1
+
+    def test_zero_new_price_skipped(self) -> None:
+        assert self._detect(new_price=0.0) == []
+
+    def test_warning_avoids_scorer_red_flag_keywords(self) -> None:
+        """scorer.py keyword-scans memos for settlement red flags —
+        the prepended warning must not depress clarity scores."""
+        for warning in (
+            self._detect() + self._detect(prior_prob=0.95, new_prob=0.30)
+        ):
+            lowered = warning.lower()
+            for keyword in (
+                "carveout", "carve-out", "discretion", "subjective",
+                "ambiguous", "unclear",
+            ):
+                assert keyword not in lowered, (keyword, warning)
+
+
+class TestLogCandidateFlipGuard:
+    """#660 end-to-end: log-candidate warns, annotates the memo, and
+    the candidates command surfaces FLIP-WARN in Status."""
+
+    @staticmethod
+    def _invoke(db_path, price: str, prob: str):
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        with patch("gimmes.cli.load_config") as mock_cfg:
+            mock_cfg.return_value.db_path = db_path
+            mock_cfg.return_value.strategy.side = "no"
+            return CliRunner().invoke(app, [
+                "log-candidate", "KXCPI-26JUN-T-0.2",
+                "--price", price, "--prob", prob, "--score", "80",
+                "--memo", "scoring memo",
+            ])
+
+    def test_flip_warns_and_annotates_memo(self, tmp_path) -> None:
+        import asyncio
+
+        from gimmes.store.queries import get_candidate_for_ticker
+
+        db_path = tmp_path / "test.db"
+        r1 = self._invoke(db_path, "0.41", "0.98")
+        assert r1.exit_code == 0, r1.output
+        assert "FLIP-WARNING" not in r1.output
+
+        r2 = self._invoke(db_path, "0.40", "0.02")
+        assert r2.exit_code == 0, r2.output
+        # The BRACKETED literal is what caddie.md keys on — Rich must
+        # render it intact (uppercase tags are not parsed as markup).
+        assert "[FLIP-WARNING]" in r2.output
+        assert "INVERSION SIGNATURE" in r2.output
+
+        async def _rows():
+            async with Database(db_path) as db:
+                return await get_candidate_for_ticker(
+                    db, "KXCPI-26JUN-T-0.2", limit=2,
+                )
+
+        rows = asyncio.run(_rows())
+        latest = rows[0]
+        assert latest["research_memo"].startswith("[FLIP-WARNING]")
+        assert "scoring memo" in latest["research_memo"]
+        # The first row stays unannotated
+        assert rows[1]["research_memo"] == "scoring memo"
+
+    def test_stable_rescore_unannotated(self, tmp_path) -> None:
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.98")
+        r2 = self._invoke(db_path, "0.40", "0.95")
+        assert r2.exit_code == 0, r2.output
+        assert "FLIP-WARNING" not in r2.output
+
+    def test_candidates_status_shows_flip_warn(self, tmp_path) -> None:
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        # ``candidates`` opens ``Database()`` bare -> GIMMES_HOME
+        # fallback, so both the writes and the read must target the
+        # same tmp home (the TestTradesCommand pattern).
+        db_path = tmp_path / "gimmes.db"
+        self._invoke(db_path, "0.41", "0.98")
+        self._invoke(db_path, "0.40", "0.02")
+
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            result = CliRunner().invoke(app, [
+                "candidates", "--ticker", "KXCPI-26JUN-T-0.2",
+                "--limit", "5",
+            ])
+        assert result.exit_code == 0, result.output
+        # The banner below the table carries the load-bearing string —
+        # cells ellipsize at the width-80 non-TTY default (#659 lesson)
+        assert "KXCPI-26JUN-T-0.2 FLIP-WARN:" in result.output

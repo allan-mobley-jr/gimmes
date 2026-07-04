@@ -1433,6 +1433,7 @@ def candidates(
 
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
+        from gimmes.store.observation_validator import FLIP_WARNING_MARKER
         from gimmes.store.queries import (
             get_candidate_for_ticker,
             get_recent_candidates,
@@ -1464,8 +1465,20 @@ def candidates(
         table.add_column("Rec")
         table.add_column("Scanned")
 
+        flip_tickers: dict[str, None] = {}  # ordered de-dup
         for c in records:
-            status = "[yellow]CAP BLOCKED[/yellow]" if c.get("cap_blocked") else ""
+            flags = []
+            if c.get("cap_blocked"):
+                flags.append("[yellow]CAP BLOCKED[/yellow]")
+            # #660: the memo itself is not rendered by this command,
+            # so the flip marker must surface here or Caddie Master
+            # never sees it. The load-bearing string goes in a banner
+            # BELOW the table — cells ellipsize at the width-80
+            # non-TTY default agents read (the #659 lesson).
+            if str(c.get("research_memo", "")).startswith(FLIP_WARNING_MARKER):
+                flags.append("[red]FLIP[/red]")
+                flip_tickers[str(c.get("ticker", ""))] = None
+            status = " ".join(flags)
             rec = str(c.get("recommendation", ""))
             table.add_row(
                 str(c.get("ticker", "")),
@@ -1479,6 +1492,14 @@ def candidates(
             )
 
         console.print(table)
+        # One banner per ticker — multiple flagged rows for the same
+        # ticker would otherwise repeat identical lines.
+        for flip_ticker in flip_tickers:
+            console.print(
+                f"[red]{rich_escape(flip_ticker)} FLIP-WARN:"
+                f" probability flipped against its own recent scoring"
+                f" — resolve before approving (#660)[/red]"
+            )
 
     _run(_candidates())
 
@@ -2231,8 +2252,20 @@ def log_candidate(
     memo_val = _resolve_prose_arg(memo, memo_file, "--memo", "--memo-file")
 
     async def _log() -> None:
+        import logging
+        import sqlite3
+
         from gimmes.store.database import Database
-        from gimmes.store.queries import insert_candidate as _insert
+        from gimmes.store.observation_validator import (
+            FLIP_WARNING_MARKER,
+            detect_candidate_flip,
+        )
+        from gimmes.store.queries import (
+            get_candidate_for_ticker,
+        )
+        from gimmes.store.queries import (
+            insert_candidate as _insert,
+        )
         from gimmes.strategy.scanner import tradeable_edge
 
         # #658: edge on the side actually bought, clamped to 0 when
@@ -2240,9 +2273,47 @@ def log_candidate(
         # prob - 0 would fabricate an edge equal to the probability).
         edge = tradeable_edge(prob, price_val, config.strategy.side)
 
+        memo_stored = memo_val
         async with Database(config.db_path) as db:
+            # #660: a probability that flips against this ticker's own
+            # recent scoring without a price move is a side-convention
+            # inversion signature (the #641 class) more often than a
+            # real re-assessment. Warn (never block — the flip can BE
+            # the correction) and mark the row so Caddie Master's 4c
+            # review sees it in the candidates Status column.
+            # Best-effort: the flip check is warn-only by design —
+            # its own fetch failing must degrade to "no check", never
+            # block the insert (log-candidate is the Caddie's primary
+            # logging path; the #657 logger-of-last-resort rule).
+            try:
+                prior_rows = await get_candidate_for_ticker(db, ticker)
+            except sqlite3.Error:
+                logging.getLogger(__name__).error(
+                    "prior-candidate lookup failed for %s; flip check"
+                    " skipped (#660)", ticker, exc_info=True,
+                )
+                prior_rows = []
+            if prior_rows:
+                warnings = detect_candidate_flip(
+                    prior_prob=prior_rows[0]["model_probability"] or 0.0,
+                    prior_price=prior_rows[0]["market_price"] or 0.0,
+                    prior_scanned_at=str(prior_rows[0]["scanned_at"] or ""),
+                    new_prob=prob,
+                    new_price=price_val,
+                )
+                for warning in warnings:
+                    console.print(
+                        f"[yellow]{FLIP_WARNING_MARKER}"
+                        f" {rich_escape(warning)}[/yellow]"
+                    )
+                if warnings:
+                    memo_stored = (
+                        f"{FLIP_WARNING_MARKER} {warnings[0]}\n"
+                        f"{memo_val}"
+                    )
             row_id = await _insert(
-                db, ticker, title, price_val, prob, edge, score_val, memo_val,
+                db, ticker, title, price_val, prob, edge, score_val,
+                memo_stored,
                 edge_size_score=edge_size,
                 signal_strength_score=signal_strength,
                 liquidity_depth_score=liquidity_depth,
