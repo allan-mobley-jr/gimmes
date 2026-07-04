@@ -157,6 +157,110 @@ class TestCalculateMetrics:
         metrics = calculate_metrics([], [])
         assert metrics.win_rate == 0.0
 
+    def test_win_rate_uses_weighted_basis_across_size_ups(self) -> None:
+        """THE #662 case: first-open basis says WIN (+0.10 vs $0.60),
+        the weighted $0.75 basis says LOSS."""
+        trades = [
+            {"action": "open", "ticker": "A", "side": "yes",
+             "price": 0.60, "count": 100, "timestamp": "2026-01-01T10:00:00"},
+            {"action": "size_up", "ticker": "A", "side": "yes",
+             "price": 0.90, "count": 100, "timestamp": "2026-01-02T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.70, "count": 200, "timestamp": "2026-01-03T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert metrics.win_rate == 0.0
+
+    def test_win_rate_size_up_win_stays_win(self) -> None:
+        # The issue's own example: avg basis ~0.6167, close at 0.80
+        trades = [
+            {"action": "open", "ticker": "A", "side": "yes",
+             "price": 0.60, "count": 100, "timestamp": "2026-01-01T10:00:00"},
+            {"action": "size_up", "ticker": "A", "side": "yes",
+             "price": 0.65, "count": 50, "timestamp": "2026-01-02T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.80, "count": 150, "timestamp": "2026-01-03T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert metrics.win_rate == 1.0
+
+    def test_win_rate_separates_sides(self) -> None:
+        """The old ticker-only grouping matched a YES close against
+        whichever side's open came first."""
+        trades = [
+            {"action": "open", "ticker": "A", "side": "no",
+             "price": 0.30, "count": 10, "timestamp": "2026-01-01T09:00:00"},
+            {"action": "open", "ticker": "A", "side": "yes",
+             "price": 0.60, "count": 10, "timestamp": "2026-01-01T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.50, "count": 10, "timestamp": "2026-01-02T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "no",
+             "price": 0.20, "count": 10, "timestamp": "2026-01-02T11:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        # yes: 0.50 vs 0.60 basis -> loss; no: 0.20 vs 0.30 -> loss
+        assert metrics.win_rate == 0.0
+
+    def test_win_rate_gains_653_reconcile_repricing(self) -> None:
+        """Delegating to calculate_pnl brings the dashboard in line
+        with the CLI report: a reconcile drift close on a market that
+        resolved our way is repriced to settlement value."""
+        trades = [
+            {"action": "open", "ticker": "A", "side": "yes",
+             "price": 0.60, "count": 10, "resolved_outcome": "yes",
+             "timestamp": "2026-01-01T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.55, "count": 10, "agent": "reconcile",
+             "timestamp": "2026-01-02T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert metrics.win_rate == 1.0  # repriced to 1.0, not 0.55
+
+    def test_partial_closes_straddling_weighted_basis(self) -> None:
+        """Fractional win rate: two partial closes on either side of
+        the single weighted basis (0.75) — one win, one loss. Also
+        the only size-up fixture with a non-degenerate rate, so a
+        gross-P&L-sign shortcut cannot fake it (+$5 gross but 0.5
+        rate) (#662 review)."""
+        trades = [
+            {"action": "open", "ticker": "A", "side": "yes",
+             "price": 0.60, "count": 100, "timestamp": "2026-01-01T10:00:00"},
+            {"action": "size_up", "ticker": "A", "side": "yes",
+             "price": 0.90, "count": 100, "timestamp": "2026-01-02T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.70, "count": 100, "timestamp": "2026-01-03T10:00:00"},
+            {"action": "close", "ticker": "A", "side": "yes",
+             "price": 0.85, "count": 100, "timestamp": "2026-01-04T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert abs(metrics.win_rate - 0.5) < 0.001
+
+    def test_scratch_excluded_from_denominator(self) -> None:
+        """A close exactly at basis is a scratch — excluded from
+        BOTH sides of the rate (1 win + 1 scratch -> 1.0, not 0.5),
+        pinning the comment's claimed semantics (#662 review)."""
+        trades = [
+            {"action": "open", "ticker": "S", "side": "yes",
+             "price": 0.70, "count": 10, "timestamp": "2026-01-01T10:00:00"},
+            {"action": "close", "ticker": "S", "side": "yes",
+             "price": 0.70, "count": 10, "timestamp": "2026-01-02T10:00:00"},
+            {"action": "open", "ticker": "W", "side": "yes",
+             "price": 0.60, "count": 10, "timestamp": "2026-01-01T11:00:00"},
+            {"action": "close", "ticker": "W", "side": "yes",
+             "price": 0.80, "count": 10, "timestamp": "2026-01-02T11:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert metrics.win_rate == 1.0
+
+    def test_orphan_close_is_not_a_fake_win(self) -> None:
+        # Old code: zero basis -> pnl +8.0 -> win_rate 1.0
+        trades = [
+            {"action": "close", "ticker": "GHOST", "side": "yes",
+             "price": 0.80, "count": 10, "timestamp": "2026-01-01T10:00:00"},
+        ]
+        metrics = calculate_metrics(trades, [])
+        assert metrics.win_rate == 0.0
+
     def test_avg_edge_predicted(self) -> None:
         trades = [
             {"action": "open", "ticker": "A", "edge": 0.10},

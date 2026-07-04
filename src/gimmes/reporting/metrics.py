@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from gimmes.reporting.pnl import calculate_pnl
+
 
 @dataclass
 class PerformanceMetrics:
@@ -172,27 +174,15 @@ def calculate_metrics(
     """Calculate performance metrics from trades and snapshots."""
     metrics = PerformanceMetrics()
 
-    # Win rate — based on realized P&L (matching pnl.py definition)
-    # Group opens by ticker for P&L calculation
-    open_prices: dict[str, float] = {}
-    for t in trades:
-        if t.get("action") == "open":
-            open_prices.setdefault(t.get("ticker", ""), t.get("price", 0.0))
-
-    wins = 0
-    losses = 0
-    for t in trades:
-        if t.get("action") != "close":
-            continue
-        close_price = t.get("price", 0.0)
-        open_price = open_prices.get(t.get("ticker", ""), 0.0)
-        pnl = (close_price - open_price) * t.get("count", 0)
-        if pnl > 0:
-            wins += 1
-        elif pnl < 0:
-            losses += 1
-    total = wins + losses
-    metrics.win_rate = wins / total if total > 0 else 0.0
+    # Win rate — delegated to calculate_pnl (#662): (ticker, side)
+    # grouping, weighted-average cost basis across size_ups, #653
+    # reconcile repricing, and orphan-close handling — replacing the
+    # first-open-price, ticker-only walk that overstated wins (open
+    # 100@$0.60 + size_up 100@$0.90 closed at $0.70 classified as a
+    # win on the $0.60 basis; the weighted $0.75 basis says loss).
+    # Scratch trades (pnl == 0) stay excluded from numerator and
+    # denominator, matching the previous semantics.
+    metrics.win_rate = calculate_pnl(trades).win_rate
 
     # Edge accuracy
     predicted_edges = [t.get("edge", 0) for t in trades if t.get("action") == "open"]
