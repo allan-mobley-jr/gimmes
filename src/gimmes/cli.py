@@ -743,6 +743,14 @@ def order(
     force: bool = typer.Option(
         False, "--force", help="Override validation failures (use with caution)",
     ),
+    force_reopen: bool = typer.Option(
+        False, "--force-reopen",
+        help=(
+            "Bypass the same-ticker reopen churn gate (#661)."
+            " Requires explicit justification — plain --force does"
+            " NOT bypass it."
+        ),
+    ),
     size_up: bool = typer.Option(
         False, "--size-up", help="Allow adding to existing position (SIZE UP)",
     ),
@@ -778,6 +786,13 @@ def order(
 
         async with trading_context(config) as (client, broker, db):
             from gimmes.strategy.scanner import effective_price
+
+            async def _audit_row(entry: ErrorLogEntry, fail_msg: str) -> None:
+                """Best-effort audit row — a failed insert degrades to a log."""
+                try:
+                    await insert_error(db, entry)
+                except Exception:
+                    logger.error(fail_msg, exc_info=True)
 
             market = await get_market(client, ticker)
             raw_price = market.midpoint or market.last_price
@@ -842,6 +857,104 @@ def order(
                         f" — only {held} held[/red]"
                     )
                     return
+                # #661: make sub-hour round trips visible. NEVER
+                # blocks a close — every branch degrades to a log.
+                try:
+                    from gimmes.risk.churn import check_roundtrip_churn
+                    from gimmes.store.queries import (
+                        get_last_entry_trade,
+                    )
+
+                    open_row = await get_last_entry_trade(db, ticker)
+                    churn_note = check_roundtrip_churn(
+                        open_timestamp=str(open_row.get("timestamp", "")),
+                    ) if open_row else None
+                    if churn_note:
+                        console.print(f"[yellow]{churn_note}[/yellow]")
+                        await _audit_row(ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.RISK_BREACH,
+                            error_code="churn_roundtrip",
+                            component="cli.order", agent=agent,
+                            message=churn_note,
+                            context=json.dumps({
+                                "ticker": ticker, "side": side,
+                            }),
+                        ), "Failed to log churn warning")
+                except Exception:
+                    # error, not debug: a permanently-failing check
+                    # would silently blind the Pro churn audit.
+                    logger.error(
+                        "Round-trip churn check failed for %s (#661)",
+                        ticker, exc_info=True,
+                    )
+
+            # --- Reopen churn gate (#661): a hard stop, not a warn —
+            # the audited reopen executed 21 seconds after Caddie
+            # Master's own cooldown note, so prompt-level guards are
+            # insufficient here. Plain --force does NOT bypass.
+            if is_buy:
+                try:
+                    from gimmes.risk.churn import check_reopen_churn
+                    from gimmes.store.queries import (
+                        get_last_close_trade,
+                    )
+
+                    last_close = await get_last_close_trade(db, ticker)
+                except Exception as gate_exc:
+                    # Fail-open on ANY error: this is a churn guard,
+                    # not a ledger — it must never break ordering.
+                    # But a dead gate must be VISIBLE (the #659
+                    # loudness rule), so best-effort error row too.
+                    logger.error(
+                        "Reopen-gate close lookup failed for %s —"
+                        " gate skipped (#661)", ticker, exc_info=True,
+                    )
+                    await _audit_row(ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="reopen_gate_lookup_failed",
+                        component="cli.order", agent=agent,
+                        message=(
+                            f"Reopen-gate close lookup failed for"
+                            f" {ticker}; gate skipped (#661):"
+                            f" {gate_exc}"
+                        ),
+                        context=json.dumps({"ticker": ticker}),
+                    ), "Failed to log gate failure")
+                    last_close = None
+                if last_close is not None:
+                    # Gate on the MARKET effective price, not the
+                    # caller-controlled limit: a marketable limit set
+                    # 5c+ away still fills at the ask, so final_price
+                    # would be a one-flag bypass of the gate.
+                    churn_msg = check_reopen_churn(
+                        close_price=last_close["price"] or 0.0,
+                        close_timestamp=str(
+                            last_close["timestamp"] or "",
+                        ),
+                        close_agent=str(last_close["agent"] or ""),
+                        entry_price=eff_price,
+                    )
+                    if churn_msg and force_reopen:
+                        console.print(
+                            f"[yellow]--force-reopen override:"
+                            f" {churn_msg}[/yellow]"
+                        )
+                        await _audit_row(ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.RISK_BREACH,
+                            error_code="reopen_gate_overridden",
+                            component="cli.order", agent=agent,
+                            message=churn_msg,
+                            context=json.dumps({
+                                "ticker": ticker, "side": side,
+                                "entry_price": final_price,
+                            }),
+                        ), "Failed to log reopen override")
+                    elif churn_msg:
+                        console.print(f"[red bold]{churn_msg}[/red bold]")
+                        raise typer.Exit(1)
 
             # --- Pre-trade validation (buy orders only) ---
             if is_buy:
@@ -1433,9 +1546,10 @@ def candidates(
 
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
-        from gimmes.store.observation_validator import FLIP_WARNING_MARKER
+        from gimmes.store.observation_validator import FLIP_WARNING_MARKER, _parse_scanned_at
         from gimmes.store.queries import (
             get_candidate_for_ticker,
+            get_last_close_times,
             get_recent_candidates,
         )
 
@@ -1446,6 +1560,14 @@ def candidates(
                 )
             else:
                 records = await get_recent_candidates(db, limit=limit)
+            # #661: research scanned BEFORE the ticker's most recent
+            # close is stale by construction — the close happened on
+            # information the candidate cannot contain (the KXGDP
+            # reopen executed exactly such a row).
+            close_times = await get_last_close_times(
+                db,
+                sorted({str(c.get("ticker", "")) for c in records}),
+            )
 
         if not records:
             console.print("[dim]No candidate records found[/dim]")
@@ -1466,6 +1588,8 @@ def candidates(
         table.add_column("Scanned")
 
         flip_tickers: dict[str, None] = {}  # ordered de-dup
+        stale_tickers: dict[str, None] = {}
+        newest_seen: set[str] = set()
         for c in records:
             flags = []
             if c.get("cap_blocked"):
@@ -1478,6 +1602,22 @@ def candidates(
             if str(c.get("research_memo", "")).startswith(FLIP_WARNING_MARKER):
                 flags.append("[red]FLIP[/red]")
                 flip_tickers[str(c.get("ticker", ""))] = None
+            row_ticker = str(c.get("ticker", ""))
+            last_close = close_times.get(row_ticker)
+            if last_close:
+                scanned = _parse_scanned_at(str(c.get("scanned_at", "")))
+                closed = _parse_scanned_at(str(last_close))
+                if scanned and closed and scanned < closed:
+                    flags.append("[red]STALE[/red]")
+                    # The banner (which the prompts key on) fires
+                    # only when the ticker's NEWEST research row is
+                    # stale — records are ordered newest-first, so
+                    # first-seen decides. Older stale rows keep the
+                    # cell flag but must not deadlock the fresh
+                    # post-close research recovery path.
+                    if row_ticker not in newest_seen:
+                        stale_tickers[row_ticker] = None
+            newest_seen.add(row_ticker)
             status = " ".join(flags)
             rec = str(c.get("recommendation", ""))
             table.add_row(
@@ -1499,6 +1639,13 @@ def candidates(
                 f"[red]{rich_escape(flip_ticker)} FLIP-WARN:"
                 f" probability flipped against its own recent scoring"
                 f" — resolve before approving (#660)[/red]"
+            )
+        for stale_ticker in stale_tickers:
+            console.print(
+                f"[red]{rich_escape(stale_ticker)} STALE-CLOSE:"
+                f" research predates the ticker's most recent close —"
+                f" the close encodes information the candidate cannot"
+                f" contain; re-research before approving (#661)[/red]"
             )
 
     _run(_candidates())

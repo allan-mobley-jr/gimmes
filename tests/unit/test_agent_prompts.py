@@ -2080,3 +2080,51 @@ def test_flip_marker_literal_shared_across_code_and_prompts(
 
     assert FLIP_WARNING_MARKER == "[FLIP-WARNING]"
     assert FLIP_WARNING_MARKER in caddie_text
+
+
+# ---------------------------------------------------------------------------
+# #661: reopen churn gate and stale-post-close research
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_4a_stale_close_rule(caddie_master_text: str) -> None:
+    assert "Prior research flagged STALE-CLOSE" in caddie_master_text
+    start = caddie_master_text.index("Prior research flagged STALE-CLOSE")
+    block = caddie_master_text[start:start + 600]
+    assert "NO valid prior research" in block
+    assert "#661" in block
+
+
+def test_caddie_master_4c_stale_close_reject(
+    caddie_master_text: str,
+) -> None:
+    assert "Post-close stale research" in caddie_master_text
+    start = caddie_master_text.index("Post-close stale research")
+    block = caddie_master_text[start:start + 900]
+    assert "STALE-CLOSE" in block
+    assert "postdates the close" in block
+    # #586 stays the stricter rule
+    assert "#586" in block
+
+
+def test_closer_reopen_gate_rules() -> None:
+    closer_text = _CLOSER.read_text()
+    assert "Staleness gate (#661)" in closer_text
+    assert "Reopen churn gate (#661)" in closer_text
+    assert "NEVER pass `--force-reopen`" in closer_text
+
+
+def test_586_lockout_untouched(caddie_master_text: str) -> None:
+    """The generalized #661 rule must not have weakened the stricter
+    stop-loss lockout literals."""
+    assert "Trigger: Stop-loss breach" in caddie_master_text
+    assert "Stop-loss reopen lockout" in caddie_master_text
+
+
+def test_groundskeeper_churn_carveout() -> None:
+    """#661: churn_roundtrip audit rows must not spam GitHub issues;
+    forced-bypass rows still escalate."""
+    gk_text = (AGENTS_DIR / "groundskeeper.md").read_text()
+    assert "churn_roundtrip" in gk_text
+    assert "do NOT file issues" in gk_text
+    assert "reopen_gate_overridden" in gk_text
