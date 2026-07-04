@@ -203,7 +203,7 @@ When a trigger condition is met, write a flag note in addition to the observatio
 | `Thesis:` | `Price movement` (adverse only), `Stop-loss breach` | exact value `intact` or `degraded` — no modifiers, no different casing |
 | `Price:` | `Price movement` (adverse only), `Stop-loss breach` | `entry $X -> current $Y (D Npp)` |
 | `TimeToResolution:` | `Stop-loss breach` | integer hours followed by `h` (e.g. `18h`, `2h`). No fractions, no `1d 2h`, no other units. Caddie Master compares this against `< 24` numerically. |
-| `StopGate:` | EVERY trigger type when the position's unrealized P&L is negative | when ANY `StopGate:` banner line appears below the `gimmes positions` table for this ticker (`MANDATORY-CLOSE` or `DATA-ERROR`), copy that banner's StopGate value VERBATIM (e.g. `StopGate: 214% MANDATORY-CLOSE`); otherwise copy the `Stop` column percentage (e.g. `StopGate: 47%`) — never hand-computed (#659) |
+| `StopGate:` | EVERY trigger type when the position's unrealized P&L is negative | when ANY `StopGate:` banner line appears below the `gimmes positions` table for this ticker (`MANDATORY-CLOSE` or `DATA-ERROR`), copy the value portion AFTER the banner's `StopGate:` prefix so the field line has a single prefix and reads e.g. `StopGate: 214% MANDATORY-CLOSE`; otherwise the value is the `Stop` column percentage (e.g. `StopGate: 47%`) — never hand-computed (#659) |
 
 **Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above). The quoted heredoc means dollar-prefixed prices survive literally — no backslash escapes needed (#589):
 
@@ -217,7 +217,7 @@ Assessment: [Is this new information the thesis did not account for? Or is this 
 Thesis: [intact or degraded].
 Price: [entry $X -> current $Y (D Npp)].
 TimeToResolution: [Nh].
-StopGate: [copy from the Stop column of gimmes positions; OMIT this line if the position is not losing].
+StopGate: [value per the field table above: the banner's value portion when a StopGate banner exists (e.g. 214% MANDATORY-CLOSE or DATA-ERROR), else the Stop column percentage; OMIT this line if the position is not losing].
 For Caddie Master: [factual summary of the situation — no recommendation].
 GIMMES_EOF
 gimmes position-note TICKER \

@@ -117,12 +117,11 @@ def _stop_cell(
             # A losing position with no cost basis is a data
             # bug — surface it loudly rather than exempting
             # the position from the backstop with a dash.
-            # Banner is short enough to stay one line at width
-            # 80 even with a 30-char ticker (#659).
+            # Banner kept minimal so it stays one line at width
+            # 80 for ANY real ticker (#659).
             return (
                 "[red]ERR[/red]",
-                f"[red bold]{ticker} StopGate: DATA-ERROR"
-                f" (losing, zero cost basis)[/red bold]",
+                f"[red bold]{ticker} StopGate: DATA-ERROR[/red bold]",
             )
         return "—", None
     if pct >= 200:
