@@ -108,6 +108,8 @@ Before dispatching Monitor, check for any orphaned close decisions from prior cy
 gimmes positions
 ```
 
+**Hard-backstop sweep (#659):** if any `StopGate: ... MANDATORY-CLOSE` banner line is printed below the positions table, treat that position as flagged this cycle and apply the hard loss backstop in step 2c even if Monitor writes no flag for it — losses can gap past the backstop between cycles. Repeat this sweep at the TOP of step 2c (re-run `gimmes positions` after Monitor returns): Monitor's research takes time and a breach can open mid-cycle.
+
 For each open position, check its note history:
 ```bash
 gimmes position-notes TICKER --limit 10
@@ -150,12 +152,20 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 4. Make your own deliberate decision — **HOLD**, **CLOSE**, or **SIZE UP**:
    - **HOLD**: The flagged information was already in the thesis, or the price move appears liquidity-driven, or the thesis is still materially intact but edge hasn't improved enough to warrant adding. When choosing HOLD, you MUST specify a re-evaluation condition so Monitor knows when to re-flag (prevents the flag-HOLD-re-flag-HOLD loop). A HOLD MUST NOT rest on sources marked `SUPERSEDED` in Monitor's most-recent playbook audit footer (#641) — if the surviving current evidence is insufficient, confer with Monitor via SendMessage for a fresh playbook search before deciding.
-   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, a stop-loss flag fires AND the thesis is degraded (see stop-loss rule below), or a profit-taking flag indicates the position has captured most of its available edge.
+   - **CLOSE**: Genuinely new information (not in the original thesis) materially changes the probability estimate, a stop-loss flag fires AND the thesis is degraded (see stop-loss rule below), the hard loss backstop fires (see below), or a profit-taking flag indicates the position has captured most of its available edge.
    - **SIZE UP**: Price moved adversely while the original thesis remains fully intact, resulting in a larger edge than at entry. Proceed to Step 2d.
 
    When reviewing a **profit-taking flag**: the position has captured a large share of its maximum possible profit. The default action is CLOSE to lock in gains, UNLESS resolution is imminent (< 24h) and remaining upside is nearly risk-free.
 
-   When reviewing a **stop-loss flag**: stop-loss is a safety valve, not an automatic CLOSE. Read Monitor's `Thesis:` line in the flag body.
+   **Hard loss backstop (REQUIRED — #659).** Before applying any other flag-review rule, re-run `gimmes positions` NOW, at review time — do not rely on the step 2a output, which can be stale by the time Monitor's research finishes. The backstop fires if EITHER the fresh output OR Monitor's `StopGate:` field shows 200% or more (the `StopGate: N% MANDATORY-CLOSE` banner below the table): the decision is CLOSE — unconditionally. NONE of the following override it: thesis intact, imminent settlement, a tighter re-evaluation condition, a pending data release, the flag's trigger type, or governance refresh. The audited failures (#659) each cost 2x+ the configured stop because a carve-out was stretched past its scope; at 200% of the gate there is no scope left. The decision note MUST include the exact line `Trigger: Stop-loss breach` so the Step 4c reopen lockout applies to backstop closes. A NON-NUMERIC StopGate (e.g. `DATA-ERROR`) means the loss telemetry itself is broken — do NOT HOLD on unquantified risk: CLOSE unless you can verify the true cost basis and loss from `gimmes position-context` this cycle.
+
+   **Loss-position thesis rule (any flag type — #659).** `Thesis: degraded` -> CLOSE is scoped by POSITION STATE, not flag type: for ANY flag on a position with negative unrealized P&L, a degraded thesis (per Monitor's `Thesis:` field OR your own review of the evidence) means CLOSE. The imminent-settlement and tighter-re-evaluation HOLD carve-outs exist for thesis-INTACT positions only. Reasoning of the form "this is a time-decay flag, not a stop-loss flag, so the degraded-thesis rule does not apply" (the KXPAYROLLS-26JUN-T125000 failure) is FORBIDDEN.
+
+   **Scheduled-release HOLD rule (#659).** Any HOLD — including one renewing a prior HOLD at its `Expiry` — on a position whose market settles on a scheduled data release (CPI, payrolls, jobless claims, GDP, FOMC) occurring before the HOLD's expiry MUST state: the release date/time, an explicit `hold-through-release` or `exit-before-release` choice, and the position's StopGate headroom against the release's plausible repricing range. `Re-evaluate if: after the release` is FORBIDDEN as the sole re-evaluation condition when StopGate is 100% or more. The KXCPIYOY-26MAY-T4.2 failure was forty procedural governance refreshes that never once decided whether to hold through the CPI print that ultimately repriced the position to 4x the gate.
+
+   **SIZE UP gate-dilution rule (#659).** SIZE UP is FORBIDDEN on any position whose StopGate is 100% or more: adding cost basis arithmetically lowers the Stop percentage and defers the hard backstop through a sanctioned action (a position at 190% can be sized back to ~120% without the loss changing). Any SIZE UP decision note on a losing position MUST state the pre-add StopGate percentage.
+
+   When reviewing a **stop-loss flag**: stop-loss is a safety valve, not an automatic CLOSE. All branches below apply only while the `Stop` column is under 200% — at or above, the hard loss backstop governs. Read Monitor's `Thesis:` line in the flag body.
    - If `Thesis: degraded` — CLOSE to cap the loss.
    - If `Thesis: intact` AND resolution is imminent (< 24h per Monitor's `TimeToResolution:` line) — HOLD; the loss is already realized in mark-to-market and re-entering after a forced close incurs fees plus worse cost basis.
    - If `Thesis: intact` AND resolution is NOT imminent — HOLD only if you can articulate a specific re-evaluation condition tighter than the original (e.g. "close if price drops another 5pp"); otherwise CLOSE.
@@ -204,7 +214,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 - Monitor's flag indicates an adverse price move with thesis intact, not adverse news that degrades the thesis
 - Daily loss limit is not breached
 
-**SIZE UP bias rule** — When ALL of the above criteria hold AND deployed capital is under 50% of bankroll (from Step 1 `risk-check` output), SIZE UP is the *presumptive* action, not HOLD. To decline SIZE UP in this scenario, you MUST provide a specific, articulable reason grounded in the current position or market state. "Waiting for more data" is NOT a valid reason — in a variance strategy, the existing data IS the thesis. The only valid reasons to decline are: a known directional catalyst resolving before the next cycle, or a specific change in the underlying data that the thesis depends on.
+**SIZE UP bias rule** — When ALL of the above criteria hold AND deployed capital is under 50% of bankroll (from Step 1 `risk-check` output), SIZE UP is the *presumptive* action, not HOLD. To decline SIZE UP in this scenario, you MUST provide a specific, articulable reason grounded in the current position or market state. "Waiting for more data" is NOT a valid reason — in a variance strategy, the existing data IS the thesis. The only valid reasons to decline are: a known directional catalyst resolving before the next cycle, a specific change in the underlying data that the thesis depends on, or StopGate at 100% or more (the gate-dilution rule in step 2c — adding basis to a stop-breached position is FORBIDDEN, and it outranks this bias rule).
 
 **Execution flow** (mirrors the CLOSE pattern):
 

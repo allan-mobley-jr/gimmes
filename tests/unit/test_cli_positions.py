@@ -282,3 +282,68 @@ class TestScanResultsMarkupEscape:
         format_scan_results([self._market("CPI")], title="Scan [draft]")
         out = narrow_console.getvalue()
         assert "[draft]" in out
+
+
+class TestPositionsStopColumn:
+    """#659 end-to-end: the positions COMMAND plumbs the configured
+    stop through to the Stop column and StopGate banner (the review
+    found the config plumbing was the only untested link)."""
+
+    def test_command_renders_stop_and_banner(self) -> None:
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+        from gimmes.models.portfolio import Position
+
+        losing = Position(
+            ticker="KXJOBLESSCLAIMS-26MAY14-210000", side="no",
+            count=100, avg_price=0.55, market_price=0.23,
+            cost_basis=100.0, unrealized_pnl=-32.10,
+        )
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(return_value=[losing])
+
+        mock_client = AsyncMock()
+        mock_db = AsyncMock()
+
+        @asynccontextmanager
+        async def _ctx(config):
+            yield mock_client, broker, mock_db
+
+        cfg = MagicMock()
+        cfg.risk.position_stop_loss_pct = 0.15
+        market = MagicMock()
+        market.midpoint = 0.23
+        market.last_price = 0.23
+        market.status = "active"
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        with (
+            patch("gimmes.cli.load_config", return_value=cfg),
+            patch("gimmes.cli.trading_context", _ctx),
+            patch(
+                "gimmes.kalshi.markets.get_market",
+                AsyncMock(return_value=market),
+            ),
+            patch(
+                "gimmes.reporting.formatter.console",
+                Console(file=buf, width=80),
+            ),
+        ):
+            result = CliRunner().invoke(app, ["positions"])
+
+        assert result.exit_code == 0, result.output
+        out = buf.getvalue()
+        # 214% of the $15 gate — banner intact at width 80
+        assert (
+            "KXJOBLESSCLAIMS-26MAY14-210000 StopGate:"
+            " 214% MANDATORY-CLOSE" in out
+        )
+        assert "Stop" in out

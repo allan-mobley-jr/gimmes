@@ -153,3 +153,107 @@ class TestFormatPnlSummary:
         assert lines.get("Closed") == "4"
         assert lines.get("Open Positions") == "1"
         assert lines.get("Total Trades") == "5"
+
+
+class TestStopColumn:
+    """#659: the Stop column computes stop-gate consumption so agents
+    read a number instead of doing arithmetic; at >= 200% a
+    `StopGate: N% MANDATORY-CLOSE` banner prints BELOW the table —
+    banners, unlike table cells, survive the width-80 non-TTY default
+    agents see (cells wrap and ellipsize long content)."""
+
+    @staticmethod
+    def _render(positions: list[dict], stop_loss_pct=0.15, width=160) -> str:
+        from io import StringIO
+        from unittest.mock import patch
+
+        from rich.console import Console
+
+        from gimmes.reporting.formatter import format_positions
+
+        buf = StringIO()
+        with patch(
+            "gimmes.reporting.formatter.console",
+            Console(file=buf, width=width),
+        ):
+            format_positions(positions, stop_loss_pct=stop_loss_pct)
+        return buf.getvalue()
+
+    @staticmethod
+    def _pos(pnl: float, cost_basis: float = 100.0, ticker="KXTEST") -> dict:
+        return {
+            "ticker": ticker, "side": "no", "count": 10,
+            "avg_price": 0.55, "market_price": 0.40,
+            "unrealized_pnl": pnl, "cost_basis": cost_basis,
+        }
+
+    def test_below_gate_renders_percentage(self) -> None:
+        # loss $7 on $100 basis at 15% stop -> 47% of gate
+        out = self._render([self._pos(-7.0)])
+        assert "47%" in out
+        assert "MANDATORY-CLOSE" not in out
+
+    def test_breached_gate_renders_over_100(self) -> None:
+        # loss $19.80 -> 132% of the $15 gate
+        out = self._render([self._pos(-19.80)])
+        assert "132%" in out
+        assert "MANDATORY-CLOSE" not in out
+
+    def test_double_gate_prints_banner(self) -> None:
+        # loss $32.10 -> 214% of the $15 gate
+        out = self._render([self._pos(-32.10)])
+        assert "214%" in out
+        assert "KXTEST StopGate: 214% MANDATORY-CLOSE" in out
+
+    def test_exactly_200_prints_banner(self) -> None:
+        out = self._render([self._pos(-30.0)])
+        assert "KXTEST StopGate: 200% MANDATORY-CLOSE" in out
+
+    def test_rounding_cannot_split_display_from_marker(self) -> None:
+        # 199.6% of gate rounds to 200 -> the banner MUST fire (the
+        # display and the threshold share the rounded value; a raw
+        # comparison would render 200% with no marker).
+        out = self._render([self._pos(-29.94)])
+        assert "200%" in out
+        assert "MANDATORY-CLOSE" in out
+
+    def test_banner_survives_width_80_with_long_ticker(self) -> None:
+        """THE load-bearing property (#659 review): at the width-80
+        non-TTY default agents get, table cells ellipsize — the
+        banner line must carry the literal intact."""
+        ticker = "KXJOBLESSCLAIMS-26MAY14-210000"
+        out = self._render(
+            [self._pos(-32.10, ticker=ticker)], width=80,
+        )
+        assert f"{ticker} StopGate: 214% MANDATORY-CLOSE" in out
+
+    def test_profitable_position_renders_dash(self) -> None:
+        out = self._render([self._pos(12.0)])
+        assert "MANDATORY-CLOSE" not in out
+        assert "—" in out
+
+    def test_losing_zero_basis_is_loud_not_dash(self) -> None:
+        """A losing position with no cost basis is a data bug — it
+        must not silently exempt itself from the backstop (#659
+        review)."""
+        out = self._render([self._pos(-5.0, cost_basis=0.0)])
+        assert "ERR" in out
+        assert "DATA-ERROR" in out
+
+    def test_none_stop_pct_keeps_legacy_table(self) -> None:
+        out = self._render([self._pos(-19.80)], stop_loss_pct=None)
+        assert "Stop" not in out
+        assert "MANDATORY-CLOSE" not in out
+
+    def test_nonpositive_stop_pct_raises(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="stop_loss_pct"):
+            self._render([self._pos(-5.0)], stop_loss_pct=0.0)
+
+    def test_data_error_banner_survives_width_80(self) -> None:
+        ticker = "KXJOBLESSCLAIMS-26MAY14-210000"
+        out = self._render(
+            [self._pos(-5.0, cost_basis=0.0, ticker=ticker)], width=80,
+        )
+        assert f"{ticker} StopGate: DATA-ERROR" in out
