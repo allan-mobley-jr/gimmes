@@ -949,7 +949,10 @@ def order(
                             message=churn_msg,
                             context=json.dumps({
                                 "ticker": ticker, "side": side,
-                                "entry_price": final_price,
+                                # eff_price is what the gate judged;
+                                # the limit is context only
+                                "entry_price": eff_price,
+                                "limit_price": final_price,
                             }),
                         ), "Failed to log reopen override")
                     elif churn_msg:
@@ -1546,7 +1549,7 @@ def candidates(
 
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
-        from gimmes.store.observation_validator import FLIP_WARNING_MARKER, _parse_scanned_at
+        from gimmes.store.observation_validator import FLIP_WARNING_MARKER, parse_scanned_at
         from gimmes.store.queries import (
             get_candidate_for_ticker,
             get_last_close_times,
@@ -1605,8 +1608,8 @@ def candidates(
             row_ticker = str(c.get("ticker", ""))
             last_close = close_times.get(row_ticker)
             if last_close:
-                scanned = _parse_scanned_at(str(c.get("scanned_at", "")))
-                closed = _parse_scanned_at(str(last_close))
+                scanned = parse_scanned_at(str(c.get("scanned_at", "")))
+                closed = parse_scanned_at(str(last_close))
                 if scanned and closed and scanned < closed:
                     flags.append("[red]STALE[/red]")
                     # The banner (which the prompts key on) fires

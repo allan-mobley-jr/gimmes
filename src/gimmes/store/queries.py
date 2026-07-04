@@ -899,7 +899,7 @@ async def get_snapshots(db: Database, limit: int = 500) -> list[dict]:
 async def get_recent_candidates(db: Database, limit: int = 20) -> list[dict]:
     """Get recent scanned candidates, newest first."""
     cursor = await db.conn.execute(
-        "SELECT * FROM candidates ORDER BY scanned_at DESC LIMIT ?", (limit,)
+        "SELECT * FROM candidates ORDER BY scanned_at DESC, id DESC LIMIT ?", (limit,)
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
