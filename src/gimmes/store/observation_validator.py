@@ -24,6 +24,7 @@ the constants in sync with monitor.md's playbook.
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from typing import NamedTuple
 
@@ -751,3 +752,127 @@ def validate_observation(
     warnings.extend(footer_warnings)
 
     return (not errors, errors, warnings)
+
+
+# ---------------------------------------------------------------------------
+# #660: candidate probability flip detection
+# ---------------------------------------------------------------------------
+#
+# KXCPI-26JUN-T-0.2 was scored NO-prob 0.98 (PROCEED, score 88) and
+# 0.02 (PASS) 2.5 hours apart on IDENTICAL market facts — a negative-
+# threshold side-convention inversion (the #641 class), with the
+# inversion signature new_prob == 1 - prior_prob holding exactly. The
+# flip was the CORRECTION, so this detector only WARNS — a hard
+# reject would have blocked the correct row. The warning text must
+# avoid scorer.py's red-flag keywords (carveout, discretion,
+# subjective, ambiguous, unclear) or it would silently depress
+# settlement-clarity scores when prepended to the memo.
+
+FLIP_PROB_DELTA = 0.50
+FLIP_PRICE_DELTA = 0.10
+INVERSION_TOLERANCE = 0.05
+FLIP_STALENESS_HOURS = 48
+# The marker MUST stay uppercase: Rich only parses tags starting
+# [a-z#/@], so [FLIP-WARNING] renders literally while a lowercase
+# [flip-warning] would be silently swallowed as markup (#644 class).
+FLIP_WARNING_MARKER = "[FLIP-WARNING]"
+
+
+def _parse_scanned_at(value: str) -> datetime.datetime | None:
+    """Parse a candidates.scanned_at timestamp (UTC), None on failure."""
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(
+                text[:19], fmt,
+            ).replace(tzinfo=datetime.UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def detect_candidate_flip(
+    *,
+    prior_prob: float,
+    prior_price: float,
+    prior_scanned_at: str,
+    new_prob: float,
+    new_price: float,
+    now: datetime.datetime | None = None,
+) -> list[str]:
+    """Warnings when a candidate's probability flips without a price move.
+
+    Fires when |new_prob - prior_prob| > FLIP_PROB_DELTA while the
+    YES-denominated market price moved <= FLIP_PRICE_DELTA — a move
+    that market facts cannot explain (#660). When the flip also
+    matches the inversion signature (new ~= 1 - prior within
+    INVERSION_TOLERANCE), the message names the #641 side-convention
+    class specifically. Skips degenerate priors (prob/price <= 0,
+    pre-#657 rows) and priors older than FLIP_STALENESS_HOURS (a
+    days-old scoring reflects a different market state). Comparison
+    assumes both rows were scored under the same configured side —
+    candidates carry no side column, so a mid-window strategy.side
+    change could produce one spurious warning (accepted residual;
+    this detector never blocks). ``now`` must be timezone-aware.
+    """
+    log = logging.getLogger(__name__)
+    if (
+        prior_prob <= 0 or prior_price <= 0
+        or new_prob <= 0 or new_price <= 0
+    ):
+        log.debug("flip check skipped: degenerate prob/price (#660)")
+        return []
+    scanned = _parse_scanned_at(prior_scanned_at)
+    if scanned is None:
+        log.debug(
+            "flip check skipped: unparseable scanned_at %r (#660)",
+            prior_scanned_at,
+        )
+        return []
+    current = now if now is not None else datetime.datetime.now(datetime.UTC)
+    age_hours = (current - scanned).total_seconds() / 3600
+    if age_hours > FLIP_STALENESS_HOURS:
+        log.debug(
+            "flip check skipped: prior scoring %.0fh old (#660)",
+            age_hours,
+        )
+        return []
+    prob_delta = abs(new_prob - prior_prob)
+    price_delta = abs(new_price - prior_price)
+    prob_inverted = (
+        abs(new_prob - (1.0 - prior_prob)) <= INVERSION_TOLERANCE
+    )
+    # A confused agent logs the COMPLEMENT price alongside the
+    # inverted probability (observed live: $0.40 -> $0.63, sum 1.03) —
+    # that is itself the inversion, not a market move, so it must not
+    # satisfy the price gate.
+    # The complement-price bypass applies ONLY when the probability
+    # also carries the inversion signature — a genuine repricing that
+    # happens to land near the prior's complement must not fire a
+    # "market facts cannot explain this" message (#660 review).
+    price_inverted = (
+        prob_inverted
+        and abs(new_price - (1.0 - prior_price)) <= FLIP_PRICE_DELTA
+    )
+    if prob_delta <= FLIP_PROB_DELTA or (
+        price_delta > FLIP_PRICE_DELTA and not price_inverted
+    ):
+        return []
+    if prob_inverted:
+        return [
+            f"INVERSION SIGNATURE (#660/#641): new probability"
+            f" {new_prob:.0%} is the complement of the prior"
+            f" {prior_prob:.0%} scored {age_hours:.0f}h ago while the"
+            f" market moved only {price_delta * 100:.0f}c — this is"
+            f" the negative-threshold side-convention flip class."
+            f" Re-derive YES/NO from Rules (primary) and state in the"
+            f" memo which convention is correct and why the prior"
+            f" scoring was wrong."
+        ]
+    return [
+        f"PROBABILITY INSTABILITY (#660): {prob_delta * 100:.0f}pp"
+        f" move from the prior scoring {age_hours:.0f}h ago on a"
+        f" {price_delta * 100:.0f}c price move — market facts cannot"
+        f" explain this. State in the memo what changed versus the"
+        f" prior scoring."
+    ]

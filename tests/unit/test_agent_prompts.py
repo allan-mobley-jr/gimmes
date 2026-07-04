@@ -2040,3 +2040,43 @@ def test_stop_column_literal_shared_across_code_and_prompts(
     assert "MANDATORY-CLOSE" in buf.getvalue()
     assert "MANDATORY-CLOSE" in caddie_master_text
     assert "MANDATORY-CLOSE" in monitor_text
+
+
+# ---------------------------------------------------------------------------
+# #660: probability-flip guard
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_flip_acknowledgment_rule(caddie_text: str) -> None:
+    """An unexplained >50pp flip against the ticker's own prior
+    scoring must be acknowledged in the memo (#660)."""
+    assert "Flip acknowledgment (REQUIRED — #660)" in caddie_text
+    start = caddie_text.index("Flip acknowledgment")
+    block = caddie_text[start:start + 700]
+    assert "[FLIP-WARNING]" in block
+    assert "prior probability" in block
+    assert "convention correction" in block
+
+
+def test_caddie_master_flip_reject_criterion(
+    caddie_master_text: str,
+) -> None:
+    """FLIP-WARN candidates are never approved on score alone (#660:
+    four PROCEEDs at ~88 on the side later assessed at 2%)."""
+    assert "Probability flip unresolved" in caddie_master_text
+    start = caddie_master_text.index("Probability flip unresolved")
+    block = caddie_master_text[start:start + 800]
+    assert "FLIP-WARN" in block
+    assert "REJECT or confer" in block
+    assert "NEVER approve a FLIP-WARN candidate on score alone" in block
+
+
+def test_flip_marker_literal_shared_across_code_and_prompts(
+    caddie_text: str,
+) -> None:
+    """Drift guard: the marker the CLI prints is the string the
+    caddie prompt keys on (#660)."""
+    from gimmes.store.observation_validator import FLIP_WARNING_MARKER
+
+    assert FLIP_WARNING_MARKER == "[FLIP-WARNING]"
+    assert FLIP_WARNING_MARKER in caddie_text
