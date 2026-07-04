@@ -1904,3 +1904,139 @@ def test_caddie_untradeable_at_bound_rule(caddie_text: str) -> None:
     assert "within one tick of a bound" in caddie_text
     assert "--recommendation pass" in caddie_text
     assert "sibling-strike" in caddie_text  # bound strikes don't dominate
+
+
+# ---------------------------------------------------------------------------
+# #659: hard loss backstop and HOLD-loop tightening
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_hard_loss_backstop_rule(
+    caddie_master_text: str,
+) -> None:
+    """At >= 200% of the stop gate the CLOSE is unconditional — every
+    carve-out the audited failures stretched must be enumerated as
+    non-applicable, and the lockout literal must apply."""
+    assert "Hard loss backstop" in caddie_master_text
+    start = caddie_master_text.index("Hard loss backstop")
+    block = caddie_master_text[start:start + 1600]
+    assert "200%" in block
+    assert "MANDATORY-CLOSE" in block
+    assert "unconditionally" in block
+    for carve_out in (
+        "thesis intact", "imminent settlement",
+        "re-evaluation condition", "data release",
+        "trigger type", "governance refresh",
+    ):
+        assert carve_out in block, f"missing non-applicable: {carve_out}"
+    assert "Trigger: Stop-loss breach" in block
+
+
+def test_caddie_master_loss_thesis_rule_not_scoped_to_flag_type(
+    caddie_master_text: str,
+) -> None:
+    """The KXPAYROLLS-26JUN failure: degraded thesis + losing position
+    must CLOSE whatever the flag's trigger type says."""
+    assert "Loss-position thesis rule" in caddie_master_text
+    start = caddie_master_text.index("Loss-position thesis rule")
+    block = caddie_master_text[start:start + 1000]
+    assert "POSITION STATE, not flag type" in block
+    assert "thesis-INTACT positions only" in block
+    assert "FORBIDDEN" in block
+    assert "KXPAYROLLS-26JUN-T125000" in block
+
+
+def test_caddie_master_scheduled_release_hold_rule(
+    caddie_master_text: str,
+) -> None:
+    """Governance refreshes must decide hold-through vs exit-before a
+    scheduled release (the KXCPIYOY-26MAY failure)."""
+    assert "Scheduled-release HOLD rule" in caddie_master_text
+    start = caddie_master_text.index("Scheduled-release HOLD rule")
+    block = caddie_master_text[start:start + 1200]
+    assert "hold-through-release" in block
+    assert "exit-before-release" in block
+    assert "FORBIDDEN as the sole re-evaluation condition" in block
+
+
+def test_caddie_master_2a_backstop_sweep(caddie_master_text: str) -> None:
+    """Losses gap between cycles (the KXCPIYOY-26JUN case) — the first
+    positions call of the cycle must sweep the StopGate banners, and
+    the sweep repeats after Monitor returns (mid-cycle gaps)."""
+    assert "Hard-backstop sweep" in caddie_master_text
+    start = caddie_master_text.index("Hard-backstop sweep")
+    block = caddie_master_text[start:start + 700]
+    assert "MANDATORY-CLOSE" in block
+    assert "even if Monitor writes no flag" in block
+    assert "TOP of step 2c" in block
+
+
+def test_caddie_master_backstop_rereads_positions_at_review(
+    caddie_master_text: str,
+) -> None:
+    """The 2a read can be stale by review time — the backstop must
+    re-run positions and fire on EITHER source (#659 review)."""
+    start = caddie_master_text.index("Hard loss backstop")
+    block = caddie_master_text[start:start + 1700]
+    assert "re-run `gimmes positions` NOW" in block
+    assert "EITHER the fresh output OR Monitor" in block
+
+
+def test_caddie_master_size_up_gate_dilution_rule(
+    caddie_master_text: str,
+) -> None:
+    """Sizing up a losing position dilutes the Stop percentage and
+    defers the backstop — forbidden at >= 100% (#659 review)."""
+    assert "SIZE UP gate-dilution rule" in caddie_master_text
+    start = caddie_master_text.index("SIZE UP gate-dilution rule")
+    block = caddie_master_text[start:start + 700]
+    assert "FORBIDDEN" in block
+    assert "100% or more" in block
+    assert "pre-add StopGate" in block
+
+
+def test_monitor_dedup_exempts_mandatory_close(monitor_text: str) -> None:
+    """The hard backstop outranks flag deduplication — a banner always
+    re-flags (#659 review)."""
+    assert "the hard loss backstop outranks flag deduplication" in monitor_text
+
+
+def test_monitor_stopgate_field_on_losing_positions(
+    monitor_text: str,
+) -> None:
+    assert "StopGate:" in monitor_text
+    # Field table row: required for every trigger when losing, copied
+    # verbatim from the CLI — never hand-computed.
+    assert "EVERY trigger type" in monitor_text
+    assert "never hand-computed" in monitor_text
+    # Template carries the line with an omit rule for winners.
+    assert "OMIT this line if the position is not losing" in monitor_text
+
+
+def test_stop_column_literal_shared_across_code_and_prompts(
+    caddie_master_text: str, monitor_text: str,
+) -> None:
+    """Drift guard: the MANDATORY-CLOSE literal rendered by the
+    formatter must be the string both prompts key on (#659)."""
+    from io import StringIO
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from gimmes.reporting import formatter
+
+    # Behavioral, not getsource: render a breached position and check
+    # the emitted banner (a docstring mention would fool getsource).
+    buf = StringIO()
+    with patch(
+        "gimmes.reporting.formatter.console",
+        Console(file=buf, width=80),
+    ):
+        formatter.format_positions([{
+            "ticker": "KXTEST", "side": "no", "count": 10,
+            "avg_price": 0.55, "market_price": 0.40,
+            "unrealized_pnl": -32.10, "cost_basis": 100.0,
+        }], stop_loss_pct=0.15)
+    assert "MANDATORY-CLOSE" in buf.getvalue()
+    assert "MANDATORY-CLOSE" in caddie_master_text
+    assert "MANDATORY-CLOSE" in monitor_text

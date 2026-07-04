@@ -92,8 +92,69 @@ def format_performance(metrics: PerformanceMetrics) -> None:
     console.print(table)
 
 
-def format_positions(positions: list[dict]) -> None:  # type: ignore[type-arg]
-    """Display positions as a Rich table."""
+def _stop_gate_pct(
+    pnl: float, cost_basis: float, stop_loss_pct: float,
+) -> int | None:
+    """Stop-gate consumption for one position, rounded percent (#659).
+
+    Computed HERE so agents read a number instead of doing arithmetic
+    (a known failure mode). Rounded BEFORE thresholding so the display
+    and the 200% backstop marker can never disagree (199.6 -> 200 ->
+    marker). None for winners and zero-basis rows.
+    """
+    if cost_basis <= 0 or pnl >= 0:
+        return None
+    return round(-pnl / (stop_loss_pct * cost_basis) * 100)
+
+
+def _stop_cell(
+    pnl: float, cost_basis: float, ticker: str, stop_loss_pct: float,
+) -> tuple[str, str | None]:
+    """``Stop`` cell text and optional banner line for one position."""
+    pct = _stop_gate_pct(pnl, cost_basis, stop_loss_pct)
+    if pct is None:
+        if pnl < 0 and cost_basis <= 0:
+            # A losing position with no cost basis is a data
+            # bug — surface it loudly rather than exempting
+            # the position from the backstop with a dash.
+            # Banner is short enough to stay one line at width
+            # 80 even with a 30-char ticker (#659).
+            return (
+                "[red]ERR[/red]",
+                f"[red bold]{ticker} StopGate: DATA-ERROR"
+                f" (losing, zero cost basis)[/red bold]",
+            )
+        return "—", None
+    if pct >= 200:
+        return (
+            f"[red bold]{pct}%[/red bold]",
+            f"[red bold]{ticker} StopGate: {pct}%"
+            f" MANDATORY-CLOSE[/red bold]",
+        )
+    if pct >= 100:
+        return f"[red]{pct}%[/red]", None
+    return f"{pct}%", None
+
+
+def format_positions(
+    positions: list[dict],  # type: ignore[type-arg]
+    stop_loss_pct: float | None = None,
+) -> None:
+    """Display positions as a Rich table.
+
+    With ``stop_loss_pct``, adds a ``Stop`` column showing stop-gate
+    consumption per losing position (#659) and prints a
+    ``StopGate: N% MANDATORY-CLOSE`` banner line BELOW the table for
+    each position at >= 200%. The banner — not the table cell —
+    carries the load-bearing literal: at the width-80 non-TTY default
+    agents see, table cells wrap and ellipsize long content, but a
+    plain sub-80-char line always survives intact. Monitor copies the
+    banner into flags; Caddie Master's hard backstop keys on it.
+    """
+    if stop_loss_pct is not None and stop_loss_pct <= 0:
+        raise ValueError(
+            f"stop_loss_pct must be positive, got {stop_loss_pct}"
+        )
     table = Table(title="Open Positions")
     # ``overflow="fold"`` keeps the full ticker visible by wrapping to
     # the next line when the terminal can't fit it; Rich's default
@@ -105,20 +166,34 @@ def format_positions(positions: list[dict]) -> None:  # type: ignore[type-arg]
     table.add_column("Avg Price", justify="right")
     table.add_column("Mkt Price", justify="right")
     table.add_column("P&L", justify="right")
+    if stop_loss_pct is not None:
+        table.add_column("Stop", justify="right")
 
+    banners: list[str] = []
     for p in positions:
         pnl = p.get("unrealized_pnl", 0)
         pnl_color = "green" if pnl >= 0 else "red"
-        table.add_row(
+        row = [
             p.get("ticker", ""),
             p.get("side", ""),
             str(p.get("count", 0)),
             f"${p.get('avg_price', 0):.2f}",
             f"${p.get('market_price', 0):.2f}",
             f"[{pnl_color}]${pnl:,.2f}[/{pnl_color}]",
-        )
+        ]
+        if stop_loss_pct is not None:
+            cell, banner = _stop_cell(
+                pnl, p.get("cost_basis", 0), p.get("ticker", ""),
+                stop_loss_pct,
+            )
+            row.append(cell)
+            if banner is not None:
+                banners.append(banner)
+        table.add_row(*row)
 
     console.print(table)
+    for banner in banners:
+        console.print(banner)
 
 
 def format_scan_results(markets: list[dict], title: str = "Scan Results") -> None:  # type: ignore[type-arg]

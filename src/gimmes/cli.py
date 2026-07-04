@@ -1665,7 +1665,10 @@ def positions() -> None:
             if not pos_list:
                 console.print("[dim]No open positions[/dim]")
                 return
-            format_positions([p.model_dump() for p in pos_list])
+            format_positions(
+                [p.model_dump() for p in pos_list],
+                stop_loss_pct=config.risk.position_stop_loss_pct,
+            )
 
     _run(_positions())
 

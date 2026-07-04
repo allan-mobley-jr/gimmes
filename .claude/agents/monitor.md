@@ -41,7 +41,7 @@ Flag a position for Caddie Master review — by writing a `flag` note — when A
 - **New information**: You find news or data published AFTER the position was opened that materially affects the probability estimate — and that information was NOT already accounted for in the original thesis.
 - **Time decay**: Resolution is < 24 hours away AND position is not yet profitable.
 - **Risk approaching**: Daily P&L loss approaching the configured daily loss limit (from the "Daily Loss Limit" line in `risk-check` output).
-- **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15. Use trigger name `Stop-loss breach` (exact spelling) and include `Thesis:`, `Price:`, and `TimeToResolution:` fields per the field-requirements table in "Writing Flags" below. Caddie Master's step 2c stop-loss rule discriminates thesis-intact-imminent-settlement HOLD from thesis-degraded CLOSE using those three fields — missing or malformed fields force the conservative CLOSE path.
+- **Stop-loss breach**: The position's unrealized P&L (from `gimmes positions`, negative when losing) is <= -(Position Stop-Loss % x cost basis). Equivalently, the absolute loss >= the "Position Stop-Loss" percentage (from `risk-check` output) multiplied by cost basis. For example, at 15% stop-loss and $100 cost basis, flag when unrealized P&L <= -$15. The `Stop` column of `gimmes positions` shows this consumption directly — 100% or more means breached. Use trigger name `Stop-loss breach` (exact spelling) and include `Thesis:`, `Price:`, `TimeToResolution:`, and `StopGate:` fields per the field-requirements table in "Writing Flags" below. Caddie Master's step 2c stop-loss rule discriminates thesis-intact-imminent-settlement HOLD from thesis-degraded CLOSE using those fields — missing or malformed fields force the conservative CLOSE path.
 - **Profit-taking threshold**: The position's unrealized gain >= the "Position Take-Profit" percentage (from `risk-check` output) multiplied by maximum possible profit. Max profit for a YES position = (1.00 - entry_price) x contracts; for NO = entry_price x contracts. For example, at 80% take-profit, entry $0.40, and 10 contracts, max profit = $6.00 and the flag triggers when unrealized P&L >= $4.80.
 
 A trigger condition means Caddie Master should look at this position. It does NOT mean the position should be closed. Caddie Master decides what to do.
@@ -203,6 +203,7 @@ When a trigger condition is met, write a flag note in addition to the observatio
 | `Thesis:` | `Price movement` (adverse only), `Stop-loss breach` | exact value `intact` or `degraded` — no modifiers, no different casing |
 | `Price:` | `Price movement` (adverse only), `Stop-loss breach` | `entry $X -> current $Y (D Npp)` |
 | `TimeToResolution:` | `Stop-loss breach` | integer hours followed by `h` (e.g. `18h`, `2h`). No fractions, no `1d 2h`, no other units. Caddie Master compares this against `< 24` numerically. |
+| `StopGate:` | EVERY trigger type when the position's unrealized P&L is negative | when ANY `StopGate:` banner line appears below the `gimmes positions` table for this ticker (`MANDATORY-CLOSE` or `DATA-ERROR`), copy that banner's StopGate value VERBATIM (e.g. `StopGate: 214% MANDATORY-CLOSE`); otherwise copy the `Stop` column percentage (e.g. `StopGate: 47%`) — never hand-computed (#659) |
 
 **Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above). The quoted heredoc means dollar-prefixed prices survive literally — no backslash escapes needed (#589):
 
@@ -216,6 +217,7 @@ Assessment: [Is this new information the thesis did not account for? Or is this 
 Thesis: [intact or degraded].
 Price: [entry $X -> current $Y (D Npp)].
 TimeToResolution: [Nh].
+StopGate: [copy from the Stop column of gimmes positions; OMIT this line if the position is not losing].
 For Caddie Master: [factual summary of the situation — no recommendation].
 GIMMES_EOF
 gimmes position-note TICKER \
@@ -232,6 +234,7 @@ Do NOT write: "I recommend closing this position." Do NOT write: "This position 
 - Look at the **most recent** decision note (type=decision) for this position from Caddie Master. Older decisions are superseded.
 - Do NOT re-flag a trigger condition that the most recent decision already addressed, UNLESS your delta observation identifies something genuinely new that was not present when that decision was made.
 - If the most recent HOLD decision includes a "Re-evaluate if" condition, only re-flag if that specific condition has been met.
+- **Exception (#659):** a position with ANY `StopGate:` banner below the `gimmes positions` table (`MANDATORY-CLOSE` or `DATA-ERROR`) MUST be re-flagged regardless of any prior HOLD's re-evaluation condition — the hard loss backstop outranks flag deduplication.
 - If the most recent HOLD decision includes an "Expiry" cycle number and the current cycle >= that number, treat the HOLD as stale — the position can be re-flagged.
 - If the most recent HOLD decision has NO "Re-evaluate if" or "Expiry" fields (legacy decision from before this feature), treat it as stale.
 - **48-hour staleness re-search rule (REQUIRED — #577)**: if the most recent CM `decision`-type note for this position is older than 48 hours, you MUST re-run the full Fundamental-Economic-Trigger Source Playbook this cycle regardless of whether your delta search finds anything new. The 48h clock anchors on the **most recent CM decision note timestamp** — not the prior observation timestamp (which Monitor controls and can refresh by writing a stale-template observation). Macro forecasts are revised frequently; old CM-defined re-eval conditions deserve a fresh check against current source state. If the fresh playbook search confirms no change, the next bullet ("No material change → no flag") still applies — 48h forces a re-search, NOT a flag.
