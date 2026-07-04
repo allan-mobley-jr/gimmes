@@ -37,7 +37,7 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 
 **Immediate escalation (MUST file issue in this cycle — NEVER defer):**
 - Any error with `critical` severity
-- Any error with `risk_breach` category
+- Any error with `risk_breach` category — EXCEPT `churn_roundtrip` WARNING rows (#661): those are audit-trail records for the Pro agent's churn analysis, written on every sub-hour close including correct stop-loss closes — do NOT file issues for them. `reopen_gate_overridden` rows DO escalate (a forced bypass always warrants review).
 - `auth_failure` errors that have been unresolved for 2+ cycles
 
 **Pattern escalation (file issue if threshold met):**

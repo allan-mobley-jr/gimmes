@@ -94,6 +94,7 @@ def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
     insert_error_side_effect=None, extra_args=None, market=None,
     snapshot_mock=None, validation=None, cli_args=None,
+    last_close=None, last_close_effect=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -143,6 +144,14 @@ def _run_order_cli(
         patch("gimmes.store.queries.get_deployed_cost_basis", AsyncMock(return_value=0.0)),
         patch("gimmes.store.queries.insert_error", mock_insert_error),
         patch("gimmes.strategy.fees.fee_for_order", MagicMock(return_value=0.03)),
+        # #661: the buy path consults the ticker's last close; default
+        # to none so the reopen gate stays out of unrelated tests.
+        patch(
+            "gimmes.store.queries.get_last_close_trade",
+            AsyncMock(
+                return_value=last_close, side_effect=last_close_effect,
+            ),
+        ),
     ]
 
     # Championship mode (broker=None) needs patched portfolio and order funcs

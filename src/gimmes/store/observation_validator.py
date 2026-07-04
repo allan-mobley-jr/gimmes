@@ -778,7 +778,7 @@ FLIP_STALENESS_HOURS = 48
 FLIP_WARNING_MARKER = "[FLIP-WARNING]"
 
 
-def _parse_scanned_at(value: str) -> datetime.datetime | None:
+def parse_scanned_at(value: str) -> datetime.datetime | None:
     """Parse a candidates.scanned_at timestamp (UTC), None on failure."""
     text = str(value).strip()
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
@@ -822,7 +822,7 @@ def detect_candidate_flip(
     ):
         log.debug("flip check skipped: degenerate prob/price (#660)")
         return []
-    scanned = _parse_scanned_at(prior_scanned_at)
+    scanned = parse_scanned_at(prior_scanned_at)
     if scanned is None:
         log.debug(
             "flip check skipped: unparseable scanned_at %r (#660)",
