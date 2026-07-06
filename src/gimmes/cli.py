@@ -1689,9 +1689,13 @@ def candidates(
             )
             if memo_row is not None:
                 scanned = str(memo_row.get("scanned_at") or "?")
+                # Header claims only what was searched: the fetched
+                # window is bounded by --limit, so the scanned-at
+                # timestamp — not a "newest on record" claim — anchors
+                # recency (PR #692 review).
                 console.print(
-                    f"\n[bold]--- RESEARCH MEMO (newest on record,"
-                    f" scanned {rich_escape(scanned)}) ---[/bold]"
+                    f"\n[bold]--- RESEARCH MEMO (scanned"
+                    f" {rich_escape(scanned)}) ---[/bold]"
                 )
                 console.print(
                     str(memo_row.get("research_memo") or ""),
