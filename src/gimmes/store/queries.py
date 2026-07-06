@@ -1023,20 +1023,28 @@ async def get_entry_analytics(
 
 
 async def get_last_entry_trade(
-    db: Database, ticker: str,
+    db: Database, ticker: str, side: str | None = None,
 ) -> dict | None:  # type: ignore[type-arg]
     """The ticker's most recent open OR size_up row, or None (#661).
 
     The round-trip churn anchor: a position sized up 10 minutes ago
     round-trips most of its capital even if the original open is
-    hours old, so size_up rows count as entries.
+    hours old, so size_up rows count as entries. ``side`` scopes the
+    anchor to the leg being closed (#678): under side='both' holdings
+    the ticker's most recent entry may belong to the OTHER side, and
+    the anchor is persisted as the round-trip grouping key in the
+    churn audit rows.
     """
-    cursor = await db.conn.execute(
+    query = (
         "SELECT price, timestamp FROM trades"
         " WHERE ticker = ? AND action IN ('open', 'size_up')"
-        " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1",
-        (ticker,),
     )
+    params: list[object] = [ticker]
+    if side:
+        query += " AND side = ?"
+        params.append(side)
+    query += " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1"
+    cursor = await db.conn.execute(query, params)
     row = await cursor.fetchone()
     return dict(row) if row else None
 
@@ -1053,12 +1061,13 @@ async def get_last_close_trade(
     (churn.py keeps its own agent check as defense in depth).
     Timestamps are normalized space->T in the ORDER BY so a legacy
     schema-default row can never outrank a newer ISO row; ``id DESC``
-    breaks exact ties. Side-blind by design: prices are
-    side-effective, so a genuine opposite-side re-entry at "the same"
-    number is rare and --force-reopen covers it (accepted residual).
+    breaks exact ties. ``side`` is returned so the gate can normalize
+    denominations (#678): prices in the row remain side-effective, and
+    check_reopen_churn flips the close price into the entry's terms
+    before applying the band.
     """
     cursor = await db.conn.execute(
-        "SELECT price, timestamp, agent FROM trades"
+        "SELECT price, timestamp, agent, side FROM trades"
         " WHERE ticker = ? AND action = 'close'"
         " AND agent != 'reconcile'"
         " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1",

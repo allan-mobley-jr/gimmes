@@ -2251,3 +2251,14 @@ def test_flip_staleness_matches_cm_research_expiry(
 
     assert FLIP_STALENESS_HOURS == 48
     assert "more than 48 hours" in caddie_master_text
+
+
+def test_caddie_master_stale_close_precedes_score_rules(
+    caddie_master_text: str,
+) -> None:
+    """#678: STALE-CLOSE invalidates the prior research, so it must be
+    checked BEFORE any score-based cooldown rule can skip on that
+    research's score."""
+    stale = caddie_master_text.index("Prior research flagged STALE-CLOSE")
+    first_rule = caddie_master_text.index("1. **No prior research**")
+    assert stale < first_rule

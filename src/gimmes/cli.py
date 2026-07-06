@@ -782,6 +782,18 @@ def order(
         nonlocal side
         if not side:
             side = config.strategy.side
+        # #678: under side='both' every downstream consumer needs an
+        # explicit side — the reopen gate would silently run
+        # side-blind (the exact gap the denomination flip closes) and
+        # OrderSide("both") would crash after the gate anyway. Fail
+        # loud and early instead.
+        if side not in ("yes", "no"):
+            console.print(
+                f"[red]Order requires an explicit side: config"
+                f" strategy.side is {side!r} — pass --side yes or"
+                f" --side no (#678)[/red]"
+            )
+            raise typer.Exit(1)
 
         import json
         import logging
@@ -882,7 +894,7 @@ def order(
                         get_last_entry_trade,
                     )
 
-                    open_row = await get_last_entry_trade(db, ticker)
+                    open_row = await get_last_entry_trade(db, ticker, side=side)
                     churn_note = check_roundtrip_churn(
                         open_timestamp=str(open_row.get("timestamp", "")),
                     ) if open_row else None
@@ -894,8 +906,16 @@ def order(
                             error_code="churn_roundtrip",
                             component="cli.order", agent=agent,
                             message=churn_note,
+                            # #678: the anchor entry is the grouping
+                            # key — legs sharing an entry_timestamp
+                            # are one round trip (Pro's audit derives
+                            # leg counts from trades; not stored).
                             context=json.dumps({
                                 "ticker": ticker, "side": side,
+                                "entry_timestamp": str(
+                                    open_row.get("timestamp", "")
+                                ),
+                                "entry_price": open_row.get("price"),
                             }),
                         ), "Failed to log churn warning")
                 except Exception:
@@ -941,6 +961,7 @@ def order(
                     ), "Failed to log gate failure")
                     last_close = None
                 if last_close is not None:
+                    close_side = str(last_close.get("side") or "")
                     # Gate on the MARKET effective price, not the
                     # caller-controlled limit: a marketable limit set
                     # 5c+ away still fills at the ask, so final_price
@@ -952,6 +973,10 @@ def order(
                         ),
                         close_agent=str(last_close["agent"] or ""),
                         entry_price=eff_price,
+                        # #678: sides let the gate flip the close
+                        # price into the entry's denomination.
+                        close_side=close_side,
+                        entry_side=side,
                     )
                     if churn_msg and force_reopen:
                         console.print(
@@ -970,6 +995,7 @@ def order(
                                 # the limit is context only
                                 "entry_price": eff_price,
                                 "limit_price": final_price,
+                                "close_side": close_side,
                             }),
                         ), "Failed to log reopen override")
                     elif churn_msg:
@@ -1628,15 +1654,21 @@ def candidates(
                 scanned = parse_scanned_at(str(c.get("scanned_at", "")))
                 closed = parse_scanned_at(str(last_close))
                 if scanned and closed and scanned < closed:
-                    flags.append("[red]STALE[/red]")
                     # The banner (which the prompts key on) fires
                     # only when the ticker's NEWEST research row is
                     # stale — records are ordered newest-first, so
-                    # first-seen decides. Older stale rows keep the
-                    # cell flag but must not deadlock the fresh
-                    # post-close research recovery path.
+                    # first-seen decides. Older stale rows keep a
+                    # DIM cell flag (#678: still genuinely stale —
+                    # Step 4c and Closer read --limit 3 output — but
+                    # 4a triggers on the banner only, and red noise
+                    # is confined to the row that arms the banner)
+                    # and must not deadlock the fresh post-close
+                    # research recovery path.
                     if row_ticker not in newest_seen:
+                        flags.append("[red]STALE[/red]")
                         stale_tickers[row_ticker] = None
+                    else:
+                        flags.append("[dim]STALE[/dim]")
             newest_seen.add(row_ticker)
             status = " ".join(flags)
             rec = str(c.get("recommendation", ""))
