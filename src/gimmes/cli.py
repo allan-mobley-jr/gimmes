@@ -3844,6 +3844,18 @@ def backtest(
             f"[dim]Running backtest: {start} to {end}, "
             f"${balance:,.0f} starting balance...[/dim]"
         )
+        # #666: the selection replay fetches candles for every scanned
+        # market (~minutes) — surface the engine's progress logs so
+        # the run doesn't look hung. Scoped to the backtest logger;
+        # INFO records are otherwise dropped (no root handler).
+        import logging
+
+        bt_logger = logging.getLogger("gimmes.backtest.engine")
+        if not bt_logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            bt_logger.addHandler(handler)
+            bt_logger.setLevel(logging.INFO)
         async with KalshiClient(config) as client:
             result = await run_backtest(client, bt_config)
 

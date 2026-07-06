@@ -595,10 +595,9 @@ class TestEntryDayPricing:
     the ENTRY-DAY candle — settlement data reaches only the payout."""
 
     def _markets(self):
-        # Settlement quotes 0.25/0.35 → NO eff at settlement = 0.70
-        # (inside the scanner band — selection still reads settlement
-        # data by design; only entry pricing/gating moved to the
-        # entry-day candle in #655).
+        # Settlement quotes 0.25/0.35 → NO eff at settlement = 0.70.
+        # Since #666 selection ALSO runs on the entry-day candle, the
+        # settlement quotes are payout-only context here.
         return [_settled_market("KXCPI-26MAR-T0.5",
                                 yes_bid=0.25, yes_ask=0.35)]
 
@@ -701,7 +700,11 @@ class TestEntryDayPricing:
 
         result = await self._run()
         assert result.trades == []
-        assert result.skipped_entry_gates == 1
+        # #666: the price band now runs inside filter_markets on the
+        # entry-day view — the market never passes the filter, so it
+        # never reaches the pass-1 prob/edge gates.
+        assert result.markets_passed_filter == 0
+        assert result.skipped_entry_gates == 0
 
     @pytest.mark.asyncio
     async def test_no_candle_dropped(self, monkeypatch) -> None:
@@ -724,7 +727,10 @@ class TestEntryDayPricing:
 
         result = await self._run()
         assert result.trades == []
-        assert result.skipped_no_candle == 1
+        # #666: a FAILED fetch is counted apart from empty history —
+        # a systemic API failure must not masquerade as data sparsity.
+        assert result.fetch_failures == 1
+        assert result.skipped_no_candle == 0
 
     @pytest.mark.asyncio
     async def test_degenerate_quote_dropped(self, monkeypatch) -> None:
@@ -737,7 +743,11 @@ class TestEntryDayPricing:
 
         result = await self._run()
         assert result.trades == []
-        assert result.skipped_no_candle == 1
+        # #666: one-sided quotes get their own counter — they can
+        # bias the sample away from near-certain late-life contracts
+        # and must be visible separately from missing history.
+        assert result.skipped_one_sided == 1
+        assert result.skipped_no_candle == 0
 
     @pytest.mark.asyncio
     async def test_future_candle_not_used(self, monkeypatch) -> None:
@@ -773,3 +783,223 @@ class TestEntryCandleHelpers:
         assert entry_candle_at([c1, c2, c3], 250) is c2
         assert entry_candle_at([c1, c2, c3], 50) is None
         assert entry_candle_at([], 100) is None
+
+
+class TestEntryDaySelection:
+    """#666 regression suite: the candidate SET is selected through
+    the entry-day lens — settlement snapshots never reach
+    filter_markets/quick_score."""
+
+    _pricing = TestEntryDayPricing()
+
+    def _stub(self, monkeypatch, markets, candles_by_ticker):
+        return self._pricing._stub(monkeypatch, markets, candles_by_ticker)
+
+    async def _run(self, config=None):
+        return await self._pricing._run(config)
+
+    @pytest.mark.asyncio
+    async def test_pessimistic_omission_fixed(self, monkeypatch) -> None:
+        """A market OUT of band at settlement but IN band on entry day
+        must now be selected and traded — the settlement lens made it
+        invisible."""
+        m = _settled_market(
+            "KXCPI-26MAR-T0.5", yes_bid=0.01, yes_ask=0.03,
+        )  # settlement NO eff ~0.98 — outside the band
+        candles = {m.ticker: [_make_candle(
+            ts=self._pricing._entry_ts(m),
+            yes_bid_close=0.30, yes_ask_close=0.40,  # entry NO eff 0.65
+        )]}
+        self._stub(monkeypatch, [m], candles)
+
+        result = await self._run()
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_price == pytest.approx(0.65)
+
+    @pytest.mark.asyncio
+    async def test_optimistic_volume_gating_fixed(self, monkeypatch) -> None:
+        """Settlement volume passes the min but the ENTRY-DAY candle
+        volume doesn't — the market must be filtered out (end-of-life
+        liquidity was gating optimistically)."""
+        m = _settled_market(
+            "KXCPI-26MAR-T0.5", yes_bid=0.25, yes_ask=0.35,
+        )  # settlement volume_24h=1000 (helper default)
+        candles = {m.ticker: [_make_candle(
+            ts=self._pricing._entry_ts(m),
+            yes_bid_close=0.25, yes_ask_close=0.35,
+            volume=0,  # no entry-day liquidity
+        )]}
+        self._stub(monkeypatch, [m], candles)
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.markets_passed_filter == 0
+
+    @pytest.mark.asyncio
+    async def test_optimistic_oi_gating_fixed(self, monkeypatch) -> None:
+        m = _settled_market(
+            "KXCPI-26MAR-T0.5", yes_bid=0.25, yes_ask=0.35,
+        )  # settlement OI=5000
+        candles = {m.ticker: [_make_candle(
+            ts=self._pricing._entry_ts(m),
+            yes_bid_close=0.25, yes_ask_close=0.35,
+            open_interest=0,
+        )]}
+        self._stub(monkeypatch, [m], candles)
+
+        result = await self._run()
+        assert result.trades == []
+        assert result.markets_passed_filter == 0
+
+    @pytest.mark.asyncio
+    async def test_counter_split_mixed_population(self, monkeypatch) -> None:
+        close = _FIXED_CLOSE_TIME
+        healthy = _settled_market(
+            "KXCPI-26MAR-T0.5", yes_bid=0.25, yes_ask=0.35,
+            close_time=close,
+        )
+        one_sided = _settled_market(
+            "KXCPI-26MAR-T0.6", yes_bid=0.25, yes_ask=0.35,
+            close_time=close,
+        )
+        no_history = _settled_market(
+            "KXCPI-26MAR-T0.7", yes_bid=0.25, yes_ask=0.35,
+            close_time=close,
+        )
+        entry_ts = self._pricing._entry_ts(healthy)
+        candles = {
+            healthy.ticker: [_make_candle(
+                ts=entry_ts, yes_bid_close=0.25, yes_ask_close=0.35,
+            )],
+            one_sided.ticker: [_make_candle(
+                ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.0,
+            )],
+            no_history.ticker: [],
+        }
+        self._stub(monkeypatch, [healthy, one_sided, no_history], candles)
+
+        result = await self._run()
+        assert result.skipped_one_sided == 1
+        assert result.skipped_no_candle == 1
+        assert len(result.trades) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_fetch_per_unique_ticker(self, monkeypatch) -> None:
+        """The selection replay fetches each ticker's candles exactly
+        once — the cache absorbs the side loop and pass 1."""
+        markets = [
+            _settled_market(
+                f"KXCPI-26MAR-T0.{i}", yes_bid=0.25, yes_ask=0.35,
+            )
+            for i in range(1, 4)
+        ]
+        entry_ts = self._pricing._entry_ts(markets[0])
+        candles = {
+            m.ticker: [_make_candle(
+                ts=entry_ts, yes_bid_close=0.25, yes_ask_close=0.35,
+            )]
+            for m in markets
+        }
+        calls = self._stub(monkeypatch, markets, candles)
+
+        await self._run()
+        fetched = [c["ticker"] for c in calls]
+        assert sorted(fetched) == sorted(m.ticker for m in markets)
+        assert len(fetched) == len(set(fetched))
+
+    @pytest.mark.asyncio
+    async def test_score_reads_candle_liquidity(self, monkeypatch) -> None:
+        """quick_score must consume the ENTRY-DAY view, not the
+        settlement snapshot: with the threshold pinned between the
+        settlement score (~rich liquidity) and the entry-day score
+        (thin volume/OI, wide spread), a settlement-lens regression
+        would trade; the entry-day lens must not (#666 review — the
+        one-token-away mutant feeding original_by_ticker into
+        quick_score)."""
+        m = _settled_market(
+            "KXCPI-26MAR-T0.5", yes_bid=0.25, yes_ask=0.35,
+        )  # settlement: volume_24h=1000, OI=5000, spread 0.10
+        candles = {m.ticker: [_make_candle(
+            ts=self._pricing._entry_ts(m),
+            yes_bid_close=0.20, yes_ask_close=0.40,  # wide spread
+            volume=120, open_interest=60,  # passes filter mins, thin
+        )]}
+        self._stub(monkeypatch, [m], candles)
+
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.0, min_edge_after_fees=-1.0,
+        )
+        from gimmes.strategy.scorer import quick_score
+
+        # Pin the threshold strictly between the two lens scores.
+        settlement_score = quick_score(m, config.gimmes_config)
+        entry_view_score = quick_score(
+            m.model_copy(update={
+                "yes_bid": 0.20, "yes_ask": 0.40, "last_price": 0.0,
+                "volume": 120, "volume_24h": 120, "open_interest": 60,
+            }),
+            config.gimmes_config,
+        )
+        assert entry_view_score < settlement_score
+        config.gimmes_config.strategy.gimme_threshold = (
+            entry_view_score + settlement_score
+        ) / 2
+
+        result = await self._run(config)
+        assert result.trades == []
+        assert result.markets_scored == 0
+        assert result.markets_passed_filter == 1  # filter passed; score gated
+
+    @pytest.mark.asyncio
+    async def test_min_days_above_offset_warns_and_selects_nothing(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """The honest synthetic close (now + ENTRY_OFFSET_DAYS) means
+        a min_days_to_resolution above the fixed offset selects
+        nothing — that must be loud, not a silent data outage."""
+        m = _settled_market("KXCPI-26MAR-T0.5", yes_bid=0.25, yes_ask=0.35)
+        candles = {m.ticker: [_make_candle(
+            ts=self._pricing._entry_ts(m),
+            yes_bid_close=0.25, yes_ask_close=0.35,
+        )]}
+        self._stub(monkeypatch, [m], candles)
+
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.0, min_edge_after_fees=-1.0,
+        )
+        config.gimmes_config.scanner.min_days_to_resolution = 2.0
+        with caplog.at_level("WARNING", logger="gimmes.backtest.engine"):
+            result = await self._run(config)
+        assert result.trades == []
+        assert result.markets_passed_filter == 0
+        assert any(
+            "min_days_to_resolution" in r.message for r in caplog.records
+        )
+
+
+class TestEntryDayView:
+    """Unit pins for the #666 synthetic entry-day Market."""
+
+    def test_field_mapping(self) -> None:
+        from gimmes.backtest.engine import _entry_day_view
+
+        m = _settled_market("KXCPI-26MAR-T0.5", yes_bid=0.10, yes_ask=0.20)
+        candle = _make_candle(
+            yes_bid_close=0.30, yes_ask_close=0.42,
+            volume=77, open_interest=88,
+        )
+        close = datetime(2027, 1, 1, tzinfo=UTC)
+        view = _entry_day_view(m, candle, close)
+
+        assert view.yes_bid == 0.30
+        assert view.yes_ask == 0.42
+        assert view.midpoint == pytest.approx(0.36)
+        assert view.spread == pytest.approx(0.12)
+        assert view.last_price == 0.0  # never fall back to stale trades
+        assert view.volume == 77
+        assert view.volume_24h == 77
+        assert view.open_interest == 88
+        assert view.close_time == close
+        assert view.status.value == "active"
+        # the settled original is untouched
+        assert m.yes_bid == 0.10
