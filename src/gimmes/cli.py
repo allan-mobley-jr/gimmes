@@ -2448,6 +2448,7 @@ def log_trade(
                 # Best-effort: a failed read degrades to zeros — a
                 # degenerate skip row beats a missing one (log-trade
                 # is the agents' logger of last resort).
+                cause_logged = False
                 try:
                     rows = await get_candidate_for_ticker(db, ticker)
                 except sqlite3.Error:
@@ -2457,6 +2458,7 @@ def log_trade(
                         ticker, exc_info=True,
                     )
                     rows = []
+                    cause_logged = True
                 if rows:
                     # #670: a candidate scanned >48h ago is a
                     # different market — zeros beat stale analytics.
@@ -2480,6 +2482,7 @@ def log_trade(
                             ticker, raw_scan,
                         )
                         rows = []
+                        cause_logged = True
                     elif datetime.now(UTC) - scanned > timedelta(
                         hours=_BACKFILL_MAX_AGE_HOURS,
                     ):
@@ -2490,6 +2493,7 @@ def log_trade(
                             ticker, _BACKFILL_MAX_AGE_HOURS,
                         )
                         rows = []
+                        cause_logged = True
                 if rows:
                     cand = rows[0]
                     if prob_missing:
@@ -2500,7 +2504,11 @@ def log_trade(
                         trade.price = cand["market_price"] or 0.0
                     if score_val <= 0:
                         trade.gimme_score = cand["gimme_score"] or 0.0
-                else:
+                elif not cause_logged:
+                    # Only when there truly was no row — the stale and
+                    # unparseable paths logged their own cause above
+                    # and must not be misreported as "no candidate"
+                    # (#670 review).
                     logging.getLogger(__name__).debug(
                         "skip for %s found no candidate row —"
                         " analytics default to 0 (#657)", ticker,

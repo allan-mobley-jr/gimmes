@@ -185,13 +185,20 @@ def test_mixed_explicit_prob_backfilled_price_score(
 
 def test_no_candidate_row_keeps_zeros(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import logging
+
     db_path = tmp_path / "test.db"
     _bare_db(db_path)
     _patch_config(monkeypatch, db_path)
 
-    result = _invoke_skip()
+    with caplog.at_level(logging.DEBUG, logger="gimmes.cli"):
+        result = _invoke_skip()
     assert result.exit_code == 0, result.output
+    # The genuine no-row path — the fallback debug names the true
+    # cause (guards against inverting the cause_logged flag, #670).
+    assert "found no candidate row" in caplog.text
 
     s = _skip_row(db_path)
     assert s["model_probability"] == 0.0
@@ -506,6 +513,59 @@ def test_unparseable_scanned_at_not_backfilled(
         result = _invoke_skip()
     assert result.exit_code == 0, result.output
     assert "unparseable" in caplog.text
+    s = _skip_row(db_path)
+    assert s["model_probability"] == 0.0
+    assert s["price"] == 0.0
+
+
+def test_stale_candidate_logs_staleness_not_no_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#670 review: the stale path logs its own cause (INFO) and must
+    NOT also emit the misleading 'found no candidate row' fallback
+    (DEBUG capture is required — at INFO the absence assertion would
+    be vacuous)."""
+    import logging
+
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _age_candidate(db_path, "datetime('now', '-49 hours')")
+    _patch_config(monkeypatch, db_path)
+
+    with caplog.at_level(logging.DEBUG, logger="gimmes.cli"):
+        result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    assert "too stale to backfill" in caplog.text
+    assert "found no candidate row" not in caplog.text
+
+
+def test_lookup_error_degrades_with_own_cause_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A candidate-lookup failure degrades to zeros, logs its own
+    cause at ERROR, and does not misreport 'no candidate row'."""
+    import logging
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    _bare_db(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    async def _boom(_db, _ticker):  # type: ignore[no-untyped-def]
+        raise sqlite3.Error("lookup exploded")
+
+    monkeypatch.setattr(
+        "gimmes.store.queries.get_candidate_for_ticker", _boom,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="gimmes.cli"):
+        result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    assert "candidate lookup failed" in caplog.text
+    assert "found no candidate row" not in caplog.text
+
     s = _skip_row(db_path)
     assert s["model_probability"] == 0.0
     assert s["price"] == 0.0
