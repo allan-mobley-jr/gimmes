@@ -3851,11 +3851,14 @@ def backtest(
         import logging
 
         bt_logger = logging.getLogger("gimmes.backtest.engine")
+        bt_logger.setLevel(logging.INFO)
         if not bt_logger.handlers:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("%(message)s"))
             bt_logger.addHandler(handler)
-            bt_logger.setLevel(logging.INFO)
+            # our handler owns the output — don't also propagate to
+            # ancestor handlers (duplicate lines)
+            bt_logger.propagate = False
         async with KalshiClient(config) as client:
             result = await run_backtest(client, bt_config)
 

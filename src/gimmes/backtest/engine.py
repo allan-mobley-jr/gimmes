@@ -556,14 +556,15 @@ async def run_backtest(
             )
             continue
         if candle_midpoint(candle) <= 0:
-            # One-sided quote: no priceable midpoint; trade-price
-            # OHLC stays deliberately rejected as a fallback (stale on
-            # thin days, #655). Counted separately because these skips
-            # can bias the sample away from near-certain late-life
-            # contracts — exactly the gimme population (#666).
+            # One-sided OR empty quote (either/both closes zero): no
+            # priceable midpoint; trade-price OHLC stays deliberately
+            # rejected as a fallback (stale on thin days, #655).
+            # Counted separately because these skips can bias the
+            # sample away from near-certain late-life contracts —
+            # exactly the gimme population (#666).
             skipped_one_sided += 1
             logger.debug(
-                "one-sided entry quote for %s (bid=%s ask=%s)",
+                "unusable entry quote for %s (bid=%s ask=%s)",
                 m.ticker, candle.yes_bid_close, candle.yes_ask_close,
             )
             continue

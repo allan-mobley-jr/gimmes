@@ -116,7 +116,7 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         )
     if result.skipped_one_sided > 0:
         funnel.add_row(
-            "Skipped (one-sided entry-day quote)",
+            "Skipped (one-sided/empty entry-day quote)",
             str(result.skipped_one_sided),
         )
     if result.fetch_failures > 0:
@@ -145,7 +145,10 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
             f" ENTRY-DAY values (they are typically lower than"
             f" settlement-time values) (#666).[/yellow]"
         )
-    candle_skips = result.skipped_no_candle + result.skipped_one_sided
+    candle_skips = (
+        result.skipped_no_candle + result.skipped_one_sided
+        + result.fetch_failures
+    )
     if (
         result.markets_scanned > 0
         and candle_skips > 0.5 * result.markets_scanned
@@ -153,7 +156,8 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         console.print(
             f"[yellow]Caution: the selection replay skipped"
             f" {candle_skips} of {result.markets_scanned} scanned"
-            f" markets for missing or one-sided entry candles —"
+            f" markets for missing, unusable, or fetch-failed entry"
+            f" candles —"
             f" results cover a subset of the scanned universe, and"
             f" one-sided skips can under-represent near-certain"
             f" late-life contracts (#666).[/yellow]"
