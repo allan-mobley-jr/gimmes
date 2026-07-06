@@ -83,6 +83,8 @@ class BacktestResult:
     skipped_concentration: int = 0
     skipped_balance: int = 0
     skipped_no_candle: int = 0
+    skipped_one_sided: int = 0
+    fetch_failures: int = 0
     skipped_entry_gates: int = 0
     truncated_chunks: list[str] = field(default_factory=list)
 
@@ -239,9 +241,9 @@ def synthesize_orderbook(ticker: str, candle: Candle, depth: int = 100) -> Order
 def candle_midpoint(candle: Candle) -> float:
     """Bid/ask midpoint of a candle — the backtest analog of
     Market.midpoint. Returns 0.0 unless both quote sides are positive
-    (a market with no two-sided quote could not have been maker-filled;
-    the candle's trade-price OHLC can be stale on thin days, so it is
-    deliberately NOT used as a fallback) (#655)."""
+    (a one-sided book has no priceable midpoint; the candle's
+    trade-price OHLC can be stale on thin days, so it is deliberately
+    NOT used as a fallback) (#655)."""
     if candle.yes_bid_close > 0 and candle.yes_ask_close > 0:
         return (candle.yes_bid_close + candle.yes_ask_close) / 2
     return 0.0
@@ -263,19 +265,19 @@ def entry_candle_at(candles: list[Candle], entry_ts: int) -> Candle | None:
     return chosen
 
 
-async def _entry_day_mid(
+async def _fetch_entry_candle(
     client: KalshiClient,
     ticker: str,
     entry_ts: int,
     cache: dict[str, list[Candle]],
-) -> float:
-    """Entry-day candle midpoint for ticker, or 0.0 when no usable
-    candle exists. The fetch window ends AT entry_ts, so future data
-    structurally cannot leak into the engine (#655). The distinct
-    unusable cases (no history, fetch failure, one-sided quote) are
-    debug-logged so the residual can be audited (#666: one-sided
-    quotes late in life would bias the sample away from the strongest
-    gimmes)."""
+    failed: set[str],
+) -> Candle | None:
+    """The ticker's entry-day candle, or None when no candle ends at
+    or before entry_ts. The fetch window ends AT entry_ts, so future
+    data structurally cannot leak into the engine (#655). Fetch
+    failures degrade to None (debug-logged); classification of the
+    unusable cases (no history vs one-sided quote) happens at the
+    call site so the funnel can count them separately (#666)."""
     if ticker not in cache:
         try:
             cache[ticker] = await get_candlesticks(
@@ -287,44 +289,49 @@ async def _entry_day_mid(
         except Exception as exc:  # noqa: BLE001
             logger.debug("candle fetch failed for %s: %s", ticker, exc)
             cache[ticker] = []
-    candle = entry_candle_at(cache[ticker], entry_ts)
-    mid = candle_midpoint(candle) if candle else 0.0
-    if mid <= 0:
-        logger.debug(
-            "no usable entry candle for %s: %s", ticker,
-            "no candles <= entry_ts" if candle is None
-            else (
-                f"one-sided quote (bid={candle.yes_bid_close}"
-                f" ask={candle.yes_ask_close})"
-            ),
-        )
-    return mid
+            # A FAILED fetch is not empty history — the caller
+            # keeps systemic API failures (the #655 endpoint 404
+            # signature) out of the data-sparsity counters (#666).
+            failed.add(ticker)
+    return entry_candle_at(cache[ticker], entry_ts)
 
 
-# ---------------------------------------------------------------------------
-# Adapt historical markets for filter_markets()
-# ---------------------------------------------------------------------------
+def _entry_day_view(
+    market: Market, candle: Candle, close_time: datetime,
+) -> Market:
+    """A Market as it looked on ENTRY DAY, built from the entry-day
+    candle — the selection lens the scanner/scorer see (#666).
 
-
-def _adapt_for_filter(
-    markets: list[Market],
-    max_days: float = 90.0,
-) -> list[Market]:
-    """Adapt settled markets so they pass through filter_markets().
-
-    Sets status to ACTIVE and close_time to a synthetic future value
-    within the configured max_days_to_resolution window.
+    Field mapping (all price/liquidity data comes from the candle so
+    filter_markets and quick_score run unchanged with no settlement
+    leak):
+    - yes_bid/yes_ask from the candle closes — Market.midpoint and
+      Market.spread then reproduce candle_midpoint and the
+      candle-derived spread with no new arithmetic.
+    - last_price is 0.0: the midpoint must never fall back to stale
+      trade prices (the same rationale candle_midpoint uses, #655).
+    - volume AND volume_24h from the daily candle's per-period volume
+      — for period_interval=1440 that IS the day's 24h volume, and
+      setting both makes the scanner/scorer's `volume_24h or volume`
+      branches read the candle value either way.
+    - open_interest at candle close.
+    - status ACTIVE + close_time at now + ENTRY_OFFSET_DAYS: the
+      honest days-to-resolution at the backtest's fixed-offset entry
+      is exactly ENTRY_OFFSET_DAYS by construction (the +60s margin
+      makes the min_days == ENTRY_OFFSET_DAYS boundary
+      deterministic).
     """
-    days = max(1.0, min(max_days - 1, 30.0))
-    future = datetime.now(UTC) + timedelta(days=days)
-    adapted = []
-    for m in markets:
-        adapted.append(m.model_copy(update={
-            "status": MarketStatus.ACTIVE,
-            "close_time": future,
-            "expiration_time": future,
-        }))
-    return adapted
+    return market.model_copy(update={
+        "status": MarketStatus.ACTIVE,
+        "yes_bid": candle.yes_bid_close,
+        "yes_ask": candle.yes_ask_close,
+        "last_price": 0.0,
+        "volume": candle.volume,
+        "volume_24h": candle.volume,
+        "open_interest": candle.open_interest,
+        "close_time": close_time,
+        "expiration_time": close_time,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -380,11 +387,14 @@ async def run_backtest(
 ) -> BacktestResult:
     """Run a backtest over historical settled markets.
 
-    Algorithm:
+    Algorithm (#666: selection happens through the entry-day lens):
     1. Fetch all settled historical markets
-    2. Filter by scanner criteria (price, volume, OI)
-    3. Score with quick_score, gate on gimme_threshold
-    4. For each qualifying market, fetch candles, simulate entry, settle
+    2. Fetch the ENTRY-DAY candle for every settled market and build
+       entry-day views (settlement data never reaches selection)
+    3. Filter by scanner criteria and score with quick_score on the
+       entry-day views, gate on gimme_threshold
+    4. For each qualifying market, gate true-prob/edge and size at the
+       entry-day price; settlement supplies only the payout
     5. Return aggregated results
     """
     gc = config.gimmes_config
@@ -482,14 +492,108 @@ async def run_backtest(
         len(all_markets), len(settled),
     )
 
-    # --- 2-4. Filter, Score, Identify trades — per side ---
-    adapted = _adapt_for_filter(
-        settled, max_days=gc.scanner.max_days_to_resolution,
-    )
+    # --- 2. Entry-day candle pass (#666) ---
+    # Selection must see the market as it looked ON ENTRY DAY: the
+    # settled snapshot's price/volume/OI/spread encode settlement-time
+    # information (in-band-at-entry markets that drifted out by
+    # settlement were invisible; end-of-life liquidity gated
+    # optimistically). One candle fetch per settled market, behind the
+    # client's token bucket (~3 min for a full multi-series run).
     original_by_ticker = {m.ticker: m for m in settled}
-    pending: list[_PendingTrade] = []
     candle_cache: dict[str, list[Candle]] = {}
+    entry_candles: dict[str, Candle] = {}
+    entry_times: dict[str, datetime] = {}
     skipped_no_candle = 0
+    skipped_one_sided = 0
+    fetch_failures = 0
+    failed_fetches: set[str] = set()
+    if (
+        gc.scanner.min_days_to_resolution > ENTRY_OFFSET_DAYS
+        or gc.scanner.max_days_to_resolution <= ENTRY_OFFSET_DAYS
+    ):
+        logger.warning(
+            "min_days_to_resolution (%.1f) / max_days_to_resolution"
+            " (%.1f) exclude the backtest's fixed %d-day entry offset"
+            " — the days filter will select NOTHING (#666)",
+            gc.scanner.min_days_to_resolution,
+            gc.scanner.max_days_to_resolution, ENTRY_OFFSET_DAYS,
+        )
+    for i, m in enumerate(settled):
+        if m.close_time is None:
+            continue
+        if i and i % 250 == 0:
+            logger.info(
+                "entry candles: %d/%d processed", i, len(settled),
+            )
+        close_time = (
+            m.close_time if m.close_time.tzinfo
+            else m.close_time.replace(tzinfo=UTC)
+        )
+        entry_time = close_time - timedelta(days=ENTRY_OFFSET_DAYS)
+        entry_ts = int(entry_time.timestamp())
+        candle = await _fetch_entry_candle(
+            client, m.ticker, entry_ts, candle_cache,
+            failed=failed_fetches,
+        )
+        if candle is None and m.ticker in failed_fetches:
+            # Distinguish a FAILED fetch from genuinely-empty history:
+            # a systemic failure (the #655 endpoint 404 produced
+            # exactly this signature) must not masquerade as data
+            # sparsity in the funnel.
+            fetch_failures += 1
+            if fetch_failures == 1:
+                logger.warning(
+                    "entry-candle fetch FAILED for %s — if this"
+                    " repeats, the skip counts reflect an API"
+                    " problem, not data sparsity (#666)", m.ticker,
+                )
+            continue
+        if candle is None:
+            skipped_no_candle += 1
+            logger.debug(
+                "no entry candle for %s: no candles <= entry_ts",
+                m.ticker,
+            )
+            continue
+        if candle_midpoint(candle) <= 0:
+            # One-sided OR empty quote (either/both closes zero): no
+            # priceable midpoint; trade-price OHLC stays deliberately
+            # rejected as a fallback (stale on thin days, #655).
+            # Counted separately because these skips can bias the
+            # sample away from near-certain late-life contracts —
+            # exactly the gimme population (#666).
+            skipped_one_sided += 1
+            logger.debug(
+                "unusable entry quote for %s (bid=%s ask=%s)",
+                m.ticker, candle.yes_bid_close, candle.yes_ask_close,
+            )
+            continue
+        if entry_ts - candle.end_period_ts > 86400:
+            logger.debug(
+                "entry candle for %s is %.1f days older than"
+                " entry_ts — stale-quote pricing (#666 residual)",
+                m.ticker, (entry_ts - candle.end_period_ts) / 86400,
+            )
+        entry_candles[m.ticker] = candle
+        entry_times[m.ticker] = entry_time
+
+    # Build the views AFTER the fetch pass: the synthetic close must
+    # be honest RELATIVE TO FILTER TIME — computing it before a
+    # multi-minute fetch pass would leave days-to-resolution just
+    # under ENTRY_OFFSET_DAYS and silently zero out configs with
+    # min_days_to_resolution == ENTRY_OFFSET_DAYS (review-found).
+    synthetic_close = datetime.now(UTC) + timedelta(
+        days=ENTRY_OFFSET_DAYS, seconds=60,
+    )
+    entry_views: dict[str, Market] = {
+        ticker: _entry_day_view(
+            original_by_ticker[ticker], candle, synthetic_close,
+        )
+        for ticker, candle in entry_candles.items()
+    }
+
+    # --- 3-4. Filter, Score, Identify trades — per side ---
+    pending: list[_PendingTrade] = []
     skipped_entry_gates = 0
     seen_tickers: set[str] = set()
     total_passed = 0
@@ -500,25 +604,24 @@ async def run_backtest(
         side_threshold = side_cfg.strategy.gimme_threshold
         side_series = side_cfg.scanner.series
 
-        # --- 2. Filter (restrict to this side's series) ---
+        # --- 3. Filter + Score on the entry-day views (#666) ---
         # series_ticker may be empty on settled markets, so match
         # by ticker prefix (e.g., "KXCPI" matches "KXCPI-26MAR-T1.3")
         side_prefixes = tuple(s + "-" for s in side_series) if side_series else ()
-        side_adapted = [
-            m for m in adapted
-            if not side_prefixes or m.ticker.startswith(side_prefixes)
+        side_views = [
+            v for v in entry_views.values()
+            if not side_prefixes or v.ticker.startswith(side_prefixes)
         ]
-        passed = filter_markets(side_adapted, side_cfg)
+        passed = filter_markets(side_views, side_cfg)
         total_passed += len(passed)
 
-        # --- 3. Score ---
         # Mirror live gating (validator.py:152-175): gimme_threshold +
-        # min_true_probability + min_edge_after_fees (#592).
+        # min_true_probability + min_edge_after_fees (#592). The
+        # price band already ran inside filter_markets on the SAME
+        # entry-day midpoint, so pass 1 keeps only the gates the
+        # filter doesn't apply: true-prob and edge-after-fees.
         min_true_prob = side_cfg.strategy.min_true_probability
         min_edge = side_cfg.strategy.min_edge_after_fees
-        # #655: NO price/prob/edge gating here — those gates now run on
-        # the ENTRY-DAY candle price in pass 1, not the settlement-time
-        # snapshot. total_scored counts score-threshold passers.
         scored: list[tuple[Market, Market, float]] = []
         for m in passed:
             s = quick_score(m, side_cfg)
@@ -534,33 +637,18 @@ async def run_backtest(
         )
 
         # --- 4. Pass 1: identify qualifying trades ---
-        # #655: entry is priced, gated, and sized on the ENTRY-DAY
-        # candle — settlement data is used only for the payout.
-        for _, orig_m, _score in scored:
+        # #655/#666: everything the engine decides is decided at the
+        # entry-day price — settlement supplies only the payout.
+        for view, orig_m, _score in scored:
             if orig_m.ticker in seen_tickers:
                 continue
             if orig_m.close_time is None:
                 continue
 
-            entry_time = orig_m.close_time - timedelta(
-                days=ENTRY_OFFSET_DAYS,
-            )
-            entry_ts = int(entry_time.timestamp())
             ticker = orig_m.ticker
-            mid = await _entry_day_mid(
-                client, ticker, entry_ts, candle_cache,
-            )
-            if mid <= 0:
-                skipped_no_candle += 1
-                continue
+            entry_time = entry_times[ticker]
+            mid = view.midpoint
             entry_eff = effective_price(mid, scan_side)
-            if not (
-                side_cfg.strategy.min_market_price
-                <= entry_eff
-                <= side_cfg.strategy.max_market_price
-            ):
-                skipped_entry_gates += 1
-                continue
             true_prob = min(entry_eff + config.assumed_edge, 0.99)
             true_prob = apply_base_rate_floor(
                 true_prob, ticker, side=scan_side,
@@ -692,6 +780,8 @@ async def run_backtest(
         markets_traded=traded_count,
         skipped_concentration=skipped_concentration,
         skipped_no_candle=skipped_no_candle,
+        skipped_one_sided=skipped_one_sided,
+        fetch_failures=fetch_failures,
         skipped_entry_gates=skipped_entry_gates,
         skipped_balance=skipped_balance,
         truncated_chunks=truncated_chunks,

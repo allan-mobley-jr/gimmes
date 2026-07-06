@@ -91,7 +91,12 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     funnel.add_column("Label", style="cyan")
     funnel.add_column("Count", justify="right")
     funnel.add_row("Settled markets fetched", str(result.markets_scanned))
-    funnel.add_row("Passed scanner filters", str(result.markets_passed_filter))
+    usable_views = (
+        result.markets_scanned - result.skipped_no_candle
+        - result.skipped_one_sided - result.fetch_failures
+    )
+    funnel.add_row("Usable entry-day views", str(usable_views))
+    funnel.add_row("Passed entry-day filters", str(result.markets_passed_filter))
     funnel.add_row("Scored above threshold", str(result.markets_scored))
     funnel.add_row("Traded", str(result.markets_traded))
     if result.skipped_concentration > 0:
@@ -106,24 +111,56 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         )
     if result.skipped_no_candle > 0:
         funnel.add_row(
-            "Skipped (no usable entry-day candle)",
+            "Skipped (no entry-day candle history)",
             str(result.skipped_no_candle),
+        )
+    if result.skipped_one_sided > 0:
+        funnel.add_row(
+            "Skipped (one-sided/empty entry-day quote)",
+            str(result.skipped_one_sided),
+        )
+    if result.fetch_failures > 0:
+        funnel.add_row(
+            "Candle fetch FAILURES (API problem)",
+            str(result.fetch_failures),
         )
     if result.skipped_entry_gates > 0:
         funnel.add_row(
-            "Skipped (entry-day price gates)",
+            "Skipped (entry-day prob/edge gates)",
             str(result.skipped_entry_gates),
         )
     console.print(funnel)
+    if result.fetch_failures > 0:
+        console.print(
+            f"[red]Warning: {result.fetch_failures} candle fetches"
+            f" FAILED — the skip counts may reflect an API problem,"
+            f" not data sparsity (#666). The #655 endpoint regression"
+            f" produced exactly this signature.[/red]"
+        )
+    if result.markets_passed_filter == 0 and usable_views > 0:
+        console.print(
+            f"[yellow]Note: all {usable_views} entry-day views failed"
+            f" the scanner filters — check min_volume /"
+            f" min_open_interest / days-to-resolution against"
+            f" ENTRY-DAY values (they are typically lower than"
+            f" settlement-time values) (#666).[/yellow]"
+        )
+    candle_skips = (
+        result.skipped_no_candle + result.skipped_one_sided
+        + result.fetch_failures
+    )
     if (
-        result.markets_scored > 0
-        and result.skipped_no_candle > 0.5 * result.markets_scored
+        result.markets_scanned > 0
+        and candle_skips > 0.5 * result.markets_scanned
     ):
         console.print(
-            "[yellow]Caution: entry-day candle data missing or"
-            " unusable (e.g. one-sided quotes) for most candidates —"
-            " results cover a subset of the scored markets"
-            " (#655).[/yellow]"
+            f"[yellow]Caution: the selection replay skipped"
+            f" {candle_skips} of {result.markets_scanned} scanned"
+            f" markets for missing, unusable, or fetch-failed entry"
+            f" candles —"
+            f" results cover a subset of the scanned universe, and"
+            f" one-sided skips can under-represent near-certain"
+            f" late-life contracts (#666).[/yellow]"
         )
     if result.truncated_chunks:
         console.print(
@@ -225,6 +262,8 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "markets_scored": result.markets_scored,
             "markets_traded": result.markets_traded,
             "skipped_no_candle": result.skipped_no_candle,
+            "skipped_one_sided": result.skipped_one_sided,
+            "fetch_failures": result.fetch_failures,
             "skipped_entry_gates": result.skipped_entry_gates,
             "truncated_chunks": result.truncated_chunks,
         },

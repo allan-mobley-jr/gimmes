@@ -119,6 +119,7 @@ class TestFormatBacktestReport:
         output = buf.getvalue()
         assert "Backtest Config" in output
         assert "Performance Summary" in output
+        assert "Usable entry-day views" in output  # #666 funnel row
 
     def test_handles_no_trades(self) -> None:
         from io import StringIO
@@ -201,19 +202,69 @@ class TestSkipCountersInReport:
     def test_json_carries_skip_counters(self) -> None:
         result = _make_result()
         result.skipped_no_candle = 3
+        result.skipped_one_sided = 2
         result.skipped_entry_gates = 5
         data = backtest_result_to_json(result)
         assert data["funnel"]["skipped_no_candle"] == 3
+        assert data["funnel"]["skipped_one_sided"] == 2
         assert data["funnel"]["skipped_entry_gates"] == 5
+
+    def test_fetch_failures_render_red_warning(self) -> None:
+        """#666: FAILED fetches are an API-problem signal (the #655
+        endpoint 404 signature), never silent data sparsity."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.fetch_failures = 7
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "FAILED" in out
+        assert "API problem" in out
+
+    def test_json_carries_fetch_failures(self) -> None:
+        result = _make_result()
+        result.fetch_failures = 3
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["fetch_failures"] == 3
+
+    def test_zero_passed_note_names_the_lens(self) -> None:
+        """#666: passed=0 with usable views must explain itself —
+        entry-day values are typically lower than settlement."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.markets_passed_filter = 0
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "ENTRY-DAY values" in buf.getvalue()
+
+    def test_one_sided_funnel_row_renders(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.skipped_one_sided = 4
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "one-sided" in buf.getvalue()
 
     def test_coverage_warning_fires_above_half(self) -> None:
         from io import StringIO
 
         from rich.console import Console
 
+        # #666: the caution denominator is the SCANNED universe now —
+        # candle skips happen before scoring.
         result = _make_result()
-        result.markets_scored = 10
-        result.skipped_no_candle = 6
+        result.markets_scanned = 10
+        result.skipped_no_candle = 4
+        result.skipped_one_sided = 2
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
         assert "Caution" in buf.getvalue()
@@ -224,8 +275,9 @@ class TestSkipCountersInReport:
         from rich.console import Console
 
         result = _make_result()
-        result.markets_scored = 10
-        result.skipped_no_candle = 5
+        result.markets_scanned = 10
+        result.skipped_no_candle = 3
+        result.skipped_one_sided = 2
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
         assert "Caution" not in buf.getvalue()
