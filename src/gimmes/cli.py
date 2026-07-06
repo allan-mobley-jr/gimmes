@@ -1659,7 +1659,8 @@ def candidates(
                     # stale — records are ordered newest-first, so
                     # first-seen decides. Older stale rows keep a
                     # DIM cell flag (#678: still genuinely stale —
-                    # 4a reads Status from --limit 3 — but red noise
+                    # Step 4c and Closer read --limit 3 output — but
+                    # 4a triggers on the banner only, and red noise
                     # is confined to the row that arms the banner)
                     # and must not deadlock the fresh post-close
                     # research recovery path.
