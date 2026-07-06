@@ -141,6 +141,13 @@ def _outcomes_by_position(
 # Analysis 1: Threshold Sweep
 # ---------------------------------------------------------------------------
 
+# Non-entry skip reasons (#657/#670): a failed close, a tooling
+# casualty, or a position we already hold is never a missed ENTRY.
+# Single source of truth — cli._NON_ENTRY_REASONS aliases this set.
+NON_ENTRY_SKIP_REASONS = frozenset({
+    "no_position", "close_failed", "infra_failed", "already_traded",
+})
+
 MIN_TRADES_THRESHOLD = 30
 
 
@@ -513,22 +520,25 @@ def analyze_missed_opportunities(
 
     Requires skip logging to be in place (see issue #20).
     """
-    # #657: exclude degenerate skip rows (no probability AND no price
-    # recorded) — they carry no signal but inflate the denominator of
-    # false_negative_rate and the MIN_SKIPS_AUDIT gate, suppressing
-    # legitimate recommendations. Close-workflow skips (no_position,
-    # close_failed — cli._NON_ENTRY_REASONS) are excluded outright:
-    # a failed close is never a missed ENTRY, whatever analytics the
-    # row carries. Both exclusion counts are surfaced in
-    # supporting_data so an audit reconciles against the raw table.
+    # #657/#670: exclude skip rows missing EITHER probability or
+    # price — log-trade's edge normalization zeroes edge unless both
+    # are positive, so such a row can NEVER classify as a missed win
+    # (edge > 0); it only inflates the denominator of
+    # false_negative_rate and the MIN_SKIPS_AUDIT gate. Legacy
+    # prob-only rows are worse: their constructor edge was fabricated
+    # against a price that was never recorded, inflating the
+    # NUMERATOR. Non-entry skips (NON_ENTRY_SKIP_REASONS) are
+    # excluded outright, whatever analytics the row carries. Both
+    # exclusion counts are surfaced in supporting_data so an audit
+    # reconciles against the raw table.
     all_skips = [t for t in trades if t.get("action") == "skip"]
     entry_skips = [
         t for t in all_skips
-        if t.get("reason", "") not in ("no_position", "close_failed")
+        if t.get("reason", "") not in NON_ENTRY_SKIP_REASONS
     ]
     skips = [
         t for t in entry_skips
-        if t.get("model_probability", 0) > 0 or t.get("price", 0) > 0
+        if t.get("model_probability", 0) > 0 and t.get("price", 0) > 0
     ]
     excluded_non_entry = len(all_skips) - len(entry_skips)
     excluded_degenerate = len(entry_skips) - len(skips)

@@ -335,20 +335,23 @@ def test_scout_shape_prob_zero_real_price_no_candidate(
 def test_non_entry_reason_skips_backfill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Close-workflow skips (no_position, close_failed) carry no entry
-    decision — the candidate row must NOT be fabricated onto them,
-    else the missed-opportunity audit counts a failed close as a
-    missed entry (#657 review)."""
+    """Non-entry skips (no_position, close_failed, plus #670's
+    infra_failed and already_traded) carry no entry decision — the
+    candidate row must NOT be fabricated onto them, else the
+    missed-opportunity audit counts a failed close, a tooling
+    casualty, or a held position as a missed entry."""
     db_path = tmp_path / "test.db"
     _seed_candidate(db_path)
     _patch_config(monkeypatch, db_path)
 
-    for reason in ("no_position", "close_failed"):
+    from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
+
+    for reason in sorted(NON_ENTRY_SKIP_REASONS):
         result = _invoke_skip("--reason", reason)
         assert result.exit_code == 0, result.output
 
     rows = _trade_rows(db_path)
-    assert len(rows) == 2
+    assert len(rows) == len(NON_ENTRY_SKIP_REASONS)
     for s in rows:
         assert s["model_probability"] == 0.0
         assert s["price"] == 0.0
@@ -437,3 +440,72 @@ def test_bound_price_close_with_explicit_prob_records_zero_edge(
     [c] = _trade_rows(db_path, "close")
     assert c["model_probability"] == 0.9
     assert c["edge"] == 0.0
+
+
+def _age_candidate(db_path: Path, sql_age: str) -> None:
+    async def _age(db: Database) -> None:
+        await db.conn.execute(
+            "UPDATE candidates SET scanned_at = " + sql_age,
+        )
+        await db.conn.commit()
+
+    _db_run(db_path, _age)
+
+
+def test_stale_candidate_not_backfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#670: a candidate scanned >48h ago is a different market — the
+    skip keeps honest zeros instead of inheriting stale analytics
+    (mirrors caddie-master's 48h research-void rule)."""
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _age_candidate(db_path, "datetime('now', '-49 hours')")
+    _patch_config(monkeypatch, db_path)
+
+    result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    s = _skip_row(db_path)
+    assert s["model_probability"] == 0.0
+    assert s["price"] == 0.0
+    assert s["edge"] == 0.0
+
+
+def test_candidate_just_inside_bound_backfills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """47h old is within the bound — full backfill (pins the
+    comparison direction)."""
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _age_candidate(db_path, "datetime('now', '-47 hours')")
+    _patch_config(monkeypatch, db_path)
+
+    result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    s = _skip_row(db_path)
+    assert s["model_probability"] == CAND_PROB
+    assert s["price"] == CAND_PRICE
+
+
+def test_unparseable_scanned_at_not_backfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A corrupt scanned_at is unknown-age data — treated as stale
+    (zeros) rather than trusted, and WARNED about (data integrity —
+    Groundskeeper triages logs post-cycle)."""
+    import logging
+
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _age_candidate(db_path, "'garbage'")
+    _patch_config(monkeypatch, db_path)
+
+    with caplog.at_level(logging.WARNING, logger="gimmes.cli"):
+        result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    assert "unparseable" in caplog.text
+    s = _skip_row(db_path)
+    assert s["model_probability"] == 0.0
+    assert s["price"] == 0.0

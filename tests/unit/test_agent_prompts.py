@@ -1872,6 +1872,12 @@ def test_skip_templates_carry_structured_reason(
          "caddie-master.md"),
         ("--action skip --reason review_reject", caddie_master_text,
          "caddie-master.md"),
+        # #670: already_traded template (criterion 4) and the
+        # infra_failed decision-note-failure instruction.
+        ("--action skip --reason already_traded", caddie_master_text,
+         "caddie-master.md"),
+        ("--reason infra_failed", caddie_master_text,
+         "caddie-master.md"),
         ("--action skip --reason validation_failed", closer_text,
          "closer.md"),
         ("--action skip --reason order_failed", closer_text,
