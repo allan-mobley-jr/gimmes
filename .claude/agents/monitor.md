@@ -203,7 +203,7 @@ When a trigger condition is met, write a flag note in addition to the observatio
 | `Thesis:` | `Price movement` (adverse only), `Stop-loss breach` | exact value `intact` or `degraded` — no modifiers, no different casing |
 | `Price:` | `Price movement` (adverse only), `Stop-loss breach` | `entry $X -> current $Y (D Npp)` |
 | `TimeToResolution:` | `Stop-loss breach` | integer hours followed by `h` (e.g. `18h`, `2h`). No fractions, no `1d 2h`, no other units. Caddie Master compares this against `< 24` numerically. |
-| `StopGate:` | EVERY trigger type when the position's unrealized P&L is negative | when ANY `StopGate:` banner line appears below the `gimmes positions` table for this ticker (`MANDATORY-CLOSE` or `DATA-ERROR`), copy the value portion AFTER the banner's `StopGate:` prefix so the field line has a single prefix and reads e.g. `StopGate: 214% MANDATORY-CLOSE`; otherwise the value is the `Stop` column percentage (e.g. `StopGate: 47%`) — never hand-computed (#659) |
+| `StopGate:` | EVERY trigger type when the position's unrealized P&L is negative OR any `StopGate:` banner exists for the ticker | when ANY `StopGate:` banner line appears below the `gimmes positions` table for this ticker (`MANDATORY-CLOSE`, `DATA-ERROR`, `STALE`, or `BASIS-SUSPECT`), copy the value portion AFTER the banner's `StopGate:` prefix so the field line has a single prefix and reads e.g. `StopGate: 214% MANDATORY-CLOSE`; if multiple banners exist for the ticker, copy the `MANDATORY-CLOSE` one (the backstop outranks); if both `STALE` and `BASIS-SUSPECT` exist with no `MANDATORY-CLOSE`, copy `STALE` (matching the Stop cell precedence); otherwise the value is the `Stop` column percentage (e.g. `StopGate: 47%`) — never hand-computed (#659) |
 
 **Template** (replace bracketed placeholders with real values; OMIT entire lines for fields not required by your trigger per the table above). The quoted heredoc means dollar-prefixed prices survive literally — no backslash escapes needed (#589):
 
@@ -217,7 +217,7 @@ Assessment: [Is this new information the thesis did not account for? Or is this 
 Thesis: [intact or degraded].
 Price: [entry $X -> current $Y (D Npp)].
 TimeToResolution: [Nh].
-StopGate: [value per the field table above: the banner's value portion when a StopGate banner exists (e.g. 214% MANDATORY-CLOSE or DATA-ERROR), else the Stop column percentage; OMIT this line if the position is not losing].
+StopGate: [value per the field table above: the banner's value portion when a StopGate banner exists (e.g. 214% MANDATORY-CLOSE, DATA-ERROR, STALE, or BASIS-SUSPECT), else the Stop column percentage; OMIT this line if the position is not losing AND no StopGate banner exists for the ticker].
 For Caddie Master: [factual summary of the situation — no recommendation].
 GIMMES_EOF
 gimmes position-note TICKER \
@@ -234,7 +234,7 @@ Do NOT write: "I recommend closing this position." Do NOT write: "This position 
 - Look at the **most recent** decision note (type=decision) for this position from Caddie Master. Older decisions are superseded.
 - Do NOT re-flag a trigger condition that the most recent decision already addressed, UNLESS your delta observation identifies something genuinely new that was not present when that decision was made.
 - If the most recent HOLD decision includes a "Re-evaluate if" condition, only re-flag if that specific condition has been met.
-- **Exception (#659):** a position with ANY `StopGate:` banner below the `gimmes positions` table (`MANDATORY-CLOSE` or `DATA-ERROR`) MUST be re-flagged regardless of any prior HOLD's re-evaluation condition — the hard loss backstop outranks flag deduplication.
+- **Exception (#659):** a position with ANY `StopGate:` banner below the `gimmes positions` table (`MANDATORY-CLOSE`, `DATA-ERROR`, `STALE`, or `BASIS-SUSPECT`) MUST be re-flagged regardless of any prior HOLD's re-evaluation condition — the hard loss backstop outranks flag deduplication.
 - If the most recent HOLD decision includes an "Expiry" cycle number and the current cycle >= that number, treat the HOLD as stale — the position can be re-flagged.
 - If the most recent HOLD decision has NO "Re-evaluate if" or "Expiry" fields (legacy decision from before this feature), treat it as stale.
 - **48-hour staleness re-search rule (REQUIRED — #577)**: if the most recent CM `decision`-type note for this position is older than 48 hours, you MUST re-run the full Fundamental-Economic-Trigger Source Playbook this cycle regardless of whether your delta search finds anything new. The 48h clock anchors on the **most recent CM decision note timestamp** — not the prior observation timestamp (which Monitor controls and can refresh by writing a stale-template observation). Macro forecasts are revised frequently; old CM-defined re-eval conditions deserve a fresh check against current source state. If the fresh playbook search confirms no change, the next bullet ("No material change → no flag") still applies — 48h forces a re-search, NOT a flag.

@@ -20,7 +20,16 @@ def _parse_position(data: dict) -> Position:  # type: ignore[type-arg]
     total_traded = float(data.get("total_traded_dollars", "0"))
     fees_paid = float(data.get("fees_paid_dollars", "0"))
 
-    # total_traded is the raw fill cost; fees are separate
+    # CAUTION (#674): total_traded_dollars and fees_paid_dollars are
+    # CUMULATIVE lifetime figures for the market ("Total spent on this
+    # market" per the API docs), and market_exposure_dollars is
+    # doc-ambiguous ("cost of the aggregate market position" — used
+    # here as market value, consistent with observed payloads). So
+    # this cost_basis is only trustworthy while realized_pnl == 0: a
+    # partial close inflates it, corrupting avg_price and the StopGate
+    # denominator. The positions command flags such rows BASIS-SUSPECT.
+    # TODO(#674): reconstruct open cost from GET /portfolio/fills
+    # before scaling live capital.
     cost_basis = total_traded + fees_paid
     unrealized_pnl = (market_value - cost_basis) if abs_count > 0 else 0.0
     avg_price = cost_basis / abs_count if abs_count > 0 else 0.0

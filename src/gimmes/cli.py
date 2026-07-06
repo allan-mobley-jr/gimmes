@@ -1827,6 +1827,8 @@ def positions() -> None:
         from gimmes.reporting.formatter import format_positions
 
         async with trading_context(config) as (client, broker, db):
+            stale: set[str] = set()
+            suspect: set[str] = set()
             if broker:
                 pos_list = await broker.get_positions()
                 # Mark-to-market + auto-settle with real prices
@@ -1834,11 +1836,42 @@ def positions() -> None:
                     try:
                         market = await get_market(client, pos.ticker)
                         current_price = market.midpoint or market.last_price
-                        await broker.mark_to_market(pos.ticker, current_price)
+                        # #674: a non-settling market with an empty
+                        # book marks "successfully" with a frozen
+                        # last_price — flag it. INACTIVE/DISPUTED
+                        # pauses freeze marks the same way; CLOSED and
+                        # the settling statuses are excluded (final
+                        # price / auto-settle below).
+                        if market.status not in (
+                            MarketStatus.CLOSED,
+                            MarketStatus.DETERMINED,
+                            MarketStatus.FINALIZED,
+                        ) and not (
+                            market.yes_bid > 0 and market.yes_ask > 0
+                        ):
+                            stale.add(pos.ticker)
+                            console.print(
+                                f"[yellow]Warning: {pos.ticker} has no"
+                                f" live quote (empty book) — mark may"
+                                f" be stale[/yellow]"
+                            )
+                        # #674 review: a never-traded dead book gives
+                        # current_price 0.0 — marking would CORRUPT
+                        # the position to a fake $0/$1 and fabricate a
+                        # MANDATORY-CLOSE from the staleness itself.
+                        # Keep the genuinely frozen last-good mark.
+                        if current_price > 0:
+                            await broker.mark_to_market(
+                                pos.ticker, current_price,
+                            )
                         # Auto-settle if market resolved
                         if market.status in (MarketStatus.DETERMINED, MarketStatus.FINALIZED):
                             await broker.settle(pos.ticker, market.result)
                     except Exception as exc:
+                        # #674: the position keeps its LAST mark — the
+                        # Stop column must say STALE, not render a
+                        # confident stale percentage.
+                        stale.add(pos.ticker)
                         console.print(
                             f"[yellow]Warning: could not update {pos.ticker}: {exc}[/yellow]"
                         )
@@ -1849,6 +1882,16 @@ def positions() -> None:
                 from gimmes.store.queries import sync_positions
                 pos_list = await get_all_positions(client)
                 await sync_positions(db, pos_list)
+                # #674: an OPEN live position with realized P&L means
+                # prior sells/settlements on this market — Kalshi's
+                # total_traded/fees_paid are cumulative, so the parsed
+                # cost_basis (the StopGate denominator) is corrupted.
+                # Paper positions never set this: the broker maintains
+                # a true open basis.
+                suspect = {
+                    p.ticker for p in pos_list
+                    if p.count > 0 and p.realized_pnl != 0
+                }
 
             if not pos_list:
                 console.print("[dim]No open positions[/dim]")
@@ -1856,6 +1899,8 @@ def positions() -> None:
             format_positions(
                 [p.model_dump() for p in pos_list],
                 stop_loss_pct=config.risk.position_stop_loss_pct,
+                stale_tickers=stale,
+                suspect_tickers=suspect,
             )
 
     _run(_positions())

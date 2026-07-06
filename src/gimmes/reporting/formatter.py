@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from rich.console import Console
@@ -141,6 +142,8 @@ def _stop_cell(
 def format_positions(
     positions: list[dict],  # type: ignore[type-arg]
     stop_loss_pct: float | None = None,
+    stale_tickers: Collection[str] | None = None,
+    suspect_tickers: Collection[str] | None = None,
 ) -> None:
     """Display positions as a Rich table.
 
@@ -152,6 +155,16 @@ def format_positions(
     agents see, table cells wrap and ellipsize long content, but a
     plain sub-80-char line always survives intact. Monitor copies the
     banner into flags; Caddie Master's hard backstop keys on it.
+
+    ``stale_tickers`` (#674): positions whose mark-to-market failed or
+    whose book is dead — the Stop cell shows ``STALE`` (the frozen pct
+    would invite anchoring on a number known to be untrustworthy) and
+    a ``StopGate: STALE`` banner rides Caddie Master's existing
+    non-numeric conservative rule. ``suspect_tickers``: live positions
+    whose cumulative-field cost_basis is corrupted by a prior partial
+    close — ``SUSP`` cell + ``StopGate: BASIS-SUSPECT`` banner. A
+    MANDATORY-CLOSE banner computed from the last-good mark is NEVER
+    suppressed by either flag: staleness cannot rescind a breach.
     """
     if stop_loss_pct is not None and stop_loss_pct <= 0:
         raise ValueError(
@@ -184,13 +197,32 @@ def format_positions(
             f"[{pnl_color}]${pnl:,.2f}[/{pnl_color}]",
         ]
         if stop_loss_pct is not None:
+            ticker = p.get("ticker", "")
             cell, banner = _stop_cell(
-                pnl, p.get("cost_basis", 0), p.get("ticker", ""),
-                stop_loss_pct,
+                pnl, p.get("cost_basis", 0), ticker, stop_loss_pct,
             )
+            is_stale = stale_tickers is not None and ticker in stale_tickers
+            is_suspect = (
+                suspect_tickers is not None and ticker in suspect_tickers
+            )
+            if is_stale:
+                cell = "[yellow]STALE[/yellow]"
+            elif is_suspect:
+                cell = "[yellow]SUSP[/yellow]"
             row.append(cell)
+            # Breach banners from the last-good mark stay — fire on
+            # stale evidence rather than wait for fresh evidence.
             if banner is not None:
                 banners.append(banner)
+            if is_stale:
+                banners.append(
+                    f"[yellow bold]{ticker} StopGate: STALE[/yellow bold]"
+                )
+            if is_suspect:
+                banners.append(
+                    f"[yellow bold]{ticker} StopGate:"
+                    f" BASIS-SUSPECT[/yellow bold]"
+                )
         table.add_row(*row)
 
     console.print(table)

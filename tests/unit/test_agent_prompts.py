@@ -2136,3 +2136,105 @@ def test_groundskeeper_churn_carveout() -> None:
     assert "churn_roundtrip" in gk_text
     assert "do NOT file issues" in gk_text
     assert "reopen_gate_overridden" in gk_text
+
+
+# ---------------------------------------------------------------------------
+# #674: STALE / BASIS-SUSPECT StopGate values + DATA-ERROR interplay pins
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_copies_all_stopgate_banner_values(
+    monitor_text: str,
+) -> None:
+    """#674 (and the previously unpinned #659 side): Monitor's field
+    table and dedup exception must enumerate every banner value the
+    formatter can emit, and prefer MANDATORY-CLOSE when several
+    banners exist."""
+    assert "`MANDATORY-CLOSE`, `DATA-ERROR`, `STALE`, or `BASIS-SUSPECT`" in monitor_text
+    assert "copy the `MANDATORY-CLOSE` one" in monitor_text
+    # A stale WINNER must still surface — the OMIT clause is scoped.
+    assert (
+        "OMIT this line if the position is not losing AND no StopGate"
+        " banner exists" in monitor_text
+    )
+
+
+def test_caddie_master_non_numeric_stopgate_rule(
+    caddie_master_text: str,
+) -> None:
+    """#674 (pins the previously untested #659 interplay): a
+    non-numeric StopGate trips the conservative CLOSE path, and the
+    new values are named."""
+    assert "NON-NUMERIC StopGate" in caddie_master_text
+    assert "do NOT HOLD on unquantified risk" in caddie_master_text
+    assert "`DATA-ERROR`" in caddie_master_text
+    assert "`STALE`" in caddie_master_text
+    assert "`BASIS-SUSPECT`" in caddie_master_text
+    # The 2a sweep covers the new banners too.
+    assert (
+        "Sweep `StopGate: STALE`, `StopGate: BASIS-SUSPECT`, and"
+        " `StopGate: DATA-ERROR`" in caddie_master_text
+    )
+
+
+def test_stale_literal_shared_across_code_and_prompts(
+    caddie_master_text: str, monitor_text: str,
+) -> None:
+    """Drift guard (#674, mirrors the MANDATORY-CLOSE guard):
+    behavioral render of a stale and a suspect position — the emitted
+    literals must be the strings both prompts key on."""
+    from io import StringIO
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from gimmes.reporting import formatter
+
+    buf = StringIO()
+    with patch(
+        "gimmes.reporting.formatter.console",
+        Console(file=buf, width=80),
+    ):
+        formatter.format_positions([{
+            "ticker": "KXTEST", "side": "no", "count": 10,
+            "avg_price": 0.55, "market_price": 0.40,
+            "unrealized_pnl": -7.0, "cost_basis": 100.0,
+        }], stop_loss_pct=0.15,
+            stale_tickers={"KXTEST"}, suspect_tickers={"KXTEST"})
+    out = buf.getvalue()
+    for literal in ("StopGate: STALE", "StopGate: BASIS-SUSPECT"):
+        assert literal in out
+    # "StopGate: STALE" disambiguates against the pre-existing #661
+    # STALE-CLOSE candidates-gate literal (review: a bare "STALE"
+    # check was vacuous).
+    assert "StopGate: STALE" in caddie_master_text
+    assert "BASIS-SUSPECT" in caddie_master_text
+    for literal in ("`STALE`", "`BASIS-SUSPECT`"):
+        assert literal in monitor_text
+
+
+def test_data_error_literal_shared_across_code_and_prompts(
+    caddie_master_text: str, monitor_text: str,
+) -> None:
+    """#674 item 4: the DATA-ERROR banner ↔ conservative-path
+    interplay, previously only pinned formatter-side."""
+    from io import StringIO
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from gimmes.reporting import formatter
+
+    buf = StringIO()
+    with patch(
+        "gimmes.reporting.formatter.console",
+        Console(file=buf, width=80),
+    ):
+        formatter.format_positions([{
+            "ticker": "KXTEST", "side": "no", "count": 10,
+            "avg_price": 0.55, "market_price": 0.40,
+            "unrealized_pnl": -7.0, "cost_basis": 0.0,
+        }], stop_loss_pct=0.15)
+    assert "StopGate: DATA-ERROR" in buf.getvalue()
+    assert "DATA-ERROR" in caddie_master_text
+    assert "DATA-ERROR" in monitor_text
