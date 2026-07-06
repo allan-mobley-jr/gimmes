@@ -10,6 +10,7 @@ failed); the round-trip warning never blocks a close.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -81,12 +82,16 @@ class TestCheckReopenChurn:
         close_timestamp="2026-06-17T18:53:36+00:00",
         close_agent="closer",
         entry_price=0.71,
+        close_side=None,
+        entry_side=None,
     ):
         return check_reopen_churn(
             close_price=close_price,
             close_timestamp=close_timestamp,
             close_agent=close_agent,
             entry_price=entry_price,
+            close_side=close_side,
+            entry_side=entry_side,
             now=NOW,
         )
 
@@ -132,6 +137,64 @@ class TestCheckReopenChurn:
         assert self._check(
             close_timestamp="2026-06-17T19:30:00+00:00",
         ) is None
+
+
+class TestSideAwareReopenGate:
+    """#678: prices are side-effective — the gate flips the close
+    price into the entry's denomination before the band check."""
+
+    _check = staticmethod(TestCheckReopenChurn._check)
+
+    def test_opposite_side_same_number_allowed(self) -> None:
+        """Close NO $0.71 → buy YES $0.71 is a 42-cent real move
+        (previously false-blocked)."""
+        msg = self._check(
+            close_price=0.71, entry_price=0.71,
+            close_side="no", entry_side="yes",
+        )
+        assert msg is None
+
+    def test_opposite_side_complement_price_rejected(self) -> None:
+        """Close NO $0.71 → buy YES $0.29 is the SAME price point
+        (previously missed churn)."""
+        msg = self._check(
+            close_price=0.71, entry_price=0.29,
+            close_side="no", entry_side="yes",
+        )
+        assert msg is not None
+        assert "#661" in msg
+        assert "--force-reopen" in msg
+        # The judged price and both denominations are auditable.
+        assert "$0.29" in msg
+        assert "$0.71" in msg
+
+    def test_same_side_explicit_unchanged(self) -> None:
+        msg = self._check(
+            close_price=0.71, entry_price=0.71,
+            close_side="no", entry_side="no",
+        )
+        assert msg is not None
+
+    def test_flipped_exact_boundary_allowed(self) -> None:
+        """Exactly at the delta in flipped terms → allowed, same as
+        the side-blind boundary (the round(...,4) is load-bearing:
+        without it 1−0.71 carries a float residue that flips the
+        boundary verdict)."""
+        msg = self._check(
+            close_price=0.71, entry_price=0.34,
+            close_side="no", entry_side="yes",
+        )
+        assert msg is None
+
+    def test_missing_or_junk_side_falls_back_side_blind(self) -> None:
+        """Fail toward the pre-#678 behavior — this is a fail-open
+        guard, not a ledger."""
+        for close_side in (None, "", "maybe"):
+            msg = self._check(
+                close_price=0.71, entry_price=0.71,
+                close_side=close_side, entry_side="yes",
+            )
+            assert msg is not None, f"close_side={close_side!r}"
 
 
 class TestCheckRoundtripChurn:
@@ -192,6 +255,30 @@ class TestOrderReopenGate:
             "agent": agent,
         }
 
+    def test_opposite_side_complement_rejected_end_to_end(self) -> None:
+        """#678: harness buys YES at eff 0.40; a fresh NO close at
+        0.60 is the same price point in YES terms — hard reject."""
+        result, out, captured, _ = self._run(
+            last_close={
+                "price": 0.60, "timestamp": _iso_ago(minutes=7),
+                "agent": "closer", "side": "no",
+            },
+        )
+        assert result.exit_code == 1, out
+        assert not captured  # no order reached the broker
+
+    def test_opposite_side_same_number_allowed_end_to_end(self) -> None:
+        """A fresh NO close at 0.40 is YES 0.60 — a 20-cent move from
+        the 0.40 entry; the order proceeds."""
+        result, out, captured, _ = self._run(
+            last_close={
+                "price": 0.40, "timestamp": _iso_ago(minutes=7),
+                "agent": "closer", "side": "no",
+            },
+        )
+        assert result.exit_code == 0, out
+        assert len(captured) == 1
+
     def test_same_price_fresh_close_rejected(self) -> None:
         # order harness buys at eff price 0.40; close 7m ago at 0.40
         result, out, captured, _ = self._run(
@@ -227,6 +314,26 @@ class TestOrderReopenGate:
         )
         assert result.exit_code == 0, out
         assert "trade" in captured
+
+    def test_override_context_carries_close_side(self) -> None:
+        """#678: the override audit row records the close row's side
+        so mixed-denomination overrides are auditable."""
+        result, out, captured, insert_error = self._run(
+            extra_args=["--force-reopen"],
+            last_close={
+                "price": 0.40, "timestamp": _iso_ago(minutes=7),
+                "agent": "closer", "side": "yes",
+            },
+        )
+        assert result.exit_code == 0, out
+        contexts = [
+            json.loads(c.args[1].context)
+            for c in insert_error.await_args_list
+            if len(c.args) > 1
+            and c.args[1].error_code == "reopen_gate_overridden"
+        ]
+        assert len(contexts) == 1
+        assert contexts[0]["close_side"] == "yes"
 
     def test_force_reopen_bypasses_with_audit_row(self) -> None:
         result, out, captured, insert_error = self._run(
@@ -298,12 +405,23 @@ class TestSellRoundtripWarning:
         return result, h._printed(console), captured, insert_error
 
     def test_fast_roundtrip_warns_but_closes(self) -> None:
-        open_row = {"timestamp": _iso_ago(minutes=20)}
+        open_row = {"timestamp": _iso_ago(minutes=20), "price": 0.38}
         result, out, captured, insert_error = self._run_sell(open_row)
         assert result.exit_code == 0, out
         assert "trade" in captured  # the close went through
         assert "Round-trip churn (#661)" in out
         assert "churn_roundtrip" in _error_codes(insert_error)
+        # #678: the anchor entry is the documented grouping key Pro
+        # uses to link multi-leg round trips — pin the contract.
+        contexts = [
+            json.loads(c.args[1].context)
+            for c in insert_error.await_args_list
+            if len(c.args) > 1
+            and c.args[1].error_code == "churn_roundtrip"
+        ]
+        assert len(contexts) == 1
+        assert contexts[0]["entry_timestamp"] == open_row["timestamp"]
+        assert contexts[0]["entry_price"] == 0.38
 
     def test_old_open_no_warning(self) -> None:
         open_row = {"timestamp": _iso_ago(hours=5)}
@@ -440,3 +558,72 @@ class TestLastCloseQueries:
             assert row["agent"] == "closer"  # decision, not drift
 
         _run_db(tmp_path / "test.db", _work)
+
+
+def test_get_last_close_trade_returns_side(tmp_path) -> None:
+    """#678: the gate needs the close row's side to normalize
+    denominations."""
+    from gimmes.store.queries import get_last_close_trade, insert_trade
+
+    db_path = tmp_path / "test.db"
+
+    async def _seed_and_check(db) -> None:
+        await insert_trade(db, _close_trade("KXGDP-26JUL30-T3.0"))
+        row = await get_last_close_trade(db, "KXGDP-26JUL30-T3.0")
+        assert row is not None
+        assert row["side"] == "no"
+
+    _run_db(db_path, _seed_and_check)
+
+
+def test_get_last_entry_trade_side_scoped(tmp_path) -> None:
+    """#678: under both-side holdings the round-trip anchor must be
+    the leg being closed, not the ticker's most recent entry."""
+    from gimmes.store.queries import get_last_entry_trade, insert_trade
+
+    db_path = tmp_path / "test.db"
+
+    async def _work(db) -> None:
+        no_entry = TradeDecision(
+            ticker="KXBOTH-26JUL-T1", action=TradeDecision.Action.OPEN,
+            side="no", count=10, price=0.60,
+        )
+        no_entry.timestamp = datetime.now(UTC) - timedelta(hours=2)
+        await insert_trade(db, no_entry)
+        yes_entry = TradeDecision(
+            ticker="KXBOTH-26JUL-T1", action=TradeDecision.Action.OPEN,
+            side="yes", count=10, price=0.40,
+        )
+        await insert_trade(db, yes_entry)
+
+        row = await get_last_entry_trade(db, "KXBOTH-26JUL-T1", side="no")
+        assert row is not None
+        assert row["price"] == 0.60  # the NO leg, not the newer YES
+
+        unscoped = await get_last_entry_trade(db, "KXBOTH-26JUL-T1")
+        assert unscoped is not None
+        assert unscoped["price"] == 0.40  # legacy behavior preserved
+
+    _run_db(db_path, _work)
+
+
+def test_order_requires_explicit_side_under_both_config() -> None:
+    """#678: under strategy.side='both' an order without --side must
+    fail loud and early — the reopen gate would otherwise run
+    silently side-blind (the exact gap the denomination flip closes)
+    and OrderSide('both') would crash after the gate anyway."""
+    from unittest.mock import MagicMock, patch
+
+    from typer.testing import CliRunner
+
+    from gimmes.cli import app
+
+    cfg = MagicMock()
+    cfg.strategy.side = "both"
+    with patch("gimmes.cli.load_config", return_value=cfg):
+        result = CliRunner().invoke(app, [
+            "order", "KXTEST", "--action", "buy", "--count", "10",
+            "--price", "40", "--yes",
+        ])
+    assert result.exit_code == 1
+    assert "explicit side" in result.output

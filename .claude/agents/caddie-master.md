@@ -275,6 +275,8 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
 
 **Time-based expiry (check first):** If the prior research `Scanned` timestamp is more than 48 hours ago, treat the candidate as having no prior research — send to Caddie for fresh evaluation regardless of score. The macro environment may have changed significantly since the original assessment.
 
+**STALE-CLOSE expiry (check first, before any score-based rule — #678 ordering):** Prior research flagged STALE-CLOSE (a `STALE-CLOSE:` banner below the `gimmes candidates --ticker TICKER --limit 3` table — the banner fires only when the NEWEST research row is stale, so fresh post-close research clears this check even while older rows still show a dim `STALE` Status) → treat as NO valid prior research regardless of score: the research predates the ticker's most recent close, and the close happened on information that research cannot contain (#661). Send to the Caddie for fresh research before the ticker may proceed.
+
 1. **No prior research** (no records found, or expired per above) → send to Caddie
 2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip via the `--rationale-file` heredoc pattern (#589):
    ```bash
@@ -287,7 +289,6 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
    rm -f "$RATIONALE_FILE"
    ```
 3. **Prior score between cooldown_cutoff and (gimme_threshold - 1)** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise log the skip with the criterion-2 template above using `--reason cooldown`, with rationale noting the borderline prior score and that the price is unchanged.
-3b. **Prior research flagged STALE-CLOSE** (a `STALE-CLOSE:` banner or `STALE` Status in `gimmes candidates --ticker TICKER --limit 3`) → treat as NO valid prior research regardless of score: the research predates the ticker's most recent close, and the close happened on information that research cannot contain (#661). Send to the Caddie for fresh research before the ticker may proceed.
 4. **Prior score >= gimme_threshold with open position** (check `gimmes positions` for the ticker) → skip; log it so the decision is auditable (no analytics flags — the open trade row carries the real analytics):
    ```bash
    RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)

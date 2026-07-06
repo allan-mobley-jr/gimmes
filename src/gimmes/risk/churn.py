@@ -61,6 +61,8 @@ def check_reopen_churn(
     close_timestamp: str,
     close_agent: str,
     entry_price: float,
+    close_side: str | None = None,
+    entry_side: str | None = None,
     now: datetime.datetime | None = None,
 ) -> str | None:
     """Rejection message when an open repeats a fresh close, else None.
@@ -71,6 +73,14 @@ def check_reopen_churn(
     is pure fee loss by construction (#661). Reconcile closes are
     broker drift, not decisions, and never arm the gate (#586/#609
     semantics). ``now`` must be timezone-aware.
+
+    Prices are side-effective, so when both sides are known and
+    differ, the close price is flipped into the entry's denomination
+    before the band check (#678): closing NO at $0.71 then buying YES
+    at $0.29 is the SAME price point (churn), while YES at $0.71
+    after that close is a 42-cent real move (legit). Missing or junk
+    side values fall back to the side-blind comparison — this is a
+    fail-open guard.
     """
     if close_agent == "reconcile":
         return None
@@ -79,11 +89,24 @@ def check_reopen_churn(
         return None
     if age_minutes > REOPEN_LOCKOUT_MINUTES:
         return None
-    if abs(entry_price - close_price) >= REOPEN_PRICE_DELTA:
+    effective_close = close_price
+    flipped = False
+    # The set equality does all the guarding: equal sides build a
+    # size-1 set, and missing/junk values can never assemble exactly
+    # {"yes", "no"} — both fall through to the side-blind comparison.
+    if {close_side, entry_side} == {"yes", "no"}:
+        effective_close = round(1.0 - close_price, 4)
+        flipped = True
+    if abs(entry_price - effective_close) >= REOPEN_PRICE_DELTA:
         return None
+    denomination = (
+        f" ({entry_side.upper()} terms; ${close_price:.2f}"
+        f" {close_side.upper()})" if flipped else ""
+    )
     return (
         f"Reopen churn gate (#661): this ticker was closed"
-        f" {age_minutes:.0f}m ago at ${close_price:.2f} and this order"
+        f" {age_minutes:.0f}m ago at ${effective_close:.2f}"
+        f"{denomination} and this order"
         f" would re-enter at ${entry_price:.2f} — a same-price round"
         f" trip repeats the KXGDP-26JUL30-T3.0 anti-pattern (fees for"
         f" zero gross). Re-entry within {REOPEN_LOCKOUT_MINUTES}m"
