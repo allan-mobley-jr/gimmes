@@ -33,7 +33,11 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
     known (#653). ``won`` is resolution-first (side == resolved_outcome
     anywhere in the group), falling back to the realized return's sign.
     Orphan closes (no matched open on record) are dropped — they have
-    no entry decision to learn from.
+    no entry decision to learn from. Two conservative edges (#668):
+    a scratch close (realized == 0, no resolution) classifies as a
+    loss — not a win is the safe reading for tuning; and unresolved
+    reconcile drift feeds mark-priced returns until resolution
+    backfill repricing corrects them retroactively.
 
     Returns one record per matched close: ``{ticker, side, timestamp,
     won, realized_return, entry_score, entry_price}`` where
@@ -115,6 +119,24 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
     return paired
 
 
+def _outcomes_by_position(
+    paired: list[dict],  # type: ignore[type-arg]
+) -> dict[tuple[str, str], bool]:
+    """Map ``(ticker, side)`` -> ``won`` from paired closes (#668).
+
+    Keyed by side so both sides of a ticker stay distinct, and
+    multiple partial closes aggregate any-loss = loss: a position that
+    realized a loss on any tranche was not a clean win — bias down.
+    When resolution is known every tranche carries the same ``won``,
+    so aggregation only bites on PnL-fallback partials.
+    """
+    outcomes: dict[tuple[str, str], bool] = {}
+    for r in paired:
+        key = (r["ticker"], r["side"])
+        outcomes[key] = outcomes.get(key, True) and r["won"]
+    return outcomes
+
+
 # ---------------------------------------------------------------------------
 # Analysis 1: Threshold Sweep
 # ---------------------------------------------------------------------------
@@ -135,18 +157,19 @@ def analyze_threshold_sweep(
     if len(paired) < MIN_TRADES_THRESHOLD:
         return None
 
-    # Build outcome map: ticker -> won (True/False). Resolution-first
-    # via _pair_closes — close-row edge is an entry artifact, not an
-    # outcome (#656).
-    outcomes: dict[str, bool] = {r["ticker"]: r["won"] for r in paired}
+    # Build outcome map. Resolution-first via _pair_closes —
+    # close-row edge is an entry artifact, not an outcome (#656).
+    # Any-loss aggregation (#668) is conservative here because the
+    # sweep only loosens on win-rate improvement.
+    outcomes = _outcomes_by_position(paired)
 
     # Build score map from opens
     scored: list[dict] = []  # type: ignore[type-arg]
     for t in opens:
-        ticker = t.get("ticker", "")
+        key = (t.get("ticker", ""), t.get("side", "yes"))
         score = t.get("gimme_score", 0)
-        if ticker in outcomes:
-            scored.append({"score": score, "won": outcomes[ticker]})
+        if key in outcomes:
+            scored.append({"score": score, "won": outcomes[key]})
 
     if len(scored) < MIN_TRADES_THRESHOLD:
         return None
@@ -412,17 +435,18 @@ def analyze_scanner_parameters(
     if len(paired) < MIN_TRADES_SCANNER:
         return None
 
-    # Build outcome map — resolution-first via _pair_closes (#656)
-    outcomes: dict[str, bool] = {r["ticker"]: r["won"] for r in paired}
+    # Build outcome map — resolution-first via _pair_closes (#656),
+    # with any-loss aggregation for partial closes (#668).
+    outcomes = _outcomes_by_position(paired)
 
     # Get prices from opens
     winner_prices: list[float] = []
     loser_prices: list[float] = []
     for t in opens:
-        ticker = t.get("ticker", "")
+        key = (t.get("ticker", ""), t.get("side", "yes"))
         price = t.get("price", 0)
-        if ticker in outcomes and price > 0:
-            if outcomes[ticker]:
+        if key in outcomes and price > 0:
+            if outcomes[key]:
                 winner_prices.append(price)
             else:
                 loser_prices.append(price)

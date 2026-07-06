@@ -407,6 +407,142 @@ class TestScannerParameters:
         assert "strategy.m" in rec.parameter_path
 
 
+class TestSideAwareOutcomes:
+    """#668: outcome maps key by (ticker, side) — both sides of a
+    ticker stay distinct, and multiple partial closes of one position
+    aggregate any-loss = loss instead of last-wins."""
+
+    def _both_sides(self, ticker: str = "BOTH") -> list[dict]:
+        """A yes-side WIN then a no-side LOSS on the same ticker.
+        Ticker-only last-wins would mark BOTH opens as losses."""
+        return [
+            {
+                "ticker": ticker, "action": "open", "side": "yes",
+                "count": 10, "price": 0.72, "gimme_score": 85.0,
+                "edge": 0.15, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": ticker, "action": "close", "side": "yes",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+            {
+                "ticker": ticker, "action": "open", "side": "no",
+                "count": 10, "price": 0.58, "gimme_score": 85.0,
+                "edge": 0.15, "agent": "closer",
+                "timestamp": "2026-03-02T10:00:00",
+            },
+            {
+                "ticker": ticker, "action": "close", "side": "no",
+                "count": 10, "price": 0.30, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-02T18:00:00",
+            },
+        ]
+
+    def test_threshold_sweep_keeps_sides_distinct(
+        self, config: GimmesConfig,
+    ) -> None:
+        trades = _make_trades(
+            n_wins=25, n_losses=5, win_score=70, loss_score=85,
+        ) + self._both_sides()
+        rec = analyze_threshold_sweep(trades, config)
+        assert rec is not None
+        sweep = {
+            row["threshold"]: row
+            for row in json.loads(rec.supporting_data)
+        }
+        # At threshold 85: the 5 baseline losses + BOTH's two opens.
+        # The yes-side win must survive the no-side loss.
+        assert sweep[85]["trades_taken"] == 7
+        assert sweep[85]["wins"] == 1
+
+    def test_threshold_sweep_partial_closes_any_loss(
+        self, config: GimmesConfig,
+    ) -> None:
+        """Loss tranche first, win tranche last — last-wins would call
+        the position a win; any-loss keeps it a loss."""
+        trades = _make_trades(
+            n_wins=25, n_losses=5, win_score=70, loss_score=85,
+        ) + [
+            {
+                "ticker": "PARTIAL", "action": "open", "side": "yes",
+                "count": 10, "price": 0.50, "gimme_score": 85.0,
+                "edge": 0.15, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": "PARTIAL", "action": "close", "side": "yes",
+                "count": 5, "price": 0.20, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T12:00:00",
+            },
+            {
+                "ticker": "PARTIAL", "action": "close", "side": "yes",
+                "count": 5, "price": 0.70, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+        ]
+        rec = analyze_threshold_sweep(trades, config)
+        assert rec is not None
+        sweep = {
+            row["threshold"]: row
+            for row in json.loads(rec.supporting_data)
+        }
+        # 5 baseline losses + PARTIAL at threshold 85 — no wins.
+        assert sweep[85]["trades_taken"] == 6
+        assert sweep[85]["wins"] == 0
+
+    def test_scanner_parameters_partial_closes_any_loss(
+        self, config: GimmesConfig,
+    ) -> None:
+        """Any-loss must hold in the scanner too: the PARTIAL open's
+        price lands in the loser bucket even though its last (winning)
+        tranche would put it in the winners under last-wins."""
+        trades = _make_trades(
+            n_wins=20, n_losses=15, win_price=0.72, loss_price=0.58,
+        ) + [
+            {
+                "ticker": "PARTIAL", "action": "open", "side": "yes",
+                "count": 10, "price": 0.50, "gimme_score": 85.0,
+                "edge": 0.15, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": "PARTIAL", "action": "close", "side": "yes",
+                "count": 5, "price": 0.20, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T12:00:00",
+            },
+            {
+                "ticker": "PARTIAL", "action": "close", "side": "yes",
+                "count": 5, "price": 0.70, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+        ]
+        rec = analyze_scanner_parameters(trades, config)
+        assert rec is not None
+        # 20 baseline winners; 15 baseline losers + PARTIAL.
+        assert "n=20" in rec.rationale
+        assert "n=16" in rec.rationale
+
+    def test_scanner_parameters_keep_sides_distinct(
+        self, config: GimmesConfig,
+    ) -> None:
+        trades = _make_trades(
+            n_wins=20, n_losses=15, win_price=0.72, loss_price=0.58,
+        ) + self._both_sides()
+        rec = analyze_scanner_parameters(trades, config)
+        assert rec is not None
+        # 20 baseline winners + BOTH's yes win; 15 losers + no loss.
+        assert "n=21" in rec.rationale
+        assert "n=16" in rec.rationale
+
+
 class TestScoringCorrelation:
     def test_returns_none_without_component_data(self, config: GimmesConfig) -> None:
         trades = _make_trades(n_wins=30, n_losses=20)

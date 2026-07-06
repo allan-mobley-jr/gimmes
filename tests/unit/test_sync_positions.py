@@ -598,3 +598,92 @@ class TestReconcileDuplicateGuard:
         trades = await get_trades(db, ticker="KX4")
         reconcile = [t for t in trades if t.get("agent") == "reconcile"]
         assert len(reconcile) == 1
+
+
+class TestCorruptAnalyticsGuard:
+    """#668: corrupt stored entry analytics (manual SQL / legacy rows)
+    must not abort the settlement or reconcile transaction — the write
+    degrades to honest zeros with a warning instead of re-failing
+    every cycle."""
+
+    async def test_settlement_close_survives_corrupt_analytics(
+        self, db, caplog,
+    ):
+        import logging
+
+        from gimmes.store.queries import log_settlement_close
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        # Out-of-range probability can only arrive via manual SQL —
+        # insert_trade validates, so corrupt the row underneath it.
+        await db.conn.execute(
+            "UPDATE trades SET model_probability = 1.7"
+            " WHERE ticker = 'KXCPI-26APR-T0.5'",
+        )
+        await db.conn.commit()
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            async with db.transaction():
+                row_id = await log_settlement_close(
+                    db, ticker="KXCPI-26APR-T0.5", side="yes",
+                    count=10, won=True,
+                )
+        assert row_id > 0
+        assert "failed validation" in caplog.text
+
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        assert len(closes) == 1
+        assert closes[0]["agent"] == "settlement"
+        assert closes[0]["price"] == 1.0
+        assert closes[0]["model_probability"] == 0.0
+        assert closes[0]["gimme_score"] == 0.0
+
+    async def test_drift_close_survives_corrupt_analytics(
+        self, db, caplog,
+    ):
+        import logging
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await db.conn.execute(
+            "UPDATE trades SET gimme_score = 250.0"
+            " WHERE ticker = 'KXCPI-26APR-T0.5'",
+        )
+        await db.conn.commit()
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=0.42),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            await sync_positions(db, [])
+        assert "failed validation" in caplog.text
+
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        assert len(closes) == 1
+        assert closes[0]["agent"] == "reconcile"
+        assert closes[0]["gimme_score"] == 0.0
+        assert closes[0]["model_probability"] == 0.0
+
+    async def test_corrupt_caller_value_still_fails_loud(
+        self, db, caplog,
+    ):
+        """A corrupt POSITIONS row (mark > 1.0) is not an analytics
+        problem — the zeroed retry re-raises, and the guard must not
+        log a 'recorded with zeroed analytics' line for a row that was
+        rolled back."""
+        import logging
+
+        from pydantic import ValidationError
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=1.7),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
+            with pytest.raises(ValidationError):
+                await sync_positions(db, [])
+        assert "recorded with zeroed analytics" not in caplog.text

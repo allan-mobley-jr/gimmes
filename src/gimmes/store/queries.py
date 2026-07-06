@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from typing import TypedDict
 
+from pydantic import ValidationError
+
 from gimmes.models.error import ErrorLogEntry
 from gimmes.models.portfolio import PortfolioSnapshot, Position
 from gimmes.models.recommendation import Recommendation
@@ -302,23 +304,45 @@ async def _log_reconcile_closes(
         # #656: carry the entry decision's analytics onto the synthetic
         # close so the trades table isn't blind to its own reasoning.
         entry = await get_entry_analytics(db, pos.ticker, pos.side) or {}
-        synth = TradeDecision(
-            ticker=pos.ticker,
-            action=TradeDecision.Action.CLOSE,
-            side=pos.side,
-            count=pos.count,
-            price=close_price,
-            model_probability=entry.get("model_probability", 0.0),
-            gimme_score=entry.get("gimme_score", 0.0),
-            edge=entry.get("edge", 0.0),
-            kelly_fraction=entry.get("kelly_fraction", 0.0),
-            rationale=(
-                "reconcile drift — broker removed position without local"
-                " close; price is last-known mark, not broker-confirmed"
-                " fill (#609)"
-            ),
-            agent="reconcile",
-        )
+
+        def _build(analytics: dict) -> TradeDecision:  # type: ignore[type-arg]
+            return TradeDecision(
+                ticker=pos.ticker,
+                action=TradeDecision.Action.CLOSE,
+                side=pos.side,
+                count=pos.count,
+                price=close_price,
+                model_probability=analytics.get("model_probability", 0.0),
+                gimme_score=analytics.get("gimme_score", 0.0),
+                edge=analytics.get("edge", 0.0),
+                kelly_fraction=analytics.get("kelly_fraction", 0.0),
+                rationale=(
+                    "reconcile drift — broker removed position without"
+                    " local close; price is last-known mark, not"
+                    " broker-confirmed fill (#609)"
+                ),
+                agent="reconcile",
+            )
+
+        try:
+            synth = _build(entry)
+        except ValidationError as exc:
+            # #668: same guard as log_settlement_close — corrupt
+            # analytics must not abort the sync_positions transaction
+            # every reconcile cycle. Retry before warning: count and
+            # close_price come from the positions row (unconstrained
+            # in the Position model), so a corrupt caller value
+            # re-raises out of the zeroed retry — fail-loud, with no
+            # lying "recorded" log line.
+            synth = _build({})
+            logging.getLogger(__name__).warning(
+                "entry analytics for %s/%s failed validation (%s) —"
+                " reconcile close recorded with zeroed analytics"
+                " (#668)", pos.ticker, pos.side,
+                ", ".join(
+                    str(e.get("loc", ("?",))[0]) for e in exc.errors()
+                ),
+            )
         await _insert_trade_row(db, synth)
 
         # IMPORTANT: this body MUST NOT contain the literal string
@@ -454,22 +478,44 @@ async def log_settlement_close(
             " analytics default to 0 (#656)", ticker, side,
         )
         entry = {}
-    synth = TradeDecision(
-        ticker=ticker,
-        action=TradeDecision.Action.CLOSE,
-        side=side,
-        count=count,
-        price=price,
-        model_probability=entry.get("model_probability", 0.0),
-        gimme_score=entry.get("gimme_score", 0.0),
-        edge=entry.get("edge", 0.0),
-        kelly_fraction=entry.get("kelly_fraction", 0.0),
-        rationale=rationale or (
-            "market settled — broker-confirmed outcome; close at"
-            " settlement value (#653)"
-        ),
-        agent="settlement",
-    )
+
+    def _build(analytics: dict) -> TradeDecision:  # type: ignore[type-arg]
+        return TradeDecision(
+            ticker=ticker,
+            action=TradeDecision.Action.CLOSE,
+            side=side,
+            count=count,
+            price=price,
+            model_probability=analytics.get("model_probability", 0.0),
+            gimme_score=analytics.get("gimme_score", 0.0),
+            edge=analytics.get("edge", 0.0),
+            kelly_fraction=analytics.get("kelly_fraction", 0.0),
+            rationale=rationale or (
+                "market settled — broker-confirmed outcome; close at"
+                " settlement value (#653)"
+            ),
+            agent="settlement",
+        )
+
+    try:
+        synth = _build(entry)
+    except ValidationError as exc:
+        # #668: corrupt stored analytics (manual SQL / legacy rows)
+        # must not abort the settlement transaction — that would
+        # re-fail every settle cycle. Honest zeros over fabricated
+        # in-range values. Retry BEFORE warning: caller-supplied
+        # fields (count, side) are validated too, and if one of those
+        # is the culprit the zeroed retry re-raises — fail-loud is
+        # correct there, and the log must not claim a row was written.
+        synth = _build({})
+        logging.getLogger(__name__).warning(
+            "entry analytics for %s/%s failed validation (%s) —"
+            " settlement close recorded with zeroed analytics (#668)",
+            ticker, side,
+            ", ".join(
+                str(e.get("loc", ("?",))[0]) for e in exc.errors()
+            ),
+        )
     if timestamp is not None:
         synth.timestamp = timestamp
     row_id = await _insert_trade_row(db, synth)

@@ -3714,7 +3714,14 @@ def lesson(
         from gimmes.strategy.advisor import run_all_analyses
 
         async with Database(config.db_path) as db:
-            all_trades = await get_trades(db, limit=1000)
+            # Fetch per-action so skip volume can't truncate older
+            # opens out from under their closes — orphaned closes are
+            # dropped by _pair_closes and the analyses silently degrade
+            # (#542 pattern, #668). Skips stay in the input:
+            # analyze_missed_opportunities consumes them.
+            all_trades: list[dict] = []  # type: ignore[type-arg]
+            for action in ("open", "close", "size_up", "skip"):
+                all_trades += await get_trades(db, action=action, limit=100_000)
             # Candidates not yet used (scoring correlation needs #20)
             candidates: list[dict] = []  # type: ignore[type-arg]
 
