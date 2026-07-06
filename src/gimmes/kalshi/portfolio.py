@@ -108,3 +108,68 @@ async def get_settlements(
     settlements = data.get("settlements", [])
     next_cursor = data.get("cursor")
     return settlements, next_cursor
+
+
+async def get_settlements_for_tickers(
+    client: KalshiClient,
+    tickers: set[str],
+    *,
+    max_pages: int = 10,
+    lookback_days: int = 30,
+) -> dict[str, dict]:  # type: ignore[type-arg]
+    """Newest settlement record per requested ticker (#663).
+
+    The settlements endpoint returns account-lifetime records, newest
+    first (live-probed schema: ticker, market_result 'yes'|'no',
+    settled_time ISO-Z, yes/no_count_fp strings). Three stop
+    conditions bound the walk: every requested ticker matched, a
+    page's oldest settled_time older than the lookback window, or the
+    max_pages cap (the get_all_positions defensive pattern). Newest
+    record wins per ticker.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    if not tickers:
+        return {}
+    cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
+    found: dict[str, dict] = {}
+    cursor: str | None = None
+    for _ in range(max_pages):
+        settlements, cursor = await get_settlements(
+            client, limit=200, cursor=cursor,
+        )
+        if not settlements:
+            break
+        oldest_in_page: datetime | None = None
+        for rec in settlements:
+            ticker = rec.get("ticker", "")
+            settled_raw = str(rec.get("settled_time", ""))
+            try:
+                settled = datetime.fromisoformat(
+                    settled_raw.replace("Z", "+00:00"),
+                )
+            except ValueError:
+                settled = None
+            if settled is not None and (
+                oldest_in_page is None or settled < oldest_in_page
+            ):
+                oldest_in_page = settled
+            if ticker in tickers and ticker not in found:
+                found[ticker] = rec
+        if tickers <= found.keys():
+            break
+        if oldest_in_page is not None and oldest_in_page < cutoff:
+            break
+        if not cursor:
+            break
+    else:
+        missing = tickers - found.keys()
+        if missing:
+            import logging
+            logging.getLogger(__name__).warning(
+                "settlements pagination cap (%d pages) hit with %d"
+                " unmatched ticker(s): %s — they fall back to"
+                " reconcile drift (#663)",
+                max_pages, len(missing), sorted(missing),
+            )
+    return found

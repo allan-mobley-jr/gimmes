@@ -1097,3 +1097,128 @@ class TestSettlementOverridesWrongOutcome:
         assert all(
             t["resolved_outcome"] == "yes" for t in trades
         ), trades
+
+
+class TestSettleLedgerClamp:
+    """#663: a resting sell logs its close trade at placement without
+    reducing the paper position, so settle() writing a FULL-count
+    settlement row would double-count the exit in daily P&L (and the
+    daily-loss trigger). The settlement row is clamped to the ledger
+    residual; balance and paper_positions updates stay full-count
+    because the broker's cash accounting is separate from the ledger.
+    """
+
+    async def _buy(
+        self, broker: PaperBroker, orderbook: Orderbook, count: int = 10,
+    ) -> None:
+        params = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY,
+            side=OrderSide.YES, count=count, yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(params, orderbook)
+
+    async def _seed_ledger(
+        self, broker: PaperBroker, *, opened: int = 0, closed: int = 0,
+    ) -> None:
+        from gimmes.models.trade import TradeDecision
+        from gimmes.store.queries import insert_trade
+
+        if opened:
+            await insert_trade(broker._db, TradeDecision(
+                ticker="TEST-MKT", action=TradeDecision.Action.OPEN,
+                side="yes", count=opened, price=0.70,
+            ))
+        if closed:
+            await insert_trade(broker._db, TradeDecision(
+                ticker="TEST-MKT", action=TradeDecision.Action.CLOSE,
+                side="yes", count=closed, price=0.90,
+            ))
+
+    @pytest.mark.asyncio
+    async def test_settle_skips_trade_row_when_ledger_covered(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        """Placement-time close row already covers the opens — settle
+        writes NO second close, but the payout still lands in the
+        balance and the outcome is still recorded."""
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook)
+        await self._seed_ledger(broker, opened=10, closed=10)
+        balance_before = await broker.get_balance()
+
+        await broker.settle("TEST-MKT", "yes")  # YES won → $1/contract
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        assert [
+            t for t in trades if t.get("agent") == "settlement"
+        ] == []
+        assert all(
+            t["resolved_outcome"] == "yes" for t in trades
+        ), trades
+        assert await broker.get_balance() == pytest.approx(
+            balance_before + 10 * 1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_settle_clamps_to_ledger_residual(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        """A partial placement-time close: the settlement row covers
+        only the contracts the ledger hasn't closed yet."""
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook)
+        await self._seed_ledger(broker, opened=10, closed=4)
+
+        await broker.settle("TEST-MKT", "yes")
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        settlement = [
+            t for t in trades if t.get("agent") == "settlement"
+        ]
+        assert len(settlement) == 1
+        assert settlement[0]["count"] == 6
+        assert settlement[0]["price"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_settle_full_count_without_trade_history(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        """opened == 0 (seeded/legacy position with no local trades)
+        keeps the pre-#663 full-count settlement row — a zero ledger
+        must not be mistaken for 'already covered'."""
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook)  # broker writes no trades rows
+
+        await broker.settle("TEST-MKT", "no")  # YES lost
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        closes = [t for t in trades if t["action"] == "close"]
+        assert len(closes) == 1
+        assert closes[0]["agent"] == "settlement"
+        assert closes[0]["count"] == 10
+        assert closes[0]["price"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_settle_clamp_capped_at_broker_count(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        """A ledger residual LARGER than the broker position (size-ups
+        in trades, partially reduced paper position) must not inflate
+        the settlement row past the contracts that actually settled."""
+        from gimmes.store.queries import get_trades
+
+        await self._buy(broker, orderbook)
+        await self._seed_ledger(broker, opened=20, closed=0)
+
+        await broker.settle("TEST-MKT", "yes")
+
+        trades = await get_trades(broker._db, ticker="TEST-MKT")
+        settlement = [
+            t for t in trades if t.get("agent") == "settlement"
+        ]
+        assert len(settlement) == 1
+        assert settlement[0]["count"] == 10  # broker count, not 20

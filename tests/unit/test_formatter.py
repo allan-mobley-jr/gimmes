@@ -120,7 +120,7 @@ class TestFormatLocalTimestamp:
 
 
 class TestFormatPnlSummary:
-    """#653: the Closed/Open Positions rows make the P&L table
+    """#653/#663: the Close Events/Open Positions rows make the P&L table
     internally consistent — pin the arithmetic."""
 
     def test_closed_and_open_rows(self) -> None:
@@ -143,14 +143,14 @@ class TestFormatPnlSummary:
         ):
             format_pnl_summary(summary)
         out = buf.getvalue()
-        assert "Closed" in out and "Open Positions" in out
-        # Closed = W+L+S = 4; Open = 1; Total = 5.
+        assert "Close Events" in out and "Open Positions" in out
+        # Close Events = W+L+S = 4; Open = 1; Total = 5.
         lines = {
             line.split("│")[1].strip(): line.split("│")[2].strip()
             for line in out.splitlines()
             if line.count("│") >= 3
         }
-        assert lines.get("Closed") == "4"
+        assert lines.get("Close Events") == "4"
         assert lines.get("Open Positions") == "1"
         assert lines.get("Total Trades") == "5"
 

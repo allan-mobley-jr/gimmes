@@ -77,6 +77,14 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
             ),
             None,
         )
+        # #663: a settlement close in the group means settlements were
+        # properly recorded for this position — any reconcile drift
+        # row alongside it is genuinely NON-settlement drift (e.g. a
+        # manual exit) and must keep its mark, not be repriced.
+        group_has_settlement = any(
+            e.get("agent") == "settlement" and e.get("action") == "close"
+            for e in events
+        )
 
         for e in events:
             action = e["action"]
@@ -93,6 +101,7 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
                 action == "close"
                 and e.get("agent") == "reconcile"
                 and group_outcome is not None
+                and not group_has_settlement
             ):
                 price = 1.0 if side == group_outcome else 0.0
 

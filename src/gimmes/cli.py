@@ -1931,6 +1931,69 @@ def risk_check() -> None:
     _run(_check())
 
 
+async def _settle_removed_positions(
+    client, db, old_tickers, removed: set[str],
+) -> int:
+    """Write settlement closes for removed positions that match
+    authoritative settlement records (#663). Returns the number of
+    positions settled. Commit-per-ticker; residual <= 0 tickers are
+    skipped (the drift close is then also suppressed by the #653
+    dup-guard, and a history-less ticker must NOT be pre-written or
+    it would produce BOTH rows)."""
+    from datetime import datetime
+
+    from gimmes.kalshi.portfolio import get_settlements_for_tickers
+    from gimmes.store.queries import (
+        count_opened_closed,
+        log_settlement_close,
+    )
+
+    records = await get_settlements_for_tickers(client, removed)
+    settled = 0
+    for ticker, rec in records.items():
+        result = str(rec.get("market_result", ""))
+        if result not in ("yes", "no"):
+            continue  # unsettleable record — fall back to drift
+        pos = old_tickers[ticker]
+        opened, closed = await count_opened_closed(
+            db, ticker, pos.side,
+        )
+        residual = opened - closed
+        if opened <= 0 or residual <= 0:
+            continue
+        if residual != pos.count:
+            import logging
+
+            logging.getLogger("gimmes").warning(
+                "settlement residual mismatch for %s: ledger %d vs"
+                " broker %d — using the ledger (#663)",
+                ticker, residual, pos.count,
+            )
+        raw_time = str(rec.get("settled_time", ""))
+        try:
+            settled_time: datetime | None = datetime.fromisoformat(
+                raw_time.replace("Z", "+00:00"),
+            )
+        except ValueError:
+            settled_time = None
+        await log_settlement_close(
+            db,
+            ticker=ticker,
+            side=pos.side,
+            count=residual,
+            won=pos.side == result,
+            timestamp=settled_time,
+            rationale=(
+                "market settled — outcome consumed from the"
+                " authoritative portfolio settlements endpoint"
+                " during reconcile (#663)"
+            ),
+        )
+        await db.conn.commit()
+        settled += 1
+    return settled
+
+
 @app.command(rich_help_panel="Portfolio")
 def reconcile() -> None:
     """Sync local position data with the authoritative source.
@@ -1999,6 +2062,55 @@ def reconcile() -> None:
                 from gimmes.kalshi.portfolio import get_all_positions
                 fresh = await get_all_positions(client)
                 source = "Kalshi API"
+
+            # #663: championship-mode settlements are consumed from
+            # the AUTHORITATIVE portfolio settlements endpoint before
+            # the sync — a settled position gets a proper
+            # agent='settlement' close at the true 1.0/0.0 value
+            # instead of an agent='reconcile' drift row at the stale
+            # mark. The #653 dup-guard (closed >= opened) then
+            # suppresses the drift close for the pre-written tickers,
+            # so sync_positions needs no signature change, and the
+            # pre-write is crash-idempotent (a retry finds residual
+            # <= 0 and skips). Any settlements-API failure degrades
+            # to today's drift behavior — reconcile is never blocked.
+            if not broker:
+                prospective_removed = (
+                    old_tickers.keys() - {p.ticker for p in fresh}
+                )
+                if prospective_removed:
+                    try:
+                        settled_count = await _settle_removed_positions(
+                            client, db, old_tickers,
+                            prospective_removed,
+                        )
+                        if settled_count:
+                            console.print(
+                                f"  [green]{settled_count} removed"
+                                f" position(s) matched settlement"
+                                f" records — closed at settlement"
+                                f" value (#663)[/green]"
+                            )
+                    except Exception as exc:
+                        import logging
+
+                        # A mid-write failure leaves the per-ticker
+                        # implicit transaction open — without a
+                        # rollback, sync_positions' BEGIN IMMEDIATE
+                        # below would die on "cannot start a
+                        # transaction within a transaction" and the
+                        # promised drift fallback would never run.
+                        await db.conn.rollback()
+                        logging.getLogger("gimmes").warning(
+                            "settlements lookup failed — falling back"
+                            " to reconcile drift (#663): %s", exc,
+                            exc_info=True,
+                        )
+                        console.print(
+                            f"  [yellow]Warning: settlements lookup"
+                            f" failed ({exc}) — removed positions"
+                            f" fall back to drift closes[/yellow]"
+                        )
 
             await sync_positions(db, fresh)
 
@@ -2503,14 +2615,20 @@ def backfill_settlements(
         repaired: list[tuple[str, float, float]] = []
         conflicts: list[tuple[str, str, str]] = []
 
+        ran = False
         async with Database(config.db_path) as db:
             try:
-                await _apply(db, inserted, repaired, conflicts)
+                ran = await _apply(db, inserted, repaired, conflicts)
             except _DryRunRollbackError:
+                ran = True
                 console.print("[dim]Dry run — no changes written.[/dim]")
-        _print_summary(inserted, repaired, conflicts, dry_run)
+        # #663: a no-table run already explained itself — an
+        # "Inserted 0" summary after that reads as a second, wrong
+        # answer.
+        if ran:
+            _print_summary(inserted, repaired, conflicts, dry_run)
 
-    async def _apply(db, inserted, repaired, conflicts) -> None:  # type: ignore[no-untyped-def]
+    async def _apply(db, inserted, repaired, conflicts) -> bool:  # type: ignore[no-untyped-def]
         from datetime import UTC, datetime
 
         from gimmes.store.queries import (
@@ -2533,12 +2651,20 @@ def backfill_settlements(
                     " backfill (#653 applies to paper-mode"
                     " settlements).[/yellow]"
                 )
-                return
+                return False
+            # #663: cost_basis > 0 makes the fingerprint sound — at
+            # count = 0 only settle() leaves cost_basis intact (a full
+            # sell drives it to 0 via the count ratio, and mark
+            # updates only touch count > 0 rows). Do NOT also require
+            # realized_pnl < 0 for 0.0 marks: realized_pnl is
+            # cumulative, so a settled loss after profitable partial
+            # sells can end lifetime-positive.
             cursor = await db.conn.execute(
                 "SELECT ticker, side, avg_price, cost_basis,"
                 " market_price, updated_at"
                 " FROM paper_positions"
-                " WHERE count = 0 AND market_price IN (0.0, 1.0)",
+                " WHERE count = 0 AND cost_basis > 0"
+                " AND market_price IN (0.0, 1.0)",
             )
             settled = [dict(r) for r in await cursor.fetchall()]
 
@@ -2621,6 +2747,7 @@ def backfill_settlements(
                      ON p.ticker = t.ticker AND p.side = t.side
                    WHERE t.action = 'close' AND t.agent = 'reconcile'
                      AND p.count = 0
+                     AND p.cost_basis > 0
                      AND p.market_price IN (0.0, 1.0)
                      AND t.price != p.market_price""",
             )
@@ -2644,6 +2771,7 @@ def backfill_settlements(
 
             if dry_run:
                 raise _DryRunRollbackError
+        return True
 
     def _print_summary(inserted, repaired, conflicts, dry: bool) -> None:  # type: ignore[no-untyped-def]
         verb = "Would insert" if dry else "Inserted"

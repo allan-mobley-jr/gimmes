@@ -289,3 +289,45 @@ class TestGetDailyPnlIncludesSettlementCloses:
         pnl = await get_daily_pnl(db, today=now.strftime("%Y-%m-%d"))
         # (0.0 - 0.40) * 10 = -$4.00 — the settlement loss IS visible.
         assert pnl == pytest.approx(-4.0)
+
+
+class TestRestingSellNoDoubleCount:
+    """#663: a resting sell's close trade is logged at placement; the
+    later settlement must not add a second close for the same
+    contracts, or daily P&L (and the daily-loss trigger) counts the
+    exit twice. End-to-end through PaperBroker.settle()."""
+
+    async def test_settlement_after_placement_close_counts_once(
+        self, db: Database, tmp_path,
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from gimmes.paper.broker import PaperBroker
+
+        paper_cfg = MagicMock()
+        paper_cfg.starting_balance = 10_000.0
+        broker = PaperBroker(db, paper_cfg)
+        await broker.initialize()
+
+        # Ledger: the agent opened 10 @ 0.70 and its resting sell
+        # logged the close 10 @ 0.90 at placement (today).
+        await insert_trade(db, _trade(action="open", price=0.70))
+        await insert_trade(db, _trade(action="close", price=0.90))
+        # Broker state: the paper position was never reduced by the
+        # resting sell — it still holds all 10 contracts at settle.
+        await db.conn.execute(
+            """INSERT INTO paper_positions
+               (ticker, side, count, avg_price, market_price,
+                cost_basis, unrealized_pnl, realized_pnl, updated_at)
+               VALUES ('KXTEST', 'yes', 10, 0.70, 0.90,
+                       7.0, 2.0, 0.0, datetime('now'))""",
+        )
+        await db.conn.commit()
+
+        await broker.settle("KXTEST", "yes")
+
+        # Exactly the placement-time close counts — no settlement row
+        # doubled it.
+        assert await get_daily_pnl(db) == pytest.approx(
+            (0.90 - 0.70) * 10,
+        )

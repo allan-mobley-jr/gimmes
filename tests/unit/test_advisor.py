@@ -198,6 +198,31 @@ class TestPairCloses:
         assert r["won"] is False
         assert r["realized_return"] == pytest.approx(-0.63)
 
+    def test_drift_keeps_mark_when_group_has_settlement(self) -> None:
+        """#663 mirror of calculate_pnl: a settlement close in the
+        group means the reconcile drift row is a manual exit — it
+        keeps its mark instead of being repriced to settlement."""
+        trades = _pair_group(
+            open_price=0.63, close_price=0.705, agent="reconcile",
+            resolved_outcome="no",  # yes side lost
+        )
+        trades[1]["count"] = 4
+        trades.append({
+            "ticker": trades[0]["ticker"], "action": "close",
+            "side": "yes", "count": 6, "price": 0.0,
+            "gimme_score": 0.0, "edge": 0.0,
+            "resolved_outcome": "no", "agent": "settlement",
+            "timestamp": "2026-01-03T10:00:00",
+        })
+        results = _pair_closes(trades)
+        drift = [
+            r for r in results
+            if r["timestamp"] == "2026-01-02T10:00:00"
+        ]
+        assert len(drift) == 1
+        # 0.705 mark kept — NOT repriced to the 0.0 settlement value.
+        assert drift[0]["realized_return"] == pytest.approx(0.705 - 0.63)
+
     def test_orphan_close_dropped(self) -> None:
         trades = [{
             "ticker": "GHOST", "action": "close", "side": "yes",
