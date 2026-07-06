@@ -59,6 +59,12 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
             ),
             None,
         )
+        # #663: mirror calculate_pnl — drift rows in groups that carry
+        # a real settlement close keep their mark (manual exits).
+        group_has_settlement = any(
+            e.get("agent") == "settlement" and e.get("action") == "close"
+            for e in events
+        )
         remaining = 0
         avg_cost = 0.0
         entry_score = 0.0
@@ -85,7 +91,11 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
             remaining -= matched
             if matched <= 0:
                 continue
-            if e.get("agent") == "reconcile" and group_outcome is not None:
+            if (
+                e.get("agent") == "reconcile"
+                and group_outcome is not None
+                and not group_has_settlement
+            ):
                 price = 1.0 if side == group_outcome else 0.0
             realized = price - avg_cost
             won = (

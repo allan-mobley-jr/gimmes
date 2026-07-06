@@ -64,6 +64,8 @@ def _seed(
     close_price: float = 0.9,
     paper_market_price: float = 1.0,
     paper_count: int = 0,
+    paper_cost_basis: float | None = None,
+    paper_realized_pnl: float | None = None,
 ) -> None:
     """Seed an open trade, an optional close, and a paper_positions row."""
 
@@ -94,9 +96,11 @@ def _seed(
                            '2026-04-24 12:00:00')""",
                 (
                     TICKER, paper_count, paper_market_price,
-                    open_count * 0.63,
-                    (open_count * 1.0 if paper_market_price == 1.0
-                     else 0.0) - open_count * 0.63,
+                    (open_count * 0.63 if paper_cost_basis is None
+                     else paper_cost_basis),
+                    (paper_realized_pnl if paper_realized_pnl is not None
+                     else (open_count * 1.0 if paper_market_price == 1.0
+                           else 0.0) - open_count * 0.63),
                 ),
             )
             await db.conn.commit()
@@ -356,3 +360,90 @@ def test_backfill_without_paper_positions_table(
     result = runner.invoke(app, ["backfill-settlements"])
     assert result.exit_code == 0, result.output
     assert "No paper_positions table" in result.output
+    # #663: the explanation is the whole answer — an "Inserted 0"
+    # summary after it reads as a second, contradictory report.
+    assert "Inserted" not in result.output
+
+
+def test_sold_out_position_not_mistaken_for_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#663: a position fully SOLD before resolution ends at count=0
+    with cost_basis drained to 0 (the sell's count-ratio update). With
+    no local close rows (legacy/UI sell), the residual guard can't
+    save us — cost_basis > 0 must be the condition that stops the
+    old mark-only fingerprint from fabricating a settlement close."""
+    db_path = tmp_path / "test.db"
+    _seed(
+        db_path, open_count=100, paper_market_price=1.0,
+        paper_cost_basis=0.0, paper_realized_pnl=27.0,
+    )
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, ["backfill-settlements"])
+    assert result.exit_code == 0, result.output
+    assert _closes(db_path) == []  # nothing fabricated
+
+
+def test_partial_profit_then_settled_loss_still_backfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#663 review: realized_pnl is CUMULATIVE — a settled loss after
+    profitable partial sells ends lifetime-positive. The fingerprint
+    must not demand realized_pnl < 0 or this genuine #653 case is
+    silently dropped."""
+    db_path = tmp_path / "test.db"
+    _seed(
+        db_path, open_count=100, close_count=50, close_agent="closer",
+        close_price=0.8, paper_market_price=0.0,
+        paper_cost_basis=15.0, paper_realized_pnl=10.0,
+    )
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, ["backfill-settlements"])
+    assert result.exit_code == 0, result.output
+    closes = _closes(db_path)
+    settlement = [c for c in closes if c["agent"] == "settlement"]
+    assert len(settlement) == 1
+    assert settlement[0]["count"] == 50  # ledger residual
+    assert settlement[0]["price"] == 0.0
+
+
+def test_genuine_settlement_loss_still_backfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hardened fingerprint must not lose the case #653 exists
+    for: settled loss (mark 0.0, negative realized P&L, intact
+    cost basis) with no close row."""
+    db_path = tmp_path / "test.db"
+    _seed(db_path, paper_market_price=0.0)
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, ["backfill-settlements"])
+    assert result.exit_code == 0, result.output
+    closes = _closes(db_path)
+    assert len(closes) == 1
+    assert closes[0]["agent"] == "settlement"
+    assert closes[0]["price"] == 0.0
+
+
+def test_drift_repair_skips_sold_out_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#663: the drift-repair phase carries the same cost_basis > 0
+    fingerprint — a fully-sold position whose stale mark sits at 0.0
+    must not have its reconcile close repriced to that mark."""
+    db_path = tmp_path / "test.db"
+    _seed(
+        db_path, open_count=100, close_count=100,
+        close_agent="reconcile", close_price=0.9,
+        paper_market_price=0.0, paper_cost_basis=0.0,
+        paper_realized_pnl=27.0,
+    )
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, ["backfill-settlements"])
+    assert result.exit_code == 0, result.output
+    closes = _closes(db_path)
+    assert len(closes) == 1
+    assert closes[0]["price"] == 0.9  # untouched

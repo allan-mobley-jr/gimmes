@@ -245,6 +245,35 @@ class TestReconcileRepricing:
         ))
         assert summary.gross_pnl == pytest.approx((0.705 - 0.63) * 100)
 
+    def test_drift_keeps_mark_when_group_has_settlement_close(self) -> None:
+        """#663: an agent='settlement' close in the group proves
+        settlements were properly recorded for this position — a
+        reconcile drift row alongside it is genuine NON-settlement
+        drift (e.g. a manual exit) and keeps its mark instead of
+        being repriced to 1.0/0.0."""
+        trades = [
+            {
+                "ticker": "KX1", "side": "no", "action": "open",
+                "count": 100, "price": 0.63, "timestamp": "2026-04-20",
+                "agent": "closer", "resolved_outcome": "yes",
+            },
+            {  # manual-exit drift at the last-known mark
+                "ticker": "KX1", "side": "no", "action": "close",
+                "count": 40, "price": 0.705, "timestamp": "2026-04-22",
+                "agent": "reconcile", "resolved_outcome": None,
+            },
+            {  # the real settlement close for the remainder
+                "ticker": "KX1", "side": "no", "action": "close",
+                "count": 60, "price": 0.0, "timestamp": "2026-04-25",
+                "agent": "settlement", "resolved_outcome": "yes",
+            },
+        ]
+        summary = calculate_pnl(trades)
+        # Drift leg keeps 0.705; only the settlement leg is 0.0.
+        assert summary.gross_pnl == pytest.approx(
+            (0.705 - 0.63) * 40 + (0.0 - 0.63) * 60
+        )
+
     def test_settlement_price_close_has_no_close_fee(self) -> None:
         """Settlement closes at 1.0/0.0 are fee-free automatically via
         calculate_fee's price-range guard; open-leg fee remains."""

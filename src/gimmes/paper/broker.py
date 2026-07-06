@@ -598,7 +598,12 @@ class PaperBroker:
         if not rows:
             return
 
-        from gimmes.store.queries import log_settlement_close
+        from gimmes.store.queries import (
+            count_opened_closed,
+            fill_resolved_outcome,
+            log_settlement_close,
+            settlement_outcome,
+        )
 
         async with self._db.transaction():
             for row in rows:
@@ -623,10 +628,50 @@ class PaperBroker:
                 # #653: settlements are real outcomes — write the close
                 # trade at settlement value so the lifetime scorecard
                 # sees the W/L (previously only the balance knew).
-                await log_settlement_close(
-                    self._db, ticker=ticker, side=side,
-                    count=count, won=won,
+                # #663: clamp to the LEDGER residual — a resting sell
+                # logged its close row at placement without reducing
+                # the paper position, so a full-count settlement row
+                # would double-count the close in daily P&L (and the
+                # daily-loss trigger). opened == 0 (no local trade
+                # history: seeded/legacy positions) keeps the
+                # full-count behavior.
+                opened, closed = await count_opened_closed(
+                    self._db, ticker, side,
                 )
+                ledger_count = (
+                    count if opened <= 0
+                    else min(count, opened - closed)
+                )
+                # (ledger_count < count implies opened > 0 — the
+                # no-history branch sets ledger_count = count.)
+                if ledger_count < count:
+                    # Auditable divergence: the balance is credited
+                    # for the full broker count while the ledger row
+                    # covers less (a placement-time close row for a
+                    # never-filled resting sell also lands here).
+                    import logging
+
+                    logging.getLogger("gimmes").warning(
+                        "settlement close for %s %s clamped to ledger"
+                        " residual: opened=%d closed=%d broker"
+                        " count=%d -> row count=%d (#663)",
+                        ticker, side, opened, closed, count,
+                        max(ledger_count, 0),
+                    )
+                if ledger_count > 0:
+                    await log_settlement_close(
+                        self._db, ticker=ticker, side=side,
+                        count=ledger_count, won=won,
+                    )
+                else:
+                    # The ledger already covers the opens (e.g. a
+                    # placement-time close row for a resting sell) —
+                    # skip the trade row but keep the outcome
+                    # authoritative.
+                    await fill_resolved_outcome(
+                        self._db, ticker,
+                        settlement_outcome(side, won),
+                    )
 
             # #653: remove the mirror row in the main positions table
             # inside the SAME transaction — otherwise the next
