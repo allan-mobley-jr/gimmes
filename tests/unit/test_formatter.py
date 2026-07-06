@@ -163,7 +163,9 @@ class TestStopColumn:
     agents see (cells wrap and ellipsize long content)."""
 
     @staticmethod
-    def _render(positions: list[dict], stop_loss_pct=0.15, width=160) -> str:
+    def _render(
+        positions: list[dict], stop_loss_pct=0.15, width=160, **kwargs,
+    ) -> str:
         from io import StringIO
         from unittest.mock import patch
 
@@ -176,7 +178,9 @@ class TestStopColumn:
             "gimmes.reporting.formatter.console",
             Console(file=buf, width=width),
         ):
-            format_positions(positions, stop_loss_pct=stop_loss_pct)
+            format_positions(
+                positions, stop_loss_pct=stop_loss_pct, **kwargs,
+            )
         return buf.getvalue()
 
     @staticmethod
@@ -257,3 +261,79 @@ class TestStopColumn:
             [self._pos(-5.0, cost_basis=0.0, ticker=ticker)], width=80,
         )
         assert f"{ticker} StopGate: DATA-ERROR" in out
+
+
+class TestStaleAndSuspectMarkers:
+    """#674: STALE (mark failed / dead book) and BASIS-SUSPECT
+    (partial-close-corrupted live cost basis) ride the same banner
+    machinery as MANDATORY-CLOSE/DATA-ERROR — non-numeric values that
+    trip Caddie Master's conservative rule."""
+
+    _render = staticmethod(TestStopColumn._render)
+    _pos = staticmethod(TestStopColumn._pos)
+
+    def test_stale_losing_position(self) -> None:
+        out = self._render(
+            [self._pos(-7.0)], stale_tickers={"KXTEST"},
+        )
+        assert "STALE" in out
+        assert "KXTEST StopGate: STALE" in out
+        assert "47%" not in out  # frozen pct must not invite anchoring
+
+    def test_stale_does_not_suppress_breach_banner(self) -> None:
+        """Fail-safe: the last-good mark showed >=200% — staleness
+        cannot rescind a breach."""
+        out = self._render(
+            [self._pos(-32.10)], stale_tickers={"KXTEST"},
+        )
+        assert "KXTEST StopGate: STALE" in out
+        assert "214% MANDATORY-CLOSE" in out
+
+    def test_stale_winner_still_flagged(self) -> None:
+        """A stale 'winning' mark can hide a loss."""
+        out = self._render(
+            [self._pos(5.0)], stale_tickers={"KXTEST"},
+        )
+        assert "KXTEST StopGate: STALE" in out
+
+    def test_suspect_position(self) -> None:
+        out = self._render(
+            [self._pos(-7.0)], suspect_tickers={"KXTEST"},
+        )
+        assert "SUSP" in out
+        assert "KXTEST StopGate: BASIS-SUSPECT" in out
+
+    def test_stale_wins_cell_both_banners_emitted(self) -> None:
+        out = self._render(
+            [self._pos(-7.0)],
+            stale_tickers={"KXTEST"}, suspect_tickers={"KXTEST"},
+        )
+        assert "KXTEST StopGate: STALE" in out
+        assert "KXTEST StopGate: BASIS-SUSPECT" in out
+        # Cell-level precedence: STALE occupies the Stop cell (mark
+        # trust precedes basis trust). Banners print below the table,
+        # so split there; BASIS-SUSPECT contains "SUSP", hence the
+        # table-portion check.
+        table_part = out.split("StopGate")[0]
+        assert "STALE" in table_part
+        assert "SUSP" not in table_part
+
+    def test_banners_survive_width_80_with_long_ticker(self) -> None:
+        long_ticker = "KXJOBLESSCLAIMS-26MAY14-210000"
+        out = self._render(
+            [self._pos(-7.0, ticker=long_ticker)],
+            width=80,
+            stale_tickers={long_ticker},
+            suspect_tickers={long_ticker},
+        )
+        assert f"{long_ticker} StopGate: STALE" in out
+        assert f"{long_ticker} StopGate: BASIS-SUSPECT" in out
+
+    def test_defaults_leave_legacy_output_unchanged(self) -> None:
+        plain = self._render([self._pos(-7.0)])
+        explicit = self._render(
+            [self._pos(-7.0)],
+            stale_tickers=set(), suspect_tickers=set(),
+        )
+        assert plain == explicit
+        assert "STALE" not in plain

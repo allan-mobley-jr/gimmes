@@ -315,10 +315,17 @@ class TestPositionsStopColumn:
 
         cfg = MagicMock()
         cfg.risk.position_stop_loss_pct = 0.15
+        from gimmes.models.market import MarketStatus
+
         market = MagicMock()
         market.midpoint = 0.23
         market.last_price = 0.23
-        market.status = "active"
+        market.status = MarketStatus.ACTIVE
+        # #674: explicit floats — the dead-book check compares > 0,
+        # and a bare MagicMock comparison raises TypeError which the
+        # try/except would swallow into a spurious STALE.
+        market.yes_bid = 0.22
+        market.yes_ask = 0.24
 
         from io import StringIO
 
@@ -347,3 +354,231 @@ class TestPositionsStopColumn:
             " 214% MANDATORY-CLOSE" in out
         )
         assert "Stop" in out
+        assert "STALE" not in out  # live quote present — no flag
+
+
+class TestPositionsStaleAndSuspect:
+    """#674: mark failures and dead books flag STALE; live positions
+    with prior partial closes flag BASIS-SUSPECT."""
+
+    def _run(self, *, market=None, get_market_effect=None, broker=None,
+             live_positions=None):
+        from contextlib import ExitStack, asynccontextmanager
+        from io import StringIO
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from rich.console import Console
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        mock_client = AsyncMock()
+        mock_db = AsyncMock()
+
+        @asynccontextmanager
+        async def _ctx(config):
+            yield mock_client, broker, mock_db
+
+        cfg = MagicMock()
+        cfg.risk.position_stop_loss_pct = 0.15
+
+        buf = StringIO()
+        patches = [
+            patch("gimmes.cli.load_config", return_value=cfg),
+            patch("gimmes.cli.trading_context", _ctx),
+            patch(
+                "gimmes.kalshi.markets.get_market",
+                AsyncMock(
+                    return_value=market, side_effect=get_market_effect,
+                ),
+            ),
+            patch(
+                "gimmes.reporting.formatter.console",
+                Console(file=buf, width=80),
+            ),
+            patch(
+                "gimmes.cli.console",
+                Console(file=buf, width=80),
+            ),
+        ]
+        if live_positions is not None:
+            patches.extend([
+                patch(
+                    "gimmes.kalshi.portfolio.get_all_positions",
+                    AsyncMock(return_value=live_positions),
+                ),
+                patch(
+                    "gimmes.store.queries.sync_positions",
+                    AsyncMock(),
+                ),
+            ])
+
+        with ExitStack() as stack:
+            for pt in patches:
+                stack.enter_context(pt)
+            result = CliRunner().invoke(app, ["positions"])
+        assert result.exit_code == 0, result.output
+        return buf.getvalue()
+
+    @staticmethod
+    def _market(*, status=None, midpoint=0.23, last_price=0.23,
+                yes_bid=0.0, yes_ask=0.0, result=None):
+        """A MagicMock market — dead book (bid/ask 0.0) by default,
+        ``status`` defaulting to ACTIVE. Quote fields are explicit
+        floats: the dead-book check compares > 0, and a bare MagicMock
+        comparison raises TypeError which the command's try/except
+        would swallow into a spurious STALE."""
+        from unittest.mock import MagicMock
+
+        from gimmes.models.market import MarketStatus
+
+        market = MagicMock()
+        market.status = MarketStatus.ACTIVE if status is None else status
+        market.midpoint = midpoint
+        market.last_price = last_price
+        market.yes_bid = yes_bid
+        market.yes_ask = yes_ask
+        market.result = result
+        return market
+
+    def _losing_position(self):
+        from gimmes.models.portfolio import Position
+
+        return Position(
+            ticker="KXCPIYOY-26MAY-T2.5", side="no",
+            count=100, avg_price=0.55, market_price=0.23,
+            cost_basis=100.0, unrealized_pnl=-32.10,
+        )
+
+    def _paper_broker(self):
+        from unittest.mock import AsyncMock
+
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(
+            return_value=[self._losing_position()],
+        )
+        return broker
+
+    def test_mark_failure_flags_stale(self) -> None:
+        out = self._run(
+            broker=self._paper_broker(),
+            get_market_effect=RuntimeError("api down"),
+        )
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: STALE" in out
+        # The breach banner from the last-good mark is NOT suppressed.
+        assert "MANDATORY-CLOSE" in out
+
+    def test_dead_book_flags_stale(self) -> None:
+        out = self._run(broker=self._paper_broker(), market=self._market())
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: STALE" in out
+        assert "no live quote" in out
+
+    def test_live_partial_close_flags_basis_suspect(self) -> None:
+        from gimmes.models.portfolio import Position
+
+        pos = Position(
+            ticker="KXCPIYOY-26MAY-T2.5", side="no",
+            count=50, avg_price=0.73, market_price=0.23,
+            cost_basis=51.0, unrealized_pnl=-25.0,
+            realized_pnl=6.0,  # prior partial close
+        )
+        out = self._run(broker=None, live_positions=[pos])
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: BASIS-SUSPECT" in out
+
+    def test_dead_book_mark_still_applied_when_price_known(self) -> None:
+        """The flag, not mark suppression, is the fix — a frozen
+        last_price > 0 is the best available and must still mark."""
+        broker = self._paper_broker()
+        self._run(broker=broker, market=self._market())
+        broker.mark_to_market.assert_awaited_once_with(
+            "KXCPIYOY-26MAY-T2.5", 0.23,
+        )
+
+    def test_never_traded_dead_book_does_not_corrupt_mark(self) -> None:
+        """#674 review: current_price 0.0 (empty book, no trades ever)
+        must NOT mark — a $0 mark would fabricate a total loss and a
+        bogus MANDATORY-CLOSE from the staleness itself."""
+        broker = self._paper_broker()
+        out = self._run(
+            broker=broker,
+            market=self._market(midpoint=0.0, last_price=0.0),
+        )
+        broker.mark_to_market.assert_not_awaited()
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: STALE" in out
+
+    def test_settling_market_with_empty_book_not_flagged(self) -> None:
+        """An empty book is the NORMAL state at settlement — a
+        DETERMINED market must not spam STALE (it auto-settles)."""
+        from gimmes.models.market import MarketStatus
+
+        market = self._market(
+            status=MarketStatus.DETERMINED,
+            midpoint=0.0, last_price=1.0, result="no",
+        )
+        out = self._run(broker=self._paper_broker(), market=market)
+        assert "StopGate: STALE" not in out
+        assert "no live quote" not in out
+
+    def test_paused_market_with_empty_book_flags_stale(self) -> None:
+        """INACTIVE (trading paused) freezes marks the same way ACTIVE
+        dead books do — same anchoring risk, same flag."""
+        from gimmes.models.market import MarketStatus
+
+        market = self._market(status=MarketStatus.INACTIVE)
+        out = self._run(broker=self._paper_broker(), market=market)
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: STALE" in out
+
+    def test_one_sided_book_flags_stale(self) -> None:
+        """A one-sided book also forces the midpoint fallback — the
+        inner condition is AND, not OR."""
+        market = self._market(yes_ask=0.24)
+        out = self._run(broker=self._paper_broker(), market=market)
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: STALE" in out
+
+    def test_live_partial_close_at_loss_also_suspect(self) -> None:
+        """realized_pnl != 0, not > 0 — a prior partial close at a
+        LOSS corrupts the cumulative cost_basis identically."""
+        from gimmes.models.portfolio import Position
+
+        pos = Position(
+            ticker="KXCPIYOY-26MAY-T2.5", side="no",
+            count=50, avg_price=0.73, market_price=0.23,
+            cost_basis=51.0, unrealized_pnl=-25.0,
+            realized_pnl=-3.0,
+        )
+        out = self._run(broker=None, live_positions=[pos])
+        assert "KXCPIYOY-26MAY-T2.5 StopGate: BASIS-SUSPECT" in out
+
+    def test_closed_live_position_not_suspect(self) -> None:
+        """count = 0 rows (closed positions the API still returns)
+        must not be flagged — they hold no capital."""
+        from gimmes.models.portfolio import Position
+
+        closed = Position(
+            ticker="KXOLD-26APR-T1", side="no",
+            count=0, avg_price=0.55, market_price=0.0,
+            cost_basis=0.0, unrealized_pnl=0.0,
+            realized_pnl=12.0,
+        )
+        open_clean = Position(
+            ticker="KXCPIYOY-26MAY-T2.5", side="no",
+            count=100, avg_price=0.55, market_price=0.60,
+            cost_basis=55.0, unrealized_pnl=5.0,
+            realized_pnl=0.0,
+        )
+        out = self._run(
+            broker=None, live_positions=[closed, open_clean],
+        )
+        assert "BASIS-SUSPECT" not in out
+
+    def test_live_untouched_position_not_suspect(self) -> None:
+        from gimmes.models.portfolio import Position
+
+        pos = Position(
+            ticker="KXCPIYOY-26MAY-T2.5", side="no",
+            count=100, avg_price=0.55, market_price=0.60,
+            cost_basis=55.0, unrealized_pnl=5.0,
+            realized_pnl=0.0,
+        )
+        out = self._run(broker=None, live_positions=[pos])
+        assert "BASIS-SUSPECT" not in out
