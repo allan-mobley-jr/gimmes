@@ -22,6 +22,11 @@ def effective_price(yes_price: float, side: str) -> float:
 
 # Kalshi's cent tick. A side priced within one tick of a bound is
 # untradeable in practice (at $0.00 an order isn't even placeable).
+# Near-bound-but-placeable prices (eff $0.02-$0.05) are deliberately
+# NOT clamped: the arithmetic stands, and execution is gated by the
+# validator's price-at-bound rejection and the scan price band
+# (#672 decision, deferred from #658). Historical degenerate candidate
+# rows are not repaired — resurfacing tickers self-heal.
 BOUND_TICK = 0.01
 
 

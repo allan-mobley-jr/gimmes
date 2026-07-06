@@ -567,36 +567,53 @@ def size(
                 from gimmes.kalshi.portfolio import get_balance
                 balance = await get_balance(client)
 
-            from gimmes.strategy.scanner import effective_price
+            from gimmes.strategy.scanner import effective_price, price_at_bound
 
             raw_price = market.midpoint or market.last_price
             price = effective_price(raw_price, config.strategy.side)
             fees = get_multipliers(market.series_ticker)
 
+            # #672: a bound-priced market is unfillable — kelly's
+            # 0 < price < 1 guard misses the one-tick-inside case
+            # (eff $0.01), so without this the table fabricates
+            # Edge/Contracts/Cost for an order that cannot exist.
+            at_bound = price_at_bound(price)
+            if at_bound:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "size %s: price at bound (eff $%.2f) — table"
+                    " zeroed (#672)", ticker, price,
+                )
+
             bankroll = config.bankroll
             true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
-            kf = kelly_fraction(
+            kf = 0.0 if at_bound else kelly_fraction(
                 price, true_prob,
                 fraction=config.sizing.kelly_fraction, fees=fees,
             )
-            contracts = position_size(
+            contracts = 0 if at_bound else position_size(
                 bankroll, price, true_prob,
                 fraction=config.sizing.kelly_fraction,
                 max_position_pct=config.sizing.max_position_pct, fees=fees,
                 mode=config.sizing.mode,
             )
             fee = fee_for_order(contracts, price, is_taker=False, fees=fees)
-            edge = edge_after_fees(price, true_prob, fees=fees)
+            edge = 0.0 if at_bound else edge_after_fees(price, true_prob, fees=fees)
             cost = contracts * price + fee
 
             table = format_kv_table(f"Position Sizing: {ticker}", [
                 ("Market Price", f"${price:.2f}"),
                 ("True Probability", f"{true_prob:.1%}"),
-                ("Edge After Fees", f"{edge:.1%}"),
+                ("Edge After Fees",
+                 f"{edge:.1%} (price at bound — untradeable, #658)"
+                 if at_bound else f"{edge:.1%}"),
                 ("Kelly Fraction", f"{kf:.4f}"),
                 ("Bankroll", f"${bankroll:,.2f}"),
                 ("Balance", f"${balance:,.2f}"),
-                ("Contracts", f"[bold]{contracts}[/bold]"),
+                ("Contracts",
+                 f"[bold]{contracts}[/bold] (at bound)"
+                 if at_bound else f"[bold]{contracts}[/bold]"),
                 ("Est. Cost", f"${cost:,.2f}"),
                 ("Est. Fee", f"${fee:,.2f}"),
             ])
