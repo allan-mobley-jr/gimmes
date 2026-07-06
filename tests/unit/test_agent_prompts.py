@@ -2238,3 +2238,16 @@ def test_data_error_literal_shared_across_code_and_prompts(
     assert "StopGate: DATA-ERROR" in buf.getvalue()
     assert "DATA-ERROR" in caddie_master_text
     assert "DATA-ERROR" in monitor_text
+
+
+def test_flip_staleness_matches_cm_research_expiry(
+    caddie_master_text: str,
+) -> None:
+    """#676: the flip detector's 48h window is deliberately equal to
+    Caddie Master's research-expiry rule — research older than 48h IS
+    "no prior research" to the workflow. Whoever changes either 48
+    must reconsider the other."""
+    from gimmes.store.observation_validator import FLIP_STALENESS_HOURS
+
+    assert FLIP_STALENESS_HOURS == 48
+    assert "more than 48 hours" in caddie_master_text

@@ -94,6 +94,27 @@ def test_candidates_title_brackets(tmp_path: Path) -> None:
     assert "[draft]" in result.output, result.output
 
 
+def test_candidates_memo_panel_renders_markup_literally(tmp_path) -> None:
+    """#676: the memo panel prints with markup=False — bracketed memo
+    text must render literally, not vanish as Rich markup (#644)."""
+    row = {
+        "ticker": "KXCPI-26APR-T0.5", "gimme_score": 70.0,
+        "market_price": 0.5, "model_probability": 0.6, "edge": 0.1,
+        "cap_blocked": 0, "recommendation": "proceed",
+        "scanned_at": "2026-07-01 12:00:00",
+        "research_memo": "sources say [red]hot[/red] print likely",
+    }
+    with patch("gimmes.store.database.Database", MagicMock()), \
+         patch(
+             "gimmes.store.queries.get_candidate_for_ticker",
+             AsyncMock(return_value=[row]),
+         ), patch("gimmes.cli.load_config", return_value=_config(tmp_path)):
+        result = runner.invoke(
+            app, ["candidates", "--ticker", "KXCPI-26APR-T0.5"],
+        )
+    assert "[red]hot[/red]" in result.output, result.output
+
+
 def test_discover_category_brackets(tmp_path: Path) -> None:
     series = [{"ticker": "KXCPI", "title": "CPI [preliminary] index"}]
     with patch("gimmes.cli.load_config", return_value=_config(tmp_path)), \

@@ -771,6 +771,17 @@ def validate_observation(
 FLIP_PROB_DELTA = 0.50
 FLIP_PRICE_DELTA = 0.10
 INVERSION_TOLERANCE = 0.05
+# 48h is deliberate and load-bearing (#676 decision): (1) it matches
+# Caddie Master's research-expiry rule — research older than 48h IS
+# "no prior research" to the workflow, so warning against it would be
+# stricter about the past than the process that produces the past;
+# (2) the flip warning feeds caddie.md's mandatory acknowledgment and
+# CM's 4c REJECT criterion, so it must stay high-precision — a
+# 0.98->0.02 move across the observed 139-168h gaps is exactly what a
+# near-binary market does when the event resolves against the prior
+# view, and complements are where genuine multi-day repricings LAND,
+# so even the inversion signature loses evidentiary force at that
+# horizon. Keep this equal to the caddie-master 48h expiry (pinned).
 FLIP_STALENESS_HOURS = 48
 # The marker MUST stay uppercase: Rich only parses tags starting
 # [a-z#/@], so [FLIP-WARNING] renders literally while a lowercase

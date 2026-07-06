@@ -968,13 +968,21 @@ async def get_thesis_for_ticker(db: Database, ticker: str) -> str:
 
 async def get_candidate_for_ticker(
     db: Database, ticker: str, *, limit: int = 1,
+    scored_only: bool = False,
 ) -> list[dict]:
-    """Return the most recent candidate row(s) for a specific ticker."""
-    cursor = await db.conn.execute(
-        "SELECT * FROM candidates WHERE ticker = ?"
-        " ORDER BY scanned_at DESC, id DESC LIMIT ?",
-        (ticker, limit),
-    )
+    """Return the most recent candidate row(s) for a specific ticker.
+
+    ``scored_only`` (#676) skips bookkeeping rows (prob/price 0 — the
+    market-info-failure rows caddie.md/scout.md mandate) so the true
+    newest SCORING is found no matter how many failure rows stack
+    above it. The predicate mirrors detect_candidate_flip's degenerate
+    guard, which remains the policy backstop.
+    """
+    query = "SELECT * FROM candidates WHERE ticker = ?"
+    if scored_only:
+        query += " AND model_probability > 0 AND market_price > 0"
+    query += " ORDER BY scanned_at DESC, id DESC LIMIT ?"
+    cursor = await db.conn.execute(query, (ticker, limit))
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
