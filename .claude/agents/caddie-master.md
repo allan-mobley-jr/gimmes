@@ -286,9 +286,18 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```
-3. **Prior score between cooldown_cutoff and (gimme_threshold - 1)** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise skip with rationale noting price unchanged.
+3. **Prior score between cooldown_cutoff and (gimme_threshold - 1)** (borderline) → re-research ONLY if the current market price (from the Scout's shortlist) differs from the prior `Price` by more than 5 cents. Otherwise log the skip with the criterion-2 template above using `--reason cooldown`, with rationale noting the borderline prior score and that the price is unchanged.
 3b. **Prior research flagged STALE-CLOSE** (a `STALE-CLOSE:` banner or `STALE` Status in `gimmes candidates --ticker TICKER --limit 3`) → treat as NO valid prior research regardless of score: the research predates the ticker's most recent close, and the close happened on information that research cannot contain (#661). Send to the Caddie for fresh research before the ticker may proceed.
-4. **Prior score >= gimme_threshold with open position** (check `gimmes positions` for the ticker) → skip, already traded
+4. **Prior score >= gimme_threshold with open position** (check `gimmes positions` for the ticker) → skip; log it so the decision is auditable (no analytics flags — the open trade row carries the real analytics):
+   ```bash
+   RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+   cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+   Already traded: open position held, prior score SCORE
+   GIMMES_EOF
+   gimmes log-trade TICKER --action skip --reason already_traded \
+     --rationale-file "$RATIONALE_FILE" --agent caddie-master
+   rm -f "$RATIONALE_FILE"
+   ```
 5. **Prior score >= gimme_threshold, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
 **If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the skip and skip directly to Step 6. NEVER run Steps 4b-5.
@@ -426,7 +435,7 @@ For each PROCEED candidate:
      --body-file "$BODY_FILE"
    rm -f "$BODY_FILE"
    ```
-   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with `--reason review_reject` and rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate.
+   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with `--reason infra_failed` and rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate — this is a tooling casualty, not a review verdict, and `infra_failed` keeps it out of the review-reject audits.
 
 6. **Log rejected candidates as skips** so the decision is auditable (use the `--rationale-file` heredoc pattern, #589):
    ```bash

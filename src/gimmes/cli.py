@@ -2329,13 +2329,23 @@ def market_info(
 _SKIP_REASONS = frozenset({
     "cooldown", "research_failed", "review_reject", "validation_failed",
     "order_failed", "close_failed", "no_position", "price_moved",
-    "liquidity",
+    "liquidity", "infra_failed", "already_traded",
 })
 
-# Close-workflow skips carry no entry decision — backfilling scan-time
+# Non-entry skips carry no entry decision — backfilling scan-time
 # candidate analytics onto them would fabricate a "missed entry" the
 # advisor then audits (#657 review). They keep honest zeros instead.
-_NON_ENTRY_REASONS = frozenset({"no_position", "close_failed"})
+# infra_failed (a proceed that died to tooling) and already_traded
+# (position held — the open row carries the real analytics) joined in
+# #670. Aliased from the advisor's single source of truth so the CLI
+# and the missed-opportunity audit can never drift.
+from gimmes.strategy.advisor import (  # noqa: E402
+    NON_ENTRY_SKIP_REASONS as _NON_ENTRY_REASONS,
+)
+
+# #670: backfill freshness bound — mirrors caddie-master's 48h
+# research-void rule; a scan older than that is a different market.
+_BACKFILL_MAX_AGE_HOURS = 48
 
 
 @app.command(name="log-trade", hidden=True)
@@ -2438,6 +2448,7 @@ def log_trade(
                 # Best-effort: a failed read degrades to zeros — a
                 # degenerate skip row beats a missing one (log-trade
                 # is the agents' logger of last resort).
+                cause_logged = False
                 try:
                     rows = await get_candidate_for_ticker(db, ticker)
                 except sqlite3.Error:
@@ -2447,6 +2458,42 @@ def log_trade(
                         ticker, exc_info=True,
                     )
                     rows = []
+                    cause_logged = True
+                if rows:
+                    # #670: a candidate scanned >48h ago is a
+                    # different market — zeros beat stale analytics.
+                    # parse_scanned_at is the canonical parser for
+                    # this column (one parser per column; an inline
+                    # fromisoformat would silently rewrite the
+                    # offset of an aware timestamp).
+                    from datetime import UTC, datetime, timedelta
+
+                    from gimmes.store.observation_validator import (
+                        parse_scanned_at,
+                    )
+
+                    raw_scan = str(rows[0].get("scanned_at") or "")
+                    scanned = parse_scanned_at(raw_scan)
+                    if scanned is None:
+                        logging.getLogger(__name__).warning(
+                            "candidate for %s has unparseable"
+                            " scanned_at %r — treating as stale;"
+                            " analytics default to 0 (#670)",
+                            ticker, raw_scan,
+                        )
+                        rows = []
+                        cause_logged = True
+                    elif datetime.now(UTC) - scanned > timedelta(
+                        hours=_BACKFILL_MAX_AGE_HOURS,
+                    ):
+                        logging.getLogger(__name__).info(
+                            "candidate for %s scanned >%dh ago —"
+                            " too stale to backfill; analytics"
+                            " default to 0 (#670)",
+                            ticker, _BACKFILL_MAX_AGE_HOURS,
+                        )
+                        rows = []
+                        cause_logged = True
                 if rows:
                     cand = rows[0]
                     if prob_missing:
@@ -2457,7 +2504,11 @@ def log_trade(
                         trade.price = cand["market_price"] or 0.0
                     if score_val <= 0:
                         trade.gimme_score = cand["gimme_score"] or 0.0
-                else:
+                elif not cause_logged:
+                    # Only when there truly was no row — the stale and
+                    # unparseable paths logged their own cause above
+                    # and must not be misreported as "no candidate"
+                    # (#670 review).
                     logging.getLogger(__name__).debug(
                         "skip for %s found no candidate row —"
                         " analytics default to 0 (#657)", ticker,

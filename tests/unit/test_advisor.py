@@ -623,14 +623,17 @@ class TestMissedOpportunities:
         assert clean_data["excluded_degenerate"] == 0
         assert polluted_data["excluded_degenerate"] == 40
 
-    def test_half_degenerate_rows_are_retained(
+    def test_half_degenerate_rows_excluded_both_ways(
         self, config: GimmesConfig,
     ) -> None:
-        """A skip with EITHER a probability OR a price recorded still
-        carries signal — only rows missing both are excluded."""
+        """#670: a skip missing EITHER probability or price persists
+        with edge = 0 (log-trade's normalization), so it can NEVER
+        classify as a missed win — and a legacy prob-only row's
+        fabricated constructor edge must not inflate the numerator.
+        Both half-degenerate shapes are excluded."""
         prob_only = [{
             "ticker": f"PROB-{i}", "action": "skip", "gimme_score": 72,
-            "edge": 0.15, "price": 0.0, "model_probability": 0.85,
+            "edge": 0.85, "price": 0.0, "model_probability": 0.85,
             "timestamp": f"2026-04-{(i % 28) + 1:02d}T10:00:00",
         } for i in range(3)]
         price_only = [{
@@ -643,8 +646,31 @@ class TestMissedOpportunities:
         )
         assert rec is not None
         data = json.loads(rec.supporting_data)
-        assert data["total_skips"] == 31  # 25 real + 3 + 3
-        assert data["excluded_degenerate"] == 0
+        assert data["total_skips"] == 25  # the real rows only
+        assert data["excluded_degenerate"] == 6
+        # The legacy fabricated edges (0.85) did not reach the rate.
+        assert data["false_negative_rate"] == pytest.approx(0.6)
+
+    def test_price_only_rows_do_not_dilute_the_rate(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#670 mirror of the degenerate-dilution test: N price-only
+        rows leave the recommendation and rate untouched."""
+        price_only = [{
+            "ticker": f"PRICE-{i}", "action": "skip", "gimme_score": 60,
+            "edge": 0.0, "price": 0.60, "model_probability": 0.0,
+            "timestamp": f"2026-05-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(15)]
+        clean = analyze_missed_opportunities(self._real_skips(), config)
+        polluted = analyze_missed_opportunities(
+            self._real_skips() + price_only, config,
+        )
+        assert clean is not None
+        assert polluted is not None
+        assert polluted.recommended_value == clean.recommended_value
+        data = json.loads(polluted.supporting_data)
+        assert data["false_negative_rate"] == pytest.approx(0.6)
+        assert data["excluded_degenerate"] == 15
 
     def test_degenerate_rows_do_not_satisfy_the_gate(
         self, config: GimmesConfig,
@@ -662,16 +688,20 @@ class TestMissedOpportunities:
     def test_non_entry_reason_skips_excluded_despite_analytics(
         self, config: GimmesConfig,
     ) -> None:
-        """A failed close is never a missed ENTRY — no_position and
-        close_failed skips stay out of the audit even when the row
-        carries full analytics (#657 review)."""
+        """A failed close, a tooling casualty, or a held position is
+        never a missed ENTRY — every non-entry reason stays out of
+        the audit even when the row carries full analytics
+        (#657 review, #670)."""
+        from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
+
+        reasons = tuple(sorted(NON_ENTRY_SKIP_REASONS))
         non_entry = [{
-            "ticker": f"CLOSEFAIL-{i}", "action": "skip",
+            "ticker": f"NONENTRY-{i}", "action": "skip",
             "gimme_score": 90, "edge": 0.30, "price": 0.65,
             "model_probability": 0.95,
-            "reason": "close_failed" if i % 2 else "no_position",
+            "reason": reasons[i % len(reasons)],
             "timestamp": f"2026-06-{(i % 28) + 1:02d}T10:00:00",
-        } for i in range(10)]
+        } for i in range(12)]
         clean = analyze_missed_opportunities(self._real_skips(), config)
         polluted = analyze_missed_opportunities(
             self._real_skips() + non_entry, config,
@@ -682,7 +712,7 @@ class TestMissedOpportunities:
         # The phantom "missed entries" (edge 0.30) did not inflate
         # missed_wins or the denominator.
         assert data["false_negative_rate"] == pytest.approx(0.6)
-        assert data["excluded_non_entry"] == 10
+        assert data["excluded_non_entry"] == 12
 
     def test_degenerate_skips_alone_are_insufficient(
         self, config: GimmesConfig,
@@ -815,3 +845,13 @@ class TestMigrationV4:
         )
         row = await cursor.fetchone()
         assert row[0] >= 4
+
+
+def test_non_entry_reasons_single_source_of_truth() -> None:
+    """#670 review: the CLI's --reason gate and the advisor's audit
+    exclusion must never drift — the CLI aliases the advisor set."""
+    from gimmes import cli
+    from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
+
+    assert cli._NON_ENTRY_REASONS is NON_ENTRY_SKIP_REASONS
+    assert NON_ENTRY_SKIP_REASONS <= cli._SKIP_REASONS
