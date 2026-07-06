@@ -872,6 +872,82 @@ class TestLogCandidateFlipGuard:
         assert r2.exit_code == 0, r2.output
         assert "FLIP-WARNING" not in r2.output
 
+    def test_degenerate_row_does_not_reset_flip_baseline(
+        self, tmp_path,
+    ) -> None:
+        """#676: caddie.md's mandated market-info-failure row
+        (--price 0 --prob 0) is bookkeeping, not a scoring — it must
+        not consume the flip baseline (at limit=1 it hid the real
+        prior and the inversion sailed through)."""
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.98")
+        r_deg = self._invoke(db_path, "0", "0")
+        assert r_deg.exit_code == 0, r_deg.output
+        r3 = self._invoke(db_path, "0.40", "0.02")
+        assert r3.exit_code == 0, r3.output
+        assert "[FLIP-WARNING]" in r3.output
+        assert "INVERSION SIGNATURE" in r3.output
+
+    def test_degenerate_row_then_stable_rescore_stays_clean(
+        self, tmp_path,
+    ) -> None:
+        """The selection must not manufacture a false positive."""
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.98")
+        self._invoke(db_path, "0", "0")
+        r3 = self._invoke(db_path, "0.40", "0.95")
+        assert r3.exit_code == 0, r3.output
+        assert "FLIP-WARNING" not in r3.output
+
+    def test_all_priors_degenerate_fails_open(self, tmp_path) -> None:
+        """All-degenerate window → no usable baseline → warn-only
+        path fails open (exit 0, no warning)."""
+        db_path = tmp_path / "test.db"
+        for _ in range(3):
+            self._invoke(db_path, "0", "0")
+        r = self._invoke(db_path, "0.40", "0.02")
+        assert r.exit_code == 0, r.output
+        assert "FLIP-WARNING" not in r.output
+
+    def test_half_degenerate_row_does_not_reset_baseline(
+        self, tmp_path,
+    ) -> None:
+        """A row with a real price but failed prob (or vice versa) is
+        still bookkeeping — the scored filter requires BOTH."""
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.98")
+        self._invoke(db_path, "0.41", "0")  # prob failed, price known
+        r3 = self._invoke(db_path, "0.40", "0.02")
+        assert r3.exit_code == 0, r3.output
+        assert "[FLIP-WARNING]" in r3.output
+
+    def test_two_consecutive_failure_rows_do_not_reset_baseline(
+        self, tmp_path,
+    ) -> None:
+        """A multi-cycle market-info outage stacks several mandated
+        failure rows — the SQL filter finds the real baseline no
+        matter how many sit above it."""
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.98")
+        self._invoke(db_path, "0", "0")
+        self._invoke(db_path, "0", "0")
+        r4 = self._invoke(db_path, "0.40", "0.02")
+        assert r4.exit_code == 0, r4.output
+        assert "[FLIP-WARNING]" in r4.output
+
+    def test_newest_scored_prior_is_the_baseline(
+        self, tmp_path,
+    ) -> None:
+        """Two usable priors that disagree: the NEWEST one is the
+        baseline (an oldest-first mutant would fire a false flip
+        against the ancient row)."""
+        db_path = tmp_path / "test.db"
+        self._invoke(db_path, "0.41", "0.02")   # ancient view
+        self._invoke(db_path, "0.41", "0.98")   # newest scoring (warns; ignore)
+        r3 = self._invoke(db_path, "0.40", "0.95")
+        assert r3.exit_code == 0, r3.output
+        assert "FLIP-WARNING" not in r3.output
+
     def test_candidates_status_shows_flip_warn(self, tmp_path) -> None:
         from unittest.mock import patch
 
@@ -895,3 +971,115 @@ class TestLogCandidateFlipGuard:
         # The banner below the table carries the load-bearing string —
         # cells ellipsize at the width-80 non-TTY default (#659 lesson)
         assert "KXCPI-26JUN-T-0.2 FLIP-WARN:" in result.output
+
+
+class TestCandidatesMemoPanel:
+    """#676: single-ticker mode prints the newest row's research memo
+    below the banners — caddie-master's 4c derivation rule reads the
+    memo through this command, and the table has no memo column."""
+
+    @staticmethod
+    def _log(db_path, memo: str, prob: str = "0.9"):
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        with patch("gimmes.cli.load_config") as mock_cfg:
+            mock_cfg.return_value.db_path = db_path
+            mock_cfg.return_value.strategy.side = "no"
+            return CliRunner().invoke(app, [
+                "log-candidate", "KXCPI-26JUN-T-0.2",
+                "--price", "0.41", "--prob", prob, "--score", "80",
+                "--memo", memo,
+            ])
+
+    @staticmethod
+    def _candidates(tmp_path, *args):
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from gimmes.cli import app
+
+        with patch("gimmes.config.GIMMES_HOME", tmp_path):
+            return CliRunner().invoke(app, ["candidates", *args])
+
+    def test_ticker_mode_prints_newest_memo_in_full(
+        self, tmp_path,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, "old memo with OLDSENTINEL word")
+        self._log(
+            db_path,
+            "Fresh research: CPI prints at 8:30 ET; consensus 0.2;"
+            " sources reviewed; conclusion holds NEWSENTINEL",
+            prob="0.88",
+        )
+        result = self._candidates(
+            tmp_path, "--ticker", "KXCPI-26JUN-T-0.2", "--limit", "5",
+        )
+        assert result.exit_code == 0, result.output
+        assert "RESEARCH MEMO" in result.output
+        # Wrap-safe single-word sentinels (#659 width lesson).
+        assert "NEWSENTINEL" in result.output
+        assert "OLDSENTINEL" not in result.output
+
+    def test_list_mode_prints_no_memo(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, "memo text")
+        result = self._candidates(tmp_path)
+        assert result.exit_code == 0, result.output
+        assert "RESEARCH MEMO" not in result.output
+
+    def test_empty_memo_placeholder(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, "")
+        result = self._candidates(
+            tmp_path, "--ticker", "KXCPI-26JUN-T-0.2",
+        )
+        assert result.exit_code == 0, result.output
+        assert "No memo stored" in result.output
+
+    def test_bookkeeping_row_does_not_hide_real_memo(
+        self, tmp_path,
+    ) -> None:
+        """#676 review: a newest bookkeeping row with an empty memo
+        must not hide the real research memo underneath it."""
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, "real research REALSENTINEL here")
+        self._log(db_path, "", prob="0")  # market-info-failure row
+        result = self._candidates(
+            tmp_path, "--ticker", "KXCPI-26JUN-T-0.2", "--limit", "5",
+        )
+        assert result.exit_code == 0, result.output
+        assert "REALSENTINEL" in result.output
+        assert "No memo stored" not in result.output
+
+    def test_long_url_token_survives_unbroken(self, tmp_path) -> None:
+        """soft_wrap: a source URL longer than width 80 must not be
+        hard-wrapped into a dead link."""
+        url = "https://www.bls.gov/news.release/archives/cpi_" + "x" * 60
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, f"source: {url}")
+        result = self._candidates(
+            tmp_path, "--ticker", "KXCPI-26JUN-T-0.2",
+        )
+        assert result.exit_code == 0, result.output
+        assert url in result.output
+
+    def test_flip_annotated_memo_marker_renders_literally(
+        self, tmp_path,
+    ) -> None:
+        """markup=False proof: the [FLIP-WARNING] annotation prints
+        intact in the memo section."""
+        db_path = tmp_path / "gimmes.db"
+        self._log(db_path, "scoring memo", prob="0.98")
+        self._log(db_path, "rescore memo", prob="0.02")
+        result = self._candidates(
+            tmp_path, "--ticker", "KXCPI-26JUN-T-0.2", "--limit", "5",
+        )
+        assert result.exit_code == 0, result.output
+        assert "RESEARCH MEMO" in result.output
+        assert "[FLIP-WARNING]" in result.output

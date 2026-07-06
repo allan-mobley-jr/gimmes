@@ -1668,6 +1668,45 @@ def candidates(
                 f" contain; re-research before approving (#661)[/red]"
             )
 
+        # #676: single-ticker mode prints the newest row's research
+        # memo — caddie-master's 4c derivation rule reads the memo
+        # through this command, and the table has no memo column.
+        # markup=False renders bracketed memo text literally (the
+        # #644 markup class); plain print wraps but never ellipsizes
+        # (the #659 width lesson).
+        if ticker:
+            # Newest NON-EMPTY memo (#676 review): a bookkeeping row
+            # with an empty memo must not hide the real research the
+            # 4c derivation rule reads. soft_wrap keeps unbroken
+            # tokens (source URLs) intact instead of hard-wrapping
+            # them into dead links at width 80.
+            memo_row = next(
+                (
+                    r for r in records
+                    if str(r.get("research_memo") or "").strip()
+                ),
+                None,
+            )
+            if memo_row is not None:
+                scanned = str(memo_row.get("scanned_at") or "?")
+                # Header claims only what was searched: the fetched
+                # window is bounded by --limit, so the scanned-at
+                # timestamp — not a "newest on record" claim — anchors
+                # recency (PR #692 review).
+                console.print(
+                    f"\n[bold]--- RESEARCH MEMO (scanned"
+                    f" {rich_escape(scanned)}) ---[/bold]"
+                )
+                console.print(
+                    str(memo_row.get("research_memo") or ""),
+                    markup=False, soft_wrap=True,
+                )
+            else:
+                console.print(
+                    "\n[bold]--- RESEARCH MEMO ---[/bold]"
+                )
+                console.print("[dim][No memo stored][/dim]")
+
     _run(_candidates())
 
 
@@ -2660,8 +2699,18 @@ def log_candidate(
             # its own fetch failing must degrade to "no check", never
             # block the insert (log-candidate is the Caddie's primary
             # logging path; the #657 logger-of-last-resort rule).
+            # #676: fetch the newest SCORED prior — the market-info-
+            # failure rows caddie.md/scout.md mandate (--price 0
+            # --prob 0) are bookkeeping, not scorings, and at a plain
+            # limit=1 a single one hid the real baseline (a multi-
+            # cycle outage would stack several). The SQL filter finds
+            # the true baseline no matter how many failure rows sit
+            # above it; the detector's own staleness/degenerate
+            # guards stay the policy backstop.
             try:
-                prior_rows = await get_candidate_for_ticker(db, ticker)
+                prior_rows = await get_candidate_for_ticker(
+                    db, ticker, scored_only=True,
+                )
             except sqlite3.Error:
                 logging.getLogger(__name__).error(
                     "prior-candidate lookup failed for %s; flip check"
@@ -2669,10 +2718,11 @@ def log_candidate(
                 )
                 prior_rows = []
             if prior_rows:
+                prior = prior_rows[0]
                 warnings = detect_candidate_flip(
-                    prior_prob=prior_rows[0]["model_probability"] or 0.0,
-                    prior_price=prior_rows[0]["market_price"] or 0.0,
-                    prior_scanned_at=str(prior_rows[0]["scanned_at"] or ""),
+                    prior_prob=prior["model_probability"] or 0.0,
+                    prior_price=prior["market_price"] or 0.0,
+                    prior_scanned_at=str(prior["scanned_at"] or ""),
                     new_prob=prob,
                     new_price=price_val,
                 )
