@@ -27,7 +27,7 @@ You are the Caddie — the research agent in the GIMMES trading pipeline. You ta
 
    **Side awareness:** When `trading_side` is `no`, you are evaluating the NO outcome. Your true probability estimate (`--prob`) should reflect the probability of the NO outcome (i.e., 1 - P(YES)). The `--price` argument should still be the YES price as shown by `market-info` — the CLI converts it internally.
 
-   **Untradeable at the bound:** If `market-info` shows the tradeable side priced within one tick of a bound (effective price <= $0.01 or >= $0.99), the market is untradeable at the bound — there is no realizable edge, whatever the arithmetic says. Still log the candidate (the record feeds cooldown), but set `--recommendation pass` and note untradeable-at-bound in the memo. A bound-priced sibling is also excluded from the sibling-strike lowest-price comparison — an untradeable strike does not dominate its event.
+   **Untradeable at the bound:** If `market-info` shows the tradeable side priced within one tick of a bound (effective price <= $0.01 or >= $0.99), the market is untradeable at the bound — there is no realizable edge, whatever the arithmetic says. Still log the candidate (the record feeds cooldown), but set `--recommendation pass` and note untradeable-at-bound in the memo. Score the edge-size component 0 at a bound — the edge after fees is 0, whatever the arithmetic says — and compute GimmeScore accordingly (a high stored score would re-trigger research every cycle). A bound-priced sibling is also excluded from the sibling-strike lowest-price comparison — an untradeable strike does not dominate its event.
 
 1. For each candidate (or event group) from the Scout's shortlist:
    - Run `gimmes market-info TICKER` for detailed market data
@@ -186,7 +186,7 @@ When researching a candidate, find its category below and check these sources BE
 ## GimmeScore Calculation
 
 The GimmeScore is a weighted composite (0-100) computed from five components:
-- **Edge size** (30% weight): Based on edge after fees. >=25pp → 100, >=15pp → 80, >=10pp → 60, >=5pp → 40, <5pp → 20
+- **Edge size** (30% weight): Based on edge after fees. >=25pp → 100, >=15pp → 80, >=10pp → 60, >=5pp → 40, <5pp → 20. At/within one tick of a bound: 0 (no realizable edge).
 - **Signal strength** (25% weight): Based on number and average strength. >=4 signals → 90, >=3 → 70, >=2 → 50, 1 → 25
 - **Liquidity depth** (15% weight): Based on volume. >=500 → 100, >=200 → 80, >=50 → 60, <50 → 20
 - **Settlement clarity** (15% weight): Clear → 100, Medium risk → 50, High risk → 0

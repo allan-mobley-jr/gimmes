@@ -6,7 +6,7 @@ from gimmes.config import GimmesConfig
 from gimmes.models.gimme import GimmeCandidate, GimmeScore
 from gimmes.models.market import Market, Orderbook
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, edge_after_fees
-from gimmes.strategy.scanner import days_until, effective_price
+from gimmes.strategy.scanner import days_until, effective_price, price_at_bound
 
 
 def quick_score(market: Market, config: GimmesConfig) -> float:
@@ -90,19 +90,28 @@ def full_score(
     side_price = effective_price(candidate.market_price, config.strategy.side)
 
     # Edge size score (0-100)
-    edge = edge_after_fees(side_price, candidate.model_probability, fees=fees)
-    if edge >= 0.25:
-        edge_score = 100.0
-    elif edge >= 0.15:
-        edge_score = 80.0
-    elif edge >= 0.10:
-        edge_score = 60.0
-    elif edge >= 0.05:
-        edge_score = 40.0
-    elif edge > 0:
-        edge_score = 20.0
-    else:
+    # #658/#672: at/within one tick of a bound, edge_after_fees
+    # collapses to ~prob on an UNFILLABLE order — no realizable edge,
+    # score 0 (same guard-then-compute pattern as the validator).
+    at_bound = price_at_bound(side_price)
+    if at_bound:
         edge_score = 0.0
+    else:
+        edge = edge_after_fees(
+            side_price, candidate.model_probability, fees=fees,
+        )
+        if edge >= 0.25:
+            edge_score = 100.0
+        elif edge >= 0.15:
+            edge_score = 80.0
+        elif edge >= 0.10:
+            edge_score = 60.0
+        elif edge >= 0.05:
+            edge_score = 40.0
+        elif edge > 0:
+            edge_score = 20.0
+        else:
+            edge_score = 0.0
 
     # Signal strength score (0-100)
     signals = candidate.signals
@@ -183,5 +192,11 @@ def full_score(
         liquidity_depth_score=liq_score,
         settlement_clarity_score=settlement_score,
         time_to_resolution_score=time_score,
-        memo=candidate.research_memo,
+        # #672: the memo carries the bound determination — a zeroed
+        # edge from an unfillable price must stay distinguishable from
+        # a genuinely dead thesis (GimmeScore has no flags field).
+        memo=(
+            f"[at-bound: edge component zeroed #658] {candidate.research_memo}"
+            if at_bound else candidate.research_memo
+        ),
     )

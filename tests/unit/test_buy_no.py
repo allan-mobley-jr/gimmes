@@ -76,6 +76,15 @@ class TestTradeableEdge:
         # stands (documented residual: the $0.97 case is 3 ticks in)
         assert tradeable_edge(0.88, 0.98, "no") == pytest.approx(0.86)
 
+    def test_garbage_yes_price_clamps_both_sides(self) -> None:
+        """#672 pin: out-of-range yes_price lands at/beyond a bound on
+        one side or the other — always clamped to 0, never a
+        fabricated edge."""
+        assert tradeable_edge(0.88, -0.5, "yes") == 0.0
+        assert tradeable_edge(0.88, -0.5, "no") == 0.0
+        assert tradeable_edge(0.88, 1.5, "yes") == 0.0
+        assert tradeable_edge(0.88, 1.5, "no") == 0.0
+
     def test_mid_range_unchanged(self) -> None:
         # NO at YES 0.70 → eff 0.30
         assert tradeable_edge(0.85, 0.70, "no") == pytest.approx(0.55)

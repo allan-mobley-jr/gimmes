@@ -398,6 +398,27 @@ class TestPriceBoundGate:
         assert result.approved is False
         assert any("Price at bound" in f for f in result.failures)
 
+    def test_count_only_order_still_rejected_at_bound(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#672: the bound rejection is not probability-gated — a
+        manual `order --count N` without --prob is just as unfillable
+        at the bound (pre-fix the whole check was skipped)."""
+        config.strategy.side = "no"
+        market = _make_market(yes_bid=1.0, yes_ask=1.0, last_price=1.0)
+        result = validate_trade(
+            market=market,
+            trade_dollars=200,
+            true_probability=None,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+        assert result.approved is False
+        assert any("Price at bound" in f for f in result.failures)
+
     def test_mid_range_edge_check_unchanged(
         self, config: GimmesConfig,
     ) -> None:

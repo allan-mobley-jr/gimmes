@@ -1910,6 +1910,8 @@ def test_caddie_untradeable_at_bound_rule(caddie_text: str) -> None:
     assert "within one tick of a bound" in caddie_text
     assert "--recommendation pass" in caddie_text
     assert "sibling-strike" in caddie_text  # bound strikes don't dominate
+    # #672: the numeric score must not undo the pass recommendation.
+    assert "edge-size component 0" in caddie_text
 
 
 # ---------------------------------------------------------------------------

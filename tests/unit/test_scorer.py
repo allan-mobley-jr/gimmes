@@ -73,6 +73,65 @@ class TestFullScore:
         # Settlement penalty should lower the score
         assert score.settlement_clarity_score <= 30
 
+    def test_bound_priced_no_side_scores_edge_zero(self) -> None:
+        """#672: YES $1.00 → NO effective $0.00 — an unfillable order.
+        edge_after_fees would say +88pp; the edge component must be 0
+        (this exact shape scored 100 pre-fix, re-triggering Caddie
+        research every cycle)."""
+        no_config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        candidate = GimmeCandidate(
+            ticker="KXCPIYOY", market_price=1.00,
+            model_probability=0.88,
+        )
+        score = full_score(candidate, None, no_config)
+        assert score.edge_size_score == 0.0
+
+    def test_one_tick_inside_bound_scores_edge_zero(self) -> None:
+        """YES $0.99 → NO effective $0.01 — within one tick, still
+        untradeable (matches tradeable_edge and the validator)."""
+        no_config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        candidate = GimmeCandidate(
+            ticker="X", market_price=0.99, model_probability=0.88,
+        )
+        score = full_score(candidate, None, no_config)
+        assert score.edge_size_score == 0.0
+
+    def test_bound_determination_carried_in_memo(self) -> None:
+        """#672: a zeroed-at-bound edge must stay distinguishable from
+        a genuinely dead thesis — the memo carries the marker."""
+        no_config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+        )
+        bound = GimmeCandidate(
+            ticker="X", market_price=1.00, model_probability=0.88,
+            research_memo="thesis text",
+        )
+        score = full_score(bound, None, no_config)
+        assert score.memo.startswith("[at-bound:")
+        assert "thesis text" in score.memo
+
+        normal = GimmeCandidate(
+            ticker="X", market_price=0.30, model_probability=0.88,
+            research_memo="thesis text",
+        )
+        score = full_score(normal, None, no_config)
+        assert score.memo == "thesis text"
+
+    def test_yes_side_floor_bound_scores_edge_zero(self) -> None:
+        candidate = GimmeCandidate(
+            ticker="X", market_price=0.01, model_probability=0.90,
+        )
+        config = GimmesConfig(mode=Mode.DRIVING_RANGE)
+        score = full_score(candidate, None, config)
+        assert score.edge_size_score == 0.0
+
     def test_no_side_uses_effective_price(self) -> None:
         """full_score should convert YES-denominated market_price for NO side."""
         no_config = GimmesConfig(

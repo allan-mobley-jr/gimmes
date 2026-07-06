@@ -161,27 +161,29 @@ def validate_trade(
     else:
         checks.append("True probability check skipped (no probability provided)")
 
-    # 6. Edge after fees (skipped when probability is unknown)
-    if true_probability is not None:
-        raw_price = market.midpoint if market.midpoint > 0 else market.last_price
-        price = effective_price(raw_price, config.strategy.side)
-        # #658: within one tick of a bound the edge formula collapses
-        # to `prob - 0` — a fabricated "Edge OK (88%)" would wave an
-        # unfillable order through the last pre-capital gate. The
-        # price can drift to the bound between Caddie research and
-        # Closer execution, so the live check must catch it.
-        if price_at_bound(price):
-            failures.append(
-                f"Price at bound: effective price ${price:.2f} is"
-                f" untradeable — no realizable edge (#658)"
-            )
+    # 6. Price at bound + edge after fees. The bound rejection is
+    # NOT probability-gated (#672 review): the price is known
+    # regardless, and a count-only manual order at eff $0.01 is just
+    # as unfillable as a probability-carrying one.
+    raw_price = market.midpoint if market.midpoint > 0 else market.last_price
+    price = effective_price(raw_price, config.strategy.side)
+    # #658: within one tick of a bound the edge formula collapses
+    # to `prob - 0` — a fabricated "Edge OK (88%)" would wave an
+    # unfillable order through the last pre-capital gate. The
+    # price can drift to the bound between Caddie research and
+    # Closer execution, so the live check must catch it.
+    if price_at_bound(price):
+        failures.append(
+            f"Price at bound: effective price ${price:.2f} is"
+            f" untradeable — no realizable edge (#658)"
+        )
+    elif true_probability is not None:
+        edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
+        min_edge = config.strategy.min_edge_after_fees
+        if edge >= min_edge:
+            checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
         else:
-            edge = edge_after_fees(price, true_probability, is_taker=is_taker, fees=fees)
-            min_edge = config.strategy.min_edge_after_fees
-            if edge >= min_edge:
-                checks.append(f"Edge OK ({edge:.1%} >= {min_edge:.1%})")
-            else:
-                failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
+            failures.append(f"Insufficient edge: {edge:.1%} < {min_edge:.1%} minimum")
     else:
         checks.append("Edge check skipped (no probability provided)")
 
