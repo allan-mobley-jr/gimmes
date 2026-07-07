@@ -346,16 +346,16 @@ gimmes market-info TICKER  # Detailed market info + orderbook
 ```bash
 gimmes size TICKER -p P      # Calculate position size
 gimmes validate TICKER -p P  # Pre-trade validation
-gimmes order TICKER -p P     # Place an order
+gimmes order TICKER -p P     # Place an order (--force-reopen to override the churn gate)
 gimmes cancel ORDER_ID       # Cancel a resting order
-gimmes trades                # List trade records (--ticker, --action)
-gimmes candidates            # List scored candidates (--ticker)
+gimmes trades                # List trade records (--ticker, --action, --limit)
+gimmes candidates            # List scored candidates (--ticker, --limit)
 gimmes reset-cooldown        # Clear cached candidate scores (--force)
 ```
 
 ### Portfolio
 ```bash
-gimmes positions                # List open positions
+gimmes positions                # List open positions (with stop-gate consumption)
 gimmes reconcile                # Sync positions with broker/API
 gimmes risk-check               # Check risk limits and daily P&L
 gimmes report                   # Performance scorecard
@@ -363,20 +363,31 @@ gimmes position-context TICKER  # Full thesis + note history for a position
 gimmes position-notes TICKER    # Position journal entries
 ```
 
+Reconcile consumes Kalshi's authoritative settlement feed at every championship sync: settled positions get proper close trades, historical settlements backfill, and drift marks reprice — so settled P&L reaches `gimmes report` and the daily P&L instead of vanishing between syncs.
+
 ### Diagnostics
 ```bash
-gimmes errors            # View error logs (--severity, --category, --unresolved)
-gimmes budget            # Show today's Claude API budget (--days N, --json)
+gimmes errors                  # View error logs (--severity, --category, --unresolved)
+gimmes budget                  # Show today's Claude API budget (--days N, --json)
+gimmes audit-cycles --date D   # Audit a UTC day's cycles for staleness
+gimmes pause-backtest          # Pause-vs-trade coincidence analysis (--from, --to)
+gimmes monitor [SUBCOMMAND]    # Hourly health-monitor cron (on|off|status|run|quiet|notify)
 ```
 
 ### Strategy
 ```bash
 gimmes backtest --from D --to D  # Backtest strategy on historical markets (--balance, --edge, --json)
+                                 # --taker-fill: conservative fill model — entries pay the ask with taker fees
+                                 # --no-cache: bypass the on-disk candle cache
                                  # Supports dual-side mode — runs per-side passes when strategy.side=both
-gimmes lesson                    # Run strategy analysis and recommendations
+gimmes lesson                    # Run strategy analysis and recommendations (--analysis/-a, --dry-run)
 gimmes recommendations           # View past strategy recommendations
 gimmes tune                      # Apply pending strategy recommendations
 ```
+
+The backtest replays history through the **entry-day lens**: every candidate is selected, priced, gated, and sized on the candle from its entry day — never the settlement-time snapshot, so no future information leaks into the results. Candle history for settled markets is immutable and cached on disk at `${GIMMES_HOME}/backtest_cache.db`, making reruns and parameter sweeps near-instant.
+
+`gimmes lesson` is the Pro's practice range: it pairs every close back to its entry, lifecycle by lifecycle, and turns realized outcomes into parameter recommendations. The analysis window is bounded by `strategy.lesson_window_days` (default 90; 0 = all-time). Review with `gimmes recommendations`, apply with `gimmes tune`.
 
 ### Dashboard
 ```bash
@@ -407,9 +418,13 @@ banner, sends an iMessage push when `GIMMES_NOTIFY_PHONE` is set in the
 environment, writes a `cycle-NNN-block.json` entry to `${GIMMES_HOME}/logs/`,
 and sleeps until the next UTC midnight, at which point the day's counters
 roll over and trading resumes automatically. Pass `0` for either flag to
-disable that cap. Inspect today's totals and remaining headroom with
-`gimmes budget` (`gimmes budget --json` for machine-readable output, which
-also includes the active caps and seconds until reset).
+disable that cap. Both caps are also config-settable and persistent —
+`gimmes config set budget.max_daily_cost_usd 50` and
+`budget.max_sessions_per_day` — with CLI flags winning when both are
+present (restart the loop to pick up config changes). Inspect today's
+totals and remaining headroom with `gimmes budget` (`gimmes budget --json`
+for machine-readable output, which also includes the active caps and
+seconds until reset).
 
 ---
 
@@ -418,7 +433,7 @@ also includes the active caps and seconds until reset).
 A market qualifies as a gimme when it clears all of the following:
 
 - **Category:** Must be in a backtested gimme category from the default watchlist (`KXINX`, `KXNASDAQ100`, `KXPAYROLLS`, `KXCPIYOY`, `KXCPICORE`, `KXCPICOREYOY`, `KXGDP`, `KXADP`). Additional series such as `KXISMPMI` can be enabled via `scanner.series`
-- **Buy price:** NO side defaults to 40¢–75¢ (`strategy.min_market_price` / `strategy.max_market_price`)
+- **Buy price:** Defaults to 55¢–85¢ from the configured side's perspective (`strategy.min_market_price` / `strategy.max_market_price`)
 - **Liquidity:** Sufficient volume and open interest to absorb the position
 - **Time horizon:** Contract resolves within 0.5–90 days (configurable)
 - **Concentration limits:** Max 15% per event, 30% per series — prevents over-exposure
@@ -450,6 +465,8 @@ Candidates are eligible for re-research after 48 hours regardless of prior score
 
 The Caddie produces a **Gimme Score** (0–100) and a structured memo summarizing the edge thesis.
 
+**Probability-flip warnings:** when a fresh estimate flips against the candidate's own recent scoring (yesterday 85% YES, today 40%), the flip is flagged before capital moves and surfaces in `gimmes candidates` and the Caddie Master's memo panel — sometimes the flip *is* the signal, so it warns rather than blocks.
+
 ### Phase 3 — Execute
 
 The Closer reviews any market with a Gimme Score above threshold and:
@@ -459,6 +476,8 @@ The Closer reviews any market with a Gimme Score above threshold and:
 3. Places a maker limit order (preferred — 75% lower fees)
 4. Logs the trade with full rationale
 
+A **reopen-churn gate** hard-blocks re-entering a ticker that was just closed — you don't re-tee the same ball twenty-one seconds after picking it up. The gate is side-aware; `gimmes order --force-reopen` is the audited override for a genuinely fresh thesis.
+
 ### Phase 4 — Monitor
 
 The Monitor watches all open positions and triggers a review when:
@@ -467,9 +486,11 @@ The Monitor watches all open positions and triggers a review when:
 - New material information emerges that changes the thesis
 - Time to resolution drops below 24 hours and position isn't profitable
 - Position approaches the daily loss limit
-- Per-position stop-loss threshold is breached (default 15% of cost basis)
+- Per-position stop-loss threshold is breached (default 15% of cost basis) — and at 2× the gate, the hard loss backstop mandates an unconditional close
 
 The Caddie Master reviews each flag and decides: **Hold**, **Close** (dispatches Closer to sell), or **Size up** (if edge has improved on an intact thesis). A SIZE UP bias rule defaults to adding when the thesis is intact and bankroll is underutilized.
+
+`gimmes positions` renders each position's stop-gate consumption in a Stop column, with **STALE** and **BASIS-SUSPECT** flags when the mark is stale or the live cost basis looks corrupted — so nobody reads a confident percentage off bad data.
 
 ---
 
@@ -495,10 +516,11 @@ position_size    = 0.25 × ratio × bankroll
 **Base rate floor:** For gimme categories with backtested win rates, the probability input is floored at the category base rate (80-90%) to prevent undersizing from conservative LLM estimates. If the Caddie estimates higher than the base rate, the higher estimate is used. This ensures positions are sized to the known structural edge, not the per-trade LLM noise.
 
 Hard limits applied regardless of sizing mode:
-- Max 10% of bankroll per position (configurable)
-- Max 50 open positions simultaneously (configurable)
+- Max 5% of bankroll per position (configurable)
+- Max 15 open positions simultaneously (configurable)
 - 15% daily loss limit → full stop
 - 15% per-position stop-loss trigger
+- Hard loss backstop — at 2× the stop-loss gate, the ball gets picked up. No exceptions. `gimmes positions` shows per-position stop-gate consumption; at ≥200% a `MANDATORY-CLOSE` banner appears and the Caddie Master closes unconditionally (enforced by the agent loop — the CLI renders the banner, the Caddie Master executes the close)
 - 80% per-position take-profit trigger
 - 15% max exposure per event, 30% max per series
 - No positions in markets with ambiguous settlement language
@@ -551,7 +573,8 @@ gimmes config set strategy.yes_overrides.max_market_price 0.85
 gimmes config set strategy.yes_overrides.min_true_probability 0.85
 gimmes config set strategy.yes_overrides.gimme_threshold 75
 
-# NO-side overrides (economic data)
+# NO-side overrides (economic data) — example values; the flat
+# strategy defaults are 0.55/0.85
 gimmes config set strategy.no_overrides.min_market_price 0.40
 gimmes config set strategy.no_overrides.max_market_price 0.75
 gimmes config set strategy.no_overrides.min_true_probability 0.50
@@ -579,11 +602,11 @@ When `side = "yes"` or `"no"`, the flat strategy fields are used directly. Per-s
     │   ├── config.py            # Two-layer config (env vars + SQLite)
     │   ├── clubhouse/           # Web dashboard (FastAPI + SSE)
     │   ├── templates/           # Jinja2 HTML template (Tailwind + Chart.js)
-    │   ├── kalshi/              # HTTP client, auth, market/order/portfolio endpoints
+    │   ├── kalshi/              # HTTP client, auth, market/order/portfolio/historical endpoints
     │   ├── paper/               # Paper trading engine (fill simulator, broker)
-    │   ├── backtest/            # Backtest engine, report formatter
-    │   ├── strategy/            # Scanner, scorer, Kelly/EV sizing, fee calculator, trade window calendar
-    │   ├── risk/                # Limits, validator, settlement risk scanner
+    │   ├── backtest/            # Backtest engine, entry-day candle cache, report formatter
+    │   ├── strategy/            # Scanner, scorer, Kelly/EV sizing, fees, trade windows, lesson advisor
+    │   ├── risk/                # Limits, validator, settlement risk scanner, reopen-churn guard
     │   ├── store/               # SQLite persistence (trades, positions, snapshots)
     │   ├── models/              # Pydantic models (market, order, portfolio, trade)
     │   └── reporting/           # P&L, metrics, Rich console formatting
