@@ -65,6 +65,8 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
         )
         # #663: mirror calculate_pnl — drift rows in groups that carry
         # a real settlement close keep their mark (manual exits).
+        # Same #684 approximation note as calculate_pnl: a UI full
+        # exit before resolution is repriced once the outcome lands.
         group_has_settlement = any(
             e.get("agent") == "settlement" and e.get("action") == "close"
             for e in events

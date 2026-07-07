@@ -687,3 +687,42 @@ class TestCorruptAnalyticsGuard:
             with pytest.raises(ValidationError):
                 await sync_positions(db, [])
         assert "recorded with zeroed analytics" not in caplog.text
+
+
+class TestDriftCountClamp:
+    """#684: the drift close covers the LEDGER residual, not
+    pos.count — a clamped settlement close (off-ledger exit) leaves a
+    remainder that must not be over-closed."""
+
+    async def test_drift_close_uses_residual_after_partial_settlement(
+        self, db,
+    ):
+        from gimmes.store.queries import log_settlement_close
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        # A clamped settlement close covered 6 of the 10 opens.
+        async with db.transaction():
+            await log_settlement_close(
+                db, ticker="KXCPI-26APR-T0.5", side="yes",
+                count=6, won=True,
+            )
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=0.42),
+        )
+
+        await sync_positions(db, [])
+
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        drift = [c for c in closes if c["agent"] == "reconcile"]
+        assert len(drift) == 1
+        # 10 opened − 6 settled = 4, NOT pos.count 10.
+        assert drift[0]["count"] == 4
+
+    async def test_no_history_position_keeps_pos_count(self, db):
+        await upsert_position(db, _pos("NO-HISTORY", count=10, price=0.42))
+        await sync_positions(db, [])
+        [c] = await get_trades(db)
+        assert c["action"] == "close"
+        assert c["count"] == 10

@@ -166,6 +166,12 @@ def _run_order_cli(
                 AsyncMock(return_value=[]),
             ),
             patch("gimmes.store.queries.sync_positions", AsyncMock()),
+            # #684: the settlements pre-consumption reads the old
+            # positions; empty -> no removed tickers -> no-op.
+            patch(
+                "gimmes.store.queries.get_positions",
+                AsyncMock(return_value=[]),
+            ),
         ])
         if championship_create_order is not None:
             patches.append(
