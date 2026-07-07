@@ -11,7 +11,7 @@ from gimmes.config import GimmesConfig
 from gimmes.kalshi.client import KalshiClient
 from gimmes.kalshi.historical import Candle, get_candlesticks
 from gimmes.kalshi.markets import list_all_markets
-from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
+from gimmes.models.market import Market, MarketStatus
 from gimmes.risk.limits import (
     check_event_exposure,
     check_series_exposure,
@@ -48,6 +48,15 @@ class BacktestConfig:
     starting_balance: float
     gimmes_config: GimmesConfig
     assumed_edge: float = 0.10  # Edge premium over market price for Kelly sizing
+    # #682: conservative fill model — entries cross the spread and pay
+    # the ask with taker fees, instead of filling at the midpoint as a
+    # maker. Selection (filter/score) AND the model belief (true_prob
+    # = midpoint + assumed_edge) stay anchored to the midpoint — the
+    # flag models fill COST only, so it can never pass MORE markets
+    # through the prob gate or size them larger than maker mode
+    # (review: deriving true_prob from the fill price loosened the
+    # gate). Edge and Kelly then shrink naturally when paying the ask.
+    taker_fill: bool = False
 
 
 @dataclass
@@ -86,6 +95,11 @@ class BacktestResult:
     skipped_one_sided: int = 0
     fetch_failures: int = 0
     skipped_entry_gates: int = 0
+    # #682: markets PRICED (not skipped) from a candle >1 day older
+    # than entry — visibility before policy; and pass-1 drops where
+    # kelly sizing yielded zero contracts.
+    stale_candles: int = 0
+    skipped_zero_sizing: int = 0
     truncated_chunks: list[str] = field(default_factory=list)
 
 
@@ -202,35 +216,6 @@ class BacktestLedger:
     def snapshot(self, timestamp: str) -> None:
         """Record an equity snapshot (balance only — all positions settle)."""
         self.equity_curve.append((timestamp, self.balance))
-
-
-# ---------------------------------------------------------------------------
-# Orderbook synthesis
-# ---------------------------------------------------------------------------
-
-
-def synthesize_orderbook(ticker: str, candle: Candle, depth: int = 100) -> Orderbook:
-    """Build a minimal Orderbook from candlestick bid/ask close prices.
-
-    Uses the candle's yes_bid_close as a YES bid level and derives a NO bid
-    level from yes_ask_close (NO bid = 1 - YES ask). Assigns synthetic depth.
-    """
-    yes_bid_price = candle.yes_bid_close
-    yes_ask_price = candle.yes_ask_close
-
-    yes_bids = []
-    no_bids = []
-
-    if yes_bid_price > 0:
-        yes_bids.append(OrderbookLevel(price=yes_bid_price, quantity=depth))
-
-    if yes_ask_price > 0:
-        # NO bid = 1 - YES ask
-        no_bid_price = round(1.0 - yes_ask_price, 2)
-        if no_bid_price > 0:
-            no_bids.append(OrderbookLevel(price=no_bid_price, quantity=depth))
-
-    return Orderbook(ticker=ticker, yes_bids=yes_bids, no_bids=no_bids)
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +489,7 @@ async def run_backtest(
     entry_candles: dict[str, Candle] = {}
     entry_times: dict[str, datetime] = {}
     skipped_no_candle = 0
+    stale_candles = 0
     skipped_one_sided = 0
     fetch_failures = 0
     failed_fetches: set[str] = set()
@@ -555,8 +541,16 @@ async def run_backtest(
                 m.ticker,
             )
             continue
-        if candle_midpoint(candle) <= 0:
-            # One-sided OR empty quote (either/both closes zero): no
+        if (
+            candle_midpoint(candle) <= 0
+            or candle.yes_bid_close >= 1.0
+            or candle.yes_ask_close >= 1.0
+        ):
+            # One-sided OR empty quote (either/both closes zero), or
+            # an at/over-bound close (#682: as unpriceable as an
+            # empty one — without the upper bound a 1.0 close passes
+            # and pollutes the sizing/gate counters; taker mode reads
+            # the raw close directly): no
             # priceable midpoint; trade-price OHLC stays deliberately
             # rejected as a fallback (stale on thin days, #655).
             # Counted separately because these skips can bias the
@@ -569,6 +563,7 @@ async def run_backtest(
             )
             continue
         if entry_ts - candle.end_period_ts > 86400:
+            stale_candles += 1
             logger.debug(
                 "entry candle for %s is %.1f days older than"
                 " entry_ts — stale-quote pricing (#666 residual)",
@@ -595,6 +590,7 @@ async def run_backtest(
     # --- 3-4. Filter, Score, Identify trades — per side ---
     pending: list[_PendingTrade] = []
     skipped_entry_gates = 0
+    zero_sized_tickers: set[str] = set()
     seen_tickers: set[str] = set()
     total_passed = 0
     total_scored = 0
@@ -648,8 +644,21 @@ async def run_backtest(
             ticker = orig_m.ticker
             entry_time = entry_times[ticker]
             mid = view.midpoint
-            entry_eff = effective_price(mid, scan_side)
-            true_prob = min(entry_eff + config.assumed_edge, 0.99)
+            mid_eff = effective_price(mid, scan_side)
+            is_taker = config.taker_fill
+            if is_taker:
+                # Conservative fill (#682): entry crosses the spread
+                # and pays the ask. NO ask = 1 - YES bid.
+                entry_eff = (
+                    view.yes_ask if scan_side == "yes"
+                    else effective_price(view.yes_bid, "no")
+                )
+            else:
+                entry_eff = mid_eff
+            # The model belief is anchored to the MIDPOINT, not the
+            # fill price — otherwise taker mode would float true_prob
+            # up with the ask and pass markets maker mode rejects.
+            true_prob = min(mid_eff + config.assumed_edge, 0.99)
             true_prob = apply_base_rate_floor(
                 true_prob, ticker, side=scan_side,
             )
@@ -657,7 +666,7 @@ async def run_backtest(
                 skipped_entry_gates += 1
                 continue
             if edge_after_fees(
-                entry_eff, true_prob, is_taker=False, fees=fees,
+                entry_eff, true_prob, is_taker=is_taker, fees=fees,
             ) < min_edge:
                 skipped_entry_gates += 1
                 continue
@@ -670,12 +679,17 @@ async def run_backtest(
                 max_position_pct=side_cfg.sizing.max_position_pct,
                 fees=fees,
                 mode=side_cfg.sizing.mode,
+                is_taker=is_taker,
             )
             if count <= 0:
+                # Set, not counter (#682 review): under side='both' a
+                # ticker can zero-size on both sides (one market, not
+                # two), or zero-size on one and trade the other.
+                zero_sized_tickers.add(ticker)
                 continue
 
             trade_fees = fee_for_order(
-                count, entry_eff, is_taker=False, fees=fees,
+                count, entry_eff, is_taker=is_taker, fees=fees,
             )
 
             seen_tickers.add(ticker)
@@ -783,6 +797,8 @@ async def run_backtest(
         skipped_one_sided=skipped_one_sided,
         fetch_failures=fetch_failures,
         skipped_entry_gates=skipped_entry_gates,
+        stale_candles=stale_candles,
+        skipped_zero_sizing=len(zero_sized_tickers - seen_tickers),
         skipped_balance=skipped_balance,
         truncated_chunks=truncated_chunks,
     )
