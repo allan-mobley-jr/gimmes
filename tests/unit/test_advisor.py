@@ -847,6 +847,15 @@ class TestMigrationV4:
         assert row[0] >= 4
 
 
+def test_annulled_order_rows_excluded_from_fnr() -> None:
+    """#690: an annulled never-filled order (reason='order_canceled')
+    carries real inherited analytics — it must be a NON-entry skip or
+    every liquidity cancel becomes an automatic false negative."""
+    from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
+
+    assert "order_canceled" in NON_ENTRY_SKIP_REASONS
+
+
 def test_non_entry_reasons_single_source_of_truth() -> None:
     """#670 review: the CLI's --reason gate and the advisor's audit
     exclusion must never drift — the CLI aliases the advisor set."""

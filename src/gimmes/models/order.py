@@ -59,6 +59,9 @@ class Order(BaseModel):
     remaining_count: int = 0
     created_time: datetime | None = None
     client_order_id: str = ""
+    # #690: why a canceled order canceled (paper broker sets it; the
+    # real Kalshi path leaves it empty). Agents need a nameable cause.
+    reason: str = ""
 
     @property
     def is_open(self) -> bool:

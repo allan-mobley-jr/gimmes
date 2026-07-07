@@ -928,10 +928,13 @@ class TestNegativeBalanceGuard:
         self, broker: PaperBroker, orderbook: Orderbook
     ) -> None:
         """Maker BUY that would exceed available balance is rejected."""
+        # #690: give the book opposing depth so the BALANCE guard is
+        # what trips — an empty book now cancels for its own reason
+        # and would silently stop pinning the balance check.
         ob = Orderbook(
             ticker="EXPENSIVE",
             yes_bids=[],
-            no_bids=[],  # No depth, but fills immediately in paper mode
+            no_bids=[OrderbookLevel(price=0.30, quantity=20_000)],
         )
         params = CreateOrderParams(
             ticker="EXPENSIVE",
@@ -943,6 +946,9 @@ class TestNegativeBalanceGuard:
         )
         order = await broker.create_order(params, ob)
         assert order.status == "canceled"
+        # Pin WHICH cancel fired (#690): the balance guard, not the
+        # empty-book refusal.
+        assert "insufficient balance" in order.reason
 
         balance = await broker.get_balance()
         assert balance == 10_000.00
@@ -1222,3 +1228,208 @@ class TestSettleLedgerClamp:
         ]
         assert len(settlement) == 1
         assert settlement[0]["count"] == 10  # broker count, not 20
+
+
+class TestEmptyBookMakerRefusal:
+    """#690: a maker order whose OPPOSING side is completely empty
+    cancels instead of fabricating a fill at its own limit — there is
+    no counterparty at any price. Non-marketable makers with a real
+    book keep the #255 immediate fill."""
+
+    @staticmethod
+    def _empty_book(ticker: str = "KXDEAD") -> Orderbook:
+        return Orderbook(ticker=ticker, yes_bids=[], no_bids=[])
+
+    @pytest.mark.asyncio
+    async def test_buy_yes_empty_book_cancels(
+        self, broker: PaperBroker,
+    ) -> None:
+        params = CreateOrderParams(
+            ticker="KXDEAD", action=OrderAction.BUY,
+            side=OrderSide.YES, count=10, yes_price=0.70,
+            post_only=True,
+        )
+        order = await broker.create_order(params, self._empty_book())
+        assert order.status == "canceled"
+        assert order.remaining_count == 10
+        assert "no opposing liquidity" in order.reason
+        assert await broker.get_balance() == 10_000.00
+        assert await broker.get_positions() == []
+
+    @pytest.mark.asyncio
+    async def test_buy_no_empty_book_cancels(
+        self, broker: PaperBroker,
+    ) -> None:
+        params = CreateOrderParams(
+            ticker="KXDEAD", action=OrderAction.BUY,
+            side=OrderSide.NO, count=10, no_price=0.40,
+            post_only=True,
+        )
+        order = await broker.create_order(params, self._empty_book())
+        assert order.status == "canceled"
+        assert await broker.get_balance() == 10_000.00
+
+    @pytest.mark.asyncio
+    async def test_sell_yes_empty_book_cancels(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        """Seed via a liquid book, then try to close on a dead one."""
+        buy = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY,
+            side=OrderSide.YES, count=10, yes_price=0.70,
+            post_only=True,
+        )
+        await broker.create_order(buy, orderbook)
+        balance_after_buy = await broker.get_balance()
+
+        sell = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.SELL,
+            side=OrderSide.YES, count=10, yes_price=0.68,
+            post_only=True,
+        )
+        order = await broker.create_order(
+            sell, self._empty_book("TEST-MKT"),
+        )
+        assert order.status == "canceled"
+        assert "no opposing liquidity" in order.reason
+        # Position intact, no proceeds credited.
+        [pos] = await broker.get_positions()
+        assert pos.count == 10
+        assert await broker.get_balance() == balance_after_buy
+
+    @pytest.mark.asyncio
+    async def test_sell_no_empty_book_cancels(
+        self, broker: PaperBroker,
+    ) -> None:
+        """Fourth direction: SELL NO against empty no_bids."""
+        buy_book = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.68, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
+        )
+        buy = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY,
+            side=OrderSide.NO, count=10, no_price=0.32,
+            post_only=True,
+        )
+        await broker.create_order(buy, buy_book)
+
+        sell = CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.SELL,
+            side=OrderSide.NO, count=10, no_price=0.35,
+            post_only=True,
+        )
+        order = await broker.create_order(
+            sell, self._empty_book("TEST-MKT"),
+        )
+        assert order.status == "canceled"
+        assert "no opposing liquidity" in order.reason
+
+    @pytest.mark.asyncio
+    async def test_canceled_order_row_kept_for_audit(
+        self, broker: PaperBroker,
+    ) -> None:
+        params = CreateOrderParams(
+            ticker="KXDEAD", action=OrderAction.BUY,
+            side=OrderSide.YES, count=10, yes_price=0.70,
+            post_only=True,
+        )
+        order = await broker.create_order(params, self._empty_book())
+        cursor = await broker._conn.execute(
+            "SELECT status FROM paper_orders WHERE order_id = ?",
+            (order.order_id,),
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row["status"] == "canceled"
+
+    @pytest.mark.asyncio
+    async def test_resting_order_stays_resting_on_dead_book(
+        self, broker: PaperBroker,
+    ) -> None:
+        """fill_resting_orders must not fabricate either — a legacy
+        resting order against a dead book stays resting."""
+        await broker._conn.execute(
+            """INSERT INTO paper_orders
+               (order_id, ticker, action, side, count, remaining_count,
+                yes_price, no_price, status, post_only, created_at,
+                updated_at)
+               VALUES ('legacy-1', 'KXDEAD', 'buy', 'yes', 10, 10,
+                       70, 0, 'resting', 1, datetime('now'),
+                       datetime('now'))""",
+        )
+        await broker._db.conn.commit()
+
+        filled = await broker.fill_resting_orders(
+            {"KXDEAD": self._empty_book()},
+        )
+        assert filled == []
+        cursor = await broker._conn.execute(
+            "SELECT status FROM paper_orders WHERE order_id = 'legacy-1'",
+        )
+        assert (await cursor.fetchone())["status"] == "resting"
+
+
+class TestCancelOrderAnnulment:
+    """#690 (#684 item 4): canceling a never-filled resting order
+    annuls its placement-time trade rows (action='skip') so the
+    ledger stops seeing an exit that never traded."""
+
+    async def _seed_resting_with_close_row(
+        self, broker: PaperBroker, *, remaining: int = 10,
+    ) -> None:
+        from gimmes.models.trade import TradeDecision
+        from gimmes.store.queries import insert_trade
+
+        await broker._conn.execute(
+            """INSERT INTO paper_orders
+               (order_id, ticker, action, side, count, remaining_count,
+                yes_price, no_price, status, post_only, created_at,
+                updated_at)
+               VALUES ('legacy-2', 'KXOLD', 'sell', 'yes', 10, ?,
+                       68, 0, 'resting', 1, datetime('now'),
+                       datetime('now'))""",
+            (remaining,),
+        )
+        await broker._db.conn.commit()
+        await insert_trade(broker._db, TradeDecision(
+            ticker="KXOLD", action=TradeDecision.Action.CLOSE,
+            side="yes", count=10, price=0.68,
+            rationale="placement-time close",
+            order_id="legacy-2",
+        ))
+
+    @pytest.mark.asyncio
+    async def test_never_filled_cancel_annuls_trade_rows(
+        self, broker: PaperBroker,
+    ) -> None:
+        from gimmes.store.queries import get_daily_pnl, get_trades
+
+        await self._seed_resting_with_close_row(broker)
+        await broker.cancel_order("legacy-2")
+
+        rows = await get_trades(broker._db, ticker="KXOLD")
+        assert len(rows) == 1
+        assert rows[0]["action"] == "skip"
+        assert rows[0]["reason"] == "order_canceled"
+        assert "#690 annulment" in rows[0]["rationale"]
+        # The phantom exit no longer reaches daily P&L.
+        assert await get_daily_pnl(broker._db) == 0.0
+        # #690 review: SELLs never reserved balance — canceling one
+        # must not fabricate a refund.
+        assert await broker.get_balance() == 10_000.00
+
+    @pytest.mark.asyncio
+    async def test_partially_filled_cancel_keeps_trade_rows(
+        self, broker: PaperBroker, caplog,
+    ) -> None:
+        import logging
+
+        from gimmes.store.queries import get_trades
+
+        await self._seed_resting_with_close_row(broker, remaining=4)
+        with caplog.at_level(logging.WARNING, logger="gimmes"):
+            await broker.cancel_order("legacy-2")
+
+        rows = await get_trades(broker._db, ticker="KXOLD")
+        assert rows[0]["action"] == "close"  # kept
+        assert "partially filled" in caplog.text

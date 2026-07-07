@@ -1245,6 +1245,30 @@ def order(
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
                 raise typer.Exit(1)
 
+            if result.status == "canceled":
+                # #690: a canceled order placed NOTHING — green
+                # "Order placed ... (status: canceled)" read as
+                # success to the Closer. Exit 1 routes agents into
+                # their order_failed skip path with a nameable cause,
+                # and the error row gives Groundskeeper the triage
+                # trail the caddie-master escalation keys on.
+                reason = result.reason or "not filled"
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code="order_canceled",
+                    component="cli.order", agent=agent,
+                    message=f"Order canceled for {ticker}: {reason}",
+                    context=json.dumps({
+                        "ticker": ticker, "side": side,
+                        "action": action, "reason": reason,
+                    }),
+                ), "Failed to log order cancel")
+                console.print(
+                    f"[red bold]Order NOT placed:"
+                    f" {rich_escape(reason)}[/red bold]"
+                )
+                raise typer.Exit(1)
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
                 f" (status: {result.status})"
@@ -2638,7 +2662,7 @@ def market_info(
 _SKIP_REASONS = frozenset({
     "cooldown", "research_failed", "review_reject", "validation_failed",
     "order_failed", "close_failed", "no_position", "price_moved",
-    "liquidity", "infra_failed", "already_traded",
+    "liquidity", "infra_failed", "already_traded", "order_canceled",
 })
 
 # Non-entry skips carry no entry decision — backfilling scan-time

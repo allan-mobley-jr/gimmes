@@ -1022,3 +1022,33 @@ class TestCloseInheritsEntryAnalytics:
         assert t.model_probability == 0.0
         assert t.edge == 0.0
         assert "position sync failed" not in _printed(mock_console).lower()
+
+
+class TestCanceledOrderContract:
+    """#690: a canceled order is a FAILURE to the caller — red
+    message with the broker's reason, exit 1, no trade row."""
+
+    def test_canceled_status_exits_nonzero_with_reason(self) -> None:
+        from gimmes.models.order import Order, OrderAction, OrderSide
+
+        canceled = Order(
+            order_id="paper-x", ticker="TEST-MKT",
+            action=OrderAction.BUY, side=OrderSide.YES,
+            status="canceled", count=10, remaining_count=10,
+            reason="no opposing liquidity — empty book, no"
+                   " counterparty at any price (#690)",
+        )
+        broker = _make_mock_broker()
+        broker.create_order = AsyncMock(return_value=canceled)
+        sync_spy = AsyncMock()
+
+        with patch(
+            "gimmes.store.queries.sync_positions_with_trade", sync_spy,
+        ):
+            result, mock_console, _ = _run_order_cli(broker)
+
+        assert result.exit_code == 1
+        out = _printed(mock_console)
+        assert "Order NOT placed" in out
+        assert "no opposing liquidity" in out
+        sync_spy.assert_not_awaited()  # no trade row for a non-event

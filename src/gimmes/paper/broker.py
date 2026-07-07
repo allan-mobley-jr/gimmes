@@ -21,7 +21,12 @@ from gimmes.models.order import (
     OrderSide,
 )
 from gimmes.models.portfolio import Position
-from gimmes.paper.fill_simulator import FillResult, SimulatedFill, simulate_fill
+from gimmes.paper.fill_simulator import (
+    FillResult,
+    SimulatedFill,
+    has_opposing_liquidity,
+    simulate_fill,
+)
 from gimmes.paper.schema import PAPER_SCHEMA_SQL
 from gimmes.store.database import Database
 from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS, FeeMultipliers, fee_for_order
@@ -143,7 +148,14 @@ class PaperBroker:
             )
             pos_row = await cursor.fetchone()
             if pos_row is None or int(pos_row["count"]) < params.count:
-                return await self._reject_order(order_id, params, now)
+                held = int(pos_row["count"]) if pos_row else 0
+                return await self._reject_order(
+                    order_id, params, now,
+                    reason=(
+                        f"insufficient position: have {held}, need"
+                        f" {params.count}"
+                    ),
+                )
 
         # Run fill simulation
         result = simulate_fill(params, orderbook, fees=fees)
@@ -152,7 +164,16 @@ class PaperBroker:
         # Real markets have opposing flow that hits resting bids; paper mode
         # has none, so we fill at limit to enable same-cycle position
         # updates.  (#255)
-        if params.post_only and result.remaining_count > 0:
+        # #690: ONLY when the opposing side exists at all — an empty
+        # counterparty side means no market, and filling there would
+        # fabricate a fill nobody offered (the phantom ledger rows the
+        # #663 settle clamp had to defend against). The order cancels
+        # instead (status falls through to "canceled" below).
+        opposing_liquidity = has_opposing_liquidity(params, orderbook)
+        if (
+            params.post_only and result.remaining_count > 0
+            and opposing_liquidity
+        ):
             remaining = result.remaining_count
             limit_price = params.price
             fill_fee = fee_for_order(
@@ -172,13 +193,25 @@ class PaperBroker:
         # Determine status — any fill counts as executed (partial taker
         # fills abandon the remainder rather than resting).
         status = "executed" if result.total_filled > 0 else "canceled"
+        cancel_reason = ""
+        if status == "canceled" and not opposing_liquidity:
+            cancel_reason = (
+                "no opposing liquidity — empty book, no counterparty"
+                " at any price (#690)"
+            )
 
         # Pre-transaction balance validation
         if result.total_filled > 0 and params.action == OrderAction.BUY:
             cost = result.total_notional + result.total_fees
             balance = await self.get_balance()
             if balance < cost:
-                return await self._reject_order(order_id, params, now)
+                return await self._reject_order(
+                    order_id, params, now,
+                    reason=(
+                        f"insufficient balance: cost ${cost:,.2f} >"
+                        f" ${balance:,.2f}"
+                    ),
+                )
 
         # All writes in one atomic transaction
         async with self._db.transaction():
@@ -253,6 +286,7 @@ class PaperBroker:
             count=params.count,
             remaining_count=result.remaining_count,
             created_time=now,
+            reason=cancel_reason,
         )
 
     async def cancel_order(self, order_id: str) -> None:
@@ -271,17 +305,51 @@ class PaperBroker:
             return
 
         async with self._db.transaction():
-            # Refund reserved balance for unfilled contracts
+            # Refund reserved balance for unfilled contracts — BUYS
+            # only (#690 review): sells never reserve balance, so an
+            # unconditional refund fabricated paper money on the
+            # legacy-cleanup path this fix sanctions.
             remaining = int(row["remaining_count"])
-            price_cents = max(int(row["yes_price"]), int(row["no_price"]))
-            refund = remaining * price_cents / 100.0
-            await self._update_balance(refund)
+            if str(row["action"]) == "buy":
+                price_cents = max(
+                    int(row["yes_price"]), int(row["no_price"]),
+                )
+                refund = remaining * price_cents / 100.0
+                await self._update_balance(refund)
 
             await self._conn.execute(
                 "UPDATE paper_orders SET status = 'canceled',"
                 " updated_at = datetime('now') WHERE order_id = ?",
                 (order_id,),
             )
+
+            # #690 (#684 item 4): a NEVER-FILLED resting order's
+            # placement-time trade rows describe a non-event — annul
+            # them (action='skip', append-only ledger: no DELETE) so
+            # daily P&L / scorecard / the #663 settle-clamp residual
+            # math stop seeing an exit that never traded. A partially
+            # filled legacy row keeps its trade rows (warned).
+            if remaining == int(row["count"]):
+                await self._conn.execute(
+                    """UPDATE trades SET action = 'skip',
+                       reason = 'order_canceled',
+                       rationale = rationale || ?
+                       WHERE order_id = ?""",
+                    (
+                        " [#690 annulment: resting order canceled"
+                        " before any fill]",
+                        order_id,
+                    ),
+                )
+            else:
+                import logging
+
+                logging.getLogger("gimmes").warning(
+                    "canceled order %s was partially filled (%d/%d)"
+                    " — placement-time trade rows kept (#690)",
+                    order_id, int(row["count"]) - remaining,
+                    int(row["count"]),
+                )
 
     async def fill_resting_orders(
         self,
@@ -348,6 +416,19 @@ class PaperBroker:
                     no_price=price if side == OrderSide.NO else None,
                     post_only=True,
                 )
+
+                # #690: same empty-book guard as create_order — a
+                # legacy resting order against a dead book stays
+                # resting instead of fabricating a fill.
+                if not has_opposing_liquidity(params, orderbooks[ticker]):
+                    import logging
+
+                    logging.getLogger("gimmes").debug(
+                        "resting order %s skipped — no opposing"
+                        " liquidity on %s (#690)",
+                        row["order_id"], ticker,
+                    )
+                    continue
 
                 # Paper mode: fill at limit price unconditionally.
                 # Real markets have opposing flow that hits resting bids;
@@ -690,8 +771,10 @@ class PaperBroker:
         order_id: str,
         params: CreateOrderParams,
         now: datetime.datetime,
+        reason: str = "",
     ) -> Order:
-        """Record a canceled order and return it."""
+        """Record a canceled order and return it (#690: with a
+        nameable cause for the CLI/agent contract)."""
         await self._conn.execute(
             """INSERT INTO paper_orders
                (order_id, ticker, action, side, count, remaining_count,
@@ -724,6 +807,7 @@ class PaperBroker:
             count=params.count,
             remaining_count=params.count,
             created_time=now,
+            reason=reason,
         )
 
     async def _update_position_from_fills(

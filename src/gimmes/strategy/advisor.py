@@ -203,6 +203,10 @@ def _lifecycle_outcomes(
 # Single source of truth — cli._NON_ENTRY_REASONS aliases this set.
 NON_ENTRY_SKIP_REASONS = frozenset({
     "no_position", "close_failed", "infra_failed", "already_traded",
+    # #690: an annulled never-filled order is a non-event, not a
+    # missed entry — its inherited analytics would otherwise land it
+    # in the FNR numerator as an automatic false negative.
+    "order_canceled",
 })
 
 MIN_TRADES_THRESHOLD = 30
