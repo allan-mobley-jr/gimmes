@@ -835,6 +835,26 @@ async def clear_all_candidates(db: Database) -> int:
 # ---------------------------------------------------------------------------
 
 
+# Canonical daily-P&L SQL (#622: reconcile drift excluded; #653:
+# settlement closes included). Shared with the read-only clubhouse
+# (clubhouse/data.py get_risk) so the dashboard's risk panel can never
+# drift from the daily-loss-limit trigger the loop reads (#680).
+DAILY_PNL_SQL = """SELECT COALESCE(SUM(
+            (c.price - COALESCE(
+                (SELECT price FROM trades o
+                 WHERE o.ticker = c.ticker
+                   AND o.action = 'open'
+                   AND o.timestamp <= c.timestamp
+                 ORDER BY o.timestamp DESC
+                 LIMIT 1),
+            0)) * c.count
+        ), 0) as daily_pnl
+        FROM trades c
+        WHERE c.action = 'close'
+          AND c.agent != 'reconcile'
+          AND date(c.timestamp) = date(?)"""
+
+
 async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
     """Calculate realized P&L from close trades for a given date (defaults to today).
 
@@ -858,20 +878,7 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
         today: Optional date string (YYYY-MM-DD) to use instead of 'now'.
     """
     cursor = await db.conn.execute(
-        """SELECT COALESCE(SUM(
-            (c.price - COALESCE(
-                (SELECT price FROM trades o
-                 WHERE o.ticker = c.ticker
-                   AND o.action = 'open'
-                   AND o.timestamp <= c.timestamp
-                 ORDER BY o.timestamp DESC
-                 LIMIT 1),
-            0)) * c.count
-        ), 0) as daily_pnl
-        FROM trades c
-        WHERE c.action = 'close'
-          AND c.agent != 'reconcile'
-          AND date(c.timestamp) = date(?)""",
+        DAILY_PNL_SQL,
         ("now" if today is None else today,),
     )
     row = await cursor.fetchone()

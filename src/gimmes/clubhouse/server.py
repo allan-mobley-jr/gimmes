@@ -326,6 +326,49 @@ def _find_port(start: int = DEFAULT_PORT, max_tries: int = 11) -> int | None:
     return None
 
 
+def _check_schema_version(db_path: Path) -> str | None:
+    """Warn when the DB schema is behind (#680).
+
+    The dashboard reads mode=ro and never migrates — on an old DB the
+    #653 repricing silently skips (resolved_outcome absent) and newer
+    semantics are missing. Warn-don't-refuse: an old DB still renders,
+    and the writer migrates it on its next open. Returns the warning
+    text (also logged) or None when current/missing.
+    """
+    import sqlite3
+
+    from gimmes.store.migrations import LATEST_SCHEMA_VERSION
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except Exception:
+        # Fresh install / missing DB — the writer will create+migrate.
+        return None
+    try:
+        row = conn.execute(
+            "SELECT MAX(version) FROM schema_version"
+        ).fetchone()
+        version = int(row[0]) if row and row[0] is not None else 0
+    except Exception as exc:
+        # The file OPENED but isn't a migrated GIMMES DB (foreign/
+        # corrupt file, garbage version) — one clear startup line
+        # beats the per-panel warning noise downstream (#680 review).
+        logger.warning("schema check failed on %s: %s", db_path, exc)
+        return None
+    finally:
+        conn.close()
+    if version >= LATEST_SCHEMA_VERSION:
+        return None
+    msg = (
+        f"Database schema v{version} < v{LATEST_SCHEMA_VERSION} — the"
+        " dashboard is read-only and cannot migrate; newer columns"
+        " (e.g. resolved_outcome, #653 repricing) are missing. Run"
+        " the trading loop or any write command to migrate."
+    )
+    logger.warning(msg)
+    return msg
+
+
 def run_standalone(
     port: int = DEFAULT_PORT,
     db_path: Path | None = None,
@@ -339,6 +382,9 @@ def run_standalone(
 
     if db_path:
         set_db_path(db_path)
+    schema_msg = _check_schema_version(_db_path)
+    if schema_msg:
+        print(f"\n  WARNING: {schema_msg}")
 
     actual_port = _find_port(port)
     if actual_port is None:
@@ -383,6 +429,7 @@ def start_background(
 
     if db_path:
         set_db_path(db_path)
+    _check_schema_version(_db_path)
     set_pause_seconds(pause_seconds)
 
     actual_port = _find_port(port)

@@ -157,6 +157,26 @@ class TestCalculatePnlWeightedAverage:
         assert summary.gross_pnl == pytest.approx(10.0)
         assert "orphan close" in caplog.text
 
+    def test_orphan_quiet_flag_demotes_to_debug(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """#680: log_orphans=False demotes the warning to debug (same
+        numeric result) — for render-loop callers like the clubhouse."""
+        import logging
+
+        trades = [self._t("close", "X", 0.80, 50, "2026-05-01T10:00:00")]
+        with caplog.at_level(
+            logging.DEBUG, logger="gimmes.reporting.pnl",
+        ):
+            loud = calculate_pnl(trades)
+            caplog.clear()
+            quiet = calculate_pnl(trades, log_orphans=False)
+        assert quiet.gross_pnl == loud.gross_pnl
+        assert not [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert any("orphan close" in r.message for r in caplog.records)
+
     def test_yes_and_no_sides_isolated(self) -> None:
         trades = [
             self._t("open", "X", 0.40, 10, "t1", side="yes"),

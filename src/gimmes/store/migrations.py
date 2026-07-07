@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from gimmes.store.database import Database
 
+# The version a fully-migrated DB reports (#680): read-only consumers
+# (the clubhouse) compare against this at startup. Drift-guarded by
+# test_latest_schema_version_constant_matches_migrations.
+LATEST_SCHEMA_VERSION = 18
+
 # Migrations are applied sequentially. Each is a tuple of (version, sql).
 MIGRATIONS: list[tuple[int, str]] = [
     # Version 1 is the initial schema (handled by database.py SCHEMA_SQL).

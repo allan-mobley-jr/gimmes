@@ -33,7 +33,11 @@ class PnLSummary:
         return self.winning_trades / completed
 
 
-def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  # accepts TradeRecord dicts
+def calculate_pnl(
+    trades: list[dict],  # type: ignore[type-arg]  # accepts TradeRecord dicts
+    *,
+    log_orphans: bool = True,
+) -> PnLSummary:
     """Calculate P&L from a list of trade records.
 
     Groups by ``(ticker, side)`` and walks each group in timestamp-ascending
@@ -124,7 +128,12 @@ def calculate_pnl(trades: list[dict]) -> PnLSummary:  # type: ignore[type-arg]  
             orphan = count - matched
             pnl = (price - avg_cost) * matched if matched else 0.0
             if orphan:
-                _log.warning(
+                # #680: the clubhouse calls this per SSE client per
+                # fingerprint change — a historical orphan would warn
+                # forever there. log_orphans=False demotes to debug
+                # (forensic trail kept); CLI report keeps the warning.
+                _log.log(
+                    logging.WARNING if log_orphans else logging.DEBUG,
                     "orphan close: ticker=%s side=%s count=%d remaining=%d",
                     ticker, side, count, remaining,
                 )

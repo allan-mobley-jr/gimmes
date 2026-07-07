@@ -833,3 +833,290 @@ class TestGetMarketDetail:
 
         with pytest.raises(ValueError, match="API key not set"):
             await data_mod.get_market_detail("TEST-YES")
+
+
+class TestDashboardTradeWindow:
+    """#680: a single 1000-row window across all actions let skip
+    volume push the newest closes out — win_rate silently went stale.
+    Per-action fetching (the #542 pattern) is immune."""
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_survives_skip_flood(
+        self, db_path: Path,
+    ) -> None:
+        async with Database(db_path) as db:
+            await db.conn.executemany(
+                """INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES (?, 'skip', 'no', 0, 0, 0, 0, 0, 0, 's',
+                           'scout', ?)""",
+                [
+                    (f"SKIP-{i}", f"2026-01-01T{i % 24:02d}:00:00")
+                    for i in range(1001)
+                ],
+            )
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXWIN', 'open', 'no', 10, 0.50, 0.8, 70,
+                           0.1, 0.02, 'entry', 'closer',
+                           '2026-06-01T10:00:00')""",
+            )
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXWIN', 'close', 'no', 10, 0.90, 0, 0, 0,
+                           0, 'win', 'closer', '2026-06-02T10:00:00')""",
+            )
+            await db.conn.commit()
+
+        metrics = await get_metrics(db_path)
+        # Pre-fix the window held only skips → win_rate 0.
+        assert metrics.win_rate == 1.0
+
+
+class TestSnapshotWindow:
+    """#680 review: the snapshots fetch keeps the NEWEST 500 — the
+    old ASC window froze equity/total_return at the oldest 500 after
+    ~2 days of SSE uptime."""
+
+    @pytest.mark.asyncio
+    async def test_equity_reflects_newest_snapshot_past_window(
+        self, db_path: Path,
+    ) -> None:
+        async with Database(db_path) as db:
+            await db.conn.executemany(
+                """INSERT INTO snapshots (balance, portfolio_value,
+                   total_equity, timestamp)
+                   VALUES (?, 0, ?, ?)""",
+                [
+                    (10_000.0, 10_000.0, f"2026-01-01T{i // 60:02d}:{i % 60:02d}:00")
+                    for i in range(501)
+                ],
+            )
+            # The single NEWEST snapshot carries a distinct equity.
+            await db.conn.execute(
+                """INSERT INTO snapshots (balance, portfolio_value,
+                   total_equity, timestamp)
+                   VALUES (99999.0, 0, 99999.0,
+                           '2027-01-01T00:00:00')""",
+            )
+            await db.conn.commit()
+
+        metrics = await get_metrics(db_path)
+        # Pre-fix the ASC window dropped the newest row → stale curve.
+        assert metrics.equity_curve[-1]["equity"] == pytest.approx(
+            99999.0,
+        )
+
+
+class TestOrphanWarningQuiet:
+    """#680: get_metrics runs per SSE client per fingerprint change —
+    orphan-close warnings are demoted to debug on that path only."""
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_silences_orphan_warnings(
+        self, db_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                """INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXORPHAN', 'close', 'no', 10, 0.90, 0, 0,
+                           0, 0, 'orphan', 'closer',
+                           '2026-06-02T10:00:00')""",
+            )
+            await db.conn.commit()
+
+        with caplog.at_level(
+            logging.DEBUG, logger="gimmes.reporting.pnl",
+        ):
+            await get_metrics(db_path)
+        warnings = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and "orphan close" in r.message
+        ]
+        assert warnings == []
+        # Forensic trail kept at debug.
+        assert any("orphan close" in r.message for r in caplog.records)
+
+
+class TestRiskExcludesReconcileDrift:
+    """#680: get_risk shares the canonical DAILY_PNL_SQL — reconcile
+    drift is excluded from the dashboard's daily P&L (#622), matching
+    the daily-loss trigger the loop reads."""
+
+    @pytest.mark.asyncio
+    async def test_get_risk_excludes_reconcile_drift(
+        self, db_path: Path,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from gimmes.store.queries import get_daily_pnl
+
+        today = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        async with Database(db_path) as db:
+            await db.conn.execute(
+                f"""INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXDRIFT', 'open', 'no', 100, 0.50, 0.8,
+                           70, 0.1, 0.02, 'entry', 'closer',
+                           '{today}')""",
+            )
+            await db.conn.execute(
+                f"""INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXDRIFT', 'close', 'no', 100, 0.10, 0, 0,
+                           0, 0, 'drift', 'reconcile', '{today}')""",
+            )
+            # A real close with known P&L defeats the default-0
+            # escape: get_risk swallows exceptions into daily_pnl=0,
+            # which would vacuously equal an all-zero expectation.
+            await db.conn.execute(
+                f"""INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXREAL', 'open', 'no', 10, 0.50, 0.8, 70,
+                           0.1, 0.02, 'entry', 'closer', '{today}')""",
+            )
+            await db.conn.execute(
+                f"""INSERT INTO trades (ticker, action, side, count,
+                   price, model_probability, gimme_score, edge,
+                   kelly_fraction, rationale, agent, timestamp)
+                   VALUES ('KXREAL', 'close', 'no', 10, 0.90, 0, 0, 0,
+                           0, 'win', 'closer', '{today}')""",
+            )
+            await db.conn.commit()
+            canonical = await get_daily_pnl(db)
+            assert canonical == pytest.approx(4.0)  # (0.9-0.5)*10
+            cursor = await db.conn.execute(
+                # paper mode: get_risk reads paper_positions
+                "SELECT COALESCE(SUM(unrealized_pnl), 0) AS u"
+                " FROM paper_positions WHERE count > 0"
+            )
+            unrealized = float((await cursor.fetchone())["u"])
+
+        risk = await get_risk(db_path)
+        # Parity with the canonical query: realized component matches
+        # get_daily_pnl exactly (drift excluded on both paths); the
+        # dashboard adds unrealized on top.
+        assert risk.daily_pnl == pytest.approx(canonical + unrealized)
+        # Pre-fix the -$40 phantom drift loss landed here.
+        assert risk.daily_pnl > -1.0
+
+
+class TestSchemaVersionCheck:
+    """#680: the read-only dashboard warns (never refuses) on a DB
+    behind the writer's schema version."""
+
+    def test_warning_on_old_db(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+        import sqlite3
+
+        from gimmes.clubhouse.server import _check_schema_version
+
+        old_db = tmp_path / "old.db"
+        conn = sqlite3.connect(old_db)
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY)"
+        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+        conn.commit()
+        conn.close()
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.clubhouse"):
+            msg = _check_schema_version(old_db)
+        assert msg is not None
+        assert "v5" in msg
+        assert "read-only" in msg
+        # start_background discards the return — the LOG line is the
+        # whole feature on that path.
+        assert any(
+            "read-only" in r.message and r.levelno >= logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_foreign_file_warns_not_silent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A file that OPENS but isn't a GIMMES DB gets one clear
+        startup line, not silence (#680 review)."""
+        import logging
+        import sqlite3
+
+        from gimmes.clubhouse.server import _check_schema_version
+
+        foreign = tmp_path / "foreign.db"
+        conn = sqlite3.connect(foreign)
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        conn.commit()
+        conn.close()
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.clubhouse"):
+            assert _check_schema_version(foreign) is None
+        assert any(
+            "schema check failed" in r.message for r in caplog.records
+        )
+
+    def test_check_wired_into_both_entry_points(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deleting the call sites must fail a test — the helper runs
+        before _find_port in both entry points, so stubbing the port
+        lookup short-circuits before uvicorn."""
+        from gimmes.clubhouse import server as server_mod
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            server_mod, "_check_schema_version",
+            lambda p: calls.append(str(p)) or None,
+        )
+        monkeypatch.setattr(server_mod, "_find_port", lambda p: None)
+
+        assert server_mod.start_background() is None
+        assert len(calls) == 1
+
+        with pytest.raises(RuntimeError):
+            server_mod.run_standalone(open_browser=False)
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_silent_on_current_db(self, db_path: Path) -> None:
+        from gimmes.clubhouse.server import _check_schema_version
+
+        assert _check_schema_version(db_path) is None
+
+    def test_silent_on_missing_db(self, tmp_path: Path) -> None:
+        from gimmes.clubhouse.server import _check_schema_version
+
+        assert _check_schema_version(tmp_path / "nope.db") is None
+
+
+def test_latest_schema_version_constant_matches_migrations(
+    tmp_path: Path,
+) -> None:
+    """Drift guard for the #680 constant: a new migration must bump
+    LATEST_SCHEMA_VERSION."""
+    import asyncio
+
+    from gimmes.store.migrations import (
+        LATEST_SCHEMA_VERSION,
+        run_migrations,
+    )
+
+    async def _version() -> int:
+        async with Database(tmp_path / "fresh.db") as db:
+            return await run_migrations(db)
+
+    assert asyncio.run(_version()) == LATEST_SCHEMA_VERSION

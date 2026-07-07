@@ -170,8 +170,14 @@ def calculate_metrics(
     trades: list[dict],  # type: ignore[type-arg]
     snapshots: list[dict],  # type: ignore[type-arg]
     initial_bankroll: float = 0.0,
+    *,
+    log_orphans: bool = True,
 ) -> PerformanceMetrics:
-    """Calculate performance metrics from trades and snapshots."""
+    """Calculate performance metrics from trades and snapshots.
+
+    ``log_orphans=False`` (#680) demotes calculate_pnl's orphan-close
+    warnings to debug — for render-loop callers like the clubhouse.
+    """
     metrics = PerformanceMetrics()
 
     # Win rate — delegated to calculate_pnl (#662): (ticker, side)
@@ -182,7 +188,9 @@ def calculate_metrics(
     # win on the $0.60 basis; the weighted $0.75 basis says loss).
     # Scratch trades (pnl == 0) stay excluded from numerator and
     # denominator, matching the previous semantics.
-    metrics.win_rate = calculate_pnl(trades).win_rate
+    metrics.win_rate = calculate_pnl(
+        trades, log_orphans=log_orphans,
+    ).win_rate
 
     # Edge accuracy
     predicted_edges = [t.get("edge", 0) for t in trades if t.get("action") == "open"]
