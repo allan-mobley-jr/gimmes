@@ -4079,12 +4079,30 @@ def lesson(
     config = load_config()
 
     async def _lesson() -> None:
+        from datetime import UTC, datetime, timedelta
+
         from rich.table import Table
 
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import get_recommendations, get_trades, insert_recommendation
         from gimmes.strategy.advisor import run_all_analyses
+
+        # #686: bound the analysis window so recommendations reflect
+        # trading under CURRENT configs (0 = all-time). The cutoff is
+        # applied post-pairing for open/close/size_up (the walk needs
+        # full history — an in-window close whose open predates the
+        # window must still price correctly) and at the DB for skips,
+        # which is where the row volume lives.
+        window_days = config.strategy.lesson_window_days
+        # Naive-UTC, second-truncated cutoff (#686 review): the SQL
+        # path (datetime()) and the advisor's string compares must
+        # window IDENTICALLY, and stored rows mix naive/aware forms.
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=window_days))
+            .replace(microsecond=0, tzinfo=None).isoformat()
+            if window_days > 0 else None
+        )
 
         async with Database(config.db_path) as db:
             # Fetch per-action so skip volume can't truncate older
@@ -4094,11 +4112,25 @@ def lesson(
             # analyze_missed_opportunities consumes them.
             all_trades: list[dict] = []  # type: ignore[type-arg]
             for action in ("open", "close", "size_up", "skip"):
-                all_trades += await get_trades(db, action=action, limit=100_000)
+                rows = await get_trades(
+                    db, action=action, limit=100_000,
+                    since=cutoff if action == "skip" else None,
+                )
+                if len(rows) == 100_000:
+                    # No silent caps (#686/#686 lesson).
+                    console.print(
+                        f"[yellow]Warning: fetch for action"
+                        f" {action!r} hit the 100000-row limit —"
+                        f" oldest rows dropped; analyses may be"
+                        f" incomplete[/yellow]"
+                    )
+                all_trades += rows
             # Candidates not yet used (scoring correlation needs #20)
             candidates: list[dict] = []  # type: ignore[type-arg]
 
-            recs = run_all_analyses(all_trades, candidates, config)
+            recs = run_all_analyses(
+                all_trades, candidates, config, since=cutoff,
+            )
 
             if not recs:
                 console.print(

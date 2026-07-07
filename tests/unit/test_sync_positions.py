@@ -667,26 +667,60 @@ class TestCorruptAnalyticsGuard:
         assert closes[0]["gimme_score"] == 0.0
         assert closes[0]["model_probability"] == 0.0
 
-    async def test_corrupt_caller_value_still_fails_loud(
+    async def test_corrupt_caller_value_skips_and_escalates(
         self, db, caplog,
     ):
-        """A corrupt POSITIONS row (mark > 1.0) is not an analytics
-        problem — the zeroed retry re-raises, and the guard must not
-        log a 'recorded with zeroed analytics' line for a row that was
-        rolled back."""
+        """#686 (rewrites the #668 fail-loud pin): a corrupt POSITIONS
+        row (mark > 1.0) no longer aborts the whole sync — the drift
+        close is SKIPPED with an ERROR log and an error_log row, no
+        lying 'recorded' line, and the sync commits."""
         import logging
 
-        from pydantic import ValidationError
+        from gimmes.store.queries import get_errors
 
         await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
         await upsert_position(
             db, _pos("KXCPI-26APR-T0.5", count=10, price=1.7),
         )
 
-        with caplog.at_level(logging.WARNING, logger="gimmes.store.queries"):
-            with pytest.raises(ValidationError):
-                await sync_positions(db, [])
+        with caplog.at_level(logging.ERROR, logger="gimmes.store.queries"):
+            await sync_positions(db, [])  # must NOT raise
         assert "recorded with zeroed analytics" not in caplog.text
+        assert "drift close SKIPPED" in caplog.text
+
+        # No lying close row for the corrupt ticker.
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        assert closes == []
+        # The escalation is durable.
+        errors = await get_errors(db, limit=10)
+        assert any(
+            e["error_code"] == "corrupt_position_skipped"
+            for e in errors
+        )
+
+    async def test_corrupt_position_does_not_block_healthy_ones(
+        self, db,
+    ):
+        """#686: the healthy removed position still gets its drift
+        close when a corrupt sibling is skipped."""
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=1.7),  # corrupt
+        )
+        await insert_trade(db, _open_trade("KXHEALTHY-26APR-T1"))
+        await upsert_position(
+            db, _pos("KXHEALTHY-26APR-T1", count=10, price=0.42),
+        )
+
+        await sync_positions(db, [])
+
+        closes = [
+            t for t in await get_trades(db) if t["action"] == "close"
+        ]
+        assert len(closes) == 1
+        assert closes[0]["ticker"] == "KXHEALTHY-26APR-T1"
 
 
 class TestDriftCountClamp:
@@ -726,3 +760,94 @@ class TestDriftCountClamp:
         [c] = await get_trades(db)
         assert c["action"] == "close"
         assert c["count"] == 10
+
+
+class TestGetTradesSince:
+    """#686: the since filter compares via datetime() so legacy
+    space-format rows window correctly against the CLI's ISO cutoff."""
+
+    async def test_since_filters_mixed_formats(self, db):
+        from gimmes.store.queries import get_trades, insert_trade
+
+        old = _open_trade("KXOLD-26JAN-T1", ts="2026-01-01T10:00:00+00:00")
+        await insert_trade(db, old)
+        recent_t = _open_trade(
+            "KXNEW-26JUL-T1", ts="2026-07-01T10:00:00+00:00",
+        )
+        await insert_trade(db, recent_t)
+        # Legacy space-format row, recent — must be RETAINED.
+        await db.conn.execute(
+            """INSERT INTO trades (ticker, action, side, count, price,
+               model_probability, gimme_score, edge, kelly_fraction,
+               rationale, agent, timestamp)
+               VALUES ('KXSPACE-26JUL-T1', 'open', 'yes', 10, 0.6,
+                       0.9, 82, 0.25, 0.03, 'entry', 'closer',
+                       '2026-07-01 11:00:00')""",
+        )
+        await db.conn.commit()
+
+        # Fixed cutoff between the hard-coded rows — a now-relative
+        # cutoff would time-bomb the test (PR #700 review).
+        cutoff = "2026-06-01T00:00:00"
+        rows = await get_trades(db, since=cutoff, limit=100)
+        tickers = {r["ticker"] for r in rows}
+        assert tickers == {"KXNEW-26JUL-T1", "KXSPACE-26JUL-T1"}
+
+
+class TestCorruptEscalationPaths:
+    """#686: the with-trade sync path and the rollback guarantee."""
+
+    async def test_sync_with_trade_skips_and_escalates(self, db):
+        from gimmes.store.queries import (
+            get_errors,
+            sync_positions_with_trade,
+        )
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=1.7),  # corrupt
+        )
+        trade = _open_trade("KXNEW-26JUL-T1", action="open")
+
+        row_id = await sync_positions_with_trade(db, [], trade)
+        assert row_id > 0  # the trade itself landed
+        errors = await get_errors(db, limit=10)
+        assert any(
+            e["error_code"] == "corrupt_position_skipped"
+            for e in errors
+        )
+
+    async def test_rollback_discards_escalations(self, db, monkeypatch):
+        """If the transaction aborts AFTER corrupt entries were
+        collected, no orphan error rows describe a sync that never
+        committed."""
+        from gimmes.store import queries as queries_module
+        from gimmes.store.queries import (
+            get_errors,
+            sync_positions_with_trade,
+        )
+
+        await insert_trade(db, _open_trade("KXCPI-26APR-T0.5"))
+        await upsert_position(
+            db, _pos("KXCPI-26APR-T0.5", count=10, price=1.7),  # corrupt
+        )
+
+        real = queries_module._insert_trade_row
+
+        async def _fail_on_trade(db_, trade):  # type: ignore[no-untyped-def]
+            if trade.ticker == "KXNEW-26JUL-T1":
+                raise RuntimeError("trade write exploded")
+            return await real(db_, trade)
+
+        monkeypatch.setattr(
+            queries_module, "_insert_trade_row", _fail_on_trade,
+        )
+        trade = _open_trade("KXNEW-26JUL-T1", action="open")
+
+        with pytest.raises(RuntimeError):
+            await sync_positions_with_trade(db, [], trade)
+        errors = await get_errors(db, limit=10)
+        assert not any(
+            e["error_code"] == "corrupt_position_skipped"
+            for e in errors
+        )
