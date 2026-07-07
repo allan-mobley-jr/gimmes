@@ -26,10 +26,12 @@ def _trade(
     count: int = 10,
     edge: float = 0.15,
     timestamp: datetime | None = None,
+    side: str = "yes",
 ) -> TradeDecision:
     return TradeDecision(
         ticker=ticker,
         action=TradeDecision.Action(action),
+        side=side,
         price=price,
         count=count,
         edge=edge,
@@ -331,3 +333,118 @@ class TestRestingSellNoDoubleCount:
         assert await get_daily_pnl(db) == pytest.approx(
             (0.90 - 0.70) * 10,
         )
+
+
+class TestDailyPnlSideScopedMatching:
+    """#695: sides are independent positions — a close must match its
+    own side's open, never a nearer opposite-side one."""
+
+    async def test_close_matches_same_side_open_not_nearer_opposite(
+        self, db: Database,
+    ) -> None:
+        t0 = datetime.now(UTC)
+        await insert_trade(db, _trade(
+            action="open", price=0.60, side="yes",
+            timestamp=t0 - timedelta(hours=3),
+        ))
+        await insert_trade(db, _trade(
+            action="open", price=0.30, side="no",
+            timestamp=t0 - timedelta(hours=2),  # nearer, wrong side
+        ))
+        await insert_trade(db, _trade(
+            action="close", price=0.70, side="yes", timestamp=t0,
+        ))
+        # Side-blind picked the nearer NO open: (0.70-0.30)*10 = 4.0.
+        assert await get_daily_pnl(db) == pytest.approx(1.0)
+
+    async def test_only_opposite_side_open_falls_back_to_zero_entry(
+        self, db: Database,
+    ) -> None:
+        t0 = datetime.now(UTC)
+        await insert_trade(db, _trade(
+            action="open", price=0.40, side="yes",
+            timestamp=t0 - timedelta(hours=1),
+        ))
+        await insert_trade(db, _trade(
+            action="close", price=0.50, side="no", timestamp=t0,
+        ))
+        # Side-blind matched cross-side: (0.50-0.40)*10 = 1.0. Correct
+        # is the zero-entry COALESCE fallback.
+        assert await get_daily_pnl(db) == pytest.approx(5.0)
+
+
+class TestDailyPnlMixedTimestampFormats:
+    """#695: raw string compare let a LATER space-format open match an
+    EARLIER ISO close (' ' < 'T'), and the raw sort ranked ISO rows
+    above space-format ones."""
+
+    @staticmethod
+    async def _raw_open(db: Database, *, price: float, ts: str) -> None:
+        await db.conn.execute(
+            """INSERT INTO trades (ticker, action, side, count, price,
+               model_probability, gimme_score, edge, kelly_fraction,
+               rationale, agent, timestamp)
+               VALUES ('KXTEST', 'open', 'yes', 10, ?, 0.8, 70, 0.1,
+                       0.02, 'legacy', 'closer', ?)""",
+            (price, ts),
+        )
+        await db.conn.commit()
+
+    async def test_space_format_open_after_close_does_not_match(
+        self, db: Database,
+    ) -> None:
+        from datetime import datetime as dt
+
+        today = dt.now(UTC).strftime("%Y-%m-%d")
+        # SINGLE space-format open LATER than the close — a second
+        # earlier ISO open would let the raw ORDER BY mask the WHERE
+        # bug by ranking the ISO row first.
+        await self._raw_open(db, price=0.90, ts=f"{today} 15:00:00")
+        await insert_trade(db, _trade(
+            action="close", price=0.50,
+            timestamp=dt.fromisoformat(f"{today}T14:00:00+00:00"),
+        ))
+        # Pre-fix: (0.50-0.90)*10 = -4.0. Post-fix: zero-entry
+        # fallback (0.50-0)*10 = 5.0. today= pins the date against a
+        # UTC-midnight rollover mid-test.
+        assert await get_daily_pnl(db, today=today) == pytest.approx(5.0)
+
+    async def test_space_format_open_orders_correctly(
+        self, db: Database,
+    ) -> None:
+        from datetime import datetime as dt
+
+        today = dt.now(UTC).strftime("%Y-%m-%d")
+        await insert_trade(db, _trade(
+            action="open", price=0.40,
+            timestamp=dt.fromisoformat(f"{today}T10:00:00+00:00"),
+        ))
+        # The REAL most-recent open, in legacy format.
+        await self._raw_open(db, price=0.60, ts=f"{today} 12:00:00")
+        await insert_trade(db, _trade(
+            action="close", price=0.70,
+            timestamp=dt.fromisoformat(f"{today}T13:00:00+00:00"),
+        ))
+        # Raw ORDER BY ranked the ISO 10:00 row first: (0.70-0.40)*10
+        # = 3.0. Normalized picks the 12:00 space open.
+        assert await get_daily_pnl(db, today=today) == pytest.approx(1.0)
+
+
+    async def test_same_second_ties_break_by_id(
+        self, db: Database,
+    ) -> None:
+        """#695 review: legacy second-precision rows can tie — the
+        id DESC tie-break makes the pick deterministic (latest
+        insert), not engine-arbitrary."""
+        from datetime import datetime as dt
+
+        today = dt.now(UTC).strftime("%Y-%m-%d")
+        await self._raw_open(db, price=0.20, ts=f"{today} 09:00:00")
+        await self._raw_open(db, price=0.55, ts=f"{today} 09:00:00")
+        await insert_trade(db, _trade(
+            action="close", price=0.60,
+            timestamp=dt.fromisoformat(f"{today}T10:00:00+00:00"),
+        ))
+        # Without the tie-break sqlite picked the FIRST open (0.20)
+        # → 4.0; deterministic latest-insert pick → 0.5.
+        assert await get_daily_pnl(db, today=today) == pytest.approx(0.5)

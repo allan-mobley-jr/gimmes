@@ -927,13 +927,21 @@ async def clear_all_candidates(db: Database) -> int:
 # settlement closes included). Shared with the read-only clubhouse
 # (clubhouse/data.py get_risk) so the dashboard's risk panel can never
 # drift from the daily-loss-limit trigger the loop reads (#680).
+# #695: side-scoped open matching + replace(' ','T') timestamp
+# normalization in BOTH the WHERE and the ORDER BY — the raw string
+# compare let a LATER space-format open match an EARLIER ISO close
+# (' ' < 'T'), and the raw sort ranked every ISO row above every
+# space-format row, picking the wrong "most recent" open.
 DAILY_PNL_SQL = """SELECT COALESCE(SUM(
             (c.price - COALESCE(
                 (SELECT price FROM trades o
                  WHERE o.ticker = c.ticker
+                   AND o.side = c.side
                    AND o.action = 'open'
-                   AND o.timestamp <= c.timestamp
-                 ORDER BY o.timestamp DESC
+                   AND replace(o.timestamp, ' ', 'T')
+                       <= replace(c.timestamp, ' ', 'T')
+                 ORDER BY replace(o.timestamp, ' ', 'T') DESC,
+                          o.id DESC
                  LIMIT 1),
             0)) * c.count
         ), 0) as daily_pnl
@@ -947,8 +955,21 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
     """Calculate realized P&L from close trades for a given date (defaults to today).
 
     For each close trade on the target date, finds the most recent open trade
-    on the same ticker that occurred before the close, then computes:
+    on the same ticker AND SIDE that occurred before the close (#695 —
+    sides are independent positions; timestamps compare after
+    replace(' ', 'T') normalization so legacy space-format rows order
+    chronologically, the #661/#680 pattern), then computes:
     (close_price - open_price) * count.
+
+    Intentional approximation (#695): the entry price is the MOST
+    RECENT open's price, not a size-weighted average across scale-ins
+    (size_up rows are excluded from the subquery). After a scale-in,
+    per-contract P&L is measured against the last full open, not true
+    average cost. Deliberate — this value feeds the real-capital
+    daily-loss trigger (check_daily_loss) and the clubhouse risk panel
+    via the shared constant (#680), and both must move together; do
+    not change the averaging here without revisiting the trigger
+    semantics.
 
     Synthetic reconcile-divergence close trades (agent='reconcile', written
     by `_log_reconcile_closes` per #609) are EXCLUDED from daily P&L because
@@ -1082,13 +1103,23 @@ async def get_candidate_for_ticker(
     return [dict(row) for row in rows]
 
 
-async def get_open_trade_for_ticker(db: Database, ticker: str) -> dict | None:  # type: ignore[type-arg]
-    """Return the most recent open trade record for a ticker, or None."""
-    cursor = await db.conn.execute(
-        "SELECT * FROM trades WHERE ticker = ? AND action = 'open'"
-        " ORDER BY timestamp DESC LIMIT 1",
-        (ticker,),
-    )
+async def get_open_trade_for_ticker(
+    db: Database, ticker: str, side: str | None = None,
+) -> dict | None:  # type: ignore[type-arg]
+    """Return the most recent open trade record for a ticker, or None.
+
+    #695: normalized ordering (the #661 pattern) so legacy space-
+    format rows rank chronologically, and an optional ``side`` scope
+    for side='both' holdings (the size_up thesis-inheritance caller
+    must not read the other leg's thesis).
+    """
+    query = "SELECT * FROM trades WHERE ticker = ? AND action = 'open'"
+    params: list[object] = [ticker]
+    if side:
+        query += " AND side = ?"
+        params.append(side)
+    query += " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1"
+    cursor = await db.conn.execute(query, params)
     row = await cursor.fetchone()
     return dict(row) if row else None
 
@@ -1110,7 +1141,7 @@ async def get_entry_analytics(
         "SELECT model_probability, gimme_score, edge, kelly_fraction"
         " FROM trades WHERE ticker = ? AND side = ?"
         " AND action IN ('open', 'size_up')"
-        " ORDER BY timestamp DESC, id DESC LIMIT 1",
+        " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1",
         (ticker, side),
     )
     row = await cursor.fetchone()
