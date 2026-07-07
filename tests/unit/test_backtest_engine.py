@@ -14,7 +14,6 @@ from gimmes.backtest.engine import (
     entry_candle_at,
     monthly_chunks,
     run_backtest,
-    synthesize_orderbook,
     weekly_chunks,
 )
 from gimmes.kalshi.historical import Candle
@@ -117,38 +116,6 @@ class TestBacktestLedger:
         assert len(ledger.trades) == 2
         assert ledger.trades[0].pnl > 0
         assert ledger.trades[1].pnl < 0
-
-
-class TestSynthesizeOrderbook:
-    def test_basic_orderbook(self) -> None:
-        candle = _make_candle(yes_bid_close=0.65, yes_ask_close=0.70)
-        ob = synthesize_orderbook("T1", candle)
-
-        assert ob.ticker == "T1"
-        assert len(ob.yes_bids) == 1
-        assert ob.yes_bids[0].price == 0.65
-        assert ob.yes_bids[0].quantity == 100
-
-        assert len(ob.no_bids) == 1
-        assert ob.no_bids[0].price == 0.30  # 1 - 0.70
-        assert ob.no_bids[0].quantity == 100
-
-    def test_custom_depth(self) -> None:
-        candle = _make_candle()
-        ob = synthesize_orderbook("T1", candle, depth=50)
-        assert ob.yes_bids[0].quantity == 50
-
-    def test_zero_bid_produces_empty(self) -> None:
-        candle = _make_candle(yes_bid_close=0.0, yes_ask_close=0.0)
-        ob = synthesize_orderbook("T1", candle)
-        assert ob.yes_bids == []
-        assert ob.no_bids == []
-
-    def test_best_yes_ask_derived(self) -> None:
-        candle = _make_candle(yes_ask_close=0.72)
-        ob = synthesize_orderbook("T1", candle)
-        # NO bid = 1 - 0.72 = 0.28, so best YES ask = 1 - 0.28 = 0.72
-        assert ob.best_yes_ask == 0.72
 
 
 
@@ -590,9 +557,9 @@ class TestStrategyFilters:
         assert len(live_defaults.trades) == len(permissive.trades)
 
 
-class TestEntryDayPricing:
-    """#655 regression suite: entries are priced, gated, and sized on
-    the ENTRY-DAY candle — settlement data reaches only the payout."""
+class _EntryDayHarness:
+    """Shared pricing-path harness (no test methods — subclassing a
+    Test class re-collects its tests, review #682)."""
 
     def _markets(self):
         # Settlement quotes 0.25/0.35 → NO eff at settlement = 0.70.
@@ -635,10 +602,35 @@ class TestEntryDayPricing:
             min_true_probability=0.0, min_edge_after_fees=-1.0,
         )
 
+    def _taker_config(self):
+        """Permissive config with the #682 taker fill model on."""
+        cfg = self._permissive_config()
+        cfg.taker_fill = True
+        return cfg
+
+    def _stub_entry_candle(
+        self, monkeypatch, *, yes_bid, yes_ask, ts_offset=0,
+    ):
+        """Stub the single settled market with one entry-day candle
+        (ts_offset shifts the candle timestamp, e.g. negative for a
+        stale quote)."""
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m) + ts_offset,
+            yes_bid_close=yes_bid, yes_ask_close=yes_ask,
+        )]}
+        return self._stub(monkeypatch, markets, candles)
+
     async def _run(self, config=None):
         return await run_backtest(
             client=None, config=config or self._permissive_config(),
         )
+
+
+class TestEntryDayPricing(_EntryDayHarness):
+    """#655 regression suite: entries are priced, gated, and sized on
+    the ENTRY-DAY candle — settlement data reaches only the payout."""
 
     @pytest.mark.asyncio
     async def test_entry_priced_from_candle_not_settlement(
@@ -1003,3 +995,342 @@ class TestEntryDayView:
         assert view.status.value == "active"
         # the settled original is untouched
         assert m.yes_bid == 0.10
+
+
+class TestTakerFill(_EntryDayHarness):
+    """#682: --taker-fill prices entries at the ask with taker fees;
+    selection still runs on the midpoint. Inherits the pricing
+    harness; overrides nothing that changes the base tests."""
+
+    @pytest.mark.asyncio
+    async def test_no_side_entry_pays_the_ask(self, monkeypatch) -> None:
+        """Candle 0.30/0.40: NO mid-fill = 0.65 (pinned by the base
+        suite); NO taker ask = 1 − yes_bid = 0.70. Kills a bid/ask
+        inversion mutant (0.70 ≠ 0.65 ≠ 0.60)."""
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        result = await self._run(config=self._taker_config())
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        assert t.entry_price == pytest.approx(0.70)
+
+    @pytest.mark.asyncio
+    async def test_taker_fees_charged(self, monkeypatch) -> None:
+        from gimmes.strategy.fees import fee_for_order
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        result = await self._run(config=self._taker_config())
+        [t] = result.trades
+        assert t.fees == pytest.approx(
+            fee_for_order(t.count, 0.70, is_taker=True),
+        )
+        # Sanity: taker fees exceed the maker fee at the same size.
+        assert t.fees > fee_for_order(t.count, 0.70, is_taker=False)
+
+    @pytest.mark.asyncio
+    async def test_json_config_reports_fill_model(self, monkeypatch) -> None:
+        from gimmes.backtest.report import backtest_result_to_json
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+        result = await self._run(config=self._taker_config())
+        assert backtest_result_to_json(result)["config"]["taker_fill"] is True
+
+
+class TestStaleCandleCounter(_EntryDayHarness):
+    """#682: a candle >1 day older than entry_ts prices the view — the
+    counter makes it visible; the market still trades (count-only,
+    policy deferred)."""
+
+    @pytest.mark.asyncio
+    async def test_stale_candle_counted_and_still_traded(
+        self, monkeypatch,
+    ) -> None:
+        self._stub_entry_candle(
+            monkeypatch, yes_bid=0.30, yes_ask=0.40,
+            ts_offset=-2 * 86400,  # 2 days stale
+        )
+
+        result = await self._run()
+        assert result.stale_candles == 1
+        # Count-only: a future tightening must consciously break this.
+        assert len(result.trades) == 1
+
+    @pytest.mark.asyncio
+    async def test_fresh_candle_not_counted(self, monkeypatch) -> None:
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        result = await self._run()
+        assert result.stale_candles == 0
+
+    @pytest.mark.asyncio
+    async def test_exactly_one_day_old_not_stale(self, monkeypatch) -> None:
+        """Strict >: an exactly-one-day-old daily candle is the normal
+        case, not stale."""
+        self._stub_entry_candle(
+            monkeypatch, yes_bid=0.30, yes_ask=0.40, ts_offset=-86400,
+        )
+
+        result = await self._run()
+        assert result.stale_candles == 0
+
+
+class TestZeroSizingCounter(_EntryDayHarness):
+    """#682: pass-1 kelly drops (count <= 0) are counted, not silent."""
+
+    @pytest.mark.asyncio
+    async def test_tiny_bankroll_counts_zero_sizing(
+        self, monkeypatch,
+    ) -> None:
+        from gimmes.backtest.engine import BacktestConfig
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        base = self._permissive_config()
+        config = BacktestConfig(
+            start_date=base.start_date,
+            end_date=base.end_date,
+            starting_balance=1.0,  # $1 buys zero contracts at ~$0.65
+            gimmes_config=base.gimmes_config,
+            assumed_edge=base.assumed_edge,
+        )
+        result = await self._run(config=config)
+        assert result.skipped_zero_sizing == 1
+        assert result.trades == []
+        # Counted at the SIZING gate, not upstream.
+        assert result.skipped_entry_gates == 0
+
+
+class TestBothSidesDedup(_EntryDayHarness):
+    """#682: pass 1's seen_tickers guard must yield exactly one trade
+    when a ticker qualifies on BOTH sides under side='both'."""
+
+    @pytest.mark.asyncio
+    async def test_ticker_traded_once_across_sides(
+        self, monkeypatch,
+    ) -> None:
+        # Candle 0.45/0.55 → mid 0.50: yes eff 0.50, no eff 0.50 —
+        # both sides in an explicit wide band.
+        self._stub_entry_candle(monkeypatch, yes_bid=0.45, yes_ask=0.55)
+
+        # effective_config_for_side RE-VALIDATES StrategyConfig, so
+        # the overrides must be constructible (min edge > 0).
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.01, min_edge_after_fees=0.0001,
+            min_market_price=0.10, max_market_price=0.90,
+        )
+        config.gimmes_config.strategy.side = "both"
+        # The operator's live config carries per-side overrides that
+        # would clobber the flat test values — reset them to empty
+        # (all-None fields inherit the flat values above).
+        from gimmes.config import SideOverrides
+
+        config.gimmes_config.strategy.yes_overrides = SideOverrides()
+        config.gimmes_config.strategy.no_overrides = SideOverrides()
+
+        result = await self._run(config=config)
+        # Both sides genuinely qualified — without this the test can
+        # pass vacuously.
+        assert result.markets_scored == 2
+        # The guard: exactly one trade for the ticker. markets_traded
+        # is the killing assertion (without the guard, pass 2 buys
+        # twice); the risk-limit asserts prove the dedup path — not a
+        # concentration/balance backstop — produced the single trade.
+        assert result.markets_traded == 1
+        assert len(result.trades) == 1
+        assert result.skipped_concentration == 0
+        assert result.skipped_balance == 0
+
+
+class TestTakerFillReviewPins(_EntryDayHarness):
+    """#682 review: yes-side branch, is_taker threading at every call
+    site, edge-gate interaction, guard bound, and the CLI wiring."""
+
+    @pytest.mark.asyncio
+    async def test_yes_side_entry_pays_the_ask(self, monkeypatch) -> None:
+        """Candle 0.45/0.55, side='yes': taker entry = ask 0.55
+        (mid-fill would be 0.50, bid 0.45 — three-way
+        discrimination)."""
+        from gimmes.config import SideOverrides
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.45, yes_ask=0.55)
+
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.01, min_edge_after_fees=0.0001,
+            min_market_price=0.10, max_market_price=0.90,
+        )
+        config.gimmes_config.strategy.side = "yes"
+        config.gimmes_config.strategy.yes_overrides = SideOverrides()
+        config.taker_fill = True
+
+        result = await self._run(config=config)
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_price == pytest.approx(0.55)
+
+    @pytest.mark.asyncio
+    async def test_sizing_uses_taker_price_and_fees(
+        self, monkeypatch,
+    ) -> None:
+        """Pins is_taker at the position_size call site — the fees
+        test alone is self-consistent with any count."""
+        from gimmes.strategy.fee_cache import DEFAULT_FEE_MULTIPLIERS
+        from gimmes.strategy.kelly import position_size
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        config = self._taker_config()
+        result = await self._run(config=config)
+        [t] = result.trades
+        side_cfg = config.gimmes_config.effective_config_for_side("no")
+        # true_prob anchored to the MIDPOINT (0.65 + 0.10), entry at
+        # the taker ask (0.70).
+        expected = position_size(
+            10_000.0, 0.70, 0.75,
+            is_taker=True,
+            fraction=side_cfg.sizing.kelly_fraction,
+            max_position_pct=side_cfg.sizing.max_position_pct,
+            fees=DEFAULT_FEE_MULTIPLIERS,
+            mode=side_cfg.sizing.mode,
+        )
+        assert t.count == expected
+        # And the maker-sized mutant is genuinely different.
+        assert expected != position_size(
+            10_000.0, 0.70, 0.75,
+            is_taker=False,
+            fraction=side_cfg.sizing.kelly_fraction,
+            max_position_pct=side_cfg.sizing.max_position_pct,
+            fees=DEFAULT_FEE_MULTIPLIERS,
+            mode=side_cfg.sizing.mode,
+        )
+
+    @pytest.mark.asyncio
+    async def test_taker_mode_cannot_pass_more_markets(
+        self, monkeypatch,
+    ) -> None:
+        """The review fix: true_prob stays midpoint-anchored, so a
+        prob gate that rejects the maker fill also rejects the taker
+        fill (pre-fix taker floated true_prob up and PASSED)."""
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        # mid_eff = 0.65 → true_prob 0.75; taker entry 0.70 would give
+        # 0.80 under the pre-fix float-up.
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.78, min_edge_after_fees=0.0001,
+        )
+        config.taker_fill = True
+        result = await self._run(config=config)
+        assert result.trades == []
+        assert result.skipped_entry_gates == 1
+
+    @pytest.mark.asyncio
+    async def test_taker_edge_gate_tighter_than_maker(
+        self, monkeypatch,
+    ) -> None:
+        """Pins is_taker at the edge_after_fees gate: a threshold
+        inside the (taker_edge, maker_edge) window rejects under
+        taker and would pass under the is_taker=False mutant."""
+        from gimmes.strategy.fees import edge_after_fees
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.30, yes_ask=0.40)
+
+        taker_edge = edge_after_fees(0.70, 0.75, is_taker=True)
+        maker_edge = edge_after_fees(0.70, 0.75, is_taker=False)
+        assert taker_edge < maker_edge  # window exists
+        threshold = (taker_edge + maker_edge) / 2
+
+        config = _backtest_config_with_overrides(
+            min_true_probability=0.0,
+            min_edge_after_fees=threshold,
+        )
+        config.taker_fill = True
+        result = await self._run(config=config)
+        assert result.trades == []
+        assert result.skipped_entry_gates == 1
+
+    @pytest.mark.asyncio
+    async def test_at_bound_close_counted_one_sided(
+        self, monkeypatch,
+    ) -> None:
+        """#682 review: an at/over-bound close (ask 1.0) is as
+        unpriceable as an empty one — it must land in the one-sided
+        counter, not pollute the sizing/gate counters."""
+        self._stub_entry_candle(monkeypatch, yes_bid=0.40, yes_ask=1.0)
+
+        result = await self._run(config=self._taker_config())
+        assert result.skipped_one_sided == 1
+        assert result.skipped_zero_sizing == 0
+        assert result.trades == []
+
+    @pytest.mark.asyncio
+    async def test_zero_sizing_counts_markets_not_side_attempts(
+        self, monkeypatch,
+    ) -> None:
+        """#682 review: under side='both' a ticker zero-sizing on both
+        sides is ONE market, not two."""
+        from gimmes.backtest.engine import BacktestConfig
+        from gimmes.config import SideOverrides
+
+        self._stub_entry_candle(monkeypatch, yes_bid=0.45, yes_ask=0.55)
+
+        base = _backtest_config_with_overrides(
+            min_true_probability=0.01, min_edge_after_fees=0.0001,
+            min_market_price=0.10, max_market_price=0.90,
+        )
+        base.gimmes_config.strategy.side = "both"
+        base.gimmes_config.strategy.yes_overrides = SideOverrides()
+        base.gimmes_config.strategy.no_overrides = SideOverrides()
+        config = BacktestConfig(
+            start_date=base.start_date,
+            end_date=base.end_date,
+            starting_balance=1.0,  # zero-sizes on BOTH sides
+            gimmes_config=base.gimmes_config,
+            assumed_edge=base.assumed_edge,
+        )
+        result = await self._run(config=config)
+        assert result.markets_scored == 2  # both sides qualified
+        assert result.skipped_zero_sizing == 1  # one market
+
+
+def test_cli_taker_fill_flag_wired() -> None:
+    """#682: --taker-fill reaches BacktestConfig through the CLI."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from typer.testing import CliRunner
+
+    from gimmes.backtest.engine import BacktestResult
+    from gimmes.cli import app
+
+    captured: dict = {}
+
+    async def _fake_run(client, config):
+        captured["config"] = config
+        return BacktestResult(
+            config=config, trades=[], final_balance=10_000.0,
+            equity_curve=[], markets_scanned=0,
+            markets_passed_filter=0, markets_scored=0, markets_traded=0,
+        )
+
+    class _FakeClient:
+        def __init__(self, _config):
+            pass
+
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    cfg = MagicMock()
+    with (
+        patch("gimmes.cli.load_config", return_value=cfg),
+        patch("gimmes.backtest.engine.run_backtest", _fake_run),
+        # the backtest command opens its own KalshiClient
+        patch("gimmes.kalshi.client.KalshiClient", _FakeClient),
+    ):
+        result = CliRunner().invoke(app, [
+            "backtest", "--from", "2026-05-01", "--to", "2026-05-10",
+            "--taker-fill", "--json",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert captured["config"].taker_fill is True

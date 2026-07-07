@@ -281,3 +281,59 @@ class TestSkipCountersInReport:
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
         assert "Caution" not in buf.getvalue()
+
+
+class TestNewCountersInReport:
+    """#682: stale_candles and skipped_zero_sizing reach the JSON and
+    the funnel; the header names the fill model."""
+
+    def test_json_carries_new_counters(self) -> None:
+        result = _make_result()
+        result.stale_candles = 4
+        result.skipped_zero_sizing = 2
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["stale_candles"] == 4
+        assert data["funnel"]["skipped_zero_sizing"] == 2
+
+    def test_json_config_carries_fill_model(self) -> None:
+        data = backtest_result_to_json(_make_result())
+        assert data["config"]["taker_fill"] is False
+
+    def test_stale_row_says_priced_not_skipped(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.stale_candles = 3
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "Priced from stale candle" in out
+        assert "3" in out
+
+    def test_zero_sizing_row_renders(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.skipped_zero_sizing = 5
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "zero position size" in buf.getvalue()
+
+    def test_header_names_fill_model(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "maker (midpoint)" in buf.getvalue()
+
+        result.config.taker_fill = True
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "taker (pays the ask)" in buf.getvalue()

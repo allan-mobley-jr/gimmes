@@ -4140,6 +4140,11 @@ def backtest(
     json_output: bool = typer.Option(
         False, "--json", help="Output results as JSON",
     ),
+    taker_fill: bool = typer.Option(
+        False, "--taker-fill",
+        help="Conservative fill model: entries pay the ask (taker)"
+             " instead of the midpoint, with taker fees (#682)",
+    ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""
     config = load_config()
@@ -4169,6 +4174,7 @@ def backtest(
             starting_balance=balance,
             gimmes_config=config,
             assumed_edge=edge,
+            taker_fill=taker_fill,
         )
         console.print(
             f"[dim]Running backtest: {start} to {end}, "

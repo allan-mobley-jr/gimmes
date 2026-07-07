@@ -81,6 +81,8 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         f" – {cfg.gimmes_config.strategy.max_market_price:.2f}",
         f"Gimme threshold: {cfg.gimmes_config.strategy.gimme_threshold:.0f}",
         f"Assumed edge: {cfg.assumed_edge:.0%}",
+        "Fill model: "
+        + ("taker (pays the ask)" if cfg.taker_fill else "maker (midpoint)"),
     ]
     console.print(Panel(
         "\n".join(header_lines), title="Backtest Config", border_style="blue",
@@ -123,6 +125,19 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         funnel.add_row(
             "Candle fetch FAILURES (API problem)",
             str(result.fetch_failures),
+        )
+    if result.stale_candles > 0:
+        # PRICED, not skipped — these views carry a quote up to 3
+        # days old (they may still be filtered out downstream; #682
+        # visibility, policy deferred).
+        funnel.add_row(
+            "Priced from stale candle (>1 day old)",
+            str(result.stale_candles),
+        )
+    if result.skipped_zero_sizing > 0:
+        funnel.add_row(
+            "Skipped (zero position size)",
+            str(result.skipped_zero_sizing),
         )
     if result.skipped_entry_gates > 0:
         funnel.add_row(
@@ -255,6 +270,7 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "end_date": str(result.config.end_date),
             "starting_balance": result.config.starting_balance,
             "assumed_edge": result.config.assumed_edge,
+            "taker_fill": result.config.taker_fill,
         },
         "funnel": {
             "markets_scanned": result.markets_scanned,
@@ -265,6 +281,8 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "skipped_one_sided": result.skipped_one_sided,
             "fetch_failures": result.fetch_failures,
             "skipped_entry_gates": result.skipped_entry_gates,
+            "stale_candles": result.stale_candles,
+            "skipped_zero_sizing": result.skipped_zero_sizing,
             "truncated_chunks": result.truncated_chunks,
         },
         "summary": {
