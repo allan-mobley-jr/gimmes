@@ -1291,8 +1291,10 @@ class TestTakerFillReviewPins(_EntryDayHarness):
         assert result.skipped_zero_sizing == 1  # one market
 
 
-def test_cli_taker_fill_flag_wired() -> None:
-    """#682: --taker-fill reaches BacktestConfig through the CLI."""
+def _invoke_backtest_cli(tmp_path, *extra_args):
+    """Run the backtest CLI with run_backtest faked out; returns
+    (result, captured) where captured records the config and the
+    candle_cache kwarg the CLI passed."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from typer.testing import CliRunner
@@ -1302,8 +1304,9 @@ def test_cli_taker_fill_flag_wired() -> None:
 
     captured: dict = {}
 
-    async def _fake_run(client, config):
+    async def _fake_run(client, config, **kwargs):
         captured["config"] = config
+        captured["cache"] = kwargs.get("candle_cache")
         return BacktestResult(
             config=config, trades=[], final_balance=10_000.0,
             equity_curve=[], markets_scanned=0,
@@ -1326,11 +1329,166 @@ def test_cli_taker_fill_flag_wired() -> None:
         patch("gimmes.backtest.engine.run_backtest", _fake_run),
         # the backtest command opens its own KalshiClient
         patch("gimmes.kalshi.client.KalshiClient", _FakeClient),
+        # #696 review: the default path builds the cache at
+        # GIMMES_HOME — patched to tmp_path so the test never
+        # writes into the user's real ~/.gimmes (the CLI imports
+        # GIMMES_HOME lazily, so the module attribute is live).
+        patch("gimmes.config.GIMMES_HOME", tmp_path),
     ):
         result = CliRunner().invoke(app, [
             "backtest", "--from", "2026-05-01", "--to", "2026-05-10",
-            "--taker-fill", "--json",
+            "--json", *extra_args,
         ])
+    return result, captured
 
+
+def test_cli_taker_fill_flag_wired(tmp_path) -> None:
+    """#682: --taker-fill reaches BacktestConfig through the CLI."""
+    result, captured = _invoke_backtest_cli(tmp_path, "--taker-fill")
     assert result.exit_code == 0, result.output
     assert captured["config"].taker_fill is True
+    # #696: the default path constructs a real CandleCache on disk.
+    assert captured["cache"] is not None
+    assert (tmp_path / "backtest_cache.db").exists()
+
+
+def test_cli_no_cache_flag_bypasses_disk(tmp_path) -> None:
+    """#696: --no-cache never constructs a cache or touches disk."""
+    result, captured = _invoke_backtest_cli(tmp_path, "--no-cache")
+    assert result.exit_code == 0, result.output
+    assert captured["cache"] is None
+    assert not (tmp_path / "backtest_cache.db").exists()
+
+
+class TestDiskCandleCache(_EntryDayHarness):
+    """#696: warm reruns make zero API calls with identical results;
+    failures are never cached (the #655 visibility holds warm)."""
+
+    @pytest.mark.asyncio
+    async def test_cold_then_warm_rerun_zero_fetches(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from gimmes.backtest.candle_cache import CandleCache
+
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m), yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        calls = self._stub(monkeypatch, markets, candles)
+        config = self._permissive_config()
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            first = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        cold_calls = len(calls)
+        assert cold_calls >= 1
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            second = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        assert len(calls) == cold_calls  # ZERO new API calls warm
+        assert cache.hits >= 1
+        assert len(second.trades) == len(first.trades)
+        assert second.trades[0].entry_price == pytest.approx(
+            first.trades[0].entry_price,
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_history_negative_cached(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from gimmes.backtest.candle_cache import CandleCache
+
+        markets = self._markets()
+        m = markets[0]
+        calls = self._stub(monkeypatch, markets, {m.ticker: []})
+        config = self._permissive_config()
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            first = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        cold_calls = len(calls)
+        assert first.skipped_no_candle == 1
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            second = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        assert len(calls) == cold_calls  # negative cache hit
+        # The funnel is undistorted warm.
+        assert second.skipped_no_candle == 1
+
+    @pytest.mark.asyncio
+    async def test_failures_never_cached(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from gimmes.backtest.candle_cache import CandleCache
+
+        markets = self._markets()
+        m = markets[0]
+        calls = self._stub(
+            monkeypatch, markets,
+            {m.ticker: RuntimeError("endpoint 404")},
+        )
+        config = self._permissive_config()
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            first = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        cold_calls = len(calls)
+        assert first.fetch_failures == 1
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            second = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        # The fetch RETRIES warm — a failure is not empty history.
+        assert len(calls) == cold_calls * 2
+        assert second.fetch_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_engine_uses_the_documented_window_keys(
+        self, monkeypatch,
+    ) -> None:
+        """A recording fake pins the cache-key contract: the window
+        derives from close_time, making sweep keys stable."""
+        from gimmes.backtest.engine import (
+            CANDLE_LOOKBACK_DAYS,
+        )
+
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        candles = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+
+        recorded: list[dict] = []
+
+        class _FakeCache:
+            hits = 0
+
+            async def get(self, ticker, **kw):
+                recorded.append({"op": "get", "ticker": ticker, **kw})
+                return None
+
+            async def put(self, ticker, *, candles, **kw):
+                recorded.append({"op": "put", "ticker": ticker, **kw})
+
+        await run_backtest(
+            client=None, config=self._permissive_config(),
+            candle_cache=_FakeCache(),
+        )
+        gets = [r for r in recorded if r["op"] == "get"]
+        puts = [r for r in recorded if r["op"] == "put"]
+        assert gets and puts
+        for r in gets + puts:
+            assert r["end_ts"] == entry_ts
+            assert r["start_ts"] == entry_ts - CANDLE_LOOKBACK_DAYS * 86400
+            assert r["period_interval"] == 1440

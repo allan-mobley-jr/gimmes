@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+from gimmes.backtest.candle_cache import CandleCache
 from gimmes.config import GimmesConfig
 from gimmes.kalshi.client import KalshiClient
 from gimmes.kalshi.historical import Candle, get_candlesticks
@@ -256,28 +257,50 @@ async def _fetch_entry_candle(
     entry_ts: int,
     cache: dict[str, list[Candle]],
     failed: set[str],
+    disk: CandleCache | None = None,
 ) -> Candle | None:
     """The ticker's entry-day candle, or None when no candle ends at
     or before entry_ts. The fetch window ends AT entry_ts, so future
     data structurally cannot leak into the engine (#655). Fetch
     failures degrade to None (debug-logged); classification of the
     unusable cases (no history vs one-sided quote) happens at the
-    call site so the funnel can count them separately (#666)."""
+    call site so the funnel can count them separately (#666).
+
+    ``disk`` (#696): a CandleCache consulted between the in-memory
+    miss and the API call, written through on SUCCESS only — a
+    failure never reaches ``put``, structurally (it lives in the
+    except branch), so the #655 fetch_failures visibility is intact
+    on warm reruns.
+    """
     if ticker not in cache:
-        try:
-            cache[ticker] = await get_candlesticks(
-                client, ticker,
-                start_ts=entry_ts - CANDLE_LOOKBACK_DAYS * 86400,
-                end_ts=entry_ts,
-                period_interval=1440,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("candle fetch failed for %s: %s", ticker, exc)
-            cache[ticker] = []
-            # A FAILED fetch is not empty history — the caller
-            # keeps systemic API failures (the #655 endpoint 404
-            # signature) out of the data-sparsity counters (#666).
-            failed.add(ticker)
+        window = {
+            "start_ts": entry_ts - CANDLE_LOOKBACK_DAYS * 86400,
+            "end_ts": entry_ts,
+            "period_interval": 1440,
+        }
+        cached = None
+        if disk is not None:
+            cached = await disk.get(ticker, **window)
+        if cached is not None:
+            cache[ticker] = cached
+        else:
+            try:
+                candles = await get_candlesticks(
+                    client, ticker, **window,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "candle fetch failed for %s: %s", ticker, exc,
+                )
+                cache[ticker] = []
+                # A FAILED fetch is not empty history — the caller
+                # keeps systemic API failures (the #655 endpoint 404
+                # signature) out of the data-sparsity counters (#666).
+                failed.add(ticker)
+            else:
+                cache[ticker] = candles
+                if disk is not None:
+                    await disk.put(ticker, candles=candles, **window)
     return entry_candle_at(cache[ticker], entry_ts)
 
 
@@ -369,6 +392,7 @@ async def run_backtest(
     config: BacktestConfig,
     *,
     fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
+    candle_cache: CandleCache | None = None,
 ) -> BacktestResult:
     """Run a backtest over historical settled markets.
 
@@ -485,7 +509,7 @@ async def run_backtest(
     # optimistically). One candle fetch per settled market, behind the
     # client's token bucket (~3 min for a full multi-series run).
     original_by_ticker = {m.ticker: m for m in settled}
-    candle_cache: dict[str, list[Candle]] = {}
+    memory_cache: dict[str, list[Candle]] = {}
     entry_candles: dict[str, Candle] = {}
     entry_times: dict[str, datetime] = {}
     skipped_no_candle = 0
@@ -493,6 +517,10 @@ async def run_backtest(
     skipped_one_sided = 0
     fetch_failures = 0
     failed_fetches: set[str] = set()
+    # Snapshot so the summary below logs THIS run's hits — a sweep
+    # driver sharing one CandleCache across run_backtest calls would
+    # otherwise see cumulative hits and negative "API fetches".
+    disk_hits_before = candle_cache.hits if candle_cache is not None else 0
     if (
         gc.scanner.min_days_to_resolution > ENTRY_OFFSET_DAYS
         or gc.scanner.max_days_to_resolution <= ENTRY_OFFSET_DAYS
@@ -518,8 +546,8 @@ async def run_backtest(
         entry_time = close_time - timedelta(days=ENTRY_OFFSET_DAYS)
         entry_ts = int(entry_time.timestamp())
         candle = await _fetch_entry_candle(
-            client, m.ticker, entry_ts, candle_cache,
-            failed=failed_fetches,
+            client, m.ticker, entry_ts, memory_cache,
+            failed=failed_fetches, disk=candle_cache,
         )
         if candle is None and m.ticker in failed_fetches:
             # Distinguish a FAILED fetch from genuinely-empty history:
@@ -577,6 +605,14 @@ async def run_backtest(
     # multi-minute fetch pass would leave days-to-resolution just
     # under ENTRY_OFFSET_DAYS and silently zero out configs with
     # min_days_to_resolution == ENTRY_OFFSET_DAYS (review-found).
+    if candle_cache is not None:
+        disk_hits = candle_cache.hits - disk_hits_before
+        logger.info(
+            "candle pass: %d unique tickers — %d disk-cache hits,"
+            " %d API fetch attempts (#696)",
+            len(memory_cache), disk_hits,
+            len(memory_cache) - disk_hits,
+        )
     synthetic_close = datetime.now(UTC) + timedelta(
         days=ENTRY_OFFSET_DAYS, seconds=60,
     )
