@@ -4382,8 +4382,8 @@ def backtest(
     no_cache: bool = typer.Option(
         False, "--no-cache",
         help="Bypass the on-disk candle cache at"
-             " $GIMMES_HOME/backtest_cache.db (default ~/.gimmes)"
-             " (#696)",
+             " $GIMMES_HOME/backtest_cache.db (GIMMES_HOME defaults"
+             " to ~/.gimmes) (#696)",
     ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""

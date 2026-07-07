@@ -124,6 +124,22 @@ async def test_put_failure_degrades_not_raises(
     assert len(warnings) == 1
 
 
+async def test_degrade_closes_connection_promptly(tmp_path: Path) -> None:
+    """Degrading must also release the file handle and WAL/shm locks
+    (the cache is never used again this run) — and _disabled must be
+    set independently of the close, since it alone carries the
+    one-warning guarantee (review-found: without this pin, a mutant
+    that never sets _disabled passes every degradation test)."""
+    async with CandleCache(tmp_path / "c.db") as cache:
+        async def _boom(*args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+        cache._conn.execute = _boom  # type: ignore[method-assign]
+        await cache.put("KX1", candles=[_candle()], **_WINDOW)
+        assert cache._conn is None  # handle released on degrade
+        assert cache._disabled
+
+
 async def test_corrupt_file_degrades_with_one_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -134,6 +150,7 @@ async def test_corrupt_file_degrades_with_one_warning(
         logging.WARNING, logger="gimmes.backtest.candle_cache",
     ):
         async with CandleCache(path) as cache:
+            assert cache._conn is None  # open-failure closes promptly
             assert await cache.get("KX1", **_WINDOW) is None
             await cache.put("KX1", candles=[_candle()], **_WINDOW)
             assert await cache.get("KX1", **_WINDOW) is None

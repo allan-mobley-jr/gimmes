@@ -9,8 +9,10 @@ cached, preserving the #655 fetch_failures visibility (a systemic 404
 must keep failing loudly, not become a cached miss).
 
 Failure doctrine: any cache error degrades to fetch-through with ONE
-warning per run and never aborts the backtest. A corrupt cache file is
-recoverable by deleting ~/.gimmes/backtest_cache.db.
+warning per CandleCache instance (the CLI creates one per run) and
+never aborts the backtest; the degraded connection is closed promptly.
+A corrupt cache file is recoverable by deleting
+$GIMMES_HOME/backtest_cache.db.
 """
 
 from __future__ import annotations
@@ -84,6 +86,9 @@ class CandleCache:
             await self._conn.commit()
         except Exception as exc:  # noqa: BLE001 — degrade, never abort
             self._degrade(exc)
+            # A degraded cache is never used again this run — release
+            # the file handle and WAL/shm locks promptly.
+            await self.close()
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -120,6 +125,7 @@ class CandleCache:
             candles = [Candle(**d) for d in json.loads(row[0])]
         except Exception as exc:  # noqa: BLE001 — corrupt row/file
             self._degrade(exc)
+            await self.close()
             return None
         self.hits += 1
         return candles
@@ -148,6 +154,7 @@ class CandleCache:
             await self._conn.commit()
         except Exception as exc:  # noqa: BLE001
             self._degrade(exc)
+            await self.close()
 
     def _degrade(self, exc: Exception) -> None:
         if not self._disabled:
