@@ -49,7 +49,26 @@ def _ohlc(group: dict, field: str) -> float:  # type: ignore[type-arg]
         return 0.0
 
 
-def _require_close(group: object, name: str) -> None:
+def _quote_group(data: dict, name: str) -> dict:  # type: ignore[type-arg]
+    """Normalize a candle's quote group. Absent or JSON-null is
+    treated as equivalent to the VERIFIED group-omission case (quiet
+    periods — keeps the legacy zero-default path; null is the classic
+    nil-without-omitempty serialization of the same state); any other
+    non-dict value is a shape anomaly
+    that must raise the documented ValueError, not leak an
+    AttributeError/TypeError out of _ohlc (#704)."""
+    value = data.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"candle {name} group is not an object:"
+            f" {type(value).__name__}",
+        )
+    return value
+
+
+def _require_close(group: dict, name: str) -> None:  # type: ignore[type-arg]
     """A non-empty quote group must carry a NUMERIC close in a known
     spelling. A missing key means an API rename (#655: close ->
     close_dollars) and a non-coercible value means a value-shape
@@ -61,11 +80,6 @@ def _require_close(group: object, name: str) -> None:
     and the `price` group is verifiably partial)."""
     if not group:
         return
-    if not isinstance(group, dict):
-        raise ValueError(
-            f"candle {name} group is not an object:"
-            f" {type(group).__name__}",
-        )
     if "close_dollars" not in group and "close" not in group:
         raise ValueError(
             f"candle {name} group has no close field: {sorted(group)}",
@@ -89,15 +103,22 @@ def _parse_candle(data: dict) -> Candle:  # type: ignore[type-arg]
         raise ValueError(
             f"candle has no end_period_ts field: {sorted(data)}",
         )
-    yes_bid = data.get("yes_bid", {})
-    yes_ask = data.get("yes_ask", {})
-    price = data.get("price", {})
-    # Only the groups the backtest consumes — the live `price` group
-    # is verifiably partial (open/close only), so no guard there.
+    try:
+        end_period_ts = int(data["end_period_ts"])
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"candle end_period_ts is not numeric:"
+            f" {data['end_period_ts']!r}",
+        ) from None
+    yes_bid = _quote_group(data, "yes_bid")
+    yes_ask = _quote_group(data, "yes_ask")
+    price = _quote_group(data, "price")
+    # Close guard only on the groups the backtest consumes — the live
+    # `price` group is verifiably partial (open/close only).
     _require_close(yes_bid, "yes_bid")
     _require_close(yes_ask, "yes_ask")
     return Candle(
-        end_period_ts=int(data["end_period_ts"]),
+        end_period_ts=end_period_ts,
         yes_bid_open=_ohlc(yes_bid, "open"),
         yes_bid_high=_ohlc(yes_bid, "high"),
         yes_bid_low=_ohlc(yes_bid, "low"),

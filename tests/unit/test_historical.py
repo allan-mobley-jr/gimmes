@@ -245,13 +245,34 @@ class TestParseCandleRenameDetection:
             })
 
     def test_non_dict_group_raises(self) -> None:
-        """A scalar group value raises the documented ValueError, not
-        garbled substring-membership semantics."""
-        with pytest.raises(ValueError, match="yes_bid"):
+        """A scalar group value raises the documented ValueError from
+        the _quote_group guard — the match pins WHICH guard fired
+        (review-found: a bare group-name match passed coincidentally
+        via substring membership on the string), and the int case has
+        no such coincidence to hide behind."""
+        for bad in ("0.34", 34):
+            with pytest.raises(
+                ValueError, match="yes_bid group is not an object",
+            ):
+                _parse_candle({
+                    "end_period_ts": 1,
+                    "yes_bid": bad,
+                    "yes_ask": {"close_dollars": "0.3600"},
+                })
+
+    def test_non_dict_price_group_raises(self) -> None:
+        """The object-shape guard covers price too (new in #704 —
+        the close guard stays yes_bid/yes_ask-only, but a scalar
+        price group is still a shape anomaly, not zero-defaultable
+        data)."""
+        with pytest.raises(
+            ValueError, match="price group is not an object",
+        ):
             _parse_candle({
                 "end_period_ts": 1,
-                "yes_bid": "0.34",
+                "yes_bid": {"close_dollars": "0.3400"},
                 "yes_ask": {"close_dollars": "0.3600"},
+                "price": "0.35",
             })
 
     def test_missing_end_period_ts_raises(self) -> None:
@@ -263,6 +284,30 @@ class TestParseCandleRenameDetection:
                 "yes_bid": {"close_dollars": "0.3400"},
                 "yes_ask": {"close_dollars": "0.3600"},
             })
+
+    def test_non_numeric_end_period_ts_raises(self) -> None:
+        """A present-but-null timestamp raises the documented
+        ValueError, not a TypeError from int(None) (Copilot-found)."""
+        with pytest.raises(ValueError, match="end_period_ts"):
+            _parse_candle({
+                "end_period_ts": None,
+                "yes_bid": {"close_dollars": "0.3400"},
+                "yes_ask": {"close_dollars": "0.3600"},
+            })
+
+    def test_null_group_treated_as_omitted(self) -> None:
+        """JSON null for a quote group means omission (legal in quiet
+        periods) — zero-defaults, no raise, and no AttributeError from
+        _ohlc on None (Copilot-found)."""
+        candle = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": None,
+            "yes_ask": {"close_dollars": "0.3600"},
+            "price": None,
+        })
+        assert candle.yes_bid_close == 0.0
+        assert candle.yes_ask_close == 0.36
+        assert candle.price_close == 0.0
 
 
 class TestListAllHistoricalMarketsFiltering:
