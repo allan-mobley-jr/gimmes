@@ -1316,7 +1316,7 @@ def order(
                             thesis = ""
                             if size_up:
                                 open_trade = await get_open_trade_for_ticker(
-                                    db, ticker,
+                                    db, ticker, side=side,
                                 )
                                 if open_trade:
                                     thesis = open_trade.get("thesis", "")
