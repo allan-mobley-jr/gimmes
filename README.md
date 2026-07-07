@@ -420,8 +420,9 @@ and sleeps until the next UTC midnight, at which point the day's counters
 roll over and trading resumes automatically. Pass `0` for either flag to
 disable that cap. Both caps are also config-settable and persistent —
 `gimmes config set budget.max_daily_cost_usd 50` and
-`budget.max_sessions_per_day` — with CLI flags winning when both are
-present (restart the loop to pick up config changes). Inspect today's
+`gimmes config set budget.max_sessions_per_day 100` — with CLI flags
+winning when both are present (restart the loop to pick up config
+changes). Inspect today's
 totals and remaining headroom with `gimmes budget` (`gimmes budget --json`
 for machine-readable output, which also includes the active caps and
 seconds until reset).
