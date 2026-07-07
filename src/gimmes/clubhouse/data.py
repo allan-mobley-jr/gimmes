@@ -25,6 +25,7 @@ from gimmes.clubhouse.models import (
 )
 from gimmes.config import GimmesConfig, load_config
 from gimmes.reporting.metrics import calculate_metrics
+from gimmes.store.queries import DAILY_PNL_SQL
 
 logger = logging.getLogger("gimmes.clubhouse")
 
@@ -358,20 +359,57 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
 
     try:
         async with _connect(db_path) as conn:
-            # Get trades
-            cursor = await conn.execute(
-                "SELECT * FROM trades ORDER BY timestamp ASC LIMIT 1000"
-            )
-            trades = [dict(row) for row in await cursor.fetchall()]
+            # Get trades per-action (#680, the #542 pattern): a
+            # single window across all actions let skip volume push
+            # the newest closes out and win_rate/equity silently went
+            # stale past 1000 rows. calculate_metrics reads only
+            # open/size_up/close (skips dropped); no consumer needs a
+            # global order — calculate_pnl re-sorts per group and the
+            # equity fallback sorts the whole list itself.
+            trades: list[dict] = []  # type: ignore[type-arg]
+            cap = 100_000
+            for action in ("open", "close", "size_up"):
+                # DESC so an overflow discards the OLDEST rows — a
+                # dashboard must stay fresh; consumers re-sort.
+                cursor = await conn.execute(
+                    # space->T normalization + id tie-break: mixed
+                    # legacy/ISO timestamp formats mis-order raw
+                    # string comparison (the #661 lesson).
+                    "SELECT * FROM trades WHERE action = ?"
+                    " ORDER BY replace(timestamp, ' ', 'T') DESC,"
+                    " id DESC LIMIT ?",
+                    (action, cap),
+                )
+                rows = await cursor.fetchall()
+                if len(rows) == cap:
+                    # No silent caps (#686 lesson).
+                    logger.warning(
+                        "trades fetch for action=%s hit the"
+                        " %d-row cap; oldest rows dropped",
+                        action, cap,
+                    )
+                trades += [dict(row) for row in rows]
 
-            # Get snapshots
+            # Get the NEWEST 500 snapshots, re-sorted ascending —
+            # the old ASC window froze equity/Sharpe/total_return at
+            # the oldest 500 once the table overflowed (~2 days of
+            # SSE uptime at the 5-minute writer cadence): the same
+            # staleness class as the trades window (#680 review).
             cursor = await conn.execute(
-                "SELECT * FROM snapshots ORDER BY timestamp ASC LIMIT 500"
+                "SELECT * FROM snapshots"
+                " ORDER BY replace(timestamp, ' ', 'T') DESC,"
+                " id DESC LIMIT 500"
             )
             snapshots = [dict(row) for row in await cursor.fetchall()]
+            snapshots.reverse()
 
             initial = config.paper.starting_balance if not config.is_championship else 0
-            metrics = calculate_metrics(trades, snapshots, initial)
+            # log_orphans=False (#680): this runs per SSE client per
+            # fingerprint change — a historical orphan close would
+            # warn forever here. The CLI report keeps the warning.
+            metrics = calculate_metrics(
+                trades, snapshots, initial, log_orphans=False,
+            )
 
             resp.win_rate = metrics.win_rate
             resp.sharpe_ratio = metrics.sharpe_ratio
@@ -399,22 +437,12 @@ async def get_risk(db_path: Path) -> RiskResponse:
 
     try:
         async with _connect(db_path) as conn:
-            # Realized P&L — match canonical get_daily_pnl query
-            cursor = await conn.execute(
-                """SELECT COALESCE(SUM(
-                    (c.price - COALESCE(
-                        (SELECT price FROM trades o
-                         WHERE o.ticker = c.ticker
-                           AND o.action = 'open'
-                           AND o.timestamp <= c.timestamp
-                         ORDER BY o.timestamp DESC
-                         LIMIT 1),
-                    0)) * c.count
-                ), 0) as daily_pnl
-                FROM trades c
-                WHERE c.action = 'close'
-                  AND date(c.timestamp) = date('now')"""
-            )
+            # Canonical daily-P&L SQL shared with get_daily_pnl
+            # (#680): the dashboard's risk panel must match the
+            # daily-loss trigger the loop reads — #622 excludes
+            # reconcile drift, #653 includes settlement closes. The
+            # inlined copy here was missing the drift exclusion.
+            cursor = await conn.execute(DAILY_PNL_SQL, ("now",))
             row = await cursor.fetchone()
             realized_pnl = row["daily_pnl"] if row else 0.0
 

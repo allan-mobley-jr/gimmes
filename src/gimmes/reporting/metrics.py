@@ -131,7 +131,11 @@ def _equity_curve_from_trades(
     """Build a cash-balance equity curve from trade history."""
     cash = initial_bankroll
     curve: list[dict] = []  # type: ignore[type-arg]
-    for t in sorted(trades, key=lambda x: x.get("timestamp", "")):
+    # space->T normalization (#680) — see calculate_pnl's sort.
+    for t in sorted(
+        trades,
+        key=lambda x: str(x.get("timestamp", "")).replace(" ", "T"),
+    ):
         action = t.get("action", "")
         cost = t.get("count", 0) * t.get("price", 0.0)
         if action in ("open", "size_up"):
@@ -170,8 +174,14 @@ def calculate_metrics(
     trades: list[dict],  # type: ignore[type-arg]
     snapshots: list[dict],  # type: ignore[type-arg]
     initial_bankroll: float = 0.0,
+    *,
+    log_orphans: bool = True,
 ) -> PerformanceMetrics:
-    """Calculate performance metrics from trades and snapshots."""
+    """Calculate performance metrics from trades and snapshots.
+
+    ``log_orphans=False`` (#680) demotes calculate_pnl's orphan-close
+    warnings to debug — for render-loop callers like the clubhouse.
+    """
     metrics = PerformanceMetrics()
 
     # Win rate — delegated to calculate_pnl (#662): (ticker, side)
@@ -182,7 +192,9 @@ def calculate_metrics(
     # win on the $0.60 basis; the weighted $0.75 basis says loss).
     # Scratch trades (pnl == 0) stay excluded from numerator and
     # denominator, matching the previous semantics.
-    metrics.win_rate = calculate_pnl(trades).win_rate
+    metrics.win_rate = calculate_pnl(
+        trades, log_orphans=log_orphans,
+    ).win_rate
 
     # Edge accuracy
     predicted_edges = [t.get("edge", 0) for t in trades if t.get("action") == "open"]
