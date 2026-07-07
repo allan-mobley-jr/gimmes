@@ -1250,8 +1250,14 @@ def order(
                 f" (status: {result.status})"
             )
 
-            # Sync positions + log trade atomically so a crash can't
-            # leave positions stale while a trade is recorded (or vice versa)
+            # Sync positions + log THIS ORDER's trade atomically so a
+            # crash can't leave positions stale while the trade is
+            # recorded (or vice versa). The #684 settlements
+            # consumption (below, before the atomic write) commits
+            # per-ticker by design — those closes are for OTHER,
+            # already-settled tickers, and the consumption is
+            # crash-idempotent (has_settlement_close guard), so they
+            # don't belong in this order's atomic unit.
             try:
                 if broker:
                     positions_for_sync = await broker.get_positions()
@@ -2235,15 +2241,25 @@ async def _settle_removed_positions(
                     " ledger (#684)",
                     ticker, record_count, residual,
                 )
-            else:
+            elif record_count < residual:
                 logging.getLogger("gimmes").warning(
                     "settlement record count mismatch for %s: record"
                     " %d vs ledger residual %d — %d contract(s)"
                     " exited off-ledger (#684)",
                     ticker, record_count, residual,
-                    abs(residual - record_count),
+                    residual - record_count,
                 )
-                count = min(residual, record_count)
+                count = record_count
+            else:
+                # record > residual: phantom/extra ledger closes, not
+                # an off-ledger exit — the ledger residual stands
+                # (min-clamp is a no-op in this direction).
+                logging.getLogger("gimmes").warning(
+                    "settlement record count mismatch for %s: record"
+                    " %d vs ledger residual %d — using the ledger"
+                    " (#684)",
+                    ticker, record_count, residual,
+                )
         if count <= 0:
             continue
         await log_settlement_close(

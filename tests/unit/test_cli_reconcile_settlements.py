@@ -638,6 +638,35 @@ def test_wildly_off_record_distrusted_to_ledger(
     assert settlement[0]["count"] == 100  # full ledger residual
 
 
+def test_record_above_residual_uses_ledger_generic_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """In-band record > residual (phantom/extra ledger closes, not an
+    off-ledger exit): the ledger residual stands, one settlement close
+    for the full residual, no drift row, generic warning."""
+    import logging
+
+    db_path = tmp_path / "test.db"
+    _seed(db_path)  # residual 100
+    _wire_championship(monkeypatch, db_path)
+    _mock_settlements(
+        monkeypatch,
+        {TICKER: _settlement_record() | {"no_count_fp": "15000"}},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gimmes"):
+        result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0, result.output
+    assert "using the ledger (#684)" in caplog.text
+    assert "exited off-ledger" not in caplog.text
+
+    closes = _closes(db_path)
+    assert len(closes) == 1
+    assert closes[0]["agent"] == "settlement"
+    assert closes[0]["count"] == 100
+
+
 def test_unusable_fp_forms_fall_back_to_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
