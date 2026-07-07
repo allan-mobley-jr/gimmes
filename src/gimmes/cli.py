@@ -4379,6 +4379,12 @@ def backtest(
         help="Conservative fill model: entries pay the ask (taker)"
              " instead of the midpoint, with taker fees (#682)",
     ),
+    no_cache: bool = typer.Option(
+        False, "--no-cache",
+        help="Bypass the on-disk candle cache at"
+             " $GIMMES_HOME/backtest_cache.db (default ~/.gimmes)"
+             " (#696)",
+    ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""
     config = load_config()
@@ -4416,11 +4422,13 @@ def backtest(
         )
         # #666: the selection replay fetches candles for every scanned
         # market (~minutes) — surface the engine's progress logs so
-        # the run doesn't look hung. Scoped to the backtest logger;
-        # INFO records are otherwise dropped (no root handler).
+        # the run doesn't look hung. Scoped to the backtest PARENT
+        # logger so the candle cache's degradation warning (#696) is
+        # also visible; INFO records are otherwise dropped (no root
+        # handler, and lastResort visibility is incidental).
         import logging
 
-        bt_logger = logging.getLogger("gimmes.backtest.engine")
+        bt_logger = logging.getLogger("gimmes.backtest")
         bt_logger.setLevel(logging.INFO)
         if not bt_logger.handlers:
             handler = logging.StreamHandler()
@@ -4430,7 +4438,21 @@ def backtest(
             # ancestor handlers (duplicate lines)
             bt_logger.propagate = False
         async with KalshiClient(config) as client:
-            result = await run_backtest(client, bt_config)
+            if no_cache:
+                result = await run_backtest(client, bt_config)
+            else:
+                # #696: settled-market candles are immutable — the
+                # disk cache makes reruns/parameter sweeps near-
+                # instant. Corruption degrades to fetch-through.
+                from gimmes.backtest.candle_cache import CandleCache
+                from gimmes.config import GIMMES_HOME
+
+                async with CandleCache(
+                    GIMMES_HOME / "backtest_cache.db",
+                ) as cache:
+                    result = await run_backtest(
+                        client, bt_config, candle_cache=cache,
+                    )
 
         if json_output:
             console.print_json(json.dumps(backtest_result_to_json(result)))
