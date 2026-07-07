@@ -655,6 +655,14 @@ def validate(
                 from gimmes.kalshi.portfolio import get_all_positions
                 from gimmes.store.queries import sync_positions
                 positions = await get_all_positions(client)
+                # #684: consume settlements before this sync writes
+                # drift closes — the daily-loss read downstream must
+                # see settlement losses, and a drift close here would
+                # permanently block the later settlement write
+                # (residual exhausted).
+                await _consume_settlements_before_sync(
+                    client, db, positions,
+                )
                 await sync_positions(db, positions)
 
             fees = get_multipliers(market.series_ticker)
@@ -837,6 +845,14 @@ def order(
                 from gimmes.kalshi.portfolio import get_all_positions
                 from gimmes.store.queries import sync_positions
                 positions = await get_all_positions(client)
+                # #684: consume settlements before this sync writes
+                # drift closes — the daily-loss read downstream must
+                # see settlement losses, and a drift close here would
+                # permanently block the later settlement write
+                # (residual exhausted).
+                await _consume_settlements_before_sync(
+                    client, db, positions,
+                )
                 await sync_positions(db, positions)
 
             order_action = OrderAction(action.lower())
@@ -1245,6 +1261,11 @@ def order(
                     )
 
                     positions_for_sync = await refresh_pos(client)
+                    # #684: same settlements-before-sync rule as the
+                    # other championship sync sites.
+                    await _consume_settlements_before_sync(
+                        client, db, positions_for_sync,
+                    )
 
                 if result.status in ("executed", "resting"):
                     from gimmes.models.trade import TradeDecision
@@ -1952,6 +1973,11 @@ def positions() -> None:
                 from gimmes.kalshi.portfolio import get_all_positions
                 from gimmes.store.queries import sync_positions
                 pos_list = await get_all_positions(client)
+                # #684: consume settlements before the sync writes
+                # drift closes — same semantics as reconcile.
+                await _consume_settlements_before_sync(
+                    client, db, pos_list,
+                )
                 await sync_positions(db, pos_list)
                 # #674: an OPEN live position with realized P&L means
                 # prior sells/settlements on this market — Kalshi's
@@ -2000,6 +2026,12 @@ def risk_check() -> None:
                 from gimmes.store.queries import sync_positions
                 balance = await get_balance(client)
                 pos = await get_all_positions(client)
+                # #684: consume settlements before the sync writes
+                # drift closes — the daily-loss check below must see
+                # settlement losses, not mark-priced drift.
+                await _consume_settlements_before_sync(
+                    client, db, pos,
+                )
                 await sync_positions(db, pos)
 
             try:
@@ -2064,6 +2096,43 @@ def risk_check() -> None:
     _run(_check())
 
 
+def _parse_settled_count(rec: dict, side: str) -> int | None:  # type: ignore[type-arg]
+    """Parse the settlement record's settled count for a side (#684).
+
+    Kalshi fp scaling is inconsistent across endpoints: the live-
+    probed settlements shape carries integer centi-contract strings
+    ("10000" = 100), while orders carry decimal strings ("60.00" =
+    60). Tolerate both; None means "no usable info" and callers keep
+    the ledger-only behavior. Defensive by design (review #684): the
+    scaling is unverified pre-championship, and a misparse here can
+    reroute a settlement loss into drift the daily-loss trigger
+    excludes — so anything ambiguous returns None rather than a
+    guess. Integer forms must be whole centi-contracts (%100 == 0:
+    a plain-contracts "60" would otherwise misparse to 0.6), and
+    fractional results are rejected, never truncated. CAUTION:
+    re-verify the scaling against a live probe before championship
+    deploy.
+    """
+    import math
+
+    raw = str(rec.get(f"{side}_count_fp", "")).strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    if "." not in raw:
+        if value % 100 != 0:
+            return None
+        value = value / 100
+    if value != int(value):
+        return None
+    return int(value)
+
+
 async def _settle_removed_positions(
     client, db, old_tickers, removed: set[str],
 ) -> int:
@@ -2072,12 +2141,29 @@ async def _settle_removed_positions(
     positions settled. Commit-per-ticker; residual <= 0 tickers are
     skipped (the drift close is then also suppressed by the #653
     dup-guard, and a history-less ticker must NOT be pre-written or
-    it would produce BOTH rows)."""
-    from datetime import datetime
+    it would produce BOTH rows).
+
+    #684: the close count is min(ledger residual, record's settled
+    count) — an off-ledger exit (operator sold on the Kalshi UI)
+    settles fewer contracts than the ledger residual, and the
+    remainder falls to a reconcile drift close at the last mark
+    (excluded from daily P&L per #622 — correct accounting for an
+    exit whose price we never saw). The close is stamped NOW, not
+    settled_time: reconcile is a live loop where the loss is NEW
+    information the daily-loss trigger must see (a backdated stamp
+    can land on a prior UTC date the trigger never re-reads); the
+    #653 backfill deliberately backdates and is unaffected. The raw
+    settled_time is preserved in the rationale. Known asymmetry
+    (#684 review): after a multi-day outage a stale settlement WIN
+    consumed today nets against today's genuine losses in
+    get_daily_pnl — accepted; the breaker is loss-conservative and
+    the window only exists when no command ran for days."""
+    import logging
 
     from gimmes.kalshi.portfolio import get_settlements_for_tickers
     from gimmes.store.queries import (
         count_opened_closed,
+        has_settlement_close,
         log_settlement_close,
     )
 
@@ -2094,37 +2180,144 @@ async def _settle_removed_positions(
         residual = opened - closed
         if opened <= 0 or residual <= 0:
             continue
+        # #684 review: a market settles ONCE — an existing settlement
+        # close for this ticker/side means a prior (possibly clamped)
+        # consumption already ran; writing again would book the
+        # off-ledger drift remainder at settlement value. The count
+        # clamp broke the old residual-based idempotency, so this
+        # check restores it.
+        if await has_settlement_close(db, ticker, pos.side):
+            continue
         if residual != pos.count:
-            import logging
-
             logging.getLogger("gimmes").warning(
                 "settlement residual mismatch for %s: ledger %d vs"
                 " broker %d — using the ledger (#663)",
                 ticker, residual, pos.count,
             )
+        count = residual
+        record_count = _parse_settled_count(rec, pos.side)
         raw_time = str(rec.get("settled_time", ""))
-        try:
-            settled_time: datetime | None = datetime.fromisoformat(
-                raw_time.replace("Z", "+00:00"),
+        if record_count == 0:
+            # Full off-ledger exit: zero contracts settled. Write a
+            # 0-count settlement EVIDENCE row — it books nothing,
+            # sets resolved_outcome, and makes group_has_settlement
+            # true so the drift close (full residual, written by the
+            # sync) keeps its mark instead of being repriced to a
+            # settlement the position never rode to (#684 review).
+            await log_settlement_close(
+                db, ticker=ticker, side=pos.side, count=0,
+                won=pos.side == result,
+                rationale=(
+                    "settlement record shows ZERO contracts settled —"
+                    " position fully exited off-ledger before"
+                    " resolution; evidence row only, the drift close"
+                    " carries the exit at the last mark (#684);"
+                    f" settled_time={raw_time or 'unknown'}"
+                ),
             )
-        except ValueError:
-            settled_time = None
+            await db.conn.commit()
+            settled += 1
+            continue
+        if record_count is not None and record_count != residual:
+            # Distrust wildly-off records: the fp scaling is
+            # unverified, and a 100x under-parse would reroute a
+            # settlement loss into drift the daily-loss trigger
+            # excludes. Outside [residual/2, residual*2] → treat as
+            # unparseable (ledger behavior) and say so at ERROR.
+            if (
+                record_count < max(1, residual // 2)
+                or record_count > residual * 2
+            ):
+                logging.getLogger("gimmes").error(
+                    "settlement record count for %s is wildly off"
+                    " the ledger residual (record %d vs residual %d)"
+                    " — possible fp-scaling misparse; using the"
+                    " ledger (#684)",
+                    ticker, record_count, residual,
+                )
+            else:
+                logging.getLogger("gimmes").warning(
+                    "settlement record count mismatch for %s: record"
+                    " %d vs ledger residual %d — %d contract(s)"
+                    " exited off-ledger (#684)",
+                    ticker, record_count, residual,
+                    abs(residual - record_count),
+                )
+                count = min(residual, record_count)
+        if count <= 0:
+            continue
         await log_settlement_close(
             db,
             ticker=ticker,
             side=pos.side,
-            count=residual,
+            count=count,
             won=pos.side == result,
-            timestamp=settled_time,
             rationale=(
                 "market settled — outcome consumed from the"
                 " authoritative portfolio settlements endpoint"
-                " during reconcile (#663)"
+                " during reconcile (#663);"
+                f" settled_time={raw_time or 'unknown'} (#684)"
             ),
         )
         await db.conn.commit()
         settled += 1
     return settled
+
+
+async def _consume_settlements_before_sync(
+    client, db, fresh, old_tickers=None,
+) -> None:
+    """Championship-mode settlements consumption (#663/#684): before a
+    sync writes drift closes, removed positions are matched against
+    the authoritative settlements endpoint and pre-written as
+    agent='settlement' closes; the #653 dup-guard then suppresses (or
+    count-clamps, #684) the drift close. Crash-idempotent; any failure
+    degrades to drift — the calling command is never blocked.
+
+    ``old_tickers`` (ticker -> ledger position) is read from the DB
+    when not supplied; reconcile passes its precomputed dict. A ledger
+    read failure propagates to the caller, same as at the old call
+    sites — only the settlements lookup/write degrades to drift."""
+    if old_tickers is None:
+        from gimmes.store.queries import get_positions
+
+        old_tickers = {p.ticker: p for p in await get_positions(db)}
+    prospective_removed = (
+        old_tickers.keys() - {p.ticker for p in fresh}
+    )
+    if not prospective_removed:
+        return
+    try:
+        settled_count = await _settle_removed_positions(
+            client, db, old_tickers, prospective_removed,
+        )
+        if settled_count:
+            console.print(
+                f"  [green]{settled_count} removed"
+                f" position(s) matched settlement"
+                f" records — closed at settlement"
+                f" value (#663)[/green]"
+            )
+    except Exception as exc:
+        import logging
+
+        # A mid-write failure leaves the per-ticker
+        # implicit transaction open — without a
+        # rollback, sync_positions' BEGIN IMMEDIATE
+        # below would die on "cannot start a
+        # transaction within a transaction" and the
+        # promised drift fallback would never run.
+        await db.conn.rollback()
+        logging.getLogger("gimmes").warning(
+            "settlements lookup failed — falling back"
+            " to reconcile drift (#663): %s", exc,
+            exc_info=True,
+        )
+        console.print(
+            f"  [yellow]Warning: settlements lookup"
+            f" failed ({exc}) — removed positions"
+            f" fall back to drift closes[/yellow]"
+        )
 
 
 @app.command(rich_help_panel="Portfolio")
@@ -2208,42 +2401,9 @@ def reconcile() -> None:
             # <= 0 and skips). Any settlements-API failure degrades
             # to today's drift behavior — reconcile is never blocked.
             if not broker:
-                prospective_removed = (
-                    old_tickers.keys() - {p.ticker for p in fresh}
+                await _consume_settlements_before_sync(
+                    client, db, fresh, old_tickers=old_tickers,
                 )
-                if prospective_removed:
-                    try:
-                        settled_count = await _settle_removed_positions(
-                            client, db, old_tickers,
-                            prospective_removed,
-                        )
-                        if settled_count:
-                            console.print(
-                                f"  [green]{settled_count} removed"
-                                f" position(s) matched settlement"
-                                f" records — closed at settlement"
-                                f" value (#663)[/green]"
-                            )
-                    except Exception as exc:
-                        import logging
-
-                        # A mid-write failure leaves the per-ticker
-                        # implicit transaction open — without a
-                        # rollback, sync_positions' BEGIN IMMEDIATE
-                        # below would die on "cannot start a
-                        # transaction within a transaction" and the
-                        # promised drift fallback would never run.
-                        await db.conn.rollback()
-                        logging.getLogger("gimmes").warning(
-                            "settlements lookup failed — falling back"
-                            " to reconcile drift (#663): %s", exc,
-                            exc_info=True,
-                        )
-                        console.print(
-                            f"  [yellow]Warning: settlements lookup"
-                            f" failed ({exc}) — removed positions"
-                            f" fall back to drift closes[/yellow]"
-                        )
 
             await sync_positions(db, fresh)
 
@@ -2853,7 +3013,9 @@ def backfill_settlements(
             # updates only touch count > 0 rows). Do NOT also require
             # realized_pnl < 0 for 0.0 marks: realized_pnl is
             # cumulative, so a settled loss after profitable partial
-            # sells can end lifetime-positive.
+            # sells can end lifetime-positive. Hand-imported/manually
+            # repaired rows sit outside this invariant — accepted
+            # (#684): this is a one-time #653 correction tool.
             cursor = await db.conn.execute(
                 "SELECT ticker, side, avg_price, cost_basis,"
                 " market_price, updated_at"

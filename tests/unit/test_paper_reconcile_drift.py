@@ -290,3 +290,72 @@ def test_cli_reconcile_paper_mode_writes_synthetic_close(  # type: ignore[no-unt
             await db.close()
 
     asyncio.run(_check())
+
+
+def test_paper_reconcile_never_touches_settlements_endpoint(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#684 item 8: settlements consumption is championship-only — a
+    paper-mode reconcile with a removed position must never call the
+    settlements endpoint (the paper broker maintains its own truth)."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock
+
+    from typer.testing import CliRunner
+
+    from gimmes import cli as cli_module
+    from gimmes.cli import app
+    from gimmes.kalshi import portfolio as portfolio_module
+
+    db_path = tmp_path / "test.db"
+
+    async def _setup() -> None:
+        db = Database(db_path)
+        await db.connect()
+        broker = PaperBroker(db, _paper_config().paper)
+        await broker.initialize()
+        await _seed_position(db, broker, ticker="KXCPI-26APR-T0.5")
+        # Remove from the broker WITHOUT settling — the reconcile
+        # will see it as removed and write a drift close.
+        await db.conn.execute(
+            "DELETE FROM paper_positions WHERE ticker = ?",
+            ("KXCPI-26APR-T0.5",),
+        )
+        await db.conn.commit()
+        await db.close()
+
+    asyncio.run(_setup())
+
+    cfg = MagicMock()
+    cfg.db_path = db_path
+    cfg.is_championship = False
+    cfg.paper = _paper_config().paper
+    monkeypatch.setattr(cli_module, "load_config", lambda: cfg)
+
+    @asynccontextmanager
+    async def _ctx(_config):  # type: ignore[no-untyped-def]
+        db = Database(db_path)
+        await db.connect()
+        try:
+            broker = PaperBroker(db, _paper_config().paper)
+            await broker.initialize()
+            yield None, broker, db
+        finally:
+            await db.close()
+
+    monkeypatch.setattr(cli_module, "trading_context", _ctx)
+
+    calls: list[set] = []
+
+    async def _spy(_client, tickers, **_kw):  # type: ignore[no-untyped-def]
+        calls.append(set(tickers))
+        return {}
+
+    monkeypatch.setattr(
+        portfolio_module, "get_settlements_for_tickers", _spy,
+    )
+
+    result = CliRunner().invoke(app, ["reconcile"])
+    assert result.exit_code == 0, result.output
+    assert calls == []  # endpoint never touched in paper mode

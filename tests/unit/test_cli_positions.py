@@ -411,6 +411,12 @@ class TestPositionsStaleAndSuspect:
                     "gimmes.store.queries.sync_positions",
                     AsyncMock(),
                 ),
+                # #684: the settlements pre-consumption reads the old
+                # positions; empty → no removed tickers → no-op.
+                patch(
+                    "gimmes.store.queries.get_positions",
+                    AsyncMock(return_value=[]),
+                ),
             ])
 
         with ExitStack() as stack:

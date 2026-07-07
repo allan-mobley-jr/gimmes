@@ -90,6 +90,14 @@ def calculate_pnl(
         # properly recorded for this position — any reconcile drift
         # row alongside it is genuinely NON-settlement drift (e.g. a
         # manual exit) and must keep its mark, not be repriced.
+        # Known approximation (#684): a UI full exit BEFORE resolution
+        # leaves the drift row as the only record; once the outcome
+        # lands it is repriced to settlement value, an error bounded
+        # by (mark − true exit). When the settlement RECORD proved
+        # zero contracts settled, the consumption writes a 0-count
+        # settlement evidence row that makes this flag true and
+        # protects the drift mark; the ambiguity note applies only
+        # when no record was ever consumed.
         group_has_settlement = any(
             e.get("agent") == "settlement" and e.get("action") == "close"
             for e in events

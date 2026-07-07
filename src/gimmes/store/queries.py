@@ -296,6 +296,12 @@ async def _log_reconcile_closes(
             # position with NO trade history (opened == 0) still gets
             # its drift close (pre-#609 DBs, seeded positions).
             continue
+        # #684: the drift close covers the LEDGER residual, not
+        # pos.count — a clamped settlement close (record count <
+        # residual, an off-ledger exit) leaves a remainder that must
+        # not be over-closed, and a stale pos.count must not inflate
+        # the group either. opened == 0 keeps the pos.count behavior.
+        drift_count = (opened - closed) if opened > 0 else pos.count
         # Use last-known mark (market_price or avg_price) as the close
         # price rather than 0.0 — keeps `get_daily_pnl`'s realized-P&L
         # math honest. Documented in the rationale so audit can see
@@ -310,7 +316,7 @@ async def _log_reconcile_closes(
                 ticker=pos.ticker,
                 action=TradeDecision.Action.CLOSE,
                 side=pos.side,
-                count=pos.count,
+                count=drift_count,
                 price=close_price,
                 model_probability=analytics.get("model_probability", 0.0),
                 gimme_score=analytics.get("gimme_score", 0.0),
@@ -354,7 +360,7 @@ async def _log_reconcile_closes(
             f"Decision: CLOSE\n"
             f"Trigger: Reconcile-divergence\n"
             f"Side: {pos.side}\n"
-            f"Count: {pos.count}\n"
+            f"Count: {drift_count}\n"
             f"Last-known mark: {close_price}\n"
             f"Rationale: broker reported position absent during reconcile;"
             f" local DB had it open. This is broker-divergence drift,"
@@ -387,6 +393,25 @@ def settlement_outcome(side: str, won: bool) -> str:
     if won:
         return side
     return "no" if side == "yes" else "yes"
+
+
+async def has_settlement_close(
+    db: Database, ticker: str, side: str
+) -> bool:
+    """True when an agent='settlement' close exists for ticker/side.
+
+    A market settles once — used by the #684 consumption idempotency
+    guard (the count clamp broke the old residual-based idempotency:
+    a retry after a clamped write would book the off-ledger drift
+    remainder at settlement value).
+    """
+    cursor = await db.conn.execute(
+        """SELECT 1 FROM trades
+           WHERE ticker = ? AND side = ? AND action = 'close'
+             AND agent = 'settlement' LIMIT 1""",
+        (ticker, side),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def count_opened_closed(
