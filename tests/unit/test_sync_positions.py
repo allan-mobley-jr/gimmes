@@ -767,8 +767,6 @@ class TestGetTradesSince:
     space-format rows window correctly against the CLI's ISO cutoff."""
 
     async def test_since_filters_mixed_formats(self, db):
-        from datetime import UTC, datetime, timedelta
-
         from gimmes.store.queries import get_trades, insert_trade
 
         old = _open_trade("KXOLD-26JAN-T1", ts="2026-01-01T10:00:00+00:00")
@@ -788,10 +786,9 @@ class TestGetTradesSince:
         )
         await db.conn.commit()
 
-        cutoff = (
-            (datetime.now(UTC) - timedelta(days=90))
-            .replace(microsecond=0, tzinfo=None).isoformat()
-        )
+        # Fixed cutoff between the hard-coded rows — a now-relative
+        # cutoff would time-bomb the test (PR #700 review).
+        cutoff = "2026-06-01T00:00:00"
         rows = await get_trades(db, since=cutoff, limit=100)
         tickers = {r["ticker"] for r in rows}
         assert tickers == {"KXNEW-26JUL-T1", "KXSPACE-26JUL-T1"}

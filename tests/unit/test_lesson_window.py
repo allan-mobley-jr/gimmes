@@ -101,9 +101,11 @@ def test_lesson_feeds_all_actions_to_analyses(
     assert len(captured) == 1
     fed_actions = {t["action"] for t in captured[0]}
     assert fed_actions == {"open", "close", "size_up", "skip"}
-    # #686: the window cutoff must actually reach the analyses.
-    assert windows == [None] or windows[0] is not None
-    assert windows[0] is not None and "T" in str(windows[0])
+    # #686: the window cutoff must actually reach the analyses —
+    # default config implies a non-None ISO cutoff.
+    assert len(windows) == 1
+    assert windows[0] is not None
+    assert "T" in str(windows[0])
 
 
 def test_zero_window_means_all_time(

@@ -117,7 +117,10 @@ async def get_trades(
         query += " AND datetime(timestamp) >= datetime(?)"
         params.append(since)
 
-    query += " ORDER BY timestamp DESC LIMIT ?"
+    # space->T normalization + id tie-break (#661/#680 pattern):
+    # mixed legacy/ISO formats mis-order raw string comparison, and a
+    # wrong order here silently drops the NEWEST rows at the LIMIT.
+    query += " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT ?"
     params.append(limit)
 
     cursor = await db.conn.execute(query, params)

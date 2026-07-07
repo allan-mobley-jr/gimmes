@@ -1113,6 +1113,29 @@ class TestLifecycleEntryAttribution:
         outcomes = _lifecycle_outcomes(paired)
         assert outcomes[("KXSTR", "no", 0)]["won"] is False  # any-loss
 
+    def test_same_day_mixed_formats_pair_correctly(self) -> None:
+        """PR #700 review: the pairing sort normalizes space->T — a
+        same-day legacy close after an ISO open must walk AFTER it
+        (raw string sort puts ' 10:00' before 'T09:00', orphaning the
+        close and silently shrinking the analysis sample)."""
+        trades = [
+            {
+                "ticker": "KXMIX", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-06-01T09:00:00",
+            },
+            {
+                "ticker": "KXMIX", "action": "close", "side": "no",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-06-01 10:00:00",  # legacy format
+            },
+        ]
+        paired = _pair_closes(trades)
+        assert len(paired) == 1
+        assert paired[0]["realized_return"] == pytest.approx(0.40)
+
     def test_space_format_close_retained_by_window(self) -> None:
         """#680 lesson applied to the window filter: legacy
         space-format timestamps normalize before comparison."""

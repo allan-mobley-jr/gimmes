@@ -59,7 +59,11 @@ def _pair_closes(
 
     paired: list[dict] = []  # type: ignore[type-arg]
     for (ticker, side), events in groups.items():
-        events.sort(key=lambda e: str(e.get("timestamp", "")))
+        # space->T normalization (#680 lesson): mixed formats within
+        # a group would walk closes before their opens.
+        events.sort(
+            key=lambda e: str(e.get("timestamp", "")).replace(" ", "T"),
+        )
         group_outcome = next(
             (
                 e.get("resolved_outcome")
