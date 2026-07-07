@@ -6,7 +6,10 @@ import pytest
 
 from gimmes.models.market import Orderbook, OrderbookLevel
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
-from gimmes.paper.fill_simulator import simulate_fill
+from gimmes.paper.fill_simulator import (
+    has_opposing_liquidity,
+    simulate_fill,
+)
 from gimmes.strategy.fees import FeeMultipliers
 
 
@@ -350,3 +353,52 @@ class TestEdgeCases:
         expected_fees = sum(f.fee for f in result.fills)
         assert abs(result.total_notional - expected_notional) < 0.001
         assert abs(result.total_fees - expected_fees) < 0.001
+
+
+class TestHasOpposingLiquidity:
+    """#690: the counterparty-side mapping, pinned per (action, side)
+    against one-sided books — a swapped branch or a both-sides check
+    must fail."""
+
+    @staticmethod
+    def _book(*, yes_bids=(), no_bids=()):
+        return Orderbook(
+            ticker="X",
+            yes_bids=[OrderbookLevel(price=p, quantity=q) for p, q in yes_bids],
+            no_bids=[OrderbookLevel(price=p, quantity=q) for p, q in no_bids],
+        )
+
+    @staticmethod
+    def _params(action, side):
+        return CreateOrderParams(
+            ticker="X", action=action, side=side, count=10,
+            yes_price=0.50 if side == OrderSide.YES else None,
+            no_price=0.50 if side == OrderSide.NO else None,
+            post_only=True,
+        )
+
+    def test_buy_yes_counterparty_is_no_bids(self) -> None:
+        p = self._params(OrderAction.BUY, OrderSide.YES)
+        assert has_opposing_liquidity(p, self._book(no_bids=[(0.4, 5)]))
+        assert not has_opposing_liquidity(p, self._book(yes_bids=[(0.4, 5)]))
+
+    def test_buy_no_counterparty_is_yes_bids(self) -> None:
+        p = self._params(OrderAction.BUY, OrderSide.NO)
+        assert has_opposing_liquidity(p, self._book(yes_bids=[(0.4, 5)]))
+        assert not has_opposing_liquidity(p, self._book(no_bids=[(0.4, 5)]))
+
+    def test_sell_yes_counterparty_is_yes_bids(self) -> None:
+        p = self._params(OrderAction.SELL, OrderSide.YES)
+        assert has_opposing_liquidity(p, self._book(yes_bids=[(0.4, 5)]))
+        assert not has_opposing_liquidity(p, self._book(no_bids=[(0.4, 5)]))
+
+    def test_sell_no_counterparty_is_no_bids(self) -> None:
+        p = self._params(OrderAction.SELL, OrderSide.NO)
+        assert has_opposing_liquidity(p, self._book(no_bids=[(0.4, 5)]))
+        assert not has_opposing_liquidity(p, self._book(yes_bids=[(0.4, 5)]))
+
+    def test_zero_quantity_level_is_not_liquidity(self) -> None:
+        p = self._params(OrderAction.BUY, OrderSide.YES)
+        assert not has_opposing_liquidity(
+            p, self._book(no_bids=[(0.4, 0)]),
+        )

@@ -124,6 +124,32 @@ def _simulate_maker_fill(
     )
 
 
+def has_opposing_liquidity(
+    params: CreateOrderParams,
+    orderbook: Orderbook,
+) -> bool:
+    """True when the order's counterparty side has ANY depth (#690).
+
+    Price-blind: the #255 maker fallback fills a non-marketable
+    remainder at its own limit — a patient maker plausibly gets met
+    when a REAL market exists — but an empty opposing side means no
+    counterparty at any price, and filling there is fabrication.
+    Counterparty sides: BUY YES <- no_bids (implied YES asks); BUY NO
+    <- yes_bids; SELL YES <- yes_bids; SELL NO <- no_bids.
+    """
+    if params.action == OrderAction.BUY:
+        levels = (
+            orderbook.no_bids if params.side == OrderSide.YES
+            else orderbook.yes_bids
+        )
+    else:
+        levels = (
+            orderbook.yes_bids if params.side == OrderSide.YES
+            else orderbook.no_bids
+        )
+    return any(lvl.quantity > 0 for lvl in levels)
+
+
 def _opposing_depth(
     params: CreateOrderParams,
     orderbook: Orderbook,
