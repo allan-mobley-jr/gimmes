@@ -12,12 +12,11 @@ from gimmes.models.recommendation import (
 )
 
 
-def _open_trades(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
-    """Filter to open trades only."""
-    return [t for t in trades if t.get("action") == "open"]
-
-
-def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
+def _pair_closes(
+    trades: list[dict],  # type: ignore[type-arg]
+    *,
+    since: str | None = None,
+) -> list[dict]:
     """Pair each close row to its opens and classify it won/lost.
 
     Close rows carry no reliable outcome signal of their own (#656):
@@ -40,10 +39,16 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
     backfill repricing corrects them retroactively.
 
     Returns one record per matched close: ``{ticker, side, timestamp,
-    won, realized_return, entry_score, entry_price}`` where
+    won, realized_return, entry_score, entry_price, lifecycle}`` where
     ``realized_return`` is per-contract (close price − avg cost) and
     entry fields come from the most recent open/size_up before the
-    close.
+    close. ``lifecycle`` (#686) indexes flat-book re-entries: an entry
+    arriving with the book at zero after prior activity starts a new
+    lifecycle, so a later winning re-trade is never ratcheted to a
+    loss by an earlier lifecycle. ``since`` (ISO timestamp) drops
+    records whose CLOSE predates it AFTER the walk — the pairing
+    always sees full history so an in-window close whose open predates
+    the window still prices correctly.
     """
     groups: dict[tuple[str, str], list[dict]] = {}  # type: ignore[type-arg]
     for t in trades:
@@ -75,6 +80,14 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
         avg_cost = 0.0
         entry_score = 0.0
         entry_price = 0.0
+        lifecycle = 0
+        had_entry = False
+        # #686 review: the lifecycle's OPENING entry, snapshotted at
+        # the increment point — per-close entry_score/entry_price are
+        # "most recent entry" (edge-decay/Kelly semantics) and would
+        # misattribute sized-up positions to the size_up's bucket.
+        lc_entry_score = 0.0
+        lc_entry_price = 0.0
         for e in events:
             action = e.get("action")
             count = int(e.get("count", 0) or 0)
@@ -82,6 +95,15 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
             if count <= 0:
                 continue
             if action in ("open", "size_up"):
+                # #686: an entry onto a FLAT book after prior activity
+                # is a re-entry — a new lifecycle (a size_up onto a
+                # flat book is functionally an entry too).
+                if remaining == 0:
+                    if had_entry:
+                        lifecycle += 1
+                    lc_entry_score = float(e.get("gimme_score", 0) or 0)
+                    lc_entry_price = price
+                had_entry = True
                 total = remaining + count
                 avg_cost = (
                     (avg_cost * remaining + price * count) / total
@@ -117,25 +139,54 @@ def _pair_closes(trades: list[dict]) -> list[dict]:  # type: ignore[type-arg]
                 "realized_return": realized,
                 "entry_score": entry_score,
                 "entry_price": entry_price,
+                "lifecycle": lifecycle,
+                "lifecycle_entry_score": lc_entry_score,
+                "lifecycle_entry_price": lc_entry_price,
             })
+    if since is not None:
+        # #686 review: window whole LIFECYCLES by their last close —
+        # per-tranche filtering would strip a straddling lifecycle's
+        # early losing tranches from the any-loss AND, biasing win
+        # rates UP in exactly the loosening direction #668 guards.
+        # space->T normalization (#680 lesson) for legacy rows.
+        last_close: dict[tuple[str, str, int], str] = {}
+        for r in paired:
+            key = (r["ticker"], r["side"], r["lifecycle"])
+            ts = str(r["timestamp"]).replace(" ", "T")
+            if ts > last_close.get(key, ""):
+                last_close[key] = ts
+        paired = [
+            r for r in paired
+            if last_close[(r["ticker"], r["side"], r["lifecycle"])] >= since
+        ]
     return paired
 
 
-def _outcomes_by_position(
+def _lifecycle_outcomes(
     paired: list[dict],  # type: ignore[type-arg]
-) -> dict[tuple[str, str], bool]:
-    """Map ``(ticker, side)`` -> ``won`` from paired closes (#668).
+) -> dict[tuple[str, str, int], dict]:  # type: ignore[type-arg]
+    """Aggregate paired closes per ``(ticker, side, lifecycle)`` (#686).
 
-    Keyed by side so both sides of a ticker stay distinct, and
-    multiple partial closes aggregate any-loss = loss: a position that
-    realized a loss on any tranche was not a clean win — bias down.
-    When resolution is known every tranche carries the same ``won``,
-    so aggregation only bites on PnL-fallback partials.
+    ``won`` ANDs across the lifecycle's tranches (the #668 any-loss
+    rule, now scoped WITHIN a lifecycle so an old losing round trip
+    can never ratchet a later winning re-entry to a loss). Entry
+    fields come from the lifecycle's first paired close — records are
+    appended in timestamp order per group. Consuming these instead of
+    raw open rows also fixes the still-open inheritance bug: a
+    currently-open re-entry has no paired close and simply isn't
+    scored yet.
     """
-    outcomes: dict[tuple[str, str], bool] = {}
+    outcomes: dict[tuple[str, str, int], dict] = {}  # type: ignore[type-arg]
     for r in paired:
-        key = (r["ticker"], r["side"])
-        outcomes[key] = outcomes.get(key, True) and r["won"]
+        key = (r["ticker"], r["side"], r["lifecycle"])
+        if key in outcomes:
+            outcomes[key]["won"] = outcomes[key]["won"] and r["won"]
+        else:
+            outcomes[key] = {
+                "won": r["won"],
+                "entry_score": r["lifecycle_entry_score"],
+                "entry_price": r["lifecycle_entry_price"],
+            }
     return outcomes
 
 
@@ -156,29 +207,28 @@ MIN_TRADES_THRESHOLD = 30
 def analyze_threshold_sweep(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> Recommendation | None:
     """Simulate different gimme_threshold values against historical trades.
 
     Returns a recommendation if a better threshold is found, else None.
     """
-    opens = _open_trades(trades)
-    paired = _pair_closes(trades)
+    paired = _pair_closes(trades, since=since)
     if len(paired) < MIN_TRADES_THRESHOLD:
         return None
 
-    # Build outcome map. Resolution-first via _pair_closes —
-    # close-row edge is an entry artifact, not an outcome (#656).
-    # Any-loss aggregation (#668) is conservative here because the
-    # sweep only loosens on win-rate improvement.
-    outcomes = _outcomes_by_position(paired)
-
-    # Build score map from opens
-    scored: list[dict] = []  # type: ignore[type-arg]
-    for t in opens:
-        key = (t.get("ticker", ""), t.get("side", "yes"))
-        score = t.get("gimme_score", 0)
-        if key in outcomes:
-            scored.append({"score": score, "won": outcomes[key]})
+    # One scored entry per LIFECYCLE (#686), consumed directly from
+    # the paired records (entry_score rides them) — raw open rows are
+    # no longer iterated, which also drops the still-open inheritance
+    # bug. Resolution-first via _pair_closes (#656); any-loss within
+    # a lifecycle (#668) stays conservative because the sweep only
+    # loosens on win-rate improvement.
+    outcomes = _lifecycle_outcomes(paired)
+    scored: list[dict] = [  # type: ignore[type-arg]
+        {"score": o["entry_score"], "won": o["won"]}
+        for o in outcomes.values()
+    ]
 
     if len(scored) < MIN_TRADES_THRESHOLD:
         return None
@@ -254,6 +304,8 @@ MIN_TRADES_EDGE_DECAY = 30
 def analyze_edge_decay(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> Recommendation | None:
     """Detect if realized edge is shrinking over time.
 
@@ -262,7 +314,7 @@ def analyze_edge_decay(
     artifact (zeroed on synthetic closes, min_edge-gated otherwise) and
     cannot express realized decay (#656).
     """
-    paired = _pair_closes(trades)
+    paired = _pair_closes(trades, since=since)
     if len(paired) < MIN_TRADES_EDGE_DECAY:
         return None
 
@@ -358,6 +410,8 @@ MIN_TRADES_KELLY = 20
 def analyze_kelly_optimization(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> Recommendation | None:
     """Compute optimal Kelly fraction from realized win rate and payoffs.
 
@@ -365,7 +419,7 @@ def analyze_kelly_optimization(
     returns via _pair_closes — entry edge is identical on both legs of
     a trade and would corrupt the payoff ratio (#656).
     """
-    paired = _pair_closes(trades)
+    paired = _pair_closes(trades, since=since)
     if len(paired) < MIN_TRADES_KELLY:
         return None
 
@@ -437,25 +491,24 @@ MIN_TRADES_SCANNER = 30
 def analyze_scanner_parameters(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> Recommendation | None:
     """Analyze price distribution of winners vs losers for price range tuning."""
-    opens = _open_trades(trades)
-    paired = _pair_closes(trades)
+    paired = _pair_closes(trades, since=since)
     if len(paired) < MIN_TRADES_SCANNER:
         return None
 
-    # Build outcome map — resolution-first via _pair_closes (#656),
-    # with any-loss aggregation for partial closes (#668).
-    outcomes = _outcomes_by_position(paired)
-
-    # Get prices from opens
+    # One priced entry per LIFECYCLE (#686), from the paired records'
+    # entry_price — resolution-first via _pair_closes (#656),
+    # any-loss within a lifecycle (#668).
+    outcomes = _lifecycle_outcomes(paired)
     winner_prices: list[float] = []
     loser_prices: list[float] = []
-    for t in opens:
-        key = (t.get("ticker", ""), t.get("side", "yes"))
-        price = t.get("price", 0)
-        if key in outcomes and price > 0:
-            if outcomes[key]:
+    for o in outcomes.values():
+        price = o["entry_price"]
+        if price > 0:
+            if o["won"]:
                 winner_prices.append(price)
             else:
                 loser_prices.append(price)
@@ -517,6 +570,8 @@ MIN_SKIPS_AUDIT = 20
 def analyze_missed_opportunities(
     trades: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> Recommendation | None:
     """Check skipped candidates that resolved favorably.
 
@@ -534,6 +589,13 @@ def analyze_missed_opportunities(
     # exclusion counts are surfaced in supporting_data so an audit
     # reconciles against the raw table.
     all_skips = [t for t in trades if t.get("action") == "skip"]
+    if since is not None:
+        # #686: self-consistent windowing when called directly —
+        # space->T normalization per the #680 lesson.
+        all_skips = [
+            t for t in all_skips
+            if str(t.get("timestamp", "")).replace(" ", "T") >= since
+        ]
     entry_skips = [
         t for t in all_skips
         if t.get("reason", "") not in NON_ENTRY_SKIP_REASONS
@@ -605,17 +667,28 @@ def run_all_analyses(
     trades: list[dict],  # type: ignore[type-arg]
     candidates: list[dict],  # type: ignore[type-arg]
     config: GimmesConfig,
+    *,
+    since: str | None = None,
 ) -> list[Recommendation]:
-    """Run all applicable analyses and return recommendations."""
+    """Run all applicable analyses and return recommendations.
+
+    ``since`` (#686) bounds the analysis window: paired closes and
+    skips before the cutoff are excluded so recommendations reflect
+    trading under CURRENT configs, not superseded ones. The pairing
+    walk itself always sees full history (an in-window close whose
+    open predates the window still prices correctly).
+    """
     results: list[Recommendation] = []
 
     analyses = [
-        lambda: analyze_threshold_sweep(trades, config),
-        lambda: analyze_edge_decay(trades, config),
+        lambda: analyze_threshold_sweep(trades, config, since=since),
+        lambda: analyze_edge_decay(trades, config, since=since),
         lambda: analyze_scoring_correlation(trades, candidates, config),
-        lambda: analyze_kelly_optimization(trades, config),
-        lambda: analyze_scanner_parameters(trades, config),
-        lambda: analyze_missed_opportunities(trades, config),
+        lambda: analyze_kelly_optimization(trades, config, since=since),
+        lambda: analyze_scanner_parameters(trades, config, since=since),
+        lambda: analyze_missed_opportunities(
+            trades, config, since=since,
+        ),
     ]
 
     for analysis in analyses:

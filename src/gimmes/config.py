@@ -205,6 +205,23 @@ class StrategyConfig(BaseModel):
             "max_val": 100,
         },
     )
+    lesson_window_days: int = Field(
+        default=90,
+        ge=0,
+        json_schema_extra={
+            "display_name": "Lesson Analysis Window (days)",
+            "description": (
+                "How far back `gimmes lesson` looks when computing"
+                " parameter recommendations. Bounds the analyses to"
+                " trading under CURRENT configs instead of all-time"
+                " history (#686). 0 = all-time. CAUTION: the analyses"
+                " have minimum-sample gates (20-30 closed trades) —"
+                " a window tighter than your recent trade volume"
+                " silently disables them, which is worse than"
+                " all-time."
+            ),
+        },
+    )
     side: Literal["yes", "no", "both"] = Field(
         default="no",
         json_schema_extra={

@@ -855,3 +855,298 @@ def test_non_entry_reasons_single_source_of_truth() -> None:
 
     assert cli._NON_ENTRY_REASONS is NON_ENTRY_SKIP_REASONS
     assert NON_ENTRY_SKIP_REASONS <= cli._SKIP_REASONS
+
+
+class TestLifecycleOutcomes:
+    """#686: flat-book re-entries are separate lifecycles — an old
+    losing round trip can never ratchet a later winning re-entry to a
+    loss, and a still-open re-entry inherits nothing."""
+
+    def _lifecycle_trades(self) -> list[dict]:
+        """Lifecycle 0: open/close at a loss. Lifecycle 1 (same
+        ticker/side, flat book): open/close at a win."""
+        return [
+            {
+                "ticker": "KXRETRY", "action": "open", "side": "no",
+                "count": 10, "price": 0.60, "gimme_score": 85.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": "KXRETRY", "action": "close", "side": "no",
+                "count": 10, "price": 0.30, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+            {
+                "ticker": "KXRETRY", "action": "open", "side": "no",
+                "count": 10, "price": 0.55, "gimme_score": 85.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-04-01T10:00:00",
+            },
+            {
+                "ticker": "KXRETRY", "action": "close", "side": "no",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-04-01T18:00:00",
+            },
+        ]
+
+    def test_pair_closes_emits_lifecycle_indices(self) -> None:
+        paired = _pair_closes(self._lifecycle_trades())
+        assert [r["lifecycle"] for r in paired] == [0, 1]
+        assert [r["won"] for r in paired] == [False, True]
+
+    def test_partial_close_does_not_increment_lifecycle(self) -> None:
+        """A partial close (book never flat) then more entries stays
+        one lifecycle."""
+        trades = [
+            {
+                "ticker": "KXP", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": "KXP", "action": "close", "side": "no",
+                "count": 4, "price": 0.70, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T12:00:00",
+            },
+            {
+                "ticker": "KXP", "action": "size_up", "side": "no",
+                "count": 5, "price": 0.55, "gimme_score": 82.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-03-01T14:00:00",
+            },
+            {
+                "ticker": "KXP", "action": "close", "side": "no",
+                "count": 11, "price": 0.80, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+        ]
+        paired = _pair_closes(trades)
+        assert [r["lifecycle"] for r in paired] == [0, 0]
+
+    def test_threshold_sweep_counts_lifecycles_independently(
+        self, config: GimmesConfig,
+    ) -> None:
+        """The ratchet fix: lifecycle 0 loses, lifecycle 1 wins — the
+        sweep must count one loss AND one win (pre-#686: two losses)."""
+        trades = _make_trades(
+            n_wins=25, n_losses=5, win_score=70, loss_score=85,
+        ) + self._lifecycle_trades()
+        rec = analyze_threshold_sweep(trades, config)
+        assert rec is not None
+        sweep = {
+            row["threshold"]: row
+            for row in json.loads(rec.supporting_data)
+        }
+        # At threshold 85: 5 baseline losses + KXRETRY's TWO
+        # lifecycles (one loss, one win).
+        assert sweep[85]["trades_taken"] == 7
+        assert sweep[85]["wins"] == 1
+
+    def test_still_open_reentry_inherits_nothing(
+        self, config: GimmesConfig,
+    ) -> None:
+        """The inheritance fix: a closed losing lifecycle plus a
+        currently-open re-entry (no close) yields exactly ONE scored
+        entry — the dangling open contributes nothing."""
+        trades = _make_trades(
+            n_wins=25, n_losses=5, win_score=70, loss_score=85,
+        ) + self._lifecycle_trades()[:2] + [{
+            "ticker": "KXRETRY", "action": "open", "side": "no",
+            "count": 10, "price": 0.55, "gimme_score": 85.0,
+            "edge": 0.1, "agent": "closer",
+            "timestamp": "2026-05-01T10:00:00",  # still open
+        }]
+        rec = analyze_threshold_sweep(trades, config)
+        assert rec is not None
+        sweep = {
+            row["threshold"]: row
+            for row in json.loads(rec.supporting_data)
+        }
+        # 5 baseline losses + ONE closed KXRETRY lifecycle; the open
+        # re-entry is not scored (pre-#686 it inherited the loss).
+        assert sweep[85]["trades_taken"] == 6
+        assert sweep[85]["wins"] == 0
+
+    def test_scanner_counts_lifecycles_independently(
+        self, config: GimmesConfig,
+    ) -> None:
+        trades = _make_trades(
+            n_wins=20, n_losses=15, win_price=0.72, loss_price=0.58,
+        ) + self._lifecycle_trades()
+        rec = analyze_scanner_parameters(trades, config)
+        assert rec is not None
+        # 20 winners + lifecycle 1's win; 15 losers + lifecycle 0's
+        # loss.
+        assert "n=21" in rec.rationale
+        assert "n=16" in rec.rationale
+
+
+class TestAnalysisWindow:
+    """#686: the since cutoff drops paired closes and skips before it,
+    post-pairing — an in-window close whose open predates the window
+    still prices correctly."""
+
+    def test_pair_closes_since_filters_post_walk(self) -> None:
+        trades = [
+            {
+                "ticker": "KXW", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-01-01T10:00:00",  # out of window
+            },
+            {
+                "ticker": "KXW", "action": "close", "side": "no",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-06-01T10:00:00",  # in window
+            },
+        ]
+        paired = _pair_closes(trades, since="2026-05-01T00:00:00")
+        assert len(paired) == 1
+        # Anti-orphan: priced against the OUT-OF-WINDOW open.
+        assert paired[0]["realized_return"] == pytest.approx(0.40)
+        assert paired[0]["entry_price"] == pytest.approx(0.50)
+
+    def test_out_of_window_closes_dropped(self) -> None:
+        trades = [
+            {
+                "ticker": "KXOLD", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-01-01T10:00:00",
+            },
+            {
+                "ticker": "KXOLD", "action": "close", "side": "no",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-01-02T10:00:00",
+            },
+        ]
+        assert _pair_closes(trades, since="2026-05-01T00:00:00") == []
+        assert len(_pair_closes(trades)) == 1  # default: all-time
+
+    def test_missed_opportunities_windows_skips(
+        self, config: GimmesConfig,
+    ) -> None:
+        """Skips before the cutoff drop out of the FNR denominator."""
+        recent = analyze_missed_opportunities(
+            TestMissedOpportunities._real_skips(), config,
+        )
+        windowed = analyze_missed_opportunities(
+            TestMissedOpportunities._real_skips(), config,
+            since="2099-01-01T00:00:00",
+        )
+        assert recent is not None
+        assert windowed is None  # everything out of window → gated
+
+
+class TestLifecycleEntryAttribution:
+    """#686 review: the sweep/scanner bucket a lifecycle by its
+    OPENING entry, not the most recent size_up before the close."""
+
+    def test_lifecycle_entry_fields_are_the_opening_entry(self) -> None:
+        from gimmes.strategy.advisor import _lifecycle_outcomes
+
+        trades = [
+            {
+                "ticker": "KXS", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-03-01T10:00:00",
+            },
+            {
+                "ticker": "KXS", "action": "size_up", "side": "no",
+                "count": 5, "price": 0.55, "gimme_score": 92.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-03-01T12:00:00",
+            },
+            {
+                "ticker": "KXS", "action": "close", "side": "no",
+                "count": 15, "price": 0.80, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-03-01T18:00:00",
+            },
+        ]
+        outcomes = _lifecycle_outcomes(_pair_closes(trades))
+        o = outcomes[("KXS", "no", 0)]
+        # The OPEN's score/price, not the size_up's (92.0/0.55).
+        assert o["entry_score"] == 80.0
+        assert o["entry_price"] == pytest.approx(0.50)
+
+    def test_straddling_lifecycle_windows_whole_not_tranches(
+        self,
+    ) -> None:
+        """#686 review: a lifecycle with a pre-cutoff losing tranche
+        and an in-window winning final close must keep BOTH tranches
+        (whole-lifecycle windowing) — per-tranche filtering would
+        strip the loss from the any-loss AND, biasing win rates UP."""
+        from gimmes.strategy.advisor import _lifecycle_outcomes
+
+        trades = [
+            {
+                "ticker": "KXSTR", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-01-01T10:00:00",
+            },
+            {  # losing partial, BEFORE the cutoff
+                "ticker": "KXSTR", "action": "close", "side": "no",
+                "count": 5, "price": 0.20, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-01-02T10:00:00",
+            },
+            {  # winning final close, AFTER the cutoff
+                "ticker": "KXSTR", "action": "close", "side": "no",
+                "count": 5, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-06-01T10:00:00",
+            },
+        ]
+        paired = _pair_closes(trades, since="2026-05-01T00:00:00")
+        assert len(paired) == 2  # whole lifecycle survives
+        outcomes = _lifecycle_outcomes(paired)
+        assert outcomes[("KXSTR", "no", 0)]["won"] is False  # any-loss
+
+    def test_space_format_close_retained_by_window(self) -> None:
+        """#680 lesson applied to the window filter: legacy
+        space-format timestamps normalize before comparison."""
+        trades = [
+            {
+                "ticker": "KXSP", "action": "open", "side": "no",
+                "count": 10, "price": 0.50, "gimme_score": 80.0,
+                "edge": 0.1, "agent": "closer",
+                "timestamp": "2026-05-20T10:00:00",
+            },
+            {
+                "ticker": "KXSP", "action": "close", "side": "no",
+                "count": 10, "price": 0.90, "gimme_score": 0.0,
+                "edge": 0.0, "agent": "closer",
+                "timestamp": "2026-06-01 10:00:00",  # legacy format
+            },
+        ]
+        paired = _pair_closes(trades, since="2026-05-01T00:00:00")
+        assert len(paired) == 1
+
+    def test_run_all_analyses_threads_since(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#686: a far-future cutoff must yield NO recommendations
+        (everything windowed out) while the unwindowed call
+        recommends — pins the since threading through every lambda."""
+        from gimmes.strategy.advisor import run_all_analyses
+
+        trades = _make_trades(
+            n_wins=25, n_losses=5, win_score=70, loss_score=85,
+        )
+        unwindowed = run_all_analyses(trades, [], config)
+        windowed = run_all_analyses(
+            trades, [], config, since="2099-01-01T00:00:00",
+        )
+        assert unwindowed  # sanity: data produces recommendations
+        assert windowed == []

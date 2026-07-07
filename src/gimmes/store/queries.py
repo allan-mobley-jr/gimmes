@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -9,7 +10,11 @@ from typing import TypedDict
 
 from pydantic import ValidationError
 
-from gimmes.models.error import ErrorLogEntry
+from gimmes.models.error import (
+    ErrorCategory,
+    ErrorLogEntry,
+    ErrorSeverity,
+)
 from gimmes.models.portfolio import PortfolioSnapshot, Position
 from gimmes.models.recommendation import Recommendation
 from gimmes.models.trade import TradeDecision
@@ -84,6 +89,7 @@ async def get_trades(
     action: str | None = None,
     limit: int = 50,
     ticker_prefix: bool = False,
+    since: str | None = None,
 ) -> list[TradeRecord]:
     """Query trade decisions with optional filters.
 
@@ -91,7 +97,9 @@ async def get_trades(
     to prefix match (``ticker LIKE <bound_ticker> || '%'``) for the
     CLI's ``gimmes trades --ticker`` command — programmatic callers
     (P&L reports, etc.) default to exact match to preserve their
-    semantics.
+    semantics. ``since`` (#686) bounds rows to ``timestamp >=`` the
+    given ISO instant, normalized via ``datetime()`` so legacy
+    space-format rows compare correctly (the #680 lesson).
     """
     query = "SELECT * FROM trades WHERE 1=1"
     params: list[object] = []
@@ -105,6 +113,9 @@ async def get_trades(
     if action:
         query += " AND action = ?"
         params.append(action)
+    if since:
+        query += " AND datetime(timestamp) >= datetime(?)"
+        params.append(since)
 
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
@@ -259,7 +270,7 @@ async def _log_reconcile_closes(
     removed: list[Position],
     *,
     exclude_ticker: str | None = None,
-) -> None:
+) -> list[ErrorLogEntry]:
     """Write a synthetic close trade + decision note for each removed
     position (#609 — reconcile-driven drift).
 
@@ -279,6 +290,7 @@ async def _log_reconcile_closes(
     transaction.
     """
     cycle = _cycle_from_env()
+    corrupt: list[ErrorLogEntry] = []
 
     for pos in removed:
         if exclude_ticker and pos.ticker == exclude_ticker:
@@ -335,12 +347,49 @@ async def _log_reconcile_closes(
         except ValidationError as exc:
             # #668: same guard as log_settlement_close — corrupt
             # analytics must not abort the sync_positions transaction
-            # every reconcile cycle. Retry before warning: count and
-            # close_price come from the positions row (unconstrained
-            # in the Position model), so a corrupt caller value
-            # re-raises out of the zeroed retry — fail-loud, with no
-            # lying "recorded" log line.
-            synth = _build({})
+            # every reconcile cycle. Retry before warning; if the
+            # zeroed retry ALSO raises, the culprit is a caller value
+            # (count/close_price from the positions row — the
+            # Position model is unconstrained, and bounding it is
+            # wrong: fee-inclusive avg_price legitimately exceeds
+            # 1.0). #686: skip-and-escalate that single position
+            # instead of aborting the whole sync — no lying row is
+            # written, the healthy positions still get their closes,
+            # and the error_log row is the triage breadcrumb
+            # (insert_error commits, so callers write it AFTER the
+            # transaction).
+            try:
+                synth = _build({})
+            except ValidationError as caller_exc:
+                fields = ", ".join(
+                    str(e.get("loc", ("?",))[0])
+                    for e in caller_exc.errors()
+                )
+                logging.getLogger(__name__).error(
+                    "corrupt position values for %s/%s (%s) — drift"
+                    " close SKIPPED for this position (#686)",
+                    pos.ticker, pos.side, fields,
+                )
+                corrupt.append(ErrorLogEntry(
+                    severity=ErrorSeverity.ERROR,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="corrupt_position_skipped",
+                    component="store.queries",
+                    agent="reconcile",
+                    cycle=cycle,
+                    message=(
+                        f"Corrupt position values for {pos.ticker}/"
+                        f"{pos.side} ({fields}) — reconcile drift"
+                        f" close skipped (#686)"
+                    ),
+                    context=json.dumps({
+                        "ticker": pos.ticker, "side": pos.side,
+                        "count": pos.count,
+                        "market_price": pos.market_price,
+                        "fields": fields,
+                    }),
+                ))
+                continue
             logging.getLogger(__name__).warning(
                 "entry analytics for %s/%s failed validation (%s) —"
                 " reconcile close recorded with zeroed analytics"
@@ -374,6 +423,7 @@ async def _log_reconcile_closes(
             " VALUES (?, ?, ?, ?, ?)",
             (pos.ticker, cycle, "reconcile", "decision", body),
         )
+    return corrupt
 
 
 def _cycle_from_env() -> int:
@@ -582,7 +632,13 @@ async def sync_positions(db: Database, positions: list[Position]) -> None:
     """
     async with db.transaction():
         removed = await _sync_positions_rows(db, positions)
-        await _log_reconcile_closes(db, removed)
+        corrupt = await _log_reconcile_closes(db, removed)
+    # #686: insert_error commits, so corrupt-position escalations are
+    # written AFTER the transaction — if the sync rolled back, the
+    # exception propagates first and no orphan error rows describe a
+    # sync that never committed.
+    for entry in corrupt:
+        await insert_error(db, entry)
 
 
 async def sync_positions_with_trade(
@@ -600,10 +656,14 @@ async def sync_positions_with_trade(
     """
     async with db.transaction():
         removed = await _sync_positions_rows(db, positions)
-        await _log_reconcile_closes(
+        corrupt = await _log_reconcile_closes(
             db, removed, exclude_ticker=trade.ticker,
         )
-        return await _insert_trade_row(db, trade)
+        row_id = await _insert_trade_row(db, trade)
+    # #686: see sync_positions — error escalations post-transaction.
+    for entry in corrupt:
+        await insert_error(db, entry)
+    return row_id
 
 
 async def _check_position_staleness(db: Database, table: str) -> None:
