@@ -49,13 +49,76 @@ def _ohlc(group: dict, field: str) -> float:  # type: ignore[type-arg]
         return 0.0
 
 
+def _quote_group(data: dict, name: str) -> dict:  # type: ignore[type-arg]
+    """Normalize a candle's quote group. Absent or JSON-null is
+    treated as equivalent to the VERIFIED group-omission case (quiet
+    periods — keeps the legacy zero-default path; null is the classic
+    nil-without-omitempty serialization of the same state); any other
+    non-dict value is a shape anomaly
+    that must raise the documented ValueError, not leak an
+    AttributeError/TypeError out of _ohlc (#704)."""
+    value = data.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"candle {name} group is not an object:"
+            f" {type(value).__name__}",
+        )
+    return value
+
+
+def _require_close(group: dict, name: str) -> None:  # type: ignore[type-arg]
+    """A non-empty quote group must carry a NUMERIC close in a known
+    spelling. A missing key means an API rename (#655: close ->
+    close_dollars) and a non-coercible value means a value-shape
+    change — either way the zero-default would mint an all-zero
+    candle that parses, gets disk-cached (#696), and miscounts as a
+    one-sided quote (#704). A PRESENT close key with value 0 is a
+    legal 0.00 quote and passes; empty/missing groups keep the legacy
+    zero-default behavior (live data verifiably omits whole groups,
+    and the `price` group is verifiably partial)."""
+    if not group:
+        return
+    if "close_dollars" not in group and "close" not in group:
+        raise ValueError(
+            f"candle {name} group has no close field: {sorted(group)}",
+        )
+    value = group.get("close_dollars", group.get("close"))
+    try:
+        float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"candle {name} close is not numeric: {value!r}",
+        ) from None
+
+
 def _parse_candle(data: dict) -> Candle:  # type: ignore[type-arg]
     """Parse a candlestick from the Kalshi API response."""
-    yes_bid = data.get("yes_bid", {})
-    yes_ask = data.get("yes_ask", {})
-    price = data.get("price", {})
+    if "end_period_ts" not in data:
+        # The engine selects the entry candle and staleness-checks by
+        # this timestamp — a renamed key would zero-default, price
+        # every market from an arbitrary candle, and disk-cache the
+        # result (#704).
+        raise ValueError(
+            f"candle has no end_period_ts field: {sorted(data)}",
+        )
+    try:
+        end_period_ts = int(data["end_period_ts"])
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"candle end_period_ts is not numeric:"
+            f" {data['end_period_ts']!r}",
+        ) from None
+    yes_bid = _quote_group(data, "yes_bid")
+    yes_ask = _quote_group(data, "yes_ask")
+    price = _quote_group(data, "price")
+    # Close guard only on the groups the backtest consumes — the live
+    # `price` group is verifiably partial (open/close only).
+    _require_close(yes_bid, "yes_bid")
+    _require_close(yes_ask, "yes_ask")
     return Candle(
-        end_period_ts=int(data.get("end_period_ts", 0)),
+        end_period_ts=end_period_ts,
         yes_bid_open=_ohlc(yes_bid, "open"),
         yes_bid_high=_ohlc(yes_bid, "high"),
         yes_bid_low=_ohlc(yes_bid, "low"),
@@ -185,6 +248,13 @@ async def get_candlesticks(
 
     Returns:
         List of Candle objects sorted by end_period_ts ascending.
+
+    Raises:
+        ValueError: when the response body is not a dict containing a
+            ``candlesticks`` key, or a candle's quote group lacks any
+            recognized close field — a shape anomaly must land in the
+            backtest's fetch_failures counter, never in the disk
+            cache's permanent negative entries (#704).
     """
     params: dict[str, str | int] = {
         "start_ts": start_ts,
@@ -196,6 +266,18 @@ async def get_candlesticks(
         f"/series/{series_ticker}/markets/{ticker}/candlesticks",
         params=params,
     )
-    candles = [_parse_candle(c) for c in data.get("candlesticks", [])]
+    candles_raw = data.get("candlesticks") if isinstance(data, dict) else None
+    if not isinstance(candles_raw, list):
+        # Missing/non-list value != present-but-empty list: a shape
+        # change (field rename, error-in-200 body, null value) must
+        # surface as a fetch failure the engine can count, not parse
+        # as empty history the disk cache would negative-cache
+        # permanently (#704).
+        raise ValueError(
+            f"Unexpected candlesticks response for {ticker}: no"
+            f" 'candlesticks' list (got"
+            f" {sorted(data) if isinstance(data, dict) else type(data).__name__})",
+        )
+    candles = [_parse_candle(c) for c in candles_raw]
     candles.sort(key=lambda c: c.end_period_ts)
     return candles

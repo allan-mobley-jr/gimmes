@@ -139,6 +139,176 @@ class TestGetCandlesticks:
 
         assert candles == []
 
+    @pytest.mark.asyncio
+    async def test_missing_candlesticks_key_raises(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        """#704: missing key != empty history. A shape change (field
+        rename, error-in-200 body) must raise so the engine counts a
+        fetch failure — parsing it as [] would let the #696 disk
+        cache negative-cache the anomaly permanently. The ticker is
+        pinned in the message — it is the operator's only lead."""
+        mock_client.get.return_value = {"error": {"code": "internal"}}
+
+        with pytest.raises(ValueError, match=r"KXTEST.*candlesticks"):
+            await get_candlesticks(
+                mock_client, "KXTEST",
+                start_ts=1700000000, end_ts=1700100000,
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_dict_body_raises(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        """#704: a 200 whose JSON body is not a dict must raise the
+        same clear ValueError, not an incidental
+        AttributeError/TypeError — for EVERY non-dict type, not just
+        ones where `in` happens to work (review-found: a bare `not in`
+        guard passes for [] but TypeErrors for None/int)."""
+        for body in ([], None, 42):
+            mock_client.get.return_value = body
+
+            with pytest.raises(ValueError, match="candlesticks"):
+                await get_candlesticks(
+                    mock_client, "KXTEST",
+                    start_ts=1700000000, end_ts=1700100000,
+                )
+
+    @pytest.mark.asyncio
+    async def test_null_candlesticks_value_raises(
+        self, mock_client: AsyncMock,
+    ) -> None:
+        """#704: key present but not a list (null value) is the same
+        shape anomaly — documented ValueError, not a TypeError from
+        iterating None."""
+        mock_client.get.return_value = {"candlesticks": None}
+
+        with pytest.raises(ValueError, match="candlesticks"):
+            await get_candlesticks(
+                mock_client, "KXTEST",
+                start_ts=1700000000, end_ts=1700100000,
+            )
+
+
+class TestParseCandleRenameDetection:
+    """#704 (root cause of #655): key ABSENCE, not zero value, is the
+    rename signal — a real 0.00 bid still carries a close key, so the
+    guard has no false-positive overlap with legal zero quotes."""
+
+    def test_renamed_close_key_raises(self) -> None:
+        with pytest.raises(ValueError, match="close"):
+            _parse_candle({
+                "end_period_ts": 1,
+                "yes_bid": {"close_usd": "0.34"},
+                "yes_ask": {"close_usd": "0.36"},
+                "price": {},
+            })
+
+    def test_zero_close_key_present_is_legal(self) -> None:
+        candle = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": {"close_dollars": "0.0000"},
+            "yes_ask": {"close_dollars": "0.0100"},
+            "price": {},
+        })
+        assert candle.yes_bid_close == 0.0
+        assert candle.yes_ask_close == 0.01
+
+    def test_partial_price_group_still_allowed(self) -> None:
+        """The live price group is verifiably partial (open/close
+        only) — the guard is scoped to yes_bid/yes_ask."""
+        candle = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": {"close_dollars": "0.3000"},
+            "yes_ask": {"close_dollars": "0.4000"},
+            "price": {"open_dollars": "0.3500"},
+        })
+        assert candle.price_close == 0.0
+
+    def test_empty_groups_keep_zero_defaults(self) -> None:
+        """Wholly absent/empty groups keep the legacy zero-default
+        path — group-level omission is legal in quiet periods."""
+        candle = _parse_candle({"end_period_ts": 1})
+        assert candle.yes_bid_close == 0.0
+        assert candle.yes_ask_close == 0.0
+
+    def test_non_numeric_close_value_raises(self) -> None:
+        """A close key that is PRESENT but not coercible to float
+        (null, nested object) is the same rename-class anomaly via a
+        value-shape change — the _ohlc zero-default would otherwise
+        mint a cacheable all-zero candle (review-found)."""
+        with pytest.raises(ValueError, match="close is not numeric"):
+            _parse_candle({
+                "end_period_ts": 1,
+                "yes_bid": {"close_dollars": None},
+                "yes_ask": {"close_dollars": "0.3600"},
+            })
+
+    def test_non_dict_group_raises(self) -> None:
+        """A scalar group value raises the documented ValueError from
+        the _quote_group guard — the match pins WHICH guard fired
+        (review-found: a bare group-name match passed coincidentally
+        via substring membership on the string), and the int case has
+        no such coincidence to hide behind."""
+        for bad in ("0.34", 34):
+            with pytest.raises(
+                ValueError, match="yes_bid group is not an object",
+            ):
+                _parse_candle({
+                    "end_period_ts": 1,
+                    "yes_bid": bad,
+                    "yes_ask": {"close_dollars": "0.3600"},
+                })
+
+    def test_non_dict_price_group_raises(self) -> None:
+        """The object-shape guard covers price too (new in #704 —
+        the close guard stays yes_bid/yes_ask-only, but a scalar
+        price group is still a shape anomaly, not zero-defaultable
+        data)."""
+        with pytest.raises(
+            ValueError, match="price group is not an object",
+        ):
+            _parse_candle({
+                "end_period_ts": 1,
+                "yes_bid": {"close_dollars": "0.3400"},
+                "yes_ask": {"close_dollars": "0.3600"},
+                "price": "0.35",
+            })
+
+    def test_missing_end_period_ts_raises(self) -> None:
+        """#704: a renamed timestamp key would zero-default and make
+        the engine price every market from an arbitrary candle — and
+        disk-cache it. Key absence must raise."""
+        with pytest.raises(ValueError, match="end_period_ts"):
+            _parse_candle({
+                "yes_bid": {"close_dollars": "0.3400"},
+                "yes_ask": {"close_dollars": "0.3600"},
+            })
+
+    def test_non_numeric_end_period_ts_raises(self) -> None:
+        """A present-but-null timestamp raises the documented
+        ValueError, not a TypeError from int(None) (Copilot-found)."""
+        with pytest.raises(ValueError, match="end_period_ts"):
+            _parse_candle({
+                "end_period_ts": None,
+                "yes_bid": {"close_dollars": "0.3400"},
+                "yes_ask": {"close_dollars": "0.3600"},
+            })
+
+    def test_null_group_treated_as_omitted(self) -> None:
+        """JSON null for a quote group means omission (legal in quiet
+        periods) — zero-defaults, no raise, and no AttributeError from
+        _ohlc on None (Copilot-found)."""
+        candle = _parse_candle({
+            "end_period_ts": 1,
+            "yes_bid": None,
+            "yes_ask": {"close_dollars": "0.3600"},
+            "price": None,
+        })
+        assert candle.yes_bid_close == 0.0
+        assert candle.yes_ask_close == 0.36
+        assert candle.price_close == 0.0
+
 
 class TestListAllHistoricalMarketsFiltering:
     @pytest.mark.asyncio
