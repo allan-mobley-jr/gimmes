@@ -270,7 +270,9 @@ async def _fetch_entry_candle(
     miss and the API call, written through on SUCCESS only — a
     failure never reaches ``put``, structurally (it lives in the
     except branch), so the #655 fetch_failures visibility is intact
-    on warm reruns.
+    on warm reruns. get_candlesticks raises on envelope/shape
+    anomalies (#704), so a renamed field lands in ``failed`` too —
+    counted, never cached.
     """
     if ticker not in cache:
         window = {
