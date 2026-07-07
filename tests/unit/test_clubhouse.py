@@ -913,6 +913,31 @@ class TestSnapshotWindow:
         )
 
 
+class TestMixedTimestampFormats:
+    """#680 review: legacy space-format rows must not outrank newer
+    ISO rows (or vice versa) in the newest-N windows."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_row_ordered_by_time_not_separator(
+        self, db_path: Path,
+    ) -> None:
+        async with Database(db_path) as db:
+            # Legacy-format snapshot NEWER than every ISO row: the
+            # raw DESC sort would rank it LAST (' ' < 'T'); the
+            # normalized sort keeps it as the curve's newest point.
+            await db.conn.execute(
+                """INSERT INTO snapshots (balance, portfolio_value,
+                   total_equity, timestamp)
+                   VALUES (77777.0, 0, 77777.0, '2027-06-01 00:00:00')""",
+            )
+            await db.conn.commit()
+
+        metrics = await get_metrics(db_path)
+        assert metrics.equity_curve[-1]["equity"] == pytest.approx(
+            77777.0,
+        )
+
+
 class TestOrphanWarningQuiet:
     """#680: get_metrics runs per SSE client per fingerprint change —
     orphan-close warnings are demoted to debug on that path only."""

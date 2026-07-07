@@ -372,8 +372,12 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
                 # DESC so an overflow discards the OLDEST rows — a
                 # dashboard must stay fresh; consumers re-sort.
                 cursor = await conn.execute(
+                    # space->T normalization + id tie-break: mixed
+                    # legacy/ISO timestamp formats mis-order raw
+                    # string comparison (the #661 lesson).
                     "SELECT * FROM trades WHERE action = ?"
-                    " ORDER BY timestamp DESC LIMIT ?",
+                    " ORDER BY replace(timestamp, ' ', 'T') DESC,"
+                    " id DESC LIMIT ?",
                     (action, cap),
                 )
                 rows = await cursor.fetchall()
@@ -392,7 +396,9 @@ async def get_metrics(db_path: Path) -> MetricsResponse:
             # SSE uptime at the 5-minute writer cadence): the same
             # staleness class as the trades window (#680 review).
             cursor = await conn.execute(
-                "SELECT * FROM snapshots ORDER BY timestamp DESC LIMIT 500"
+                "SELECT * FROM snapshots"
+                " ORDER BY replace(timestamp, ' ', 'T') DESC,"
+                " id DESC LIMIT 500"
             )
             snapshots = [dict(row) for row in await cursor.fetchall()]
             snapshots.reverse()

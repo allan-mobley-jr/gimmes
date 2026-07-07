@@ -131,7 +131,11 @@ def _equity_curve_from_trades(
     """Build a cash-balance equity curve from trade history."""
     cash = initial_bankroll
     curve: list[dict] = []  # type: ignore[type-arg]
-    for t in sorted(trades, key=lambda x: x.get("timestamp", "")):
+    # space->T normalization (#680) — see calculate_pnl's sort.
+    for t in sorted(
+        trades,
+        key=lambda x: str(x.get("timestamp", "")).replace(" ", "T"),
+    ):
         action = t.get("action", "")
         cost = t.get("count", 0) * t.get("price", 0.0)
         if action in ("open", "size_up"):

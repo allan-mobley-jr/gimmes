@@ -177,6 +177,28 @@ class TestCalculatePnlWeightedAverage:
         ]
         assert any("orphan close" in r.message for r in caplog.records)
 
+    def test_mixed_timestamp_formats_order_chronologically(
+        self,
+    ) -> None:
+        """#680: a legacy space-format row must sort by TIME, not by
+        separator byte (' ' < 'T' would walk the close before its
+        open on the boundary day, fabricating an orphan)."""
+        trades = [
+            # ISO close at 09:00, legacy open at 08:00 SAME DAY:
+            # raw string order puts the space row FIRST correctly
+            # here, so invert: legacy close after ISO open.
+            self._t("open", "X", 0.50, 10, "2026-05-01T08:00:00"),
+            {
+                "ticker": "X", "side": "yes", "action": "close",
+                "count": 10, "price": 0.70,
+                "timestamp": "2026-05-01 09:00:00",  # legacy format
+            },
+        ]
+        summary = calculate_pnl(trades)
+        # Raw-string sort: ' 09:00' < 'T08:00' → close walks first →
+        # orphan + $0. Normalized: (0.70-0.50)*10 = 2.0.
+        assert summary.gross_pnl == pytest.approx(2.0)
+
     def test_yes_and_no_sides_isolated(self) -> None:
         trades = [
             self._t("open", "X", 0.40, 10, "t1", side="yes"),

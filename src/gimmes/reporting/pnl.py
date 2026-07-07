@@ -65,7 +65,12 @@ def calculate_pnl(
         groups.setdefault(key, []).append(t)
 
     for (ticker, side), events in groups.items():
-        events.sort(key=lambda e: str(e.get("timestamp", "")))
+        # space->T normalization (#680): mixed legacy/ISO formats
+        # mis-order raw string comparison (' ' < 'T'), which could
+        # walk a close before its open on the boundary day.
+        events.sort(
+            key=lambda e: str(e.get("timestamp", "")).replace(" ", "T"),
+        )
         remaining = 0
         avg_cost = 0.0
 
