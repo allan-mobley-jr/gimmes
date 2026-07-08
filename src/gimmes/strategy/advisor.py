@@ -10,6 +10,8 @@ from gimmes.models.recommendation import (
     Confidence,
     Recommendation,
 )
+from gimmes.strategy.fees import edge_after_fees
+from gimmes.strategy.scanner import effective_price, price_at_bound
 
 
 def _pair_closes(
@@ -581,7 +583,16 @@ def analyze_missed_opportunities(
     *,
     since: str | None = None,
 ) -> Recommendation | None:
-    """Check skipped candidates that resolved favorably.
+    """Audit skipped candidates by ex-ante EV AFTER FEES (#707).
+
+    A skip is a "missed win" when its expected value at the recorded
+    skip price — probability minus side-effective price minus maker
+    fee — was positive. This is deliberately NOT settlement-based:
+    ``resolved_outcome`` is sparse for skips by design (it is only
+    stamped when the ticker was also traded), and "would have won"
+    was the wrong bar anyway — a cheap long shot that happened to
+    settle favorably was still a bad bet at its price. The fee-free
+    raw ``edge`` column overstated missed wins by the fee margin.
 
     Requires skip logging to be in place (see issue #20).
     """
@@ -617,31 +628,57 @@ def analyze_missed_opportunities(
     if len(skips) < MIN_SKIPS_AUDIT:
         return None
 
-    # Count skips that had positive edge (would have won)
-    missed_wins = [s for s in skips if s.get("edge", 0) > 0]
+    # A missed win is a skip whose ex-ante EV AFTER FEES was positive
+    # at the recorded (YES-denominated) price. Guard-then-compute per
+    # the #658 scorer/validator pattern: a bound-priced skip has no
+    # tradeable edge and stays in the denominator as a correct skip.
+    missed_wins: list[tuple[dict, float]] = []  # type: ignore[type-arg]
+    for s in skips:
+        eff = effective_price(s["price"], s.get("side", "yes"))
+        ev = (
+            0.0 if price_at_bound(eff)
+            else edge_after_fees(eff, s["model_probability"])
+        )
+        if ev > 0:
+            missed_wins.append((s, ev))
     if not missed_wins:
         return None
 
     false_negative_rate = len(missed_wins) / len(skips)
+    correct_skip_rate = 1 - false_negative_rate
+    fn_cost = sum(ev for _, ev in missed_wins)
 
     if false_negative_rate < 0.20:  # Less than 20% false negatives — acceptable
         return None
 
-    # Check if missed wins had scores just below threshold
+    # Near-miss cohort: derive the recommendation once, then restrict
+    # the cited cohort to the score band the recommendation would
+    # actually admit (#707 — a threshold of 50 motivated by score-45
+    # skips it wouldn't admit is not evidence).
     threshold = config.strategy.gimme_threshold
-    near_misses = [
-        s for s in missed_wins
+    cohort = [
+        s for s, _ in missed_wins
         if 0 < s.get("gimme_score", 0) < threshold
     ]
-
-    if not near_misses:
+    if not cohort:
         return None
 
-    avg_missed_score = sum(s.get("gimme_score", 0) for s in near_misses) / len(near_misses)
-    recommended = max(int(avg_missed_score - 5), 50)
-
+    cohort_avg = sum(s.get("gimme_score", 0) for s in cohort) / len(cohort)
+    recommended = max(int(cohort_avg - 5), 50)
     if recommended >= threshold:
         return None
+
+    near_misses = [
+        s for s in cohort
+        if recommended <= s.get("gimme_score", 0) < threshold
+    ]
+    if not near_misses:
+        # The floor-50 recommendation admits nobody from the cohort
+        # that motivated it — not a recommendation.
+        return None
+    avg_missed_score = (
+        sum(s.get("gimme_score", 0) for s in near_misses) / len(near_misses)
+    )
 
     return Recommendation(
         parameter_path="strategy.gimme_threshold",
@@ -650,12 +687,19 @@ def analyze_missed_opportunities(
         confidence=Confidence.MEDIUM if len(skips) >= 50 else Confidence.LOW,
         analysis_type=AnalysisType.MISSED_OPPORTUNITY,
         rationale=(
-            f"False negative rate: {false_negative_rate:.0%} ({len(missed_wins)}/{len(skips)} "
-            f"skipped trades would have won). {len(near_misses)} near-misses averaged "
-            f"score {avg_missed_score:.0f} (threshold: {threshold})."
+            f"EV-based false negative rate: {false_negative_rate:.0%} "
+            f"({len(missed_wins)}/{len(skips)} skips had positive expected"
+            f" value after fees; correct-skip rate {correct_skip_rate:.0%})."
+            f" Estimated foregone EV: ${fn_cost:.2f} total at 1"
+            f" contract/skip."
+            f" {len(near_misses)} near-misses in the admitted band"
+            f" [{recommended}, {threshold}) averaged score"
+            f" {avg_missed_score:.0f}."
         ),
         supporting_data=json.dumps({
             "false_negative_rate": round(false_negative_rate, 3),
+            "correct_skip_rate": round(correct_skip_rate, 3),
+            "fn_cost_per_contract": round(fn_cost, 3),
             "missed_wins": len(missed_wins),
             "total_skips": len(skips),
             "excluded_degenerate": excluded_degenerate,

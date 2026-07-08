@@ -724,6 +724,151 @@ class TestMissedOpportunities:
         )
         assert rec is None
 
+    def test_ev_after_fees_flips_marginal_edge_out_of_numerator(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#707: a skip with a small POSITIVE raw edge but negative
+        EV after fees is a CORRECT skip. The old fee-free `edge > 0`
+        numerator counted these as missed wins — the maker fee margin
+        is exactly what the metric was overstating."""
+        trades = self._real_skips()
+        for i in range(10):
+            trades.append({
+                "ticker": f"SKIP-MARGINAL-{i}", "action": "skip",
+                "gimme_score": 72, "edge": 0.005, "price": 0.60,
+                "model_probability": 0.605,  # EV = 0.605-0.60-0.01 < 0
+                "timestamp": f"2026-04-{(i % 28) + 1:02d}T10:00:00",
+            })
+        rec = analyze_missed_opportunities(trades, config)
+        assert rec is not None
+        data = json.loads(rec.supporting_data)
+        assert data["missed_wins"] == 15  # marginal rows excluded
+        assert data["false_negative_rate"] == pytest.approx(15 / 35, abs=1e-3)
+        assert data["correct_skip_rate"] == pytest.approx(20 / 35, abs=1e-3)
+
+    def test_no_side_price_converted_before_fee_math(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#707: the price column is YES-denominated. A NO-side skip
+        at YES 0.30 has effective price 0.70 — EV 0.65-0.70-0.01 < 0,
+        a correct skip. Reading the raw YES price would fabricate a
+        +0.34 missed win."""
+        trades = self._real_skips()
+        for i in range(10):
+            trades.append({
+                # edge deliberately POSITIVE (review-found): with a
+                # negative edge these rows are excluded by an
+                # `edge > 0` revert too, making this test inert
+                # against that mutation — a positive edge keeps it
+                # load-bearing for BOTH the conversion and the
+                # EV-numerator itself.
+                "ticker": f"SKIP-NO-{i}", "action": "skip", "side": "no",
+                "gimme_score": 72, "edge": 0.05, "price": 0.30,
+                "model_probability": 0.65,
+                "timestamp": f"2026-04-{(i % 28) + 1:02d}T10:00:00",
+            })
+        rec = analyze_missed_opportunities(trades, config)
+        assert rec is not None
+        data = json.loads(rec.supporting_data)
+        assert data["missed_wins"] == 15
+        assert data["false_negative_rate"] == pytest.approx(15 / 35, abs=1e-3)
+
+    def test_recommendation_admits_its_cited_cohort(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#707: near-misses below the derived threshold must not be
+        cited — every cited near-miss clears the recommendation."""
+        trades = self._real_skips(n_wins=10, n_losses=10)  # 10 at 72
+        for i in range(5):
+            trades.append({
+                "ticker": f"SKIP-LOW-{i}", "action": "skip",
+                "gimme_score": 52, "edge": 0.15, "price": 0.65,
+                "model_probability": 0.85,
+                "timestamp": f"2026-04-{(i % 28) + 1:02d}T10:00:00",
+            })
+        rec = analyze_missed_opportunities(trades, config)
+        assert rec is not None
+        # cohort avg (10x72 + 5x52)/15 = 65.33 -> recommended 60;
+        # band [60, 75) drops the five 52s.
+        assert rec.recommended_value == "60"
+        data = json.loads(rec.supporting_data)
+        assert data["near_misses"] == 10
+        assert data["avg_missed_score"] == pytest.approx(72.0)
+        assert data["avg_missed_score"] >= int(rec.recommended_value)
+
+    def test_empty_admitted_band_returns_none(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#707: a floor-50 recommendation whose admitted band [50, 75)
+        contains none of the motivating cohort is not a
+        recommendation. The old code recommended 50 while citing
+        score-30 skips it wouldn't admit."""
+        trades = [{
+            "ticker": f"SKIP-DEEP-{i}", "action": "skip",
+            "gimme_score": 30, "edge": 0.15, "price": 0.65,
+            "model_probability": 0.85,
+            "timestamp": f"2026-01-{(i % 28) + 1:02d}T10:00:00",
+        } for i in range(15)]
+        trades += self._real_skips(n_wins=0, n_losses=10)
+        assert analyze_missed_opportunities(trades, config) is None
+
+    def test_rationale_surfaces_fn_cost_and_correct_skip_rate(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#707: the operator sees the EV-based cost AND the
+        correct-skip rate — the tradeoff, not just the loosening
+        pressure."""
+        rec = analyze_missed_opportunities(self._real_skips(), config)
+        assert rec is not None
+        data = json.loads(rec.supporting_data)
+        # 15 wins x EV(0.85 - 0.65 - 0.01) = 15 x 0.19 = 2.85
+        assert data["fn_cost_per_contract"] == pytest.approx(2.85)
+        assert data["correct_skip_rate"] == pytest.approx(0.4)
+        assert "$2.85" in rec.rationale
+        assert "40%" in rec.rationale
+        assert "[67, 75)" in rec.rationale
+        # 25 skips < 50 -> LOW (tiering was unpinned, review-found)
+        assert rec.confidence == Confidence.LOW
+
+    def test_confidence_medium_at_fifty_skips(
+        self, config: GimmesConfig,
+    ) -> None:
+        """The MEDIUM tier requires >= 50 audited skips."""
+        rec = analyze_missed_opportunities(
+            self._real_skips(n_wins=30, n_losses=20), config,
+        )
+        assert rec is not None
+        assert rec.confidence == Confidence.MEDIUM
+
+    def test_low_fnr_is_acceptable_no_recommendation(
+        self, config: GimmesConfig,
+    ) -> None:
+        """Below the 20% gate the skips are working as intended —
+        3/25 EV-positive skips (12%) must NOT produce loosening
+        pressure (gate was one-side-pinned, review-found)."""
+        rec = analyze_missed_opportunities(
+            self._real_skips(n_wins=3, n_losses=22), config,
+        )
+        assert rec is None
+
+    def test_bound_priced_skip_is_not_a_missed_win(
+        self, config: GimmesConfig,
+    ) -> None:
+        """#658 guard carries over: a bound-priced skip has no
+        tradeable edge — denominator yes, numerator no."""
+        trades = self._real_skips()
+        trades.append({
+            "ticker": "SKIP-BOUND", "action": "skip", "side": "no",
+            "gimme_score": 72, "edge": 0.0, "price": 0.995,
+            "model_probability": 0.9,
+            "timestamp": "2026-04-01T10:00:00",
+        })
+        rec = analyze_missed_opportunities(trades, config)
+        assert rec is not None
+        data = json.loads(rec.supporting_data)
+        assert data["missed_wins"] == 15
+        assert data["total_skips"] == 26
+
 
 class TestRunAllAnalyses:
     def test_returns_list(self, config: GimmesConfig) -> None:
