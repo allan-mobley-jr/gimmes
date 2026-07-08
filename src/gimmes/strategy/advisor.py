@@ -699,7 +699,7 @@ def analyze_missed_opportunities(
         supporting_data=json.dumps({
             "false_negative_rate": round(false_negative_rate, 3),
             "correct_skip_rate": round(correct_skip_rate, 3),
-            "fn_cost_per_contract": round(fn_cost, 3),
+            "fn_cost_total": round(fn_cost, 3),
             "missed_wins": len(missed_wins),
             "total_skips": len(skips),
             "excluded_degenerate": excluded_degenerate,

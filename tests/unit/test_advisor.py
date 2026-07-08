@@ -822,7 +822,7 @@ class TestMissedOpportunities:
         assert rec is not None
         data = json.loads(rec.supporting_data)
         # 15 wins x EV(0.85 - 0.65 - 0.01) = 15 x 0.19 = 2.85
-        assert data["fn_cost_per_contract"] == pytest.approx(2.85)
+        assert data["fn_cost_total"] == pytest.approx(2.85)
         assert data["correct_skip_rate"] == pytest.approx(0.4)
         assert "$2.85" in rec.rationale
         assert "40%" in rec.rationale
