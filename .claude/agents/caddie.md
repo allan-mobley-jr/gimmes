@@ -261,6 +261,16 @@ gimmes log-trade TICKER --action skip \
 rm -f "$RATIONALE_FILE"
 ```
 
+**Liquidity skips MUST carry `--reason liquidity`** (#710). When the skip is because the order book is empty or one-sided — `market-info` shows YES Bid $0.00 / YES Ask $0.00, or the tradeable side has no resting orders — add `--reason liquidity` to the command:
+
+```bash
+gimmes log-trade TICKER --action skip --reason liquidity \
+  --price 0.XX --prob 0.XX --score NN \
+  --rationale-file "$RATIONALE_FILE" --agent caddie
+```
+
+For all other skips (PASS on research grounds, NEEDS MORE RESEARCH after re-scoring), omit `--reason` — the rationale prose carries the cause. A thin-but-two-sided book that merely lowers the liquidity-depth score is a research-grounds PASS, not a `liquidity` skip. Never invent a reason value: unknown values are rejected and the skip row is lost. A reason-less skip prints a yellow #710 warning — this is EXPECTED for non-liquidity skips; do not add `--reason` just to silence it and do not re-log.
+
 If a `log-trade` skip command fails, note the failure in your output and continue. Do not retry failed log commands.
 
 If `market-info` fails for a candidate, log the candidate with `--price 0 --prob 0` and log the skip with the failure in the rationale.

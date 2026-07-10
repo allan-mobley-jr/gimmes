@@ -15,6 +15,12 @@ CADDIE_MASTER = AGENTS_DIR / "caddie-master.md"
 CADDIE = AGENTS_DIR / "caddie.md"
 MONITOR = AGENTS_DIR / "monitor.md"
 GROUNDSKEEPER = AGENTS_DIR / "groundskeeper.md"
+SCOUT = AGENTS_DIR / "scout.md"
+
+
+@pytest.fixture(scope="module")
+def scout_text() -> str:
+    return SCOUT.read_text()
 
 
 @pytest.fixture(scope="module")
@@ -1831,7 +1837,6 @@ def test_no_agent_uses_inline_memo_body_rationale_for_prose() -> None:
 # ---------------------------------------------------------------------------
 
 _CLOSER = AGENTS_DIR / "closer.md"
-_SCOUT = AGENTS_DIR / "scout.md"
 
 
 def test_no_zeroed_skip_analytics_in_templates(
@@ -1891,12 +1896,11 @@ def test_skip_templates_carry_structured_reason(
 
 
 def test_scout_and_caddie_skip_templates_keep_real_analytics(
-    caddie_text: str,
+    scout_text: str, caddie_text: str,
 ) -> None:
     """Scout/Caddie skips happen at scan/research time when the agent
     HAS the real values — their templates must keep passing them
     (the CLI backfill is the fallback, not the primary path)."""
-    scout_text = _SCOUT.read_text()
     for text, name in ((scout_text, "scout.md"), (caddie_text, "caddie.md")):
         assert "--price 0.XX --prob 0.XX --score NN" in text, (
             f"{name} skip template no longer passes real analytics"
@@ -2262,3 +2266,46 @@ def test_caddie_master_stale_close_precedes_score_rules(
     stale = caddie_master_text.index("Prior research flagged STALE-CLOSE")
     first_rule = caddie_master_text.index("1. **No prior research**")
     assert stale < first_rule
+
+
+def test_scout_and_caddie_mandate_liquidity_reason(
+    scout_text: str, caddie_text: str,
+) -> None:
+    """#710: empty-reason liquidity skips degrade the #657 skip
+    analytics and the #707 EV audit — both skip-logging agents must
+    mandate --reason liquidity for book-emptiness skips and say what
+    to do otherwise (omit, never invent)."""
+    for name, text in (("scout.md", scout_text), ("caddie.md", caddie_text)):
+        assert "--action skip --reason liquidity" in text, (
+            f"{name} lost the --reason liquidity template (#710)"
+        )
+        assert "order book is empty or one-sided" in text, (
+            f"{name} lost the liquidity-skip mandate prose (#710)"
+        )
+        assert "Never invent a reason value" in text, (
+            f"{name} lost the invalid-reason warning (#710) — agents"
+            " guessing values hit BadParameter and the row is lost"
+        )
+
+
+def test_prompt_skip_reasons_exist_in_cli_vocabulary() -> None:
+    """#710 sync guard: every --reason value in any agent prompt must
+    exist in the CLI's _SKIP_REASONS — an unknown value is rejected
+    at log time and, combined with the no-retry rule, loses the row."""
+    import re
+
+    from gimmes.cli import _SKIP_REASONS
+
+    for path in sorted(AGENTS_DIR.glob("*.md")):
+        # [= ] + optional quote: the bare form is the template norm,
+        # but --reason=x and --reason 'x' must not slip past the
+        # guard (review-found extraction gap).
+        for value in re.findall(
+            r"--reason[= ]['\"]?(\w+)", path.read_text(),
+        ):
+            if value == "REASON":  # placeholder token, not a value
+                continue
+            assert value in _SKIP_REASONS, (
+                f"{path.name} references --reason {value!r} which is"
+                " not in cli._SKIP_REASONS (#710)"
+            )
