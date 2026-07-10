@@ -2860,6 +2860,19 @@ def log_trade(
                 )
             row_id = await insert_trade(db, trade)
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
+            if action == "skip" and not reason:
+                # #710: entry-type skip with no structured cause — the
+                # #657 skip analytics and #707 EV audit can't classify
+                # it. Warn AFTER the insert (a pre-insert warning would
+                # claim "logged" on failure paths), and never reject:
+                # agents are told not to retry failed log commands, so
+                # rejection would silently drop the row.
+                console.print(
+                    "[yellow]Warning: skip logged without --reason"
+                    " (#710) — if the order book was empty/one-sided,"
+                    " this should carry --reason liquidity. The row"
+                    " was logged; do not re-log.[/yellow]"
+                )
 
     _run(_log())
 

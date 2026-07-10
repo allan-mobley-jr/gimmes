@@ -100,6 +100,57 @@ def _invoke_skip(*extra: str) -> object:
     ])
 
 
+def test_empty_reason_skip_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#710: an entry-type skip with no --reason gets a yellow
+    warning naming the liquidity vocabulary — logged, exit 0."""
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = _invoke_skip()
+    assert result.exit_code == 0, result.output
+    assert "#710" in result.output
+    assert "liquidity" in result.output
+    # The load-bearing instruction — an agent seeing the warning must
+    # not duplicate the row (review-found: was unpinned).
+    assert "re-log" in result.output
+    assert _skip_row(db_path)["reason"] == ""
+
+
+def test_reason_given_suppresses_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#710: a structured reason means no warning — and liquidity
+    persists (first persistence pin for the value)."""
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = _invoke_skip("--reason", "liquidity")
+    assert result.exit_code == 0, result.output
+    assert "#710" not in result.output
+    assert _skip_row(db_path)["reason"] == "liquidity"
+
+
+def test_non_skip_action_no_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#710: the warning is a skip-path concern only."""
+    db_path = tmp_path / "test.db"
+    _seed_candidate(db_path)
+    _patch_config(monkeypatch, db_path)
+
+    result = runner.invoke(app, [
+        "log-trade", TICKER, "--action", "open",
+        "--price", "0.5", "--prob", "0.8", "--score", "70",
+        "--count", "10", "--rationale", "test open",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "#710" not in result.output
+
+
 def test_skip_without_args_inherits_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
