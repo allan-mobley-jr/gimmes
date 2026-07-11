@@ -725,9 +725,9 @@ class _EntryDayHarness:
         return [_settled_market("KXCPI-26MAR-T0.5",
                                 yes_bid=0.25, yes_ask=0.35)]
 
-    def _entry_ts(self, m) -> int:
+    def _entry_ts(self, m, offset: float = ENTRY_OFFSET_DAYS) -> int:
         return int(
-            (m.close_time - timedelta(days=ENTRY_OFFSET_DAYS)).timestamp(),
+            (m.close_time - timedelta(days=offset)).timestamp(),
         )
 
     def _stub(self, monkeypatch, markets, candles_by_ticker):
@@ -783,6 +783,40 @@ class _EntryDayHarness:
         return await run_backtest(
             client=None, config=config or self._permissive_config(),
         )
+
+    def _stub_windowed(
+        self, monkeypatch, markets, entry_candles, walk_candles,
+    ):
+        """Window-aware stub (#714): entry windows serve the entry
+        candle, walk windows (end_ts == settle_ts) the walk series."""
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        calls: list[dict] = []
+        settle_ts = {
+            m.ticker: int(m.close_time.timestamp()) for m in markets
+        }
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            calls.append({"ticker": ticker, "start_ts": start_ts,
+                          "end_ts": end_ts})
+            if end_ts == settle_ts[ticker] and start_ts != end_ts:
+                return walk_candles.get(ticker, [])
+            return entry_candles.get(ticker, [])
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+        return calls
+
+    def _exit_config(self, tp=None, sl=None):
+        cfg = self._permissive_config()
+        cfg.take_profit_pct = tp
+        cfg.stop_loss_pct = sl
+        return cfg
 
 
 class TestEntryDayPricing(_EntryDayHarness):
@@ -1541,42 +1575,256 @@ def test_cli_tp_sl_out_of_range_rejected(tmp_path) -> None:
     assert result.exit_code == 1
 
 
-class TestPostEntryExits(_EntryDayHarness):
-    """#714: end-to-end TP/SL walk through run_backtest. The stub is
-    window-aware: entry window (end_ts == entry_ts) serves the entry
-    candle, walk window (end_ts == settle_ts) serves the walk series."""
+def test_cli_entry_offset_wired(tmp_path) -> None:
+    """#713: --entry-offset reaches BacktestConfig; the CLI default
+    equals the engine constant."""
+    result, captured = _invoke_backtest_cli(
+        tmp_path, "--entry-offset", "2.5",
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].entry_offset_days == 2.5
 
-    def _stub_windowed(
-        self, monkeypatch, markets, entry_candles, walk_candles,
-    ):
+    result, captured = _invoke_backtest_cli(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert captured["config"].entry_offset_days == ENTRY_OFFSET_DAYS
+
+
+def test_cli_entry_offset_nonpositive_rejected(tmp_path) -> None:
+    result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", "0")
+    assert result.exit_code == 1
+    result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", "-1")
+    assert result.exit_code == 1
+    # Non-finite values would crash obscurely in timedelta (Copilot).
+    for bad in ("nan", "inf", "1e309"):
+        result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", bad)
+        assert result.exit_code == 1, bad
+
+
+class TestEntryOffset(_EntryDayHarness):
+    """#713: the entry offset is configurable; the fetch window,
+    candle selection, synthetic close, walk boundary, and warnings
+    all key off the configured value."""
+
+    def _offset_config(self, offset, tp=None, sl=None):
+        cfg = self._exit_config(tp=tp, sl=sl)
+        cfg.entry_offset_days = offset
+        return cfg
+
+    @pytest.mark.asyncio
+    async def test_offset_shifts_entry_window_and_candle_selection(
+        self, monkeypatch,
+    ) -> None:
+        """The discriminating fixture: with offset 2.0 the window
+        ends at close-2d, so the close-1d candle (which the default
+        offset would price from) must be unreachable — both the
+        window bound AND the selected candle prove the offset
+        governs."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        candles = {m.ticker: [
+            _make_candle(ts=close_ts - 172_800,
+                         yes_bid_close=0.30, yes_ask_close=0.40),
+            _make_candle(ts=close_ts - 86_400,
+                         yes_bid_close=0.10, yes_ask_close=0.20),
+        ]}
+        calls = self._stub(monkeypatch, markets, candles)
+        config = self._offset_config(2.0)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        # NO eff of the -2d candle (mid 0.35 -> 0.65), NOT the -1d
+        # candle's 0.85.
+        assert t.entry_price == pytest.approx(0.65)
+        assert t.entry_time == m.close_time - timedelta(days=2)
+        assert all(c["end_ts"] == close_ts - 172_800 for c in calls)
+        assert all(
+            c["start_ts"] == close_ts - 172_800 - 3 * 86_400
+            for c in calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_larger_offset_walk_gains_candles(
+        self, monkeypatch,
+    ) -> None:
+        """#714 synergy: a 3-day offset gives the walk interior
+        candles the default offset never sees — the TP fires at
+        close-2d."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        entry_ts3 = close_ts - 259_200
+        entry = {m.ticker: [_make_candle(
+            ts=entry_ts3, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        walk = {m.ticker: [
+            _make_candle(ts=entry_ts3 + 86_400,
+                         yes_bid_close=0.02, yes_ask_close=0.06),
+            _make_candle(ts=entry_ts3 + 172_800,
+                         yes_bid_close=0.50, yes_ask_close=0.60),
+        ]}
+        calls = self._stub_windowed(monkeypatch, markets, entry, walk)
+        config = self._offset_config(3.0, tp=0.8)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        assert t.exit_reason == "take_profit"
+        assert t.exit_time == datetime.fromtimestamp(
+            entry_ts3 + 86_400, tz=UTC,
+        )
+        assert result.exited_take_profit == 1
+        walk_calls = [c for c in calls if c["end_ts"] == close_ts]
+        assert walk_calls
+        assert all(c["start_ts"] == entry_ts3 for c in walk_calls)
+
+    @pytest.mark.asyncio
+    async def test_nonfinite_offset_fails_fast(
+        self, monkeypatch,
+    ) -> None:
+        """Programmatic callers get a clear ValueError BEFORE the
+        minutes-long market fetch pass (Copilot; placement
+        review-found — the stub records list calls to prove it)."""
+        list_calls = []
+
         async def _fake_list(*args, **kwargs):
-            return markets
-
-        calls: list[dict] = []
-        settle_ts = {
-            m.ticker: int(m.close_time.timestamp()) for m in markets
-        }
-
-        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
-            calls.append({"ticker": ticker, "start_ts": start_ts,
-                          "end_ts": end_ts})
-            if end_ts == settle_ts[ticker] and start_ts != end_ts:
-                return walk_candles.get(ticker, [])
-            return entry_candles.get(ticker, [])
+            list_calls.append(1)
+            return []
 
         monkeypatch.setattr(
             "gimmes.backtest.engine.list_all_markets", _fake_list,
         )
-        monkeypatch.setattr(
-            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
-        )
-        return calls
+        for bad in (float("nan"), float("inf"), 0.0, -1.0):
+            config = self._offset_config(bad)
+            with pytest.raises(ValueError, match="entry_offset_days"):
+                await run_backtest(client=None, config=config)
+        assert list_calls == []  # guard fired before any fetch
 
-    def _exit_config(self, tp=None, sl=None):
-        cfg = self._permissive_config()
-        cfg.take_profit_pct = tp
-        cfg.stop_loss_pct = sl
-        return cfg
+    @pytest.mark.asyncio
+    async def test_subday_offset_warns(
+        self, monkeypatch, caplog,
+    ) -> None:
+        import logging
+
+        # CLI tests set propagate=False on gimmes.backtest (#696
+        # lesson) — caplog captures at root; restore for this test.
+        monkeypatch.setattr(
+            logging.getLogger("gimmes.backtest"), "propagate", True,
+        )
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        candles = {m.ticker: [_make_candle(
+            ts=close_ts - 43_200, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+        config = self._offset_config(0.5)
+        config.gimmes_config.scanner.min_days_to_resolution = 0.0
+
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            await run_backtest(client=None, config=config)
+        warnings = [r.message for r in caplog.records]
+        assert any("sub-day" in w for w in warnings)
+        assert not any("hold-to-settlement" in w for w in warnings)
+
+        # Control arm (mutation pin: `< 1` must not become `<= 1`):
+        # the default 1.0 offset never triggers the sub-day warning.
+        caplog.clear()
+        config = self._offset_config(1.0)
+        config.gimmes_config.scanner.min_days_to_resolution = 0.0
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            await run_backtest(client=None, config=config)
+        assert not any(
+            "sub-day" in r.message for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_subday_offset_with_tpsl_warns_walk_degradation(
+        self, monkeypatch, caplog,
+    ) -> None:
+        import logging
+
+        # CLI tests set propagate=False on gimmes.backtest (#696
+        # lesson) — caplog captures at root; restore for this test.
+        monkeypatch.setattr(
+            logging.getLogger("gimmes.backtest"), "propagate", True,
+        )
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        candles = {m.ticker: [_make_candle(
+            ts=close_ts - 43_200, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+        config = self._offset_config(0.5, tp=0.8)
+        config.gimmes_config.scanner.min_days_to_resolution = 0.0
+
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            await run_backtest(client=None, config=config)
+        warnings = [r.message for r in caplog.records]
+        assert any("sub-day" in w for w in warnings)
+        assert any("hold-to-settlement" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_days_filter_warning_keys_off_configured_offset(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """min_days 1.5: a 2.0 offset passes (and trades — proving
+        synthetic_close honors the offset); the default 1.0 offset
+        warns and selects nothing."""
+        import logging
+
+        monkeypatch.setattr(
+            logging.getLogger("gimmes.backtest"), "propagate", True,
+        )
+        markets = self._markets()
+        m = markets[0]
+
+        def _cfg(offset):
+            candles = {m.ticker: [_make_candle(
+                ts=int((m.close_time
+                        - timedelta(days=offset)).timestamp()),
+                yes_bid_close=0.30, yes_ask_close=0.40,
+            )]}
+            self._stub(monkeypatch, markets, candles)
+            config = self._offset_config(offset)
+            config.gimmes_config.scanner.min_days_to_resolution = 1.5
+            config.gimmes_config.scanner.max_days_to_resolution = 90.0
+            return config
+
+        config = _cfg(2.0)
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            result = await run_backtest(client=None, config=config)
+        assert not any(
+            "min_days_to_resolution" in r.message for r in caplog.records
+        )
+        assert len(result.trades) == 1
+
+        caplog.clear()
+        config = _cfg(1.0)
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            result = await run_backtest(client=None, config=config)
+        assert any(
+            "min_days_to_resolution" in r.message for r in caplog.records
+        )
+        assert result.trades == []
+
+
+class TestPostEntryExits(_EntryDayHarness):
+    """#714: end-to-end TP/SL walk through run_backtest. The stub is
+    window-aware: entry window (end_ts == entry_ts) serves the entry
+    candle, walk window (end_ts == settle_ts) serves the walk series."""
 
     def _entry_setup(self, monkeypatch, walk_bid, walk_ask):
         """One market, entry candle 0.30/0.40 (NO eff 0.65), one

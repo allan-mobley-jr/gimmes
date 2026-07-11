@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -28,7 +29,7 @@ from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
 
-ENTRY_OFFSET_DAYS = 1
+ENTRY_OFFSET_DAYS = 1.0
 CANDLE_LOOKBACK_DAYS = 3
 
 
@@ -63,6 +64,10 @@ class BacktestConfig:
     # legal threshold: every gate on these must use `is not None`.
     take_profit_pct: float | None = None
     stop_loss_pct: float | None = None
+    # #713: enter each market this many days before close. Daily
+    # candle granularity (period 1440) is unchanged — sub-day values
+    # warn; sub-day granularity is the v2 follow-up (#716).
+    entry_offset_days: float = ENTRY_OFFSET_DAYS
 
 
 @dataclass
@@ -484,10 +489,11 @@ def _entry_day_view(
       setting both makes the scanner/scorer's `volume_24h or volume`
       branches read the candle value either way.
     - open_interest at candle close.
-    - status ACTIVE + close_time at now + ENTRY_OFFSET_DAYS: the
+    - status ACTIVE + close_time at now + the configured entry offset
+      (``entry_offset_days``, default ENTRY_OFFSET_DAYS): the
       honest days-to-resolution at the backtest's fixed-offset entry
-      is exactly ENTRY_OFFSET_DAYS by construction (the +60s margin
-      makes the min_days == ENTRY_OFFSET_DAYS boundary
+      is exactly the configured offset by construction (the +60s
+      margin makes the min_days == entry_offset_days boundary
       deterministic).
     """
     return market.model_copy(update={
@@ -568,6 +574,19 @@ async def run_backtest(
     5. Return aggregated results
     """
     gc = config.gimmes_config
+    if not (
+        math.isfinite(config.entry_offset_days)
+        and config.entry_offset_days > 0
+    ):
+        # Fail fast — BEFORE the minutes-long market fetch pass — with
+        # a clear message for programmatic callers: NaN/inf would
+        # otherwise surface as an obscure timedelta conversion error
+        # deep in the entry pass (Copilot, #713; placement
+        # review-found).
+        raise ValueError(
+            f"entry_offset_days must be a positive finite number,"
+            f" got {config.entry_offset_days!r}",
+        )
     ledger = BacktestLedger(config.starting_balance)
 
     # --- 1. Fetch settled markets per series via live API ---
@@ -683,16 +702,44 @@ async def run_backtest(
     # otherwise see cumulative hits and negative "API fetches".
     disk_hits_before = candle_cache.hits if candle_cache is not None else 0
     if (
-        gc.scanner.min_days_to_resolution > ENTRY_OFFSET_DAYS
-        or gc.scanner.max_days_to_resolution <= ENTRY_OFFSET_DAYS
+        gc.scanner.min_days_to_resolution > config.entry_offset_days
+        or gc.scanner.max_days_to_resolution <= config.entry_offset_days
     ):
         logger.warning(
             "min_days_to_resolution (%.1f) / max_days_to_resolution"
-            " (%.1f) exclude the backtest's fixed %d-day entry offset"
-            " — the days filter will select NOTHING (#666)",
+            " (%.1f) exclude the backtest's %g-day entry offset"
+            " (--entry-offset) — the days filter will select NOTHING"
+            " (#666)",
             gc.scanner.min_days_to_resolution,
-            gc.scanner.max_days_to_resolution, ENTRY_OFFSET_DAYS,
+            gc.scanner.max_days_to_resolution, config.entry_offset_days,
         )
+    if config.entry_offset_days < 1:
+        # #713 v1: granularity is still DAILY — sub-day offsets mostly
+        # land in skipped_no_candle until #716.
+        logger.warning(
+            "--entry-offset %g is sub-day, but candles are DAILY"
+            " (period 1440, midnight-UTC boundaries): entries still"
+            " price from the last candle ending at or before the"
+            " offset, and markets living under a day mostly have none"
+            " (skipped_no_candle). Sub-day granularity is #716 (#713)",
+            config.entry_offset_days,
+        )
+        if (
+            config.take_profit_pct is not None
+            or config.stop_loss_pct is not None
+        ):
+            logger.warning(
+                "TP/SL with a sub-day entry offset: the walk sees only"
+                " DAILY candles strictly between entry and settlement"
+                " — under a %g-day offset that is almost always ZERO"
+                " candles, so exits silently degrade to"
+                " hold-to-settlement (#713/#714)",
+                config.entry_offset_days,
+            )
+    logger.info(
+        "entry-candle pass: %d markets to price — one candle fetch"
+        " each on a cold cache (#713)", len(settled),
+    )
     for i, m in enumerate(settled):
         if m.close_time is None:
             continue
@@ -704,7 +751,7 @@ async def run_backtest(
             m.close_time if m.close_time.tzinfo
             else m.close_time.replace(tzinfo=UTC)
         )
-        entry_time = close_time - timedelta(days=ENTRY_OFFSET_DAYS)
+        entry_time = close_time - timedelta(days=config.entry_offset_days)
         entry_ts = int(entry_time.timestamp())
         candle = await _fetch_entry_candle(
             client, m.ticker, entry_ts, memory_cache,
@@ -764,8 +811,8 @@ async def run_backtest(
     # Build the views AFTER the fetch pass: the synthetic close must
     # be honest RELATIVE TO FILTER TIME — computing it before a
     # multi-minute fetch pass would leave days-to-resolution just
-    # under ENTRY_OFFSET_DAYS and silently zero out configs with
-    # min_days_to_resolution == ENTRY_OFFSET_DAYS (review-found).
+    # under the configured entry offset and silently zero out configs
+    # with min_days_to_resolution == entry_offset_days (review-found).
     if candle_cache is not None:
         disk_hits = candle_cache.hits - disk_hits_before
         logger.info(
@@ -775,7 +822,7 @@ async def run_backtest(
             len(memory_cache) - disk_hits,
         )
     synthetic_close = datetime.now(UTC) + timedelta(
-        days=ENTRY_OFFSET_DAYS, seconds=60,
+        days=config.entry_offset_days, seconds=60,
     )
     entry_views: dict[str, Market] = {
         ticker: _entry_day_view(
