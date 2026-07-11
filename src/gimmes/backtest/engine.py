@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -573,6 +574,19 @@ async def run_backtest(
     5. Return aggregated results
     """
     gc = config.gimmes_config
+    if not (
+        math.isfinite(config.entry_offset_days)
+        and config.entry_offset_days > 0
+    ):
+        # Fail fast — BEFORE the minutes-long market fetch pass — with
+        # a clear message for programmatic callers: NaN/inf would
+        # otherwise surface as an obscure timedelta conversion error
+        # deep in the entry pass (Copilot, #713; placement
+        # review-found).
+        raise ValueError(
+            f"entry_offset_days must be a positive finite number,"
+            f" got {config.entry_offset_days!r}",
+        )
     ledger = BacktestLedger(config.starting_balance)
 
     # --- 1. Fetch settled markets per series via live API ---

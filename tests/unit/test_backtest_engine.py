@@ -1594,6 +1594,10 @@ def test_cli_entry_offset_nonpositive_rejected(tmp_path) -> None:
     assert result.exit_code == 1
     result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", "-1")
     assert result.exit_code == 1
+    # Non-finite values would crash obscurely in timedelta (Copilot).
+    for bad in ("nan", "inf", "1e309"):
+        result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", bad)
+        assert result.exit_code == 1, bad
 
 
 class TestEntryOffset(_EntryDayHarness):
@@ -1674,6 +1678,28 @@ class TestEntryOffset(_EntryDayHarness):
         walk_calls = [c for c in calls if c["end_ts"] == close_ts]
         assert walk_calls
         assert all(c["start_ts"] == entry_ts3 for c in walk_calls)
+
+    @pytest.mark.asyncio
+    async def test_nonfinite_offset_fails_fast(
+        self, monkeypatch,
+    ) -> None:
+        """Programmatic callers get a clear ValueError BEFORE the
+        minutes-long market fetch pass (Copilot; placement
+        review-found — the stub records list calls to prove it)."""
+        list_calls = []
+
+        async def _fake_list(*args, **kwargs):
+            list_calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        for bad in (float("nan"), float("inf"), 0.0, -1.0):
+            config = self._offset_config(bad)
+            with pytest.raises(ValueError, match="entry_offset_days"):
+                await run_backtest(client=None, config=config)
+        assert list_calls == []  # guard fired before any fetch
 
     @pytest.mark.asyncio
     async def test_subday_offset_warns(

@@ -4447,8 +4447,15 @@ def backtest(
                     f"[red]{flag} must be between 0 and 1[/red]",
                 )
                 raise typer.Exit(1)
-        if not entry_offset > 0:  # `not >` also rejects NaN
-            console.print("[red]--entry-offset must be positive[/red]")
+        import math
+
+        # `not >` also rejects NaN; isfinite rejects inf/1e309, which
+        # would otherwise crash obscurely in timedelta (Copilot).
+        if not (math.isfinite(entry_offset) and entry_offset > 0):
+            console.print(
+                "[red]--entry-offset must be a positive finite"
+                " number[/red]",
+            )
             raise typer.Exit(1)
         bt_config = BacktestConfig(
             start_date=start,
