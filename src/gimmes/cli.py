@@ -4410,6 +4410,12 @@ def backtest(
              " basis (e.g. 0.15 mirrors the live loop). Omit to hold"
              " to settlement (#714)",
     ),
+    entry_offset: float = typer.Option(
+        1.0, "--entry-offset",
+        help="Enter each market this many days before close (default"
+             " 1). Candles are daily — sub-day values mostly skip;"
+             " each offset value is a fresh cache namespace (#713)",
+    ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""
     config = load_config()
@@ -4441,6 +4447,9 @@ def backtest(
                     f"[red]{flag} must be between 0 and 1[/red]",
                 )
                 raise typer.Exit(1)
+        if not entry_offset > 0:  # `not >` also rejects NaN
+            console.print("[red]--entry-offset must be positive[/red]")
+            raise typer.Exit(1)
         bt_config = BacktestConfig(
             start_date=start,
             end_date=end,
@@ -4450,6 +4459,7 @@ def backtest(
             taker_fill=taker_fill,
             take_profit_pct=take_profit,
             stop_loss_pct=stop_loss,
+            entry_offset_days=entry_offset,
         )
         console.print(
             f"[dim]Running backtest: {start} to {end}, "

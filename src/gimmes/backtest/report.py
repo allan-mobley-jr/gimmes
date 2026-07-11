@@ -86,6 +86,7 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         f" – {cfg.gimmes_config.strategy.max_market_price:.2f}",
         f"Gimme threshold: {cfg.gimmes_config.strategy.gimme_threshold:.0f}",
         f"Assumed edge: {cfg.assumed_edge:.0%}",
+        f"Entry offset: {cfg.entry_offset_days:g} day(s) before close",
         "Fill model: "
         + ("taker (pays the ask)" if cfg.taker_fill else "maker (midpoint)"),
         "Exits: "
@@ -301,6 +302,7 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "taker_fill": result.config.taker_fill,
             "take_profit_pct": result.config.take_profit_pct,
             "stop_loss_pct": result.config.stop_loss_pct,
+            "entry_offset_days": result.config.entry_offset_days,
         },
         "funnel": {
             "markets_scanned": result.markets_scanned,

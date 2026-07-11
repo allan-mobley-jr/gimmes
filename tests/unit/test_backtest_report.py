@@ -439,3 +439,32 @@ class TestExitFieldsInReport:
         assert "walk fetches" in out
         # The semantic point of the wording: only ENTERED positions.
         assert "entered" in out
+
+
+class TestEntryOffsetInReport:
+    """#713: the configured offset reaches the JSON config and the
+    header."""
+
+    def test_json_config_carries_entry_offset(self) -> None:
+        data = backtest_result_to_json(_make_result())
+        assert data["config"]["entry_offset_days"] == 1.0
+        result = _make_result()
+        result.config.entry_offset_days = 2.5
+        data = backtest_result_to_json(result)
+        assert data["config"]["entry_offset_days"] == 2.5
+
+    def test_header_shows_entry_offset(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        # %g pins: 1.0 renders "1", not "1.0" (mutation pin).
+        assert "Entry offset: 1 day(s)" in buf.getvalue()
+
+        result.config.entry_offset_days = 2.5
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "Entry offset: 2.5 day(s)" in buf.getvalue()
