@@ -337,3 +337,105 @@ class TestNewCountersInReport:
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
         assert "taker (pays the ask)" in buf.getvalue()
+
+
+
+class TestExitFieldsInReport:
+    """#714: exit-reason counters and per-trade exit fields reach the
+    JSON; the funnel and header render the exit rule."""
+
+    def test_json_carries_exit_counters(self) -> None:
+        result = _make_result()
+        result.exited_take_profit = 2
+        result.exited_stop_loss = 1
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["exited_take_profit"] == 2
+        assert data["funnel"]["exited_stop_loss"] == 1
+
+    def test_json_trade_exit_fields(self) -> None:
+        from datetime import UTC, datetime
+
+        result = _make_result()
+        data = backtest_result_to_json(result)
+        t0 = data["trades"][0]
+        assert t0["exit_reason"] == "settled"
+        assert t0["exit_price"] is None
+        assert t0["exit_time"] is None
+
+        result.trades[0].exit_reason = "take_profit"
+        result.trades[0].exit_price = 0.94
+        result.trades[0].exit_time = datetime(2026, 4, 15, tzinfo=UTC)
+        data = backtest_result_to_json(result)
+        t0 = data["trades"][0]
+        assert t0["exit_reason"] == "take_profit"
+        assert t0["exit_price"] == 0.94
+        assert t0["exit_time"].startswith("2026-04-15")
+
+    def test_json_config_carries_tp_sl(self) -> None:
+        data = backtest_result_to_json(_make_result())
+        assert data["config"]["take_profit_pct"] is None
+        assert data["config"]["stop_loss_pct"] is None
+
+    def test_funnel_exit_rows_render(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.exited_take_profit = 2
+        result.exited_stop_loss = 1
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "Exited (take-profit)" in out
+        assert "Exited (stop-loss)" in out
+
+    def test_header_names_exit_rule(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "hold to settlement" in buf.getvalue()
+
+        result.config.take_profit_pct = 0.8
+        result.config.stop_loss_pct = 0.15
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "TP 80%" in out
+        assert "SL 15%" in out
+
+        # 0.0 is a LEGAL threshold — a truthiness gate would render
+        # "hold to settlement" (review-found).
+        result.config.take_profit_pct = 0.0
+        result.config.stop_loss_pct = None
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "TP 0%" in buf.getvalue()
+
+    def test_summary_total_fees_includes_exit_legs(self) -> None:
+        result = _make_result()
+        result.trades[0].fees = 5.0  # entry + exit legs combined
+        result.trades[0].exit_reason = "take_profit"
+        data = backtest_result_to_json(result)
+        total = round(sum(t.fees for t in result.trades), 2)
+        assert data["summary"]["total_fees"] == total
+
+    def test_walk_fetch_failure_warning_renders(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.walk_fetch_failures = 3
+        data = backtest_result_to_json(result)
+        assert data["funnel"]["walk_fetch_failures"] == 3
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "walk fetches" in out
+        # The semantic point of the wording: only ENTERED positions.
+        assert "entered" in out

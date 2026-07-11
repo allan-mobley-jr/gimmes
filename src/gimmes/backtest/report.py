@@ -74,6 +74,11 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
     s = _compute_summary(result)
 
     # --- Header ---
+    exit_parts = []
+    if cfg.take_profit_pct is not None:
+        exit_parts.append(f"TP {cfg.take_profit_pct:.0%}")
+    if cfg.stop_loss_pct is not None:
+        exit_parts.append(f"SL {cfg.stop_loss_pct:.0%}")
     header_lines = [
         f"Period: {cfg.start_date} to {cfg.end_date}",
         f"Starting balance: ${cfg.starting_balance:,.2f}",
@@ -83,6 +88,8 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         f"Assumed edge: {cfg.assumed_edge:.0%}",
         "Fill model: "
         + ("taker (pays the ask)" if cfg.taker_fill else "maker (midpoint)"),
+        "Exits: "
+        + (" / ".join(exit_parts) if exit_parts else "hold to settlement"),
     ]
     console.print(Panel(
         "\n".join(header_lines), title="Backtest Config", border_style="blue",
@@ -144,6 +151,14 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
             "Skipped (entry-day prob/edge gates)",
             str(result.skipped_entry_gates),
         )
+    if result.exited_take_profit > 0:
+        funnel.add_row(
+            "Exited (take-profit)", str(result.exited_take_profit),
+        )
+    if result.exited_stop_loss > 0:
+        funnel.add_row(
+            "Exited (stop-loss)", str(result.exited_stop_loss),
+        )
     console.print(funnel)
     if result.fetch_failures > 0:
         console.print(
@@ -151,6 +166,14 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
             f" FAILED — the skip counts may reflect an API problem,"
             f" not data sparsity (#666). The #655 endpoint regression"
             f" produced exactly this signature.[/red]"
+        )
+    if result.walk_fetch_failures > 0:
+        console.print(
+            f"[yellow]Warning: {result.walk_fetch_failures} entered"
+            f" positions' post-entry walk fetches FAILED — they"
+            f" silently held to settlement, so the TP/SL exit numbers"
+            f" above understate what the exit rule would have done"
+            f" (#714).[/yellow]"
         )
     if result.markets_passed_filter == 0 and usable_views > 0:
         console.print(
@@ -260,6 +283,11 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "pnl": round(t.pnl, 4),
             "entry_time": t.entry_time.isoformat() if t.entry_time else None,
             "settle_time": t.settle_time.isoformat() if t.settle_time else None,
+            "exit_reason": t.exit_reason,
+            "exit_price": (
+                round(t.exit_price, 4) if t.exit_price is not None else None
+            ),
+            "exit_time": t.exit_time.isoformat() if t.exit_time else None,
         }
         for t in result.trades
     ]
@@ -271,6 +299,8 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "starting_balance": result.config.starting_balance,
             "assumed_edge": result.config.assumed_edge,
             "taker_fill": result.config.taker_fill,
+            "take_profit_pct": result.config.take_profit_pct,
+            "stop_loss_pct": result.config.stop_loss_pct,
         },
         "funnel": {
             "markets_scanned": result.markets_scanned,
@@ -284,6 +314,9 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "stale_candles": result.stale_candles,
             "skipped_zero_sizing": result.skipped_zero_sizing,
             "truncated_chunks": result.truncated_chunks,
+            "exited_take_profit": result.exited_take_profit,
+            "exited_stop_loss": result.exited_stop_loss,
+            "walk_fetch_failures": result.walk_fetch_failures,
         },
         "summary": {
             "total_trades": s.total,

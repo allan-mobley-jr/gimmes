@@ -10,6 +10,7 @@ from gimmes.backtest.engine import (
     DEFAULT_FEE_MULTIPLIERS,
     ENTRY_OFFSET_DAYS,
     BacktestLedger,
+    _walk_exit,
     candle_midpoint,
     entry_candle_at,
     monthly_chunks,
@@ -17,6 +18,7 @@ from gimmes.backtest.engine import (
     weekly_chunks,
 )
 from gimmes.kalshi.historical import Candle
+from gimmes.strategy.fees import fee_for_order
 from gimmes.strategy.kelly import position_size
 
 
@@ -95,6 +97,56 @@ class TestBacktestLedger:
     def test_settle_unknown_ticker(self) -> None:
         ledger = BacktestLedger(1000.0)
         assert ledger.settle("UNKNOWN", "yes") is None
+
+    def test_close_gain(self) -> None:
+        """#714: an early exit is a SELL at price minus the exit fee."""
+        ledger = BacktestLedger(1000.0)
+        ledger.buy("T1", "Test", "yes", 10, 0.65, 0.50)  # cost 7.00
+        trade = ledger.close(
+            "T1", result="yes", price=0.94, exit_fees=0.06,
+            exit_time=None, reason="take_profit",
+        )
+        assert trade is not None
+        assert trade.payout == pytest.approx(10 * 0.94 - 0.06)  # 9.34
+        assert trade.pnl == pytest.approx(9.34 - 7.00)  # +2.34
+        assert ledger.balance == pytest.approx(1000.0 - 7.00 + 9.34)
+        assert "T1" not in ledger.positions
+        assert trade.exit_reason == "take_profit"
+        assert trade.exit_price == 0.94
+        assert trade.settle_time is None
+        assert trade.fees == pytest.approx(0.56)  # entry + exit legs
+
+    def test_close_loss(self) -> None:
+        ledger = BacktestLedger(1000.0)
+        ledger.buy("T1", "Test", "yes", 10, 0.65, 0.50)
+        trade = ledger.close(
+            "T1", result="no", price=0.40, exit_fees=0.29,
+            exit_time=None, reason="stop_loss",
+        )
+        assert trade is not None
+        assert trade.payout == pytest.approx(10 * 0.40 - 0.29)  # 3.71
+        assert trade.pnl == pytest.approx(3.71 - 7.00)  # -3.29
+        assert ledger.balance == pytest.approx(1000.0 - 7.00 + 3.71)
+
+    def test_close_unknown_ticker(self) -> None:
+        ledger = BacktestLedger(1000.0)
+        assert ledger.close(
+            "UNKNOWN", result="yes", price=0.5, exit_fees=0.0,
+            exit_time=None, reason="stop_loss",
+        ) is None
+        assert ledger.balance == 1000.0
+
+    def test_settle_after_close_noop(self) -> None:
+        """#714: the exit pops the position, so the trade's later
+        settle event no-ops — no double-count."""
+        ledger = BacktestLedger(1000.0)
+        ledger.buy("T1", "Test", "yes", 10, 0.65, 0.50)
+        ledger.close(
+            "T1", result="yes", price=0.94, exit_fees=0.06,
+            exit_time=None, reason="take_profit",
+        )
+        assert ledger.settle("T1", "yes") is None
+        assert len(ledger.trades) == 1
 
     def test_snapshot(self) -> None:
         ledger = BacktestLedger(1000.0)
@@ -555,6 +607,111 @@ class TestStrategyFilters:
             ),
         )
         assert len(live_defaults.trades) == len(permissive.trades)
+
+
+class TestWalkExit:
+    """#714: the pure walk — trigger math mirrors the LIVE formulas
+    (SL on fee-inclusive cost basis; TP on fee-free max profit; mark
+    = side-effective midpoint; conservative tradeable-side fill)."""
+
+    ENTRY_TS = 1_700_000_000
+    SETTLE_TS = ENTRY_TS + 86_400
+
+    def _walk(self, candles, **kw):
+        args = dict(
+            side="yes", count=10, entry_eff=0.65, cost_basis=6.5,
+            entry_ts=self.ENTRY_TS, settle_ts=self.SETTLE_TS,
+            tp_pct=None, sl_pct=None,
+        )
+        args.update(kw)
+        return _walk_exit(candles, **args)
+
+    def _mid_candle(self, bid, ask, offset=43_200):
+        return _make_candle(
+            ts=self.ENTRY_TS + offset, yes_bid_close=bid,
+            yes_ask_close=ask,
+        )
+
+    def test_stop_first_when_both_trigger(self) -> None:
+        """Degenerate 0.0 thresholds co-trigger at break-even — the
+        pessimistic stop wins (and 0.0 is a LEGAL threshold)."""
+        hit = self._walk(
+            [self._mid_candle(0.60, 0.70)], tp_pct=0.0, sl_pct=0.0,
+        )
+        assert hit == ("stop_loss", 0.60, self.ENTRY_TS + 43_200)
+
+    def test_take_profit_fill_is_bid_for_yes(self) -> None:
+        # mark 0.97, gain 10*0.97-6.5 = 3.2 >= 0.8*3.5 = 2.8
+        hit = self._walk(
+            [self._mid_candle(0.96, 0.98)], tp_pct=0.8,
+        )
+        assert hit == ("take_profit", 0.96, self.ENTRY_TS + 43_200)
+
+    def test_no_side_fill_is_one_minus_ask(self) -> None:
+        # NO mark = 1-0.55 = 0.45; loss 6.5-4.5 = 2.0 >= 0.15*6.5
+        hit = self._walk(
+            [self._mid_candle(0.50, 0.60)], side="no", sl_pct=0.15,
+        )
+        assert hit is not None
+        assert hit[0] == "stop_loss"
+        assert hit[1] == pytest.approx(0.40)  # 1 - yes_ask_close
+
+    def test_quiet_candle_skipped(self) -> None:
+        """A zero-default candle computes mark 0 — treating it as a
+        crash would fabricate a stop on every quiet day."""
+        hit = self._walk(
+            [self._mid_candle(0.0, 0.0)], sl_pct=0.15,
+        )
+        assert hit is None
+
+    def test_degenerate_candle_skipped(self) -> None:
+        hit = self._walk(
+            [self._mid_candle(0.99, 1.0)], tp_pct=0.5,
+        )
+        assert hit is None
+
+    def test_entry_and_settlement_candles_excluded(self) -> None:
+        """Look-ahead discipline: the entry candle priced the entry;
+        the settlement candle encodes the outcome."""
+        crash = [
+            self._mid_candle(0.10, 0.20, offset=0),        # == entry_ts
+            self._mid_candle(0.10, 0.20, offset=86_400),   # == settle_ts
+        ]
+        assert self._walk(crash, sl_pct=0.15) is None
+
+    def test_tp_denominator_is_fee_free(self) -> None:
+        """Mutation pin: max_profit = count*(1-eff) WITHOUT fees. A
+        fee-inclusive denominator (count - cost_basis) is smaller and
+        would fire here; the fee-free threshold holds. count=10,
+        eff=0.65, cost_basis=7.0 (fee 0.50): mark 0.96 -> unrealized
+        2.60 < fee-free 0.8*3.5=2.80 (hold) but >= mutant 2.40."""
+        hit = self._walk(
+            [self._mid_candle(0.95, 0.97)], cost_basis=7.0, tp_pct=0.8,
+        )
+        assert hit is None
+
+    def test_sl_basis_is_fee_inclusive(self) -> None:
+        """Mutation pin: the SL denominator is the fee-INCLUSIVE cost
+        basis (live _stop_gate_pct). count=10, eff=0.65,
+        cost_basis=7.0: mark 0.595 -> loss 1.05 >= 0.15*7.0 = 1.05
+        (fires); a fee-free basis gives loss 0.55 < 0.975 (holds)."""
+        hit = self._walk(
+            [self._mid_candle(0.59, 0.60)], cost_basis=7.0, sl_pct=0.15,
+        )
+        assert hit is not None
+        assert hit[0] == "stop_loss"
+
+    def test_tp_none_means_no_tp(self) -> None:
+        hit = self._walk(
+            [self._mid_candle(0.96, 0.98)], tp_pct=None, sl_pct=0.15,
+        )
+        assert hit is None
+
+    def test_sl_none_means_no_sl(self) -> None:
+        hit = self._walk(
+            [self._mid_candle(0.10, 0.20)], tp_pct=0.8, sl_pct=None,
+        )
+        assert hit is None
 
 
 class _EntryDayHarness:
@@ -1358,6 +1515,480 @@ def test_cli_no_cache_flag_bypasses_disk(tmp_path) -> None:
     assert result.exit_code == 0, result.output
     assert captured["cache"] is None
     assert not (tmp_path / "backtest_cache.db").exists()
+
+
+def test_cli_tp_sl_flags_wired(tmp_path) -> None:
+    """#714: --take-profit/--stop-loss reach BacktestConfig; defaults
+    stay None (hold to settlement)."""
+    result, captured = _invoke_backtest_cli(
+        tmp_path, "--take-profit", "0.8", "--stop-loss", "0.15",
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].take_profit_pct == 0.8
+    assert captured["config"].stop_loss_pct == 0.15
+
+    result, captured = _invoke_backtest_cli(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert captured["config"].take_profit_pct is None
+    assert captured["config"].stop_loss_pct is None
+
+
+def test_cli_tp_sl_out_of_range_rejected(tmp_path) -> None:
+    """#714: validation runs before any engine work."""
+    result, _ = _invoke_backtest_cli(tmp_path, "--take-profit", "1.5")
+    assert result.exit_code == 1
+    result, _ = _invoke_backtest_cli(tmp_path, "--stop-loss", "-0.1")
+    assert result.exit_code == 1
+
+
+class TestPostEntryExits(_EntryDayHarness):
+    """#714: end-to-end TP/SL walk through run_backtest. The stub is
+    window-aware: entry window (end_ts == entry_ts) serves the entry
+    candle, walk window (end_ts == settle_ts) serves the walk series."""
+
+    def _stub_windowed(
+        self, monkeypatch, markets, entry_candles, walk_candles,
+    ):
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        calls: list[dict] = []
+        settle_ts = {
+            m.ticker: int(m.close_time.timestamp()) for m in markets
+        }
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            calls.append({"ticker": ticker, "start_ts": start_ts,
+                          "end_ts": end_ts})
+            if end_ts == settle_ts[ticker] and start_ts != end_ts:
+                return walk_candles.get(ticker, [])
+            return entry_candles.get(ticker, [])
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+        return calls
+
+    def _exit_config(self, tp=None, sl=None):
+        cfg = self._permissive_config()
+        cfg.take_profit_pct = tp
+        cfg.stop_loss_pct = sl
+        return cfg
+
+    def _entry_setup(self, monkeypatch, walk_bid, walk_ask):
+        """One market, entry candle 0.30/0.40 (NO eff 0.65), one
+        strictly-interior walk candle at entry_ts + 12h."""
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        entry = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        walk = {m.ticker: [_make_candle(
+            ts=entry_ts + 43_200, yes_bid_close=walk_bid,
+            yes_ask_close=walk_ask,
+        )]}
+        calls = self._stub_windowed(monkeypatch, markets, entry, walk)
+        return m, entry_ts, calls
+
+    def _expected_entry(self, config):
+        """Recompute count / entry fee / cost basis the way the
+        engine does (NO eff 0.65), so tests don't hard-wire the
+        operator's sizing config."""
+        side_cfg = config.gimmes_config.effective_config_for_side("no")
+        count = position_size(
+            config.starting_balance, 0.65,
+            min(0.65 + config.assumed_edge, 0.99),
+            fraction=side_cfg.sizing.kelly_fraction,
+            max_position_pct=side_cfg.sizing.max_position_pct,
+            fees=DEFAULT_FEE_MULTIPLIERS,
+            mode=side_cfg.sizing.mode,
+        )
+        entry_fee = fee_for_order(count, 0.65, is_taker=False)
+        return count, entry_fee, count * 0.65 + entry_fee
+
+    @pytest.mark.asyncio
+    async def test_take_profit_exit(self, monkeypatch) -> None:
+        # Walk candle 0.02/0.06: NO mark 0.96 — deep in profit.
+        _, _, _ = self._entry_setup(monkeypatch, 0.02, 0.06)
+        config = self._exit_config(tp=0.8)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        count, _, cost_basis = self._expected_entry(config)
+        exit_price = 1.0 - 0.06  # NO fill = 1 - yes_ask_close
+        exit_fee = fee_for_order(count, exit_price, is_taker=False)
+        assert t.exit_reason == "take_profit"
+        assert t.exit_price == pytest.approx(exit_price)
+        assert t.payout == pytest.approx(count * exit_price - exit_fee)
+        assert t.pnl == pytest.approx(t.payout - cost_basis)
+        assert t.result == "no"  # eventual settlement preserved
+        # settle_time keeps the WOULD-HAVE-settled moment (review:
+        # exit-vs-hold analysis needs both timestamps).
+        assert t.settle_time == _FIXED_CLOSE_TIME
+        assert t.exit_time is not None and t.exit_time < t.settle_time
+        assert result.exited_take_profit == 1
+        assert result.exited_stop_loss == 0
+        # The exit snapshots equity at exit time (drawdown/sharpe
+        # inputs — review-found: deleting the snapshot survived).
+        assert any(
+            eq == pytest.approx(
+                10_000.0 - cost_basis + t.payout,
+            ) for _, eq in result.equity_curve
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_loss_exit(self, monkeypatch) -> None:
+        # Walk candle 0.50/0.60: NO mark 0.45 vs entry eff 0.65 —
+        # a >15% drawdown on cost basis. The market EVENTUALLY
+        # settles "no" (a win) — the stop costs money vs holding:
+        # realism, pinned.
+        self._entry_setup(monkeypatch, 0.50, 0.60)
+        config = self._exit_config(sl=0.15)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        count, _, cost_basis = self._expected_entry(config)
+        exit_price = 1.0 - 0.60
+        exit_fee = fee_for_order(count, exit_price, is_taker=False)
+        assert t.exit_reason == "stop_loss"
+        assert t.payout == pytest.approx(count * exit_price - exit_fee)
+        assert t.pnl == pytest.approx(t.payout - cost_basis)
+        assert t.pnl < 0 < count * 1.0 - cost_basis  # stop lost, hold won
+        assert result.exited_stop_loss == 1
+
+    @pytest.mark.asyncio
+    async def test_no_trigger_holds_to_settlement(self, monkeypatch) -> None:
+        # Walk candle 0.28/0.38: NO mark 0.67 — inside both bands.
+        self._entry_setup(monkeypatch, 0.28, 0.38)
+        config = self._exit_config(tp=0.8, sl=0.15)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        count, _, cost_basis = self._expected_entry(config)
+        assert t.exit_reason == "settled"
+        assert t.exit_price is None
+        assert t.payout == pytest.approx(count * 1.0)  # NO won
+        assert result.exited_take_profit == 0
+        assert result.exited_stop_loss == 0
+
+    @pytest.mark.asyncio
+    async def test_defaults_no_post_entry_fetch(self, monkeypatch) -> None:
+        """None thresholds mean NO walk fetch at all — every candle
+        call is the entry window (complements the #666 pin)."""
+        m, entry_ts, calls = self._entry_setup(monkeypatch, 0.02, 0.06)
+        result = await run_backtest(
+            client=None, config=self._permissive_config(),
+        )
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "settled"
+        assert all(c["end_ts"] == entry_ts for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_zero_threshold_is_not_none(self, monkeypatch) -> None:
+        """tp=0.0 is a legal threshold — a falsy gate would silently
+        disable it (review guard)."""
+        self._entry_setup(monkeypatch, 0.28, 0.38)  # tiny gain
+        config = self._exit_config(tp=0.0)
+        result = await run_backtest(client=None, config=config)
+        assert result.exited_take_profit == 1
+
+    @pytest.mark.asyncio
+    async def test_walk_window_bounds(self, monkeypatch) -> None:
+        """The walk fetch spans (entry_ts, settle_ts, 1440)."""
+        m, entry_ts, calls = self._entry_setup(monkeypatch, 0.02, 0.06)
+        settle_ts = int(m.close_time.timestamp())
+        await run_backtest(client=None, config=self._exit_config(tp=0.8))
+        walk_calls = [c for c in calls if c["end_ts"] == settle_ts]
+        assert walk_calls, "no walk fetch recorded"
+        assert all(c["start_ts"] == entry_ts for c in walk_calls)
+
+    @pytest.mark.asyncio
+    async def test_taker_fill_exit_fee(self, monkeypatch) -> None:
+        """One flag governs both legs: taker entries pay taker exits."""
+        self._entry_setup(monkeypatch, 0.02, 0.06)
+        config = self._exit_config(tp=0.8)
+        config.taker_fill = True
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        # Taker entry: NO pays 1 - yes_bid = 0.70.
+        side_cfg = config.gimmes_config.effective_config_for_side("no")
+        count = position_size(
+            config.starting_balance, 0.70,
+            min(0.65 + config.assumed_edge, 0.99),
+            fraction=side_cfg.sizing.kelly_fraction,
+            max_position_pct=side_cfg.sizing.max_position_pct,
+            fees=DEFAULT_FEE_MULTIPLIERS,
+            mode=side_cfg.sizing.mode,
+            is_taker=True,
+        )
+        entry_fee = fee_for_order(count, 0.70, is_taker=True)
+        exit_fee = fee_for_order(count, t.exit_price, is_taker=True)
+        assert t.fees == pytest.approx(entry_fee + exit_fee)
+
+    @pytest.mark.asyncio
+    async def test_exit_frees_balance_for_later_entry(
+        self, monkeypatch,
+    ) -> None:
+        """Exits release capital chronologically inside Pass 2: with
+        stops on, positions closed before a later entry make room
+        for it (without them, the fourth entry hits the balance
+        gate)."""
+        close_a = _FIXED_CLOSE_TIME
+        close_b = _FIXED_CLOSE_TIME + timedelta(hours=18)
+        markets = [
+            _settled_market(f"KXCPI-26MAR-A{i}", yes_bid=0.25,
+                            yes_ask=0.35, close_time=close_a)
+            for i in range(3)
+        ] + [
+            _settled_market("KXCPI-26MAR-B0", yes_bid=0.25,
+                            yes_ask=0.35, close_time=close_b),
+        ]
+        entry = {}
+        walk = {}
+        for m in markets:
+            ts = self._entry_ts(m)
+            entry[m.ticker] = [_make_candle(
+                ts=ts, yes_bid_close=0.30, yes_ask_close=0.40,
+            )]
+            # Crash candle 6h after entry: NO mark 0.45 -> stop.
+            walk[m.ticker] = [_make_candle(
+                ts=ts + 21_600, yes_bid_close=0.50, yes_ask_close=0.60,
+            )]
+        self._stub_windowed(monkeypatch, markets, entry, walk)
+
+        def _cfg(sl=None):
+            cfg = self._exit_config(sl=sl)
+            gc = cfg.gimmes_config
+            gc.sizing.kelly_fraction = 1.0  # ~26.5% of bankroll each
+            gc.sizing.max_position_pct = 1.0
+            gc.risk.max_event_exposure_pct = 1.0
+            gc.risk.max_series_exposure_pct = 1.0
+            return cfg
+
+        baseline = await run_backtest(client=None, config=_cfg())
+        # B can't fit: the three open A positions consume ~79% of
+        # bankroll, so B trips the balance gate or (sharing the
+        # KXCPI-26MAR event) the concentration gate — either way it
+        # never trades without exits.
+        assert len(baseline.trades) == 3
+        assert (
+            baseline.skipped_balance + baseline.skipped_concentration == 1
+        )
+
+        stopped = await run_backtest(client=None, config=_cfg(sl=0.15))
+        # A-exits freed capital AND exposure before B's entry.
+        assert len(stopped.trades) == 4
+        assert stopped.skipped_balance == 0
+        assert stopped.skipped_concentration == 0
+        assert stopped.exited_stop_loss == 4
+
+    @pytest.mark.asyncio
+    async def test_exit_at_same_instant_does_not_fund_entry(
+        self, monkeypatch,
+    ) -> None:
+        """Sort-key pin: exits free capital for the NEXT timestamp —
+        an exit sharing a timestamp with another trade's entry must
+        not fund it (entries sort before non-entries)."""
+        close_a = _FIXED_CLOSE_TIME
+        close_b = _FIXED_CLOSE_TIME + timedelta(hours=18)
+        m_a = _settled_market("KXCPI-26MARA-A0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_a)
+        m_b = _settled_market("KXCPI-26MARB-B0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_b)
+        markets = [m_a, m_b]
+        entry = {}
+        for m in markets:
+            entry[m.ticker] = [_make_candle(
+                ts=self._entry_ts(m), yes_bid_close=0.30,
+                yes_ask_close=0.40,
+            )]
+        # A's crash candle ends EXACTLY at B's entry_ts (A entry +6h).
+        walk = {m_a.ticker: [_make_candle(
+            ts=self._entry_ts(m_b), yes_bid_close=0.50,
+            yes_ask_close=0.60,
+        )], m_b.ticker: []}
+        self._stub_windowed(monkeypatch, markets, entry, walk)
+
+        cfg = self._exit_config(sl=0.15)
+        gc = cfg.gimmes_config
+        gc.sizing.kelly_fraction = 1.0
+        gc.sizing.max_position_pct = 1.0
+        gc.risk.max_event_exposure_pct = 1.0
+        gc.risk.max_series_exposure_pct = 1.0
+        # Geometry that distinguishes the sort-key mutant: with
+        # assumed_edge 0.214, full Kelly sizes each position to ~60%
+        # of the 3k balance. Without A's exit cash B cannot fit
+        # (~1200 available < ~1800); WITH it (~1073 freed) B would
+        # fit — so exit-before-entry ordering is the only thing that
+        # makes B skip.
+        cfg.assumed_edge = 0.214
+        cfg.starting_balance = 3_000.0
+
+        result = await run_backtest(client=None, config=cfg)
+        # A entered; A's exit shares B's entry timestamp — B's entry
+        # processes FIRST (entries sort key 0) and fails on the
+        # balance or shared-series concentration gate while A is
+        # still open; A's exit frees capital/exposure one instant too
+        # late. An exit-first mutant would clear BOTH gates and trade
+        # B (len == 2).
+        assert len(result.trades) == 1
+        assert (
+            result.skipped_balance + result.skipped_concentration == 1
+        )
+        assert result.exited_stop_loss == 1
+
+    @pytest.mark.asyncio
+    async def test_walk_windows_disk_cached(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """#714 x #696: walk windows ride the disk cache — a warm
+        rerun makes ZERO fetches (entry AND walk) and reproduces the
+        same exit (review-found: the walk's cache path was dead code
+        under test)."""
+        from gimmes.backtest.candle_cache import CandleCache
+
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        entry = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        walk = {m.ticker: [_make_candle(
+            ts=entry_ts + 43_200, yes_bid_close=0.02,
+            yes_ask_close=0.06,
+        )]}
+        calls = self._stub_windowed(monkeypatch, markets, entry, walk)
+        config = self._exit_config(tp=0.8)
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            first = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        cold_calls = len(calls)
+        assert first.exited_take_profit == 1
+        assert cold_calls >= 2  # entry window + walk window
+
+        async with CandleCache(tmp_path / "c.db") as cache:
+            second = await run_backtest(
+                client=None, config=config, candle_cache=cache,
+            )
+        assert len(calls) == cold_calls  # fully warm
+        assert second.exited_take_profit == 1
+        assert second.trades[0].exit_price == pytest.approx(
+            first.trades[0].exit_price,
+        )
+
+    @pytest.mark.asyncio
+    async def test_walk_failure_on_skipped_entry_not_counted(
+        self, monkeypatch,
+    ) -> None:
+        """#714 Copilot semantics pin: walk_fetch_failures counts only
+        ENTERED positions. B's walk fetch fails AND B is skipped at
+        entry (balance/concentration) — the failure must not count
+        (a pre-admission-counting revert reports 1 and fails)."""
+        close_a = _FIXED_CLOSE_TIME
+        close_b = _FIXED_CLOSE_TIME + timedelta(hours=18)
+        m_a = _settled_market("KXCPI-26MARA-A0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_a)
+        m_b = _settled_market("KXCPI-26MARB-B0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_b)
+        markets = [m_a, m_b]
+        settle_ts = {
+            m.ticker: int(m.close_time.timestamp()) for m in markets
+        }
+        entry_candles = {
+            m.ticker: [_make_candle(
+                ts=self._entry_ts(m), yes_bid_close=0.30,
+                yes_ask_close=0.40,
+            )] for m in markets
+        }
+        a_walk = [_make_candle(
+            ts=self._entry_ts(m_b), yes_bid_close=0.50,
+            yes_ask_close=0.60,
+        )]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            if end_ts == settle_ts[ticker] and start_ts != end_ts:
+                if ticker == m_b.ticker:
+                    raise RuntimeError("walk endpoint 404")
+                return a_walk
+            return entry_candles[ticker]
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+
+        cfg = self._exit_config(sl=0.15)
+        gc = cfg.gimmes_config
+        gc.sizing.kelly_fraction = 1.0
+        gc.sizing.max_position_pct = 1.0
+        gc.risk.max_event_exposure_pct = 1.0
+        gc.risk.max_series_exposure_pct = 1.0
+        cfg.assumed_edge = 0.214
+        cfg.starting_balance = 3_000.0
+
+        result = await run_backtest(client=None, config=cfg)
+        assert len(result.trades) == 1
+        assert (
+            result.skipped_balance + result.skipped_concentration == 1
+        )
+        assert result.exited_stop_loss == 1
+        assert result.fetch_failures == 0
+        # The pin: B never entered, so its failed walk is not counted.
+        assert result.walk_fetch_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_walk_fetch_failure_holds_and_counts(
+        self, monkeypatch,
+    ) -> None:
+        """A failed walk fetch holds to settlement, counts in
+        walk_fetch_failures, and never touches the entry-pass
+        fetch_failures funnel (review-found: was silent AND
+        untested)."""
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        settle_ts = int(m.close_time.timestamp())
+        entry_candles = [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            if end_ts == settle_ts and start_ts != end_ts:
+                raise RuntimeError("walk endpoint 404")
+            return entry_candles
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+        result = await run_backtest(
+            client=None, config=self._exit_config(sl=0.15),
+        )
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "settled"
+        assert result.walk_fetch_failures == 1
+        assert result.fetch_failures == 0
 
 
 class TestDiskCandleCache(_EntryDayHarness):
