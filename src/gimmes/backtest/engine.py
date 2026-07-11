@@ -58,6 +58,11 @@ class BacktestConfig:
     # (review: deriving true_prob from the fill price loosened the
     # gate). Edge and Kelly then shrink naturally when paying the ask.
     taker_fill: bool = False
+    # #714: post-entry TP/SL walk. None = hold to settlement (today's
+    # behavior — and NO post-entry candle fetch at all). 0.0 is a
+    # legal threshold: every gate on these must use `is not None`.
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
 
 
 @dataclass
@@ -76,6 +81,13 @@ class BacktestTrade:
     pnl: float
     entry_time: datetime | None = None
     settle_time: datetime | None = None
+    # #714: how the position ended. "settled" preserves the pre-#714
+    # shape; early exits carry the fill and its timestamp, and keep
+    # `result` = the market's EVENTUAL settlement so did-the-exit-help
+    # analysis stays possible.
+    exit_reason: str = "settled"
+    exit_price: float | None = None
+    exit_time: datetime | None = None
 
 
 @dataclass
@@ -102,6 +114,14 @@ class BacktestResult:
     stale_candles: int = 0
     skipped_zero_sizing: int = 0
     truncated_chunks: list[str] = field(default_factory=list)
+    # #714 exit-reason counters (0 unless a TP/SL walk ran), plus
+    # walk-fetch visibility: a failed post-entry fetch silently holds
+    # to settlement, so without this counter a systemic API failure
+    # would degrade a TP/SL backtest into hold-to-settlement numbers
+    # wearing an "Exits:" header (#655 doctrine).
+    exited_take_profit: int = 0
+    exited_stop_loss: int = 0
+    walk_fetch_failures: int = 0
 
 
 @dataclass
@@ -119,6 +139,10 @@ class _PendingTrade:
     result: str
     event_ticker: str = ""
     series_ticker: str = ""
+    # #714: filled by the walk pass when a TP/SL trigger is found.
+    exit_reason: str | None = None
+    exit_price: float = 0.0
+    exit_time: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +238,64 @@ class BacktestLedger:
         self.trades.append(trade)
         return trade
 
+    def close(
+        self,
+        ticker: str,
+        *,
+        result: str,
+        price: float,
+        exit_fees: float,
+        exit_time: datetime | None,
+        reason: str,
+        settle_time: datetime | None = None,
+    ) -> BacktestTrade | None:
+        """Close an open position at ``price`` (#714 early exit).
+
+        Unlike ``settle``, this is a live SELL at a market price, so
+        the exit leg pays its own order fee. ``result`` is the
+        market's EVENTUAL settlement outcome, recorded so exited
+        trades stay comparable with settled ones. The position is
+        popped, which makes the trade's later settle event a natural
+        no-op via the caller's positions guard.
+
+        Note the maker-mode hybrid: exits always PRICE at the touch
+        (a spread-crossing fill — deliberate conservatism), while the
+        fee multiplier follows the run's fill model; only taker mode
+        is fee-consistent with its price. Documented, not accidental.
+        """
+        pos = self.positions.pop(ticker, None)
+        if pos is None:
+            return None
+
+        payout = pos.count * price - exit_fees
+        pnl = payout - pos.cost_basis
+        self.balance += payout
+
+        trade = BacktestTrade(
+            ticker=ticker,
+            title=pos.title,
+            side=pos.side,
+            count=pos.count,
+            entry_price=pos.entry_price,
+            cost_basis=pos.cost_basis,
+            # entry + exit legs — cost_basis embeds only the entry
+            # fee; pnl = payout − cost_basis stays self-consistent
+            # because the exit fee is already netted out of payout.
+            fees=pos.fees + exit_fees,
+            result=result,
+            payout=payout,
+            pnl=pnl,
+            entry_time=pos.entry_time,
+            # The time the market WOULD have settled — kept alongside
+            # exit_time so exit-vs-hold analysis has both moments.
+            settle_time=settle_time,
+            exit_reason=reason,
+            exit_price=price,
+            exit_time=exit_time,
+        )
+        self.trades.append(trade)
+        return trade
+
     def snapshot(self, timestamp: str) -> None:
         """Record an equity snapshot (balance only — all positions settle)."""
         self.equity_curve.append((timestamp, self.balance))
@@ -233,6 +315,79 @@ def candle_midpoint(candle: Candle) -> float:
     if candle.yes_bid_close > 0 and candle.yes_ask_close > 0:
         return (candle.yes_bid_close + candle.yes_ask_close) / 2
     return 0.0
+
+
+def _walk_exit(
+    candles: list[Candle],
+    *,
+    side: str,
+    count: int,
+    entry_eff: float,
+    cost_basis: float,
+    entry_ts: int,
+    settle_ts: int,
+    tp_pct: float | None,
+    sl_pct: float | None,
+) -> tuple[str, float, int] | None:
+    """Walk post-entry daily candles for the first TP/SL trigger (#714).
+
+    Mirrors the LIVE definitions exactly: stop-loss fires when the
+    unrealized loss reaches ``sl_pct`` of the fee-inclusive cost basis
+    (reporting/formatter._stop_gate_pct); take-profit fires when the
+    unrealized gain reaches ``tp_pct`` of the fee-FREE maximum profit
+    ``count * (1 − side-effective entry)`` (monitor.md's worked
+    example). The trigger mark is the side-effective bid/ask midpoint
+    — what the live monitor sees — while the returned exit price is
+    the conservative tradeable-side close (YES exits at the bid, NO
+    at 1 − ask): the trigger looks at the mid, the fill crosses to
+    the touch.
+
+    Look-ahead discipline: candles ending at or before ``entry_ts``
+    priced the entry; candles ending at or after ``settle_ts`` encode
+    the settlement outcome — both are excluded, so the first evaluable
+    candle is the day after entry. Quiet/one-sided candles (zero
+    midpoint or a close at/over 1.0 — live data zero-defaults omitted
+    quote groups) are SKIPPED, not treated as crashes: a zero-default
+    close would otherwise fabricate a stop-loss on every quiet day.
+    The price of that skip is that a GENUINE one-sided crash (bid
+    collapses while the ask stands) is also skipped — the walk is
+    optimistic there, unlike the live monitor, whose Market.midpoint
+    falls back to last_price and can still mark down.
+    Stop-loss is checked before take-profit — when both trigger on
+    one candle (degenerate thresholds), the pessimistic read wins.
+
+    Returns (reason, exit_price, exit_ts) or None to hold.
+    """
+    max_profit = count * (1.0 - entry_eff)
+    for candle in candles:
+        if candle.end_period_ts <= entry_ts:
+            continue
+        if candle.end_period_ts >= settle_ts:
+            break
+        mid = candle_midpoint(candle)
+        if (
+            mid <= 0
+            or candle.yes_bid_close >= 1.0
+            or candle.yes_ask_close >= 1.0
+        ):
+            continue
+        mark = effective_price(mid, side)
+        unrealized = count * mark - cost_basis
+        # Conservative tradeable-side close: YES exits at the bid,
+        # NO at 1 − ask (see docstring).
+        exit_price = (
+            candle.yes_bid_close if side == "yes"
+            else 1.0 - candle.yes_ask_close
+        )
+        if sl_pct is not None and -unrealized >= sl_pct * cost_basis:
+            return ("stop_loss", exit_price, candle.end_period_ts)
+        if (
+            tp_pct is not None
+            and max_profit > 0
+            and unrealized >= tp_pct * max_profit
+        ):
+            return ("take_profit", exit_price, candle.end_period_ts)
+    return None
 
 
 def entry_candle_at(candles: list[Candle], entry_ts: int) -> Candle | None:
@@ -750,11 +905,90 @@ async def run_backtest(
         total_passed, total_scored,
     )
 
+    # --- 4b. Post-entry TP/SL walk (#714) ---
+    # Only when a threshold is configured (`is not None` — 0.0 is a
+    # legal value): fetch each pending trade's post-entry daily
+    # candles and find the first trigger. One fetch per pending trade
+    # (tens; skipped-at-entry trades over-fetch slightly — accepted
+    # for simplicity), through its own window-keyed path: the entry
+    # pass's memory_cache is keyed by ticker for a DIFFERENT window
+    # and must not be reused. Walk fetch failures hold to settlement
+    # (debug-logged) and deliberately do NOT count in fetch_failures —
+    # that counter's funnel arithmetic is entry-pass semantics.
+    # TODO(#714): verify Kalshi's candlesticks period cap (~5000 per
+    # request, unpinned) — one request per market is safe for daily
+    # candles over any realistic backtest window.
+    walk_fetch_failures = 0
+    if (
+        config.take_profit_pct is not None
+        or config.stop_loss_pct is not None
+    ):
+        for trade in pending:
+            entry_ts = int(trade.entry_time.timestamp())
+            settle_time = (
+                trade.settle_time if trade.settle_time.tzinfo
+                else trade.settle_time.replace(tzinfo=UTC)
+            )
+            settle_ts = int(settle_time.timestamp())
+            walk_window = {
+                "start_ts": entry_ts,
+                "end_ts": settle_ts,
+                "period_interval": 1440,
+            }
+            walk_candles = None
+            if candle_cache is not None:
+                walk_candles = await candle_cache.get(
+                    trade.ticker, **walk_window,
+                )
+            if walk_candles is None:
+                try:
+                    walk_candles = await get_candlesticks(
+                        client, trade.ticker, **walk_window,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    walk_fetch_failures += 1
+                    if walk_fetch_failures == 1:
+                        logger.warning(
+                            "post-entry walk fetch FAILED for %s — if"
+                            " this repeats, TP/SL exits are silently"
+                            " degrading to hold-to-settlement (#714)",
+                            trade.ticker,
+                        )
+                    logger.debug(
+                        "walk candle fetch failed for %s: %s —"
+                        " holding to settlement", trade.ticker, exc,
+                    )
+                    continue
+                else:
+                    if candle_cache is not None:
+                        await candle_cache.put(
+                            trade.ticker, candles=walk_candles,
+                            **walk_window,
+                        )
+            exit_hit = _walk_exit(
+                walk_candles,
+                side=trade.side,
+                count=trade.count,
+                entry_eff=trade.vwap,
+                cost_basis=trade.count * trade.vwap + trade.fees,
+                entry_ts=entry_ts,
+                settle_ts=settle_ts,
+                tp_pct=config.take_profit_pct,
+                sl_pct=config.stop_loss_pct,
+            )
+            if exit_hit is not None:
+                reason, exit_price, exit_ts = exit_hit
+                trade.exit_reason = reason
+                trade.exit_price = exit_price
+                trade.exit_time = datetime.fromtimestamp(exit_ts, tz=UTC)
+
     # --- 5. Pass 2: process events chronologically ---
     events: list[tuple[str, datetime, _PendingTrade]] = []
     for trade in pending:
         events.append(("entry", trade.entry_time, trade))
         events.append(("settle", trade.settle_time, trade))
+        if trade.exit_reason is not None and trade.exit_time is not None:
+            events.append(("exit", trade.exit_time, trade))
     # Sort by time. For events at the same timestamp, process entries
     # before settlements so a trade's own entry always precedes its
     # settlement. This means capital freed by settlements is available
@@ -764,6 +998,8 @@ async def run_backtest(
     traded_count = 0
     skipped_concentration = 0
     skipped_balance = 0
+    exited_take_profit = 0
+    exited_stop_loss = 0
     for event_type, timestamp, trade in events:
         if event_type == "entry":
             trade_dollars = trade.count * trade.vwap + trade.fees
@@ -813,6 +1049,34 @@ async def run_backtest(
                 traded_count += 1
             else:
                 skipped_balance += 1
+        elif event_type == "exit":
+            # #714: TP/SL exit found by the walk. Entries skipped at
+            # concentration/balance never opened a position, so the
+            # guard makes their exit a no-op — and once closed, the
+            # trade's later settle event no-ops the same way.
+            if trade.ticker in ledger.positions:
+                exit_fees = fee_for_order(
+                    trade.count, trade.exit_price,
+                    is_taker=config.taker_fill, fees=fees,
+                )
+                # Guarded at event construction: exit events are only
+                # appended with a non-None reason — assert keeps a
+                # future violation loud instead of mislabeled.
+                assert trade.exit_reason is not None
+                ledger.close(
+                    trade.ticker,
+                    result=trade.result,
+                    price=trade.exit_price,
+                    exit_fees=exit_fees,
+                    exit_time=trade.exit_time,
+                    reason=trade.exit_reason,
+                    settle_time=trade.settle_time,
+                )
+                if trade.exit_reason == "take_profit":
+                    exited_take_profit += 1
+                else:
+                    exited_stop_loss += 1
+                ledger.snapshot(timestamp.isoformat())
         elif event_type == "settle":
             if trade.ticker in ledger.positions:
                 ledger.settle(
@@ -839,4 +1103,7 @@ async def run_backtest(
         skipped_zero_sizing=len(zero_sized_tickers - seen_tickers),
         skipped_balance=skipped_balance,
         truncated_chunks=truncated_chunks,
+        exited_take_profit=exited_take_profit,
+        exited_stop_loss=exited_stop_loss,
+        walk_fetch_failures=walk_fetch_failures,
     )

@@ -4398,6 +4398,18 @@ def backtest(
              " $GIMMES_HOME/backtest_cache.db (GIMMES_HOME defaults"
              " to ~/.gimmes) (#696)",
     ),
+    take_profit: float | None = typer.Option(
+        None, "--take-profit",
+        help="Exit when unrealized gain reaches this fraction of max"
+             " profit (e.g. 0.8 mirrors the live loop). Omit to hold"
+             " to settlement (#714)",
+    ),
+    stop_loss: float | None = typer.Option(
+        None, "--stop-loss",
+        help="Exit when unrealized loss reaches this fraction of cost"
+             " basis (e.g. 0.15 mirrors the live loop). Omit to hold"
+             " to settlement (#714)",
+    ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""
     config = load_config()
@@ -4421,6 +4433,14 @@ def backtest(
         if edge <= 0:
             console.print("[red]--edge must be positive[/red]")
             raise typer.Exit(1)
+        for flag, value in (
+            ("--take-profit", take_profit), ("--stop-loss", stop_loss),
+        ):
+            if value is not None and not 0 <= value <= 1:
+                console.print(
+                    f"[red]{flag} must be between 0 and 1[/red]",
+                )
+                raise typer.Exit(1)
         bt_config = BacktestConfig(
             start_date=start,
             end_date=end,
@@ -4428,6 +4448,8 @@ def backtest(
             gimmes_config=config,
             assumed_edge=edge,
             taker_fill=taker_fill,
+            take_profit_pct=take_profit,
+            stop_loss_pct=stop_loss,
         )
         console.print(
             f"[dim]Running backtest: {start} to {end}, "
