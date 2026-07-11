@@ -1888,6 +1888,71 @@ class TestPostEntryExits(_EntryDayHarness):
         )
 
     @pytest.mark.asyncio
+    async def test_walk_failure_on_skipped_entry_not_counted(
+        self, monkeypatch,
+    ) -> None:
+        """#714 Copilot semantics pin: walk_fetch_failures counts only
+        ENTERED positions. B's walk fetch fails AND B is skipped at
+        entry (balance/concentration) — the failure must not count
+        (a pre-admission-counting revert reports 1 and fails)."""
+        close_a = _FIXED_CLOSE_TIME
+        close_b = _FIXED_CLOSE_TIME + timedelta(hours=18)
+        m_a = _settled_market("KXCPI-26MARA-A0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_a)
+        m_b = _settled_market("KXCPI-26MARB-B0", yes_bid=0.25,
+                              yes_ask=0.35, close_time=close_b)
+        markets = [m_a, m_b]
+        settle_ts = {
+            m.ticker: int(m.close_time.timestamp()) for m in markets
+        }
+        entry_candles = {
+            m.ticker: [_make_candle(
+                ts=self._entry_ts(m), yes_bid_close=0.30,
+                yes_ask_close=0.40,
+            )] for m in markets
+        }
+        a_walk = [_make_candle(
+            ts=self._entry_ts(m_b), yes_bid_close=0.50,
+            yes_ask_close=0.60,
+        )]
+
+        async def _fake_list(*args, **kwargs):
+            return markets
+
+        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+            if end_ts == settle_ts[ticker] and start_ts != end_ts:
+                if ticker == m_b.ticker:
+                    raise RuntimeError("walk endpoint 404")
+                return a_walk
+            return entry_candles[ticker]
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.get_candlesticks", _fake_candles,
+        )
+
+        cfg = self._exit_config(sl=0.15)
+        gc = cfg.gimmes_config
+        gc.sizing.kelly_fraction = 1.0
+        gc.sizing.max_position_pct = 1.0
+        gc.risk.max_event_exposure_pct = 1.0
+        gc.risk.max_series_exposure_pct = 1.0
+        cfg.assumed_edge = 0.214
+        cfg.starting_balance = 3_000.0
+
+        result = await run_backtest(client=None, config=cfg)
+        assert len(result.trades) == 1
+        assert (
+            result.skipped_balance + result.skipped_concentration == 1
+        )
+        assert result.exited_stop_loss == 1
+        assert result.fetch_failures == 0
+        # The pin: B never entered, so its failed walk is not counted.
+        assert result.walk_fetch_failures == 0
+
+    @pytest.mark.asyncio
     async def test_walk_fetch_failure_holds_and_counts(
         self, monkeypatch,
     ) -> None:

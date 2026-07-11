@@ -140,9 +140,13 @@ class _PendingTrade:
     event_ticker: str = ""
     series_ticker: str = ""
     # #714: filled by the walk pass when a TP/SL trigger is found.
+    # walk_fetch_failed marks a trade whose post-entry candles could
+    # not be fetched — counted at Pass-2 entry ACCEPTANCE, because a
+    # failed walk only matters for positions that actually opened.
     exit_reason: str | None = None
     exit_price: float = 0.0
     exit_time: datetime | None = None
+    walk_fetch_failed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -909,8 +913,9 @@ async def run_backtest(
     # Only when a threshold is configured (`is not None` — 0.0 is a
     # legal value): fetch each pending trade's post-entry daily
     # candles and find the first trigger. One fetch per pending trade
-    # (tens; skipped-at-entry trades over-fetch slightly — accepted
-    # for simplicity), through its own window-keyed path: the entry
+    # (tens; trades later skipped in Pass 2 by the balance or
+    # concentration gates over-fetch slightly — accepted for
+    # simplicity), through its own window-keyed path: the entry
     # pass's memory_cache is keyed by ticker for a DIFFERENT window
     # and must not be reused. Walk fetch failures hold to settlement
     # (debug-logged) and deliberately do NOT count in fetch_failures —
@@ -946,14 +951,11 @@ async def run_backtest(
                         client, trade.ticker, **walk_window,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    walk_fetch_failures += 1
-                    if walk_fetch_failures == 1:
-                        logger.warning(
-                            "post-entry walk fetch FAILED for %s — if"
-                            " this repeats, TP/SL exits are silently"
-                            " degrading to hold-to-settlement (#714)",
-                            trade.ticker,
-                        )
+                    # Flag now, COUNT at Pass-2 entry acceptance — a
+                    # failed walk only misleads for positions that
+                    # actually open (Copilot: pre-admission counting
+                    # overattributed silent holds).
+                    trade.walk_fetch_failed = True
                     logger.debug(
                         "walk candle fetch failed for %s: %s —"
                         " holding to settlement", trade.ticker, exc,
@@ -1047,6 +1049,15 @@ async def run_backtest(
             )
             if bought:
                 traded_count += 1
+                if trade.walk_fetch_failed:
+                    walk_fetch_failures += 1
+                    if walk_fetch_failures == 1:
+                        logger.warning(
+                            "post-entry walk fetch FAILED for %s — if"
+                            " this repeats, TP/SL exits are silently"
+                            " degrading to hold-to-settlement (#714)",
+                            trade.ticker,
+                        )
             else:
                 skipped_balance += 1
         elif event_type == "exit":
@@ -1074,8 +1085,12 @@ async def run_backtest(
                 )
                 if trade.exit_reason == "take_profit":
                     exited_take_profit += 1
-                else:
+                elif trade.exit_reason == "stop_loss":
                     exited_stop_loss += 1
+                else:  # pragma: no cover - _walk_exit emits only these
+                    raise AssertionError(
+                        f"unknown exit reason {trade.exit_reason!r}",
+                    )
                 ledger.snapshot(timestamp.isoformat())
         elif event_type == "settle":
             if trade.ticker in ledger.positions:

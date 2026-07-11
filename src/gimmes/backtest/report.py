@@ -169,10 +169,11 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         )
     if result.walk_fetch_failures > 0:
         console.print(
-            f"[yellow]Warning: {result.walk_fetch_failures} post-entry"
-            f" walk fetches FAILED — those positions silently held to"
-            f" settlement, so the TP/SL exit numbers above understate"
-            f" what the exit rule would have done (#714).[/yellow]"
+            f"[yellow]Warning: {result.walk_fetch_failures} entered"
+            f" positions' post-entry walk fetches FAILED — they"
+            f" silently held to settlement, so the TP/SL exit numbers"
+            f" above understate what the exit rule would have done"
+            f" (#714).[/yellow]"
         )
     if result.markets_passed_filter == 0 and usable_views > 0:
         console.print(

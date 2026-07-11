@@ -435,4 +435,7 @@ class TestExitFieldsInReport:
         assert data["funnel"]["walk_fetch_failures"] == 3
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
-        assert "walk fetches" in buf.getvalue()
+        out = buf.getvalue()
+        assert "walk fetches" in out
+        # The semantic point of the wording: only ENTERED positions.
+        assert "entered" in out
