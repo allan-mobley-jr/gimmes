@@ -379,6 +379,9 @@ gimmes monitor [SUBCOMMAND]    # Hourly health-monitor cron (on|off|status|run|q
 gimmes backtest --from D --to D  # Backtest strategy on historical markets (--balance, --edge, --json)
                                  # --taker-fill: conservative fill model — entries pay the ask with taker fees
                                  # --no-cache: bypass the on-disk candle cache
+                                 # --take-profit 0.8 / --stop-loss 0.15: model live TP/SL exits (fractions)
+                                 # --entry-offset DAYS: enter this many days before market close (default 1)
+                                 # --candle-period 1|60|1440: candle granularity in minutes (default daily)
                                  # Supports dual-side mode — runs per-side passes when strategy.side=both
 gimmes lesson                    # Run strategy analysis and recommendations (--analysis/-a, --dry-run)
 gimmes recommendations           # View past strategy recommendations
