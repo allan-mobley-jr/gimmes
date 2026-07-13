@@ -520,10 +520,11 @@ def _entry_day_view(
       candle-derived spread with no new arithmetic.
     - last_price is 0.0: the midpoint must never fall back to stale
       trade prices (the same rationale candle_midpoint uses, #655).
-    - volume AND volume_24h from the candle's per-period volume — for
-      period_interval=1440 that IS the day's 24h volume. At sub-day
-      periods the caller passes ``volume_24h`` = the trailing-24h sum
-      (#716); the single per-period candle volume would understate
+    - volume AND volume_24h: at period 1440 both come from the
+      candle's per-period volume — that IS the day's 24h volume. At
+      sub-day periods the caller passes ``volume_24h`` = the
+      trailing-24h SUM of per-period volumes, and both fields carry
+      it (#716); the single per-period candle volume would understate
       24h volume up to 1440x and silently bias the scanner's
       min_volume gate and quick_score's volume tiers. Both fields are
       set to the same value so the scanner/scorer's
@@ -1051,10 +1052,10 @@ async def run_backtest(
         ):
             coarser = 60 if walk_candle_period == 1 else 1440
             logger.warning(
-                "--entry-offset %g spans %d candles at period %d —"
-                " over the API's hard cap of %d per request; walking"
-                " exits at period %d instead (coarser exit"
-                " resolution) (#716)",
+                "--entry-offset %g spans %d periods at %d-min"
+                " granularity — over the API's hard cap of %d periods"
+                " per request; walking exits at period %d instead"
+                " (coarser exit resolution) (#716)",
                 config.entry_offset_days,
                 int(config.entry_offset_days * 1440 / walk_candle_period),
                 walk_candle_period, MAX_CANDLES_PER_REQUEST, coarser,
