@@ -87,6 +87,13 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         f"Gimme threshold: {cfg.gimmes_config.strategy.gimme_threshold:.0f}",
         f"Assumed edge: {cfg.assumed_edge:.0%}",
         f"Entry offset: {cfg.entry_offset_days:g} day(s) before close",
+        f"Candle period: {cfg.candle_period_minutes} min" + (
+            f" (exits walked at {result.walk_candle_period} min —"
+            f" capped fallback)"
+            if result.walk_candle_period is not None
+            and result.walk_candle_period != cfg.candle_period_minutes
+            else ""
+        ),
         "Fill model: "
         + ("taker (pays the ask)" if cfg.taker_fill else "maker (midpoint)"),
         "Exits: "
@@ -303,6 +310,8 @@ def backtest_result_to_json(result: BacktestResult) -> dict:  # type: ignore[typ
             "take_profit_pct": result.config.take_profit_pct,
             "stop_loss_pct": result.config.stop_loss_pct,
             "entry_offset_days": result.config.entry_offset_days,
+            "candle_period_minutes": result.config.candle_period_minutes,
+            "walk_candle_period": result.walk_candle_period,
         },
         "funnel": {
             "markets_scanned": result.markets_scanned,
