@@ -30,7 +30,15 @@ from gimmes.strategy.scanner import effective_price, filter_markets
 from gimmes.strategy.scorer import quick_score
 
 ENTRY_OFFSET_DAYS = 1.0
+# The 3-day lookback fits the API cap at EVERY allowed period: worst
+# case is period 1 -> 3*1440 = 4320 (+1 inclusive endpoint) < 5000
+# (cap pinned by test; live-probed 2026-07-13, hard 400 beyond it).
 CANDLE_LOOKBACK_DAYS = 3
+ALLOWED_CANDLE_PERIODS = (1, 60, 1440)
+# Kalshi candlesticks: max 5000 periods per request — a hard 400
+# ("max candlesticks: 5000"), NOT truncation. Live-probed 2026-07-13
+# by bisection at periods 1/60/1440 (#716, settles the #714 TODO).
+MAX_CANDLES_PER_REQUEST = 5000
 
 
 logger = logging.getLogger(__name__)
@@ -64,10 +72,15 @@ class BacktestConfig:
     # legal threshold: every gate on these must use `is not None`.
     take_profit_pct: float | None = None
     stop_loss_pct: float | None = None
-    # #713: enter each market this many days before close. Daily
-    # candle granularity (period 1440) is unchanged — sub-day values
-    # warn; sub-day granularity is the v2 follow-up (#716).
+    # #713: enter each market this many days before close.
     entry_offset_days: float = ENTRY_OFFSET_DAYS
+    # #716: candle granularity in minutes (1, 60, or 1440) for entry
+    # pricing and the TP/SL walk. Sub-day periods make sub-day entry
+    # offsets meaningful (daily candles are midnight-US/Eastern
+    # aligned, so a <24h market has no daily candle before close) and
+    # compute volume_24h as a trailing-24h sum. Each period is a
+    # fresh cache namespace.
+    candle_period_minutes: int = 1440
 
 
 @dataclass
@@ -127,6 +140,10 @@ class BacktestResult:
     exited_take_profit: int = 0
     exited_stop_loss: int = 0
     walk_fetch_failures: int = 0
+    # #716: the period the walk actually used — coarser than the
+    # configured candle_period_minutes when the offset span would
+    # exceed the API's 5000-period cap; None when no walk ran.
+    walk_candle_period: int | None = None
 
 
 @dataclass
@@ -422,6 +439,7 @@ async def _fetch_entry_candle(
     cache: dict[str, list[Candle]],
     failed: set[str],
     disk: CandleCache | None = None,
+    period: int = 1440,
 ) -> Candle | None:
     """The ticker's entry-day candle, or None when no candle ends at
     or before entry_ts. The fetch window ends AT entry_ts, so future
@@ -442,7 +460,7 @@ async def _fetch_entry_candle(
         window = {
             "start_ts": entry_ts - CANDLE_LOOKBACK_DAYS * 86400,
             "end_ts": entry_ts,
-            "period_interval": 1440,
+            "period_interval": period,
         }
         cached = None
         if disk is not None:
@@ -470,11 +488,29 @@ async def _fetch_entry_candle(
     return entry_candle_at(cache[ticker], entry_ts)
 
 
+def _trailing_24h_volume(
+    candles: list[Candle], entry_ts: int,
+) -> int:
+    """Sum of per-period candle volumes in the trailing 24 hours
+    ``(entry_ts - 86400, entry_ts]`` (#716). Candle volume is
+    strictly per-period (live-verified: minute candles sum to the
+    market total), and quiet periods are simply omitted from the
+    series — omitted means zero volume, so the sum over present
+    candles is exact."""
+    return sum(
+        c.volume for c in candles
+        if entry_ts - 86_400 < c.end_period_ts <= entry_ts
+    )
+
+
 def _entry_day_view(
     market: Market, candle: Candle, close_time: datetime,
+    volume_24h: int | None = None,
 ) -> Market:
-    """A Market as it looked on ENTRY DAY, built from the entry-day
-    candle — the selection lens the scanner/scorer see (#666).
+    """A Market as it looked AT THE ENTRY TIMESTAMP, built from the
+    entry candle (daily at period 1440, hourly/minute at sub-day
+    periods, #716) — the selection lens the scanner/scorer see
+    (#666).
 
     Field mapping (all price/liquidity data comes from the candle so
     filter_markets and quick_score run unchanged with no settlement
@@ -484,10 +520,17 @@ def _entry_day_view(
       candle-derived spread with no new arithmetic.
     - last_price is 0.0: the midpoint must never fall back to stale
       trade prices (the same rationale candle_midpoint uses, #655).
-    - volume AND volume_24h from the daily candle's per-period volume
-      — for period_interval=1440 that IS the day's 24h volume, and
-      setting both makes the scanner/scorer's `volume_24h or volume`
-      branches read the candle value either way.
+    - volume AND volume_24h from the candle's per-period volume — for
+      period_interval=1440 that IS the day's 24h volume. At sub-day
+      periods the caller passes ``volume_24h`` = the trailing-24h sum
+      (#716); the single per-period candle volume would understate
+      24h volume up to 1440x and silently bias the scanner's
+      min_volume gate and quick_score's volume tiers. Both fields are
+      set to the same value so the scanner/scorer's
+      `volume_24h or volume` branches read it either way. The 1440
+      path deliberately keeps the SELECTED candle's volume (not the
+      trailing sum): a stale entry candle >1 day old would sum to 0
+      and silently drop markets the default path prices today.
     - open_interest at candle close.
     - status ACTIVE + close_time at now + the configured entry offset
       (``entry_offset_days``, default ENTRY_OFFSET_DAYS): the
@@ -496,13 +539,14 @@ def _entry_day_view(
       margin makes the min_days == entry_offset_days boundary
       deterministic).
     """
+    vol = candle.volume if volume_24h is None else volume_24h
     return market.model_copy(update={
         "status": MarketStatus.ACTIVE,
         "yes_bid": candle.yes_bid_close,
         "yes_ask": candle.yes_ask_close,
         "last_price": 0.0,
-        "volume": candle.volume,
-        "volume_24h": candle.volume,
+        "volume": vol,
+        "volume_24h": vol,
         "open_interest": candle.open_interest,
         "close_time": close_time,
         "expiration_time": close_time,
@@ -586,6 +630,14 @@ async def run_backtest(
         raise ValueError(
             f"entry_offset_days must be a positive finite number,"
             f" got {config.entry_offset_days!r}",
+        )
+    if config.candle_period_minutes not in ALLOWED_CANDLE_PERIODS:
+        # Same fail-fast doctrine (#713): a bad period would surface
+        # as a per-market API 400 deep in the entry pass.
+        raise ValueError(
+            f"candle_period_minutes must be one of"
+            f" {ALLOWED_CANDLE_PERIODS}, got"
+            f" {config.candle_period_minutes!r}",
         )
     ledger = BacktestLedger(config.starting_balance)
 
@@ -713,15 +765,17 @@ async def run_backtest(
             gc.scanner.min_days_to_resolution,
             gc.scanner.max_days_to_resolution, config.entry_offset_days,
         )
-    if config.entry_offset_days < 1:
-        # #713 v1: granularity is still DAILY — sub-day offsets mostly
-        # land in skipped_no_candle until #716.
+    if config.entry_offset_days < 1 and config.candle_period_minutes == 1440:
+        # #716: sub-day offsets are only meaningful with sub-day
+        # candles — daily candles are midnight-US/Eastern aligned, so
+        # a <24h market has no daily candle before close.
         logger.warning(
             "--entry-offset %g is sub-day, but candles are DAILY"
-            " (period 1440, midnight-UTC boundaries): entries still"
-            " price from the last candle ending at or before the"
-            " offset, and markets living under a day mostly have none"
-            " (skipped_no_candle). Sub-day granularity is #716 (#713)",
+            " (period 1440, midnight-US/Eastern boundaries): entries"
+            " still price from the last candle ending at or before"
+            " the offset, and markets living under a day mostly have"
+            " none (skipped_no_candle) — pass --candle-period 60 (or"
+            " 1) for sub-day granularity (#716)",
             config.entry_offset_days,
         )
         if (
@@ -729,11 +783,12 @@ async def run_backtest(
             or config.stop_loss_pct is not None
         ):
             logger.warning(
-                "TP/SL with a sub-day entry offset: the walk sees only"
-                " DAILY candles strictly between entry and settlement"
-                " — under a %g-day offset that is almost always ZERO"
-                " candles, so exits silently degrade to"
-                " hold-to-settlement (#713/#714)",
+                "TP/SL with a sub-day entry offset at DAILY"
+                " granularity: the walk sees only daily candles"
+                " strictly between entry and settlement — under a"
+                " %g-day offset that is almost always ZERO candles,"
+                " so exits silently degrade to hold-to-settlement;"
+                " pass --candle-period 60 (or 1) (#714/#716)",
                 config.entry_offset_days,
             )
     logger.info(
@@ -756,6 +811,7 @@ async def run_backtest(
         candle = await _fetch_entry_candle(
             client, m.ticker, entry_ts, memory_cache,
             failed=failed_fetches, disk=candle_cache,
+            period=config.candle_period_minutes,
         )
         if candle is None and m.ticker in failed_fetches:
             # Distinguish a FAILED fetch from genuinely-empty history:
@@ -827,6 +883,13 @@ async def run_backtest(
     entry_views: dict[str, Market] = {
         ticker: _entry_day_view(
             original_by_ticker[ticker], candle, synthetic_close,
+            volume_24h=(
+                _trailing_24h_volume(
+                    memory_cache[ticker],
+                    int(entry_times[ticker].timestamp()),
+                )
+                if config.candle_period_minutes < 1440 else None
+            ),
         )
         for ticker, candle in entry_candles.items()
     }
@@ -967,14 +1030,36 @@ async def run_backtest(
     # and must not be reused. Walk fetch failures hold to settlement
     # (debug-logged) and deliberately do NOT count in fetch_failures —
     # that counter's funnel arithmetic is entry-pass semantics.
-    # TODO(#714): verify Kalshi's candlesticks period cap (~5000 per
-    # request, unpinned) — one request per market is safe for daily
-    # candles over any realistic backtest window.
+    # Cap fact (settles the #714 TODO): Kalshi hard-400s beyond 5000
+    # periods per request (live-probed 2026-07-13) — see
+    # MAX_CANDLES_PER_REQUEST. The walk span is exactly the entry
+    # offset (entry -> settle), so the cap condition is config-derived
+    # and computed ONCE: fall back to the next coarser period until
+    # the span fits (#716). Coarser exit resolution beats a hard 400,
+    # and 1440 always fits (a 5000-day offset would be absurd).
     walk_fetch_failures = 0
+    walk_candle_period: int | None = None
     if (
         config.take_profit_pct is not None
         or config.stop_loss_pct is not None
     ):
+        walk_candle_period = config.candle_period_minutes
+        while (
+            walk_candle_period != 1440
+            and config.entry_offset_days * 1440 / walk_candle_period
+            >= MAX_CANDLES_PER_REQUEST
+        ):
+            coarser = 60 if walk_candle_period == 1 else 1440
+            logger.warning(
+                "--entry-offset %g spans %d candles at period %d —"
+                " over the API's hard cap of %d per request; walking"
+                " exits at period %d instead (coarser exit"
+                " resolution) (#716)",
+                config.entry_offset_days,
+                int(config.entry_offset_days * 1440 / walk_candle_period),
+                walk_candle_period, MAX_CANDLES_PER_REQUEST, coarser,
+            )
+            walk_candle_period = coarser
         for trade in pending:
             entry_ts = int(trade.entry_time.timestamp())
             settle_time = (
@@ -985,7 +1070,7 @@ async def run_backtest(
             walk_window = {
                 "start_ts": entry_ts,
                 "end_ts": settle_ts,
-                "period_interval": 1440,
+                "period_interval": walk_candle_period,
             }
             walk_candles = None
             if candle_cache is not None:
@@ -1168,4 +1253,5 @@ async def run_backtest(
         exited_take_profit=exited_take_profit,
         exited_stop_loss=exited_stop_loss,
         walk_fetch_failures=walk_fetch_failures,
+        walk_candle_period=walk_candle_period,
     )

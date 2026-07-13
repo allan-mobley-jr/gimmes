@@ -4413,8 +4413,17 @@ def backtest(
     entry_offset: float = typer.Option(
         1.0, "--entry-offset",
         help="Enter each market this many days before close (default"
-             " 1). Candles are daily — sub-day values mostly skip;"
-             " each offset value is a fresh cache namespace (#713)",
+             " 1). Sub-day offsets need --candle-period 60 (or 1);"
+             " each offset value is a fresh cache namespace"
+             " (#713/#716)",
+    ),
+    candle_period: int = typer.Option(
+        1440, "--candle-period",
+        help="Candle granularity in minutes for entry pricing and the"
+             " TP/SL walk: 1, 60, or 1440 (default: daily). Sub-day"
+             " periods compute volume_24h as a trailing-24h sum; each"
+             " period is a fresh cache namespace, and period 1 grows"
+             " the cache fast (#716)",
     ),
 ) -> None:
     """Backtest the gimme strategy on historical settled markets."""
@@ -4424,7 +4433,11 @@ def backtest(
         import json
         from datetime import date
 
-        from gimmes.backtest.engine import BacktestConfig, run_backtest
+        from gimmes.backtest.engine import (
+            ALLOWED_CANDLE_PERIODS,
+            BacktestConfig,
+            run_backtest,
+        )
         from gimmes.backtest.report import backtest_result_to_json, format_backtest_report
         from gimmes.kalshi.client import KalshiClient
 
@@ -4457,6 +4470,11 @@ def backtest(
                 " number[/red]",
             )
             raise typer.Exit(1)
+        if candle_period not in ALLOWED_CANDLE_PERIODS:
+            console.print(
+                "[red]--candle-period must be 1, 60, or 1440[/red]",
+            )
+            raise typer.Exit(1)
         bt_config = BacktestConfig(
             start_date=start,
             end_date=end,
@@ -4467,6 +4485,7 @@ def backtest(
             take_profit_pct=take_profit,
             stop_loss_pct=stop_loss,
             entry_offset_days=entry_offset,
+            candle_period_minutes=candle_period,
         )
         console.print(
             f"[dim]Running backtest: {start} to {end}, "

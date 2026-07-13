@@ -468,3 +468,51 @@ class TestEntryOffsetInReport:
         buf = StringIO()
         format_backtest_report(result, Console(file=buf, width=120))
         assert "Entry offset: 2.5 day(s)" in buf.getvalue()
+
+
+class TestCandlePeriodInReport:
+    """#716: period and walk-period reach the JSON config."""
+
+    def test_json_carries_period_fields(self) -> None:
+        data = backtest_result_to_json(_make_result())
+        assert data["config"]["candle_period_minutes"] == 1440
+        assert data["config"]["walk_candle_period"] is None
+
+        result = _make_result()
+        result.config.candle_period_minutes = 60
+        result.walk_candle_period = 60
+        data = backtest_result_to_json(result)
+        assert data["config"]["candle_period_minutes"] == 60
+        assert data["config"]["walk_candle_period"] == 60
+
+    def test_header_shows_period(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "Candle period: 1440 min" in buf.getvalue()
+
+    def test_header_shows_walk_fallback(self) -> None:
+        """The capped-fallback walk period must be visible in the
+        HUMAN report, not just the JSON (review-found: a mid-run
+        warning scrolls away)."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        result = _make_result()
+        result.config.candle_period_minutes = 1
+        result.walk_candle_period = 60
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        out = buf.getvalue()
+        assert "exits walked at 60 min" in out
+
+        # No suffix when the walk ran at the configured period.
+        result.walk_candle_period = 1
+        buf = StringIO()
+        format_backtest_report(result, Console(file=buf, width=120))
+        assert "exits walked" not in buf.getvalue()

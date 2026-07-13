@@ -7,8 +7,11 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from gimmes.backtest.engine import (
+    ALLOWED_CANDLE_PERIODS,
+    CANDLE_LOOKBACK_DAYS,
     DEFAULT_FEE_MULTIPLIERS,
     ENTRY_OFFSET_DAYS,
+    MAX_CANDLES_PER_REQUEST,
     BacktestLedger,
     _walk_exit,
     candle_midpoint,
@@ -797,9 +800,13 @@ class _EntryDayHarness:
             m.ticker: int(m.close_time.timestamp()) for m in markets
         }
 
-        async def _fake_candles(client, ticker, *, start_ts, end_ts, **kw):
+        async def _fake_candles(
+            client, ticker, *, start_ts, end_ts,
+            period_interval=1440, **kw,
+        ):
             calls.append({"ticker": ticker, "start_ts": start_ts,
-                          "end_ts": end_ts})
+                          "end_ts": end_ts,
+                          "period_interval": period_interval})
             if end_ts == settle_ts[ticker] and start_ts != end_ts:
                 return walk_candles.get(ticker, [])
             return entry_candles.get(ticker, [])
@@ -1589,6 +1596,27 @@ def test_cli_entry_offset_wired(tmp_path) -> None:
     assert captured["config"].entry_offset_days == ENTRY_OFFSET_DAYS
 
 
+def test_cli_candle_period_wired(tmp_path) -> None:
+    """#716: --candle-period reaches BacktestConfig; default 1440."""
+    result, captured = _invoke_backtest_cli(
+        tmp_path, "--candle-period", "60",
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].candle_period_minutes == 60
+
+    result, captured = _invoke_backtest_cli(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert captured["config"].candle_period_minutes == 1440
+
+
+def test_cli_candle_period_invalid_rejected(tmp_path) -> None:
+    for bad in ("30", "0", "720"):
+        result, _ = _invoke_backtest_cli(
+            tmp_path, "--candle-period", bad,
+        )
+        assert result.exit_code == 1, bad
+
+
 def test_cli_entry_offset_nonpositive_rejected(tmp_path) -> None:
     result, _ = _invoke_backtest_cli(tmp_path, "--entry-offset", "0")
     assert result.exit_code == 1
@@ -1728,7 +1756,22 @@ class TestEntryOffset(_EntryDayHarness):
             await run_backtest(client=None, config=config)
         warnings = [r.message for r in caplog.records]
         assert any("sub-day" in w for w in warnings)
+        assert any("--candle-period" in w for w in warnings)  # #716
         assert not any("hold-to-settlement" in w for w in warnings)
+
+        # #716 control arm: sub-day offset WITH sub-day candles is
+        # meaningful — no warning.
+        caplog.clear()
+        config = self._offset_config(0.5)
+        config.candle_period_minutes = 60
+        config.gimmes_config.scanner.min_days_to_resolution = 0.0
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            await run_backtest(client=None, config=config)
+        assert not any(
+            "sub-day" in r.message for r in caplog.records
+        )
 
         # Control arm (mutation pin: `< 1` must not become `<= 1`):
         # the default 1.0 offset never triggers the sub-day warning.
@@ -1771,6 +1814,20 @@ class TestEntryOffset(_EntryDayHarness):
         warnings = [r.message for r in caplog.records]
         assert any("sub-day" in w for w in warnings)
         assert any("hold-to-settlement" in w for w in warnings)
+
+        # #716 control arm: period 60 makes the sub-day walk real —
+        # neither warning fires.
+        caplog.clear()
+        config = self._offset_config(0.5, tp=0.8)
+        config.candle_period_minutes = 60
+        config.gimmes_config.scanner.min_days_to_resolution = 0.0
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            await run_backtest(client=None, config=config)
+        assert not any(
+            "hold-to-settlement" in r.message for r in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_days_filter_warning_keys_off_configured_offset(
@@ -1819,6 +1876,280 @@ class TestEntryOffset(_EntryDayHarness):
             "min_days_to_resolution" in r.message for r in caplog.records
         )
         assert result.trades == []
+
+
+class TestCandlePeriod(_EntryDayHarness):
+    """#716: configurable candle granularity — sub-day entry pricing,
+    sub-day exits, trailing-24h volume, the 5000-period cap fallback,
+    and fail-fast validation."""
+
+    def _period_config(self, period, offset=1.0, tp=None, sl=None):
+        cfg = self._exit_config(tp=tp, sl=sl)
+        cfg.entry_offset_days = offset
+        cfg.candle_period_minutes = period
+        cfg.gimmes_config.scanner.min_days_to_resolution = 0.0
+        return cfg
+
+    def test_trailing_24h_volume_boundary(self) -> None:
+        """Direct pin of the half-open interval (review-found: the
+        e2e min_volume gate can't see over-inclusion — 100 and 655
+        both pass min_volume=100). The boundary candle (exactly 24h
+        old) and the 25h-old candle are BOTH excluded."""
+        from gimmes.backtest.engine import _trailing_24h_volume
+
+        entry_ts = 1_700_000_000
+        candles = [
+            _make_candle(ts=entry_ts - 90_000, volume=999),
+            _make_candle(ts=entry_ts - 86_400, volume=555),
+            _make_candle(ts=entry_ts - 7_200, volume=30),
+            _make_candle(ts=entry_ts - 3_600, volume=30),
+            _make_candle(ts=entry_ts, volume=40),
+        ]
+        assert _trailing_24h_volume(candles, entry_ts) == 100
+
+    def test_lookback_fits_cap_at_every_period(self) -> None:
+        """Pure pin: the 3-day entry lookback must fit the API's
+        hard 5000-period cap at EVERY allowed period (worst case
+        period 1: 4320 + 1 inclusive endpoint)."""
+        for p in ALLOWED_CANDLE_PERIODS:
+            assert (
+                CANDLE_LOOKBACK_DAYS * 1440 / p + 1
+                <= MAX_CANDLES_PER_REQUEST
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_period_fails_fast(self, monkeypatch) -> None:
+        list_calls = []
+
+        async def _fake_list(*args, **kwargs):
+            list_calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        for bad in (0, 30, 720, -1):
+            config = self._period_config(bad)
+            with pytest.raises(ValueError, match="candle_period"):
+                await run_backtest(client=None, config=config)
+        assert list_calls == []  # guard fired before any fetch
+
+    @pytest.mark.asyncio
+    async def test_period60_subday_entry_pricing(
+        self, monkeypatch,
+    ) -> None:
+        """A half-day offset with hourly candles prices the entry —
+        the combination #713 could only warn about."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        entry_ts = close_ts - 43_200  # offset 0.5
+        candles = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        calls = self._stub(monkeypatch, markets, candles)
+        config = self._period_config(60, offset=0.5)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        assert result.trades[0].entry_price == pytest.approx(0.65)
+        assert all(c["end_ts"] == entry_ts for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_period60_walk_finds_subday_exit(
+        self, monkeypatch,
+    ) -> None:
+        """Hourly walk candles let a half-day position exit intraday
+        — structurally impossible at period 1440."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        entry_ts = close_ts - 43_200
+        entry = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        walk = {m.ticker: [_make_candle(
+            ts=entry_ts + 3_600, yes_bid_close=0.02, yes_ask_close=0.06,
+        )]}
+        calls = self._stub_windowed(monkeypatch, markets, entry, walk)
+        config = self._period_config(60, offset=0.5, tp=0.8)
+        result = await run_backtest(client=None, config=config)
+
+        assert len(result.trades) == 1
+        t = result.trades[0]
+        assert t.exit_reason == "take_profit"
+        assert t.exit_time == datetime.fromtimestamp(
+            entry_ts + 3_600, tz=UTC,
+        )
+        assert result.walk_candle_period == 60
+        walk_calls = [c for c in calls if c["end_ts"] == close_ts]
+        assert walk_calls
+        # The FETCH itself carries the walk period (review-found:
+        # result.walk_candle_period is set independently of the
+        # window dict — both must agree).
+        assert all(c["period_interval"] == 60 for c in walk_calls)
+
+    @pytest.mark.asyncio
+    async def test_trailing_24h_volume_at_period60(
+        self, monkeypatch,
+    ) -> None:
+        """volume_24h = trailing-24h SUM of per-period volumes; the
+        25h-old candle is excluded (half-open lower bound). A
+        single-candle mapping (40) would fail min_volume=100."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        entry_ts = close_ts - 43_200
+        candles = {m.ticker: [
+            _make_candle(ts=entry_ts - 90_000, yes_bid_close=0.30,
+                         yes_ask_close=0.40, volume=999),
+            _make_candle(ts=entry_ts - 86_400, yes_bid_close=0.30,
+                         yes_ask_close=0.40, volume=555),  # boundary: excluded
+            _make_candle(ts=entry_ts - 7_200, yes_bid_close=0.30,
+                         yes_ask_close=0.40, volume=30),
+            _make_candle(ts=entry_ts - 3_600, yes_bid_close=0.30,
+                         yes_ask_close=0.40, volume=30),
+            _make_candle(ts=entry_ts, yes_bid_close=0.30,
+                         yes_ask_close=0.40, volume=40),
+        ]}
+        self._stub(monkeypatch, markets, candles)
+        config = self._period_config(60, offset=0.5)
+        config.gimmes_config.scanner.min_volume = 100
+        result = await run_backtest(client=None, config=config)
+        # 40 + 30 + 30 = 100 passes; single-candle 40 would not.
+        assert len(result.trades) == 1
+
+    @pytest.mark.asyncio
+    async def test_default_period_keeps_selected_candle_volume(
+        self, monkeypatch,
+    ) -> None:
+        """Period 1440 keeps the SELECTED candle's volume even when
+        stale — a trailing sum would be 0 and silently drop markets
+        the default path prices today (plan-found regression trap)."""
+        markets = self._markets()
+        m = markets[0]
+        entry_ts = self._entry_ts(m)
+        candles = {m.ticker: [_make_candle(
+            ts=entry_ts - 100_000,  # stale (>1 day old)
+            yes_bid_close=0.30, yes_ask_close=0.40, volume=500,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+        config = self._period_config(1440)
+        config.gimmes_config.scanner.min_volume = 100
+        result = await run_backtest(client=None, config=config)
+        assert len(result.trades) == 1
+        assert result.stale_candles == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_candle_at_period60_drops_on_volume(
+        self, monkeypatch,
+    ) -> None:
+        """At sub-day periods a stale entry candle (>24h old) means
+        the trailing 24h genuinely had zero volume — the market is
+        honestly dropped by min_volume (review-found: only the 1440
+        arm of this dichotomy was pinned)."""
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        entry_ts = close_ts - 43_200
+        candles = {m.ticker: [_make_candle(
+            ts=entry_ts - 100_000,  # >24h old
+            yes_bid_close=0.30, yes_ask_close=0.40, volume=500,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+        config = self._period_config(60, offset=0.5)
+        config.gimmes_config.scanner.min_volume = 100
+        result = await run_backtest(client=None, config=config)
+        assert result.trades == []
+        assert result.stale_candles == 1
+
+    @pytest.mark.asyncio
+    async def test_walk_period_fallback_ladder(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """Offset spans over the 5000-period cap fall back to the
+        next coarser walk period; entries keep the configured
+        period."""
+        import logging
+
+        monkeypatch.setattr(
+            logging.getLogger("gimmes.backtest"), "propagate", True,
+        )
+        markets = self._markets()
+        m = markets[0]
+        close_ts = int(m.close_time.timestamp())
+        # offset 4.0 at period 1: 5760 >= 5000 -> walk at 60.
+        entry_ts = close_ts - 4 * 86_400
+        entry = {m.ticker: [_make_candle(
+            ts=entry_ts, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        walk = {m.ticker: []}
+        calls = self._stub_windowed(monkeypatch, markets, entry, walk)
+        config = self._period_config(1, offset=4.0, sl=0.15)
+        with caplog.at_level(
+            logging.WARNING, logger="gimmes.backtest.engine",
+        ):
+            result = await run_backtest(client=None, config=config)
+        assert result.walk_candle_period == 60
+        assert any("hard cap" in r.message for r in caplog.records)
+        entry_calls = [c for c in calls if c["end_ts"] == entry_ts]
+        assert entry_calls  # entries still fetched (at period 1)
+        assert all(c["period_interval"] == 1 for c in entry_calls)
+        fallback_walk = [c for c in calls if c["end_ts"] == close_ts]
+        assert fallback_walk
+        # The walk WINDOW uses the fallback period, not the config
+        # period (review-found: unpinned).
+        assert all(c["period_interval"] == 60 for c in fallback_walk)
+
+        # Control: offset 3.0 at period 1 = 4320 < 5000 -> no fallback.
+        caplog.clear()
+        entry_ts3 = close_ts - 3 * 86_400
+        entry3 = {m.ticker: [_make_candle(
+            ts=entry_ts3, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub_windowed(monkeypatch, markets, entry3, walk)
+        config = self._period_config(1, offset=3.0, sl=0.15)
+        result = await run_backtest(client=None, config=config)
+        assert result.walk_candle_period == 1
+
+        # Exact-cap boundary (mutation pin: `>=` must not become
+        # `>`): span of exactly 5000 periods needs 5001 inclusive
+        # candles -> fallback.
+        boundary_offset = 5000 / 1440
+        entry_tsb = close_ts - int(boundary_offset * 86_400)
+        entryb = {m.ticker: [_make_candle(
+            ts=entry_tsb, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub_windowed(monkeypatch, markets, entryb, walk)
+        config = self._period_config(1, offset=boundary_offset, sl=0.15)
+        result = await run_backtest(client=None, config=config)
+        assert result.walk_candle_period == 60
+
+        # Second rung: offset 209 at period 60 -> walk at 1440.
+        entry_ts209 = close_ts - 209 * 86_400
+        entry209 = {m.ticker: [_make_candle(
+            ts=entry_ts209, yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub_windowed(monkeypatch, markets, entry209, walk)
+        config = self._period_config(60, offset=209.0, sl=0.15)
+        config.gimmes_config.scanner.max_days_to_resolution = 400.0
+        result = await run_backtest(client=None, config=config)
+        assert result.walk_candle_period == 1440
+
+    @pytest.mark.asyncio
+    async def test_no_walk_means_no_walk_period(
+        self, monkeypatch,
+    ) -> None:
+        markets = self._markets()
+        m = markets[0]
+        candles = {m.ticker: [_make_candle(
+            ts=self._entry_ts(m), yes_bid_close=0.30, yes_ask_close=0.40,
+        )]}
+        self._stub(monkeypatch, markets, candles)
+        result = await run_backtest(
+            client=None, config=self._period_config(60),
+        )
+        assert result.walk_candle_period is None
 
 
 class TestPostEntryExits(_EntryDayHarness):
@@ -2331,15 +2662,14 @@ class TestDiskCandleCache(_EntryDayHarness):
         assert second.fetch_failures == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("period", [1, 60, 1440])
     async def test_engine_uses_the_documented_window_keys(
-        self, monkeypatch,
+        self, monkeypatch, period,
     ) -> None:
         """A recording fake pins the cache-key contract: the window
-        derives from close_time, making sweep keys stable."""
-        from gimmes.backtest.engine import (
-            CANDLE_LOOKBACK_DAYS,
-        )
-
+        derives from close_time and carries the configured period
+        (#716), making sweep keys stable. The lookback is deliberately
+        NOT scaled by period."""
         markets = self._markets()
         m = markets[0]
         entry_ts = self._entry_ts(m)
@@ -2360,8 +2690,10 @@ class TestDiskCandleCache(_EntryDayHarness):
             async def put(self, ticker, *, candles, **kw):
                 recorded.append({"op": "put", "ticker": ticker, **kw})
 
+        config = self._permissive_config()
+        config.candle_period_minutes = period
         await run_backtest(
-            client=None, config=self._permissive_config(),
+            client=None, config=config,
             candle_cache=_FakeCache(),
         )
         gets = [r for r in recorded if r["op"] == "get"]
@@ -2370,4 +2702,4 @@ class TestDiskCandleCache(_EntryDayHarness):
         for r in gets + puts:
             assert r["end_ts"] == entry_ts
             assert r["start_ts"] == entry_ts - CANDLE_LOOKBACK_DAYS * 86400
-            assert r["period_interval"] == 1440
+            assert r["period_interval"] == period
