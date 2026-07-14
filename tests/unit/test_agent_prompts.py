@@ -1382,8 +1382,9 @@ def test_caddie_and_monitor_economic_category_lists_stay_in_sync(
     )
     caddie_cats = [c.strip() for c in sanity_match.group(1).split(",")]
     # Equity indices use intraday price moves, not economist forecasts;
-    # bank enumeration does not apply.
-    non_economic = {"KXINX", "KXNASDAQ100"}
+    # bank enumeration does not apply. KXBTCD (#721) is a crypto price
+    # series with no economist-forecast sources — same class.
+    non_economic = {"KXINX", "KXNASDAQ100", "KXBTCD"}
     economic_caddie_cats = [
         c for c in caddie_cats if c and c not in non_economic
     ]
@@ -2309,3 +2310,323 @@ def test_prompt_skip_reasons_exist_in_cli_vocabulary() -> None:
                 f"{path.name} references --reason {value!r} which is"
                 " not in cli._SKIP_REASONS (#710)"
             )
+
+
+# ---------------------------------------------------------------------------
+# #721/#724: hourly-ladder lane guards
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_btcd_in_gimme_category_list(caddie_text: str) -> None:
+    """#724: KXBTCD joins the sanity-check fast track; the existing
+    nine categories must survive alongside it (superset guard)."""
+    import re
+
+    match = re.search(
+        r"For candidates in backtested gimme categories \(([^)]+)\),",
+        caddie_text,
+    )
+    assert match is not None
+    cats = {c.strip() for c in match.group(1).split(",")}
+    assert cats >= {
+        "KXCPICORE", "KXCPIYOY", "KXCPICOREYOY", "KXPAYROLLS", "KXADP",
+        "KXGDP", "KXINX", "KXNASDAQ100", "KXJOBLESSCLAIMS", "KXBTCD",
+    }
+
+
+def test_caddie_btcd_base_rate_row_matches_config(caddie_text: str) -> None:
+    """#724 cross-file: the caddie.md base-rate table row for KXBTCD
+    must carry the same value as CATEGORY_BASE_RATES — the regex is
+    built FROM the constant so config drift fails this prompt test."""
+    import re
+
+    from gimmes.config import CATEGORY_BASE_RATES
+
+    rate = CATEGORY_BASE_RATES["KXBTCD"]
+    assert rate == 0.70
+    pct = f"{int(rate * 100)}%"
+    prob = f"{rate:.2f}"
+    row = re.search(
+        rf"\|\s*KXBTCD\s*\|\s*{re.escape(pct)}\s*\|\s*{re.escape(prob)}\s*\|",
+        caddie_text,
+    )
+    assert row is not None, (
+        f"caddie.md base-rate table must carry | KXBTCD | {pct} | {prob} |"
+        " matching CATEGORY_BASE_RATES (#724)"
+    )
+
+
+def test_caddie_time_rubric_hourly_matches_scorer(caddie_text: str) -> None:
+    """#724 behavioral cross-file: the prompt rubric's hourly <1-day
+    score must equal what scorer.full_score actually computes."""
+    import re
+    from datetime import UTC, datetime, timedelta
+
+    from gimmes.config import GimmesConfig, Mode, ScannerConfig, StrategyConfig
+    from gimmes.models.gimme import GimmeCandidate
+    from gimmes.models.market import Market
+    from gimmes.strategy.scorer import full_score
+
+    ticker = "KXBTCD-26JUN23H14-T119999.99"
+    config = GimmesConfig(
+        mode=Mode.DRIVING_RANGE,
+        strategy=StrategyConfig(side="no"),
+        scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+    )
+    market = Market(
+        ticker=ticker, last_price=0.35,
+        close_time=datetime.now(UTC) + timedelta(minutes=29),
+    )
+    candidate = GimmeCandidate(
+        ticker=ticker, market_price=0.65, model_probability=0.80, edge=0.15,
+    )
+    score = full_score(candidate, None, config, market=market)
+
+    bullet = re.search(r"- \*\*Time to resolution\*\*[^\n]+", caddie_text)
+    assert bullet is not None
+    line = bullet.group(0)
+    assert "hourly" in line
+    hourly_score = re.search(r"hourly-series tickers, where <1 day → (\d+)", line)
+    assert hourly_score is not None, (
+        "caddie.md time rubric lost the hourly <1 day arrow (#724)"
+    )
+    assert int(hourly_score.group(1)) == int(score.time_to_resolution_score)
+    assert "<1 day → 20" in line  # non-hourly branch stays pinned
+
+    # Long-dated bucket behavioral sync (>60 drifted to 20 pre-#724)
+    far_market = Market(
+        ticker="KXTEST", last_price=0.65,
+        close_time=datetime.now(UTC) + timedelta(days=90),
+    )
+    far_score = full_score(
+        GimmeCandidate(
+            ticker="KXTEST", market_price=0.65,
+            model_probability=0.80, edge=0.15,
+        ),
+        None, config, market=far_market,
+    )
+    assert f">60 → {int(far_score.time_to_resolution_score)}" in line
+
+
+def test_caddie_hourly_floor_note(caddie_text: str) -> None:
+    """#724: hourly tickers gate on their own floor; the note must name
+    the config key and the read command, and cite the default that
+    matches StrategyConfig."""
+    from gimmes.config import StrategyConfig
+
+    assert "gimmes config get strategy.hourly_min_true_probability" in caddie_text
+    idx = caddie_text.index("Hourly floor (#721)")
+    window = caddie_text[idx:idx + 600]
+    assert "strategy.hourly_min_true_probability" in window
+    assert "NOT the global" in window  # exclusive floor, not additive
+    assert f"{StrategyConfig().hourly_min_true_probability:.2f}" in window
+
+
+def test_caddie_master_full_cycle_4c_conferral_untouched(
+    caddie_master_text: str,
+) -> None:
+    """#724: 4c-lite is scoped to hourly cycles ONLY — the full-cycle
+    Step 4c conferral mandate must remain verbatim."""
+    import re
+
+    block = re.search(
+        r"#### 4c\. Review & Approve.*?(?=\n### Step 5)",
+        caddie_master_text, re.DOTALL,
+    )
+    assert block is not None
+    text = block.group(0)
+    assert "Confer with Caddie using SendMessage" in text
+    assert "NEVER dispatch Closer without completing this review" in text
+    assert "Go back and forth as many times as needed" in text
+
+
+def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
+    """#724: the hourly lane keeps every capital-discipline element and
+    names its one relaxation honestly."""
+    import re
+
+    block = re.search(
+        r"## Hourly Cycles \(GIMMES_CYCLE_TYPE=hourly\).*?(?=\n## )",
+        caddie_master_text, re.DOTALL,
+    )
+    assert block is not None
+    text = block.group(0)
+    assert "ONE batched" in text
+    assert "apply verbatim" in text
+    assert "REJECT criterion" in text
+    assert "paper-trading experiment" in text
+    assert "NEVER extend it to full cycles" in text
+    assert "NEVER run Step 6 (Scorecard) or Step 7 (Pro)" in text
+    assert "#659" in text  # Step 2 backstop rationale
+    assert "MUST NOT be skipped" in text  # Step 2 discipline
+    # Batched-conferral scope stays tight
+    assert "a single SendMessage to Caddie covering ALL PROCEED candidates" in text
+    assert "at most one follow-up" in text
+    # The audit trail stays per-ticker — only the conferral is batched
+    assert "Sub-steps 4-6 remain PER-CANDIDATE" in text
+    assert "gimmes scan -s <series>" in text  # Step 3 scope survives
+    # Daily-loss-breach gate outranks the Step 2 mandate
+    assert "daily-loss-breach gate still outranks this" in text
+    # The env default must stay full — an unset var must never
+    # self-classify a full cycle as hourly
+    assert "treat unset as `full`" in caddie_master_text
+
+
+def test_caddie_master_hourly_zero_candidate_override(
+    caddie_master_text: str,
+) -> None:
+    """#724: hourly cycles reroute every skip-to-Step-6 exit to 6.5
+    (Step 6 never runs); the full-cycle exits stay untouched."""
+    import re
+
+    assert "skip directly to Step 6.5" in caddie_master_text
+    # Negative lookahead: 'Step 6.5' contains 'Step 6' as a substring
+    full_cycle_exits = re.findall(
+        r"skip directly to Step 6(?!\.5)", caddie_master_text,
+    )
+    assert len(full_cycle_exits) >= 4, (
+        "full-cycle skip-to-Step-6 exits must remain (#724 override is"
+        " hourly-scoped, not a rewrite)"
+    )
+    # The 'skip to Step 6' (no 'directly') variants — max-positions,
+    # bankroll, and 4c's all-rejected exit — are enumerated by the
+    # override and must survive too
+    plain_exits = re.findall(r"skip to Step 6(?!\.5)", caddie_master_text)
+    assert len(plain_exits) >= 3
+
+
+def test_hourly_prompt_steps_exist_in_caddie_master(
+    caddie_master_text: str,
+) -> None:
+    """#724 cross-file: every step number named in the loop's cycle
+    prompts must exist as a caddie-master.md heading, and the hourly
+    prompt's list must match the hourly lane section's list — kills
+    renumber drift in either direction."""
+    import re
+
+    from gimmes.cli import HOURLY_CYCLE_PROMPT_TEMPLATE, MONITOR_CYCLE_PROMPT
+
+    def step_tokens(text: str, run_phrase: str = "Only run") -> list[str]:
+        m = re.search(rf"{run_phrase} Steps ([^.]+(?:\.\d+[^.]*)*)\.", text)
+        assert m is not None, f"no step list in {text!r}"
+        return [
+            t.strip() for t in m.group(1).replace("and ", "").split(",")
+            if t.strip()
+        ]
+
+    hourly_prompt = HOURLY_CYCLE_PROMPT_TEMPLATE.format(series="KXBTCD")
+    for prompt in (hourly_prompt, MONITOR_CYCLE_PROMPT):
+        for token in step_tokens(prompt):
+            has_heading = (
+                f"### Step {token}:" in caddie_master_text
+                or f"#### {token}." in caddie_master_text
+            )
+            assert has_heading, (
+                f"cycle prompt names Step {token} but caddie-master.md"
+                " has no such heading (#724)"
+            )
+
+    # The hourly lane section's own step list must name the same steps
+    hourly_tokens = step_tokens(hourly_prompt)
+    lane = re.search(
+        r"## Hourly Cycles \(GIMMES_CYCLE_TYPE=hourly\).*?(?=\n## )",
+        caddie_master_text, re.DOTALL,
+    )
+    assert lane is not None
+    lane_tokens = step_tokens(lane.group(0), "Run ONLY")
+    assert lane_tokens == hourly_tokens, (
+        f"cli.py hourly prompt steps {hourly_tokens} != caddie-master.md"
+        f" hourly lane steps {lane_tokens} (#724)"
+    )
+
+
+def test_closer_hourly_taker_rule() -> None:
+    """#724: Closer orders hourly tickers with --taker (resting maker
+    orders in sub-hour books are honest no-fills, #690), and the flag
+    actually exists on the order command."""
+    import inspect
+
+    from gimmes.cli import order
+
+    closer_text = _CLOSER.read_text()
+    assert "--taker" in closer_text
+    assert "honest no-fill" in closer_text
+    assert "#690" in closer_text
+    assert (
+        "gimmes order TICKER --prob P --taker --yes --agent closer"
+        in closer_text
+    )
+    # The CLOSE path is the one that matters most: a maker stop-loss
+    # exit in a sub-hour book never fills (#659 backstop would be inert)
+    assert (
+        "gimmes order TICKER --action sell --side SIDE --count COUNT"
+        " --taker --yes --agent closer" in closer_text
+    )
+    assert "EVERY order" in closer_text
+    assert "NEVER add `--taker` to non-hourly tickers" in closer_text
+    assert "taker" in inspect.signature(order).parameters
+
+
+def test_monitor_time_decay_hourly_carveout(monitor_text: str) -> None:
+    """#724: the Time decay trigger would fire on 100% of hourly
+    positions (all settle <1h, hold-to-settlement by design)."""
+    import re
+
+    trigger = re.search(r"- \*\*Time decay\*\*:[^\n]+", monitor_text)
+    assert trigger is not None
+    line = trigger.group(0)
+    assert "NEVER fire this trigger" in line  # polarity is load-bearing
+    assert "hold-to-settlement" in line
+    assert "hourly" in line.lower()
+    # Membership is a config read, not ticker-shape guessing
+    assert "gimmes config get scanner.hourly_series" in line
+
+    vocab = re.search(r"`Trigger: Time decay`[^\n]+", monitor_text)
+    assert vocab is not None
+    assert "Never for hourly-series positions" in vocab.group(0)
+
+
+def test_scout_hourly_scan_section(scout_text: str) -> None:
+    """#724: Scout knows the hourly lane — scoped scans, the HOURLY
+    tag, the min-days bypass, and batched-rationale skip logging that
+    keeps per-candidate rows (#710)."""
+    assert "gimmes scan -s" in scout_text
+    assert "HOURLY" in scout_text
+    assert "bypass the `scanner.min_days_to_resolution` floor" in scout_text
+    assert "Per-candidate skip rows remain REQUIRED" in scout_text
+    assert "ONE rationale file per group" in scout_text
+    assert "do NOT run an unscoped `gimmes scan`" in scout_text
+
+
+def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
+    """#724: the crypto-substitution block is the entire hourly analysis
+    method — pin its existence, its check names, and the PASS polarity
+    (a PASS→PROCEED swap would invert the safety direction)."""
+    import re
+
+    block = re.search(
+        r"\*\*Hourly-series substitution \(#721.*?"
+        r"(?=\*\*If all three checks pass)",
+        caddie_text, re.DOTALL,
+    )
+    assert block is not None, (
+        "caddie.md lost the Hourly-series substitution block (#724)"
+    )
+    text = block.group(0)
+    assert "Distance check" in text
+    assert "Imminence check" in text
+    assert "NOT a gimme -> PASS" in text
+    assert "Do NOT run the macro playbooks" in text
+    # Both substituted verdicts must point the safe direction
+    assert "-> PROCEED" not in text
+
+
+def test_caddie_sibling_rule_hourly_exemption(caddie_text: str) -> None:
+    """#724: hourly ladders are exempt from cheapest-sibling selection —
+    the backtest entered every in-band rung up to the event cap, and
+    the paper lane exists to measure fidelity to it."""
+    idx = caddie_text.index("Hourly-ladder exemption (#721/#724)")
+    window = caddie_text[idx:idx + 600]
+    assert "EXEMPT" in window
+    assert "PROCEED every rung that passes the checks" in window
+    assert "max_event_exposure_pct" in window

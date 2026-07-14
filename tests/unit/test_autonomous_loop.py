@@ -2098,8 +2098,11 @@ class TestHourlyLadder:
         prompt = cmd[cmd.index("-p") + 1]
         assert "HOURLY-LADDER" in prompt
         assert "KXBTCD" in prompt
-        assert "0, 0.5, 1, 3, 4, 4c, 5, and 8" in prompt
-        assert "Skip Monitor, Scorecard, and Pro" in prompt
+        # Step 2 (Monitor/stop-loss backstop) and 6.5 (Groundskeeper)
+        # ride the hourly lane (#724) — in steady state hourly cycles
+        # are the only overnight cycles
+        assert "0, 0.5, 1, 2, 3, 4, 4c, 5, 6.5, and 8" in prompt
+        assert "Skip Scorecard and Pro" in prompt
 
     def test_hourly_disabled_when_series_empty(self) -> None:
         # Default config: the hourly gate is bool(hourly_series) — the
