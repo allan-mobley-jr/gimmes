@@ -54,7 +54,7 @@ When the Scout's shortlist contains **multiple candidates from the same event** 
 
 ## Sanity-Check Mode (Default for Gimme Categories)
 
-For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPAYROLLS, KXADP, KXGDP, KXINX, KXNASDAQ100, KXJOBLESSCLAIMS), run a **fast sanity check** instead of deep research. The structural edge in these categories is proven — deep probability estimation adds noise, not signal.
+For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPAYROLLS, KXADP, KXGDP, KXINX, KXNASDAQ100, KXJOBLESSCLAIMS, KXBTCD), run a **fast sanity check** instead of deep research. The structural edge in these categories is proven — deep probability estimation adds noise, not signal.
 
 **Three checks (30 seconds, not 5 minutes):**
 
@@ -75,6 +75,12 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
    - If the data the contract depends on has already been published, the market should have settled
    - A still-open contract after data release may have settlement issues → PASS
 
+**Hourly-series substitution (#721 — series in `scanner.hourly_series`, e.g. KXBTCD):** hourly BTC ladders are price markets, not scheduled data releases — the macro-release framing above does not map. Keep the three-check shape but substitute:
+
+1. **Distance check** (replaces the extraordinary-event check): look up current BTC spot and compare the strike-to-spot distance against how far BTC actually moved over the past ~30 minutes (realized-move sanity). If the strike sits within one recent 30-minute move of spot, or BTC is mid-fast-move (last-30-min move exceeds the strike distance), it is NOT a gimme -> PASS with the distance arithmetic in the rationale. Do NOT run the macro playbooks, bank enumeration, or base-effect arithmetic — there is no forecast consensus for an hourly BTC close; the category base rate plus this distance check IS the analysis.
+2. **Settlement clarity check**: unchanged — state the YES/NO win conditions from `Rules (primary)` before scoring.
+3. **Imminence check** (replaces the staleness check): verify the market settles at the NEXT top of the hour and is still open — a ladder for an hour that already settled is dead -> PASS.
+
 **If all three checks pass → PROCEED** with the category base rate as probability:
 
 | Category | Base Rate (NO Win %) | Use as --prob |
@@ -84,9 +90,11 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 | KXPAYROLLS, KXADP, KXJOBLESSCLAIMS | 85% | 0.85 |
 | KXGDP | 85% | 0.85 |
 | KXINX, KXNASDAQ100 | 80% | 0.80 |
+| KXBTCD | 70% | 0.70 |
 
 4. **Sibling-strike selection (per-event Kelly rule)**: When two or more candidates from the SAME event_ticker (the full prefix before the final `-T<strike>` segment, e.g., `KXADP-26APR-T100000` and `KXADP-26APR-T125000` share event_ticker `KXADP-26APR`; `KXADP-26APR-T100000` and `KXADP-26MAY-T100000` do NOT — different months are different events) pass checks 1–3 in the same review batch on the configured `trading_side` (read from `gimmes config get strategy.side`) and share the same gimme-category base rate, PROCEED ONLY the candidate with the LOWEST price on `trading_side`; PASS the higher-priced siblings.
    - Rationale: under the fast-track assumption of a constant category base rate, `edge = base_rate − entry_price` is monotonic in entry price alone, so the cheapest entry on the trading side is Kelly-optimal. Picking a higher-priced sibling leaks edge for no informational gain (fixes #591).
+   - **Hourly-ladder exemption (#721/#724):** hourly-series ladders (series in `scanner.hourly_series`, e.g. KXBTCD) are EXEMPT from this rule — PROCEED every rung that passes the checks. The backtested hourly edge entered ALL in-band rungs up to the event-concentration cap; the validator's `max_event_exposure_pct` is the rung selector there, not price ranking. Collapsing an hourly ladder to its cheapest strike would corrupt the live-vs-backtest comparison the paper lane exists to measure.
    - PASS rationale MUST cite the dominant sibling ticker and its price on the trading side (e.g., `"PASS — dominated by sibling KXADP-26APR-T125000 NO at \$0.48; this strike NO at \$0.71 has lower edge under the same base rate"`).
    - When `trading_side` is `both`, this rule does NOT fire — strikes on opposite sides aren't directly comparable; apportion to Caddie Master via PROCEED so each side's Kelly is considered independently.
    - Tied prices (within \$0.01): PROCEED all tied candidates and let Caddie Master apply the concentration limit (`max_event_exposure_pct`) to pick which fit.
@@ -190,7 +198,7 @@ The GimmeScore is a weighted composite (0-100) computed from five components:
 - **Signal strength** (25% weight): Based on number and average strength. >=4 signals → 90, >=3 → 70, >=2 → 50, 1 → 25
 - **Liquidity depth** (15% weight): Based on volume. >=500 → 100, >=200 → 80, >=50 → 60, <50 → 20
 - **Settlement clarity** (15% weight): Clear → 100, Medium risk → 50, High risk → 0
-- **Time to resolution** (15% weight): 1-14 days → 100, 15-30 → 70, 31-60 → 40, >60 → 20
+- **Time to resolution** (15% weight): 1-14 days → 100, 15-30 → 70, 31-60 → 40, >60 → 15, <1 day → 20 — EXCEPT hourly-series tickers, where <1 day → 70 (sub-hour close is the hourly design sweet spot, but exit optionality is genuinely limited, so 70 not 100 — #721, mirrors the scorer's hourly branch)
 
 ## Recommendation Thresholds (MUST follow exactly)
 
@@ -199,6 +207,8 @@ The GimmeScore is a weighted composite (0-100) computed from five components:
 - GimmeScore < 50 → **PASS**
 
 Additionally, true probability MUST be >= the configured `min_true_probability` (from step 0). Even if GimmeScore meets the threshold, PASS the candidate if true probability is below this minimum.
+
+**Hourly floor (#721):** for hourly-series tickers (series prefix in `scanner.hourly_series`), the probability floor is `strategy.hourly_min_true_probability`, NOT the global `min_true_probability` — the global 0.90 floor would reject every hourly candidate; the KXBTCD NO-side backtested base rate is 0.70. When the shortlist contains HOURLY-tagged candidates, read it in step 0: `gimmes config get strategy.hourly_min_true_probability`.
 
 ## Output Format
 

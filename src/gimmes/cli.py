@@ -48,6 +48,25 @@ HOURLY_MIN_CYCLE_SECONDS = 120
 A cycle that can't finish Scout -> Caddie -> Closer before the market
 settles would only burn a session (#723)."""
 
+# Cycle prompts are module constants so drift guards can pin the step
+# lists against caddie-master.md's headings (#724). Step 2 rides the
+# hourly lane deliberately: in steady state hourly cycles are the only
+# cycles, so this is the #659 stop-loss backstop's overnight coverage
+# (it self-skips when no positions exist). Step 6.5 keeps Groundskeeper
+# error escalation flowing for the same reason.
+HOURLY_CYCLE_PROMPT_TEMPLATE = (
+    "Run an HOURLY-LADDER cycle. Only run Steps 0, 0.5, 1, 2, 3, 4, 4c,"
+    " 5, 6.5, and 8. In Step 3, instruct Scout to scan ONLY the hourly"
+    " series (run 'gimmes scan -s <series>' for each of: {series})."
+    " Skip Scorecard and Pro."
+)
+
+MONITOR_CYCLE_PROMPT = (
+    "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
+    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
+    " and Pro."
+)
+
 
 def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
     """Extract a human-readable message from an httpx.HTTPStatusError."""
@@ -6139,12 +6158,8 @@ def _autonomous_loop(
                     f" [blue bold][HOURLY WINDOW: {_series} —"
                     f" settles {h_close.strftime('%H:%M')} ET][/blue bold]"
                 )
-                cycle_prompt = (
-                    "Run an HOURLY-LADDER cycle. Only run Steps 0, 0.5, 1,"
-                    " 3, 4, 4c, 5, and 8. In Step 3, instruct Scout to scan"
-                    " ONLY the hourly series (run 'gimmes scan -s <series>'"
-                    f" for each of: {_series}). Skip Monitor, Scorecard,"
-                    " and Pro."
+                cycle_prompt = HOURLY_CYCLE_PROMPT_TEMPLATE.format(
+                    series=_series,
                 )
             else:
                 cycle_type = "monitor"
@@ -6162,11 +6177,7 @@ def _autonomous_loop(
                     f" [yellow][MONITOR ONLY — next window:"
                     f" {next_name} in {h}h {m:02d}m][/yellow]"
                 )
-                cycle_prompt = (
-                    "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
-                    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
-                    " and Pro."
-                )
+                cycle_prompt = MONITOR_CYCLE_PROMPT
 
             update_session_cycle(config.db_path, session_id, cycle)
 

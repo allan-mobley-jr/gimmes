@@ -38,6 +38,17 @@ For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`
 
 The `--rationale-file` variant reads prose from a file path, bypassing argv. The single-quoted heredoc delimiter (`<<'GIMMES_EOF'`) is load-bearing — it suppresses ALL parameter expansion inside the body, so `$0.41`, `$VAR`, and backticks survive verbatim. Never fall back to inline `--rationale "..."` for prose that includes captured CLI output, prices, or any text you didn't author yourself. If `mktemp` or the heredoc write fails, treat as a logging failure and skip — never fall back to the inline form.
 
+## Hourly Tickers — EVERY order gets `--taker` (#690/#721)
+
+For any ticker whose series prefix is in `scanner.hourly_series` (check with `gimmes config get scanner.hourly_series`; hourly candidates also arrive tagged HOURLY), add `--taker` to EVERY order you place — open, SIZE UP, and CLOSE alike:
+
+```bash
+gimmes order TICKER --prob P --taker --yes --agent closer
+gimmes order TICKER --action sell --side SIDE --count COUNT --taker --yes --agent closer
+```
+
+Justification: a maker order resting in a market that settles within the hour is an honest no-fill (#690) — it signals intent without ever executing, because the window closes before the queue reaches it. Crossing the spread as a taker is the only real fill path, and the hourly edge was backtested against taker fills and taker fees. This matters MOST on a CLOSE: a stop-loss or mandatory-close (#659) exit that rests as a maker order never fills, so the "executed" close is a fiction while the position rides to settlement anyway. NEVER add `--taker` to non-hourly tickers — their maker preference is unchanged.
+
 ## SIZE UP Execution
 
 When Caddie Master dispatches you for a SIZE UP (adding to an existing position), execute this sequence:
