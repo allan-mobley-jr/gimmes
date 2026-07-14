@@ -423,7 +423,8 @@ async def _enter_hourly_position(
 
     # The KXBTCD base-rate floor promotes a low NO-side estimate to
     # exactly the hourly gate (floor==gate by design, #722)
-    floored = apply_base_rate_floor(0.60, market.ticker, side="no")
+    raw_prob = 0.60
+    floored = apply_base_rate_floor(raw_prob, market.ticker, side="no")
     assert floored == 0.70
 
     # Production auto-sizing prices at the side-effective MID and
@@ -451,7 +452,7 @@ async def _enter_hourly_position(
     await insert_trade(db, TradeDecision(
         ticker=HOURLY_TICKER, action=TradeDecision.Action.OPEN,
         side="no", count=contracts, price=no_price,
-        model_probability=0.72, agent="closer",
+        model_probability=raw_prob, agent="closer",
     ))
 
     # post_only=False is what `gimmes order --taker` wires (#722)
@@ -475,6 +476,17 @@ async def _settlement_closes(db: Database) -> list:
         (HOURLY_TICKER,),
     )
     return await cursor.fetchall()
+
+
+async def _settlement_date(db: Database) -> str:
+    """The close row's own date — passing it to get_daily_pnl makes the
+    assertion deterministic even across a UTC-midnight straddle."""
+    cursor = await db.conn.execute(
+        "SELECT date(replace(timestamp, ' ', 'T')) AS d FROM trades"
+        " WHERE ticker = ? AND action = 'close'",
+        (HOURLY_TICKER,),
+    )
+    return (await cursor.fetchone())["d"]
 
 
 class TestHourlyNoLifecycle:
@@ -509,7 +521,9 @@ class TestHourlyNoLifecycle:
         assert settlement["agent"] == "settlement"
         assert settlement["price"] == 1.0
         assert settlement["count"] == contracts
-        assert await get_daily_pnl(db) == pytest.approx(
+        assert await get_daily_pnl(
+            db, today=await _settlement_date(db),
+        ) == pytest.approx(
             (1.0 - 0.47) * contracts,
         )
 
@@ -535,7 +549,9 @@ class TestHourlyNoLifecycle:
         assert settlement["agent"] == "settlement"
         assert settlement["price"] == 0.0
         # A real realized loss the daily-loss trigger must see
-        assert await get_daily_pnl(db) == pytest.approx(
+        assert await get_daily_pnl(
+            db, today=await _settlement_date(db),
+        ) == pytest.approx(
             (0.0 - 0.47) * contracts,
         )
 
