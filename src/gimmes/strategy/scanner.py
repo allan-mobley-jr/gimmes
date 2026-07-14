@@ -75,10 +75,11 @@ def filter_markets(
 
     Filters by:
     - Excluded tickers (e.g. open positions)
-    - Price range (min_market_price to max_market_price)
+    - Price range (min_market_price to max_market_price; hourly-series
+      tickers use hourly_min/max_market_price instead)
     - Minimum volume / open interest
     - Market status (active only)
-    - Time to resolution
+    - Time to resolution (hourly-series tickers skip the min-days floor)
 
     Category filtering is handled upstream by fetching markets per series.
     Returns filtered markets sorted by volume (descending).
@@ -96,10 +97,14 @@ def filter_markets(
         if m.status != MarketStatus.ACTIVE:
             continue
 
+        hourly = config.is_hourly_ticker(m.ticker)
+
         # Price range check (from the configured side's perspective)
         raw_price = m.midpoint if m.midpoint > 0 else m.last_price
         price = effective_price(raw_price, st.side)
-        if price < st.min_market_price or price > st.max_market_price:
+        min_price = st.hourly_min_market_price if hourly else st.min_market_price
+        max_price = st.hourly_max_market_price if hourly else st.max_market_price
+        if price < min_price or price > max_price:
             continue
 
         # Volume filter
@@ -117,7 +122,9 @@ def filter_markets(
             days = days_until(m.expiration_time)
         if days is None:
             continue  # Perpetual or unknown — skip
-        if days < sc.min_days_to_resolution:
+        # Hourly ladders resolve in <1h by design — the min-days floor
+        # would reject every candidate (#721). max_days still applies.
+        if not hourly and days < sc.min_days_to_resolution:
             continue
         if days > sc.max_days_to_resolution:
             continue
