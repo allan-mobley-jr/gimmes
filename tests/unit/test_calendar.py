@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from gimmes.strategy.calendar import (
     _cpi,
     _gdp_advance,
+    hourly_window,
+    is_in_hourly_window,
     is_in_trade_window,
     next_trade_window,
     position_window,
+    seconds_until_next_hourly_open,
     seconds_until_next_window,
 )
 
@@ -344,3 +347,100 @@ class TestPositionWindow:
         close = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
         open_dt, _ = position_window(close, hours_before=6.0)
         assert open_dt == close.astimezone(ET) - timedelta(hours=6)
+
+
+class TestHourlyWindow:
+    """#723: ad-hoc scan windows for hourly-settled series."""
+
+    def test_basic(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 10, tzinfo=ET)
+        open_dt, close_dt = hourly_window(dt, lead_minutes=29)
+        assert open_dt == datetime(2026, 4, 7, 14, 31, tzinfo=ET)
+        assert close_dt == datetime(2026, 4, 7, 15, 0, tzinfo=ET)
+
+    def test_exact_top_of_hour_belongs_to_next(self) -> None:
+        at_top = datetime(2026, 4, 7, 14, 0, 0, tzinfo=ET)
+        open_dt, close_dt = hourly_window(at_top, lead_minutes=29)
+        assert close_dt == datetime(2026, 4, 7, 15, 0, tzinfo=ET)
+        assert open_dt == datetime(2026, 4, 7, 14, 31, tzinfo=ET)
+
+        just_before = datetime(2026, 4, 7, 13, 59, 59, 999999, tzinfo=ET)
+        _, close_dt = hourly_window(just_before, lead_minutes=29)
+        assert close_dt == datetime(2026, 4, 7, 14, 0, tzinfo=ET)
+
+    def test_day_boundary(self) -> None:
+        dt = datetime(2026, 4, 7, 23, 45, tzinfo=ET)
+        open_dt, close_dt = hourly_window(dt, lead_minutes=29)
+        assert close_dt == datetime(2026, 4, 8, 0, 0, tzinfo=ET)
+        assert open_dt == datetime(2026, 4, 7, 23, 31, tzinfo=ET)
+
+    def test_custom_lead(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 55, tzinfo=ET)
+        open_dt, close_dt = hourly_window(dt, lead_minutes=10)
+        assert close_dt - open_dt == timedelta(minutes=10)
+
+    def test_spring_forward_no_2am_window(self) -> None:
+        # 2026-03-08: 2 AM ET does not exist. From 01:45 EST the next
+        # real hour-top is 07:00 UTC (= 03:00 EDT); UTC arithmetic gets
+        # this right where wall-clock replace() would invent 02:00.
+        dt = datetime(2026, 3, 8, 1, 45, tzinfo=ET)
+        open_dt, close_dt = hourly_window(dt, lead_minutes=29)
+        assert close_dt.astimezone(UTC) == datetime(2026, 3, 8, 7, 0, tzinfo=UTC)
+        assert is_in_hourly_window(dt, lead_minutes=29) is True
+
+    def test_fall_back_repeated_hour_gets_two_windows(self) -> None:
+        # 2026-11-01: the 1 AM ET wall hour repeats. Both instants must
+        # get their own settlement window (KXBTCD settles every real
+        # hour) — pins the UTC-arithmetic design via ZoneInfo fold.
+        first = datetime(2026, 11, 1, 1, 30, tzinfo=ET)  # fold=0, EDT
+        second = datetime(2026, 11, 1, 1, 30, fold=1, tzinfo=ET)  # EST
+        _, close1 = hourly_window(first, lead_minutes=29)
+        _, close2 = hourly_window(second, lead_minutes=29)
+        assert close1.astimezone(UTC) == datetime(2026, 11, 1, 6, 0, tzinfo=UTC)
+        assert close2.astimezone(UTC) == datetime(2026, 11, 1, 7, 0, tzinfo=UTC)
+        assert close2.astimezone(UTC) - close1.astimezone(UTC) == timedelta(hours=1)
+
+
+class TestIsInHourlyWindow:
+    def test_open_boundary_inclusive(self) -> None:
+        at_open = datetime(2026, 4, 7, 14, 31, tzinfo=ET)
+        assert is_in_hourly_window(at_open, lead_minutes=29) is True
+
+    def test_just_before_open(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 30, 59, tzinfo=ET)
+        assert is_in_hourly_window(dt, lead_minutes=29) is False
+
+    def test_top_of_hour_not_in_window(self) -> None:
+        # At exactly 14:00 the relevant window is the 15:00 one, whose
+        # open is 14:31 — close-exclusivity via the next-window rule
+        dt = datetime(2026, 4, 7, 14, 0, tzinfo=ET)
+        assert is_in_hourly_window(dt, lead_minutes=29) is False
+
+
+class TestSecondsUntilNextHourlyOpen:
+    def test_before_open(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 10, tzinfo=ET)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 1260
+
+    def test_exactly_at_open_returns_following(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 31, tzinfo=ET)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 3600
+
+    def test_inside_window(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 45, tzinfo=ET)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 2760
+
+    def test_ceil_and_minimum(self) -> None:
+        dt = datetime(2026, 4, 7, 14, 30, 59, 900000, tzinfo=ET)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 1
+
+    def test_ceil_not_truncation(self) -> None:
+        # 60.5s to the open must round UP (61) — int() truncation (60)
+        # would wake the loop a second early, outside the window
+        dt = datetime(2026, 4, 7, 14, 29, 59, 500000, tzinfo=ET)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 61
+
+    def test_fall_back_counts_toward_first_settlement(self) -> None:
+        dt = datetime(2026, 11, 1, 1, 15, tzinfo=ET)  # fold=0, EDT
+        # Next open is 01:31 EDT (toward the 06:00 UTC settlement)
+        assert seconds_until_next_hourly_open(dt, lead_minutes=29) == 960

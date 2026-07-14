@@ -20,11 +20,12 @@ from gimmes.cli import (
     _detect_api_error,
     _detect_rate_limit,
     _extract_terminal_text,
+    _position_window_hit,
     _set_mode,
     _wrap_stream_json,
     app,
 )
-from gimmes.config import GimmesConfig, Mode, RiskConfig
+from gimmes.config import GimmesConfig, Mode, RiskConfig, ScannerConfig
 
 runner = CliRunner()
 
@@ -1950,3 +1951,666 @@ class TestCheckRemoteStaleness:
             )
             msg = _check_remote_staleness(tmp_path, "abc")
             assert msg is None
+
+
+class TestPositionWindowHit:
+    """#723: the pure position-window seam — hourly tickers are excluded
+    so a held sub-hour position can't trigger full cycles every 60s."""
+
+    @staticmethod
+    def _config(hourly_series: list[str]) -> GimmesConfig:
+        return GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            scanner=ScannerConfig(hourly_series=hourly_series),
+        )
+
+    def test_excludes_hourly_ticker(self) -> None:
+        now = datetime.now(UTC)
+        close_times = [
+            ("KXBTCD-26JUN23H14-T119999.99", now + timedelta(minutes=30)),
+            ("KXINX-26JUN23-B5000", now + timedelta(hours=2)),
+        ]
+        hit, ticker = _position_window_hit(
+            close_times, self._config(["KXBTCD"]), now,
+        )
+        assert hit is True
+        assert ticker == "KXINX-26JUN23-B5000"
+
+    def test_only_hourly_positions_no_hit(self) -> None:
+        now = datetime.now(UTC)
+        close_times = [
+            ("KXBTCD-26JUN23H14-T119999.99", now + timedelta(minutes=30)),
+        ]
+        assert _position_window_hit(
+            close_times, self._config(["KXBTCD"]), now,
+        ) == (False, None)
+
+    def test_inert_when_hourly_series_empty(self) -> None:
+        # Without the hourly opt-in the old behavior is unchanged: a
+        # KXBTCD position inside its 18h window IS a hit
+        now = datetime.now(UTC)
+        close_times = [
+            ("KXBTCD-26JUN23H14-T119999.99", now + timedelta(minutes=30)),
+        ]
+        hit, ticker = _position_window_hit(
+            close_times, self._config([]), now,
+        )
+        assert hit is True
+        assert ticker == "KXBTCD-26JUN23H14-T119999.99"
+
+    def test_outside_window_no_hit(self) -> None:
+        now = datetime.now(UTC)
+        close_times = [("KXINX-26JUN23-B5000", now + timedelta(hours=30))]
+        assert _position_window_hit(
+            close_times, self._config([]), now,
+        ) == (False, None)
+
+
+class TestHourlyLadder:
+    """#723: the third 'hourly' cycle type — window gating, one cycle
+    per window, timeout clamp, sleep integration, 24h cadence."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_funcs(self, tmp_path, monkeypatch):
+        """Same isolation as TestAutonomousLoop, but OUTSIDE any release
+        window by default — the fixture's is_in_trade_window=True would
+        mask every hourly path (release wins the precedence ladder)."""
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch("asyncio.run", side_effect=lambda coro: coro.close()),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(False, None, None),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch(
+                "gimmes.cli._check_remote_staleness",
+                return_value=None,
+            ),
+        ):
+            yield
+
+    @staticmethod
+    def _hourly_load_config(**scanner_overrides):
+        """load_config side_effect injecting hourly_series=['KXBTCD']."""
+        from gimmes import cli as gimmes_cli
+
+        original = gimmes_cli.load_config
+        scanner_overrides.setdefault("hourly_series", ["KXBTCD"])
+
+        def patched(*args, **kwargs):  # type: ignore[no-untyped-def]
+            cfg = original(*args, **kwargs)
+            return cfg.model_copy(update={
+                "scanner": cfg.scanner.model_copy(update=scanner_overrides),
+            })
+
+        return patched
+
+    @staticmethod
+    def _dt_relative_window(remaining_seconds: int):
+        """hourly_window stub: close at dt + remaining — cli computes
+        _remaining from the same dt it passes, so the clamp is exact."""
+        def _hw(dt=None, *, lead_minutes):  # type: ignore[no-untyped-def]
+            return (
+                dt - timedelta(minutes=4),
+                dt + timedelta(seconds=remaining_seconds),
+            )
+        return _hw
+
+    def test_hourly_prompt_and_env(self) -> None:
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "hourly"
+        cmd = mock_popen.call_args.args[0]
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "HOURLY-LADDER" in prompt
+        assert "KXBTCD" in prompt
+        assert "0, 0.5, 1, 3, 4, 4c, 5, and 8" in prompt
+        assert "Skip Monitor, Scorecard, and Pro" in prompt
+
+    def test_hourly_disabled_when_series_empty(self) -> None:
+        # Default config: the hourly gate is bool(hourly_series) — the
+        # calendar helpers must never even be consulted. max_cycles=2 so
+        # the post-cycle monitor recompute (which has its own
+        # hourly_enabled guard) is also exercised: the loop breaks
+        # BEFORE the sleep on the final cycle, so a single cycle would
+        # never reach that block. The real seconds_until_next_hourly_open
+        # delegates to the patched module-global hourly_window, so the
+        # spies catch a dropped guard at either site transitively.
+        hw_spy = MagicMock()
+        in_hw_spy = MagicMock()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("gimmes.strategy.calendar.is_in_hourly_window", in_hw_spy),
+            patch("gimmes.strategy.calendar.hourly_window", hw_spy),
+        ):
+            _autonomous_loop("driving_range", max_cycles=2, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "monitor"
+        in_hw_spy.assert_not_called()
+        hw_spy.assert_not_called()
+
+    def test_one_cycle_per_window(self) -> None:
+        # A FIXED absolute window (same close instant every call → same
+        # key): the second and third iterations must fall to monitor
+        close = datetime.now(UTC) + timedelta(seconds=1500)
+        window = (close - timedelta(minutes=29), close)
+        types: list[str] = []
+
+        def popen_side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            types.append(kwargs["env"]["GIMMES_CYCLE_TYPE"])
+            return _mock_popen()
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=popen_side_effect),
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                lambda dt=None, *, lead_minutes: window,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 1860,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
+
+        assert types == ["hourly", "monitor", "monitor"]
+        # The clamp must not leak into later cycles: cycle 1 is clamped
+        # to the window remainder, cycles 2-3 (monitor) run unclamped
+        timeouts = [c.kwargs["timeout"] for c in mock_comm.call_args_list]
+        assert timeouts[0] <= 1500
+        assert timeouts[1:] == [2700, 2700]
+
+    def test_max_cycles_per_window_gt_one(self) -> None:
+        close = datetime.now(UTC) + timedelta(seconds=1500)
+        window = (close - timedelta(minutes=29), close)
+        types: list[str] = []
+
+        def popen_side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            types.append(kwargs["env"]["GIMMES_CYCLE_TYPE"])
+            return _mock_popen()
+
+        sleep_spy = MagicMock()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=popen_side_effect),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep", sleep_spy),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=self._hourly_load_config(
+                    hourly_max_cycles_per_window=2,
+                ),
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                lambda dt=None, *, lead_minutes: window,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 1860,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
+
+        assert types == ["hourly", "hourly", "monitor"]
+        # Post-hourly with count < max sleeps pause_seconds (0), NOT the
+        # to-next-open path — otherwise max>1 silently degrades to 1
+        # effective cycle per window
+        assert sleep_spy.call_args_list[0].args[0] == 0
+
+    def test_release_precedence_over_hourly(self) -> None:
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(True, "Index contracts", 3600),
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "full"
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[cmd.index("-p") + 1] == "Run one trading cycle."
+
+    def test_hourly_timeout_clamped(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=_mock_popen()),
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        assert mock_comm.call_args.kwargs["timeout"] == 1500
+
+    def test_hourly_timeout_not_clamped_when_window_long(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=_mock_popen()),
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(5000),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        assert mock_comm.call_args.kwargs["timeout"] == 2700
+
+    def test_hourly_skipped_when_too_late(self) -> None:
+        # 60s remaining < HOURLY_MIN_CYCLE_SECONDS: fall through to
+        # monitor, full timeout — no straggler cycle can order into a
+        # settled market
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(60),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 3600,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "monitor"
+        assert mock_comm.call_args.kwargs["timeout"] == 2700
+
+    def test_monitor_sleep_and_display_consider_hourly(self, capsys) -> None:
+        sleep_spy = MagicMock()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep", sleep_spy),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: False,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=7200,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 900,
+            ),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=2, pause_seconds=0,
+                monitor_interval=3600,
+            )
+
+        # Both the decision-time sleep and the post-cycle recompute must
+        # take the sooner hourly open (900 < 7200 release, < 3600 interval)
+        assert sleep_spy.call_args_list[0].args[0] == 900
+        assert "Hourly ladder" in capsys.readouterr().out
+
+    def test_post_hourly_sleep_lands_at_next_open(self) -> None:
+        # After an exhausted hourly window, sleep to the next open —
+        # NOT clamped by monitor_interval, no intermediate monitor cycle
+        sleep_spy = MagicMock()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep", sleep_spy),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=7200,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 1860,
+            ),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=2, pause_seconds=0,
+                monitor_interval=120,
+            )
+
+        assert sleep_spy.call_args_list[0].args[0] == 1860
+
+    def test_24h_cadence_simulation(self) -> None:
+        """The budget guardrail as a test: a full simulated day with
+        hourly enabled and no release windows runs exactly 24 hourly
+        cycles + 1 leading monitor cycle — no window slept through, no
+        intermediate monitor sessions, sessions/day bounded at 25."""
+        from zoneinfo import ZoneInfo
+
+        from gimmes.strategy.calendar import (
+            hourly_window as real_hw,
+        )
+        from gimmes.strategy.calendar import (
+            is_in_hourly_window as real_in_hw,
+        )
+        from gimmes.strategy.calendar import (
+            seconds_until_next_hourly_open as real_snho,
+        )
+
+        et = ZoneInfo("America/New_York")
+        clock = {"now": datetime(2026, 4, 7, 0, 0, tzinfo=et)}  # a Tuesday
+        end = clock["now"] + timedelta(hours=24)
+        types: list[str] = []
+
+        def fake_in_hw(dt=None, *, lead_minutes):  # type: ignore[no-untyped-def]
+            return real_in_hw(clock["now"], lead_minutes=lead_minutes)
+
+        def fake_hw(dt=None, *, lead_minutes):  # type: ignore[no-untyped-def]
+            # Delegate to the real impl at the simulated instant, then
+            # re-anchor to the caller's dt (the loop's real now) so its
+            # `_remaining = close - now` arithmetic stays exact
+            o, c = real_hw(clock["now"], lead_minutes=lead_minutes)
+            rem_open = (o - clock["now"]).total_seconds()
+            rem_close = (c - clock["now"]).total_seconds()
+            base = dt if dt is not None else clock["now"]
+            return (
+                base + timedelta(seconds=rem_open),
+                base + timedelta(seconds=rem_close),
+            )
+
+        def fake_snho(dt=None, *, lead_minutes):  # type: ignore[no-untyped-def]
+            return real_snho(clock["now"], lead_minutes=lead_minutes)
+
+        def fake_sleep(secs):  # type: ignore[no-untyped-def]
+            clock["now"] += timedelta(seconds=secs)
+            if clock["now"] >= end:
+                raise KeyboardInterrupt
+
+        def popen_side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            types.append(kwargs["env"]["GIMMES_CYCLE_TYPE"])
+            return _mock_popen()
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=popen_side_effect),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep", side_effect=fake_sleep),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch("gimmes.strategy.calendar.is_in_hourly_window", fake_in_hw),
+            patch("gimmes.strategy.calendar.hourly_window", fake_hw),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                fake_snho,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=10**6,  # no release windows all day
+            ),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=100, pause_seconds=0,
+                monitor_interval=3600,
+            )
+
+        assert types.count("hourly") == 24
+        assert types.count("monitor") == 1
+        assert len(types) == 25
+
+    def test_position_precedence_over_hourly(self, capsys) -> None:
+        # #723 review: a held NON-hourly position near settlement must
+        # keep its full cycles even when an hourly window is open —
+        # otherwise the steady-state hourly cadence starves position
+        # surveillance (overnight/weekends have no release windows)
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "asyncio.run",
+                side_effect=lambda coro: (
+                    coro.close(), (True, "KXINX-26JUN23-B5000"),
+                )[1],
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "full"
+        assert "POSITION WINDOW" in capsys.readouterr().out
+
+    def test_post_hourly_sleep_takes_sooner_release_window(self) -> None:
+        # The post-hourly min must consider the release calendar too —
+        # a release window opening before the next hourly open wins
+        sleep_spy = MagicMock()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep", sleep_spy),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                self._dt_relative_window(1500),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=600,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 1860,
+            ),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=2, pause_seconds=0,
+                monitor_interval=3600,
+            )
+
+        assert sleep_spy.call_args_list[0].args[0] == 600
+
+    def test_startup_warning_lead_too_short_to_fire(self, capsys) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=self._hourly_load_config(hourly_lead_minutes=2),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        # Rich wraps long console lines — normalize before matching
+        out = " ".join(capsys.readouterr().out.split())
+        assert "can NEVER fire" in out
+
+    def test_startup_warning_lead_clamp_risk(self, capsys) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=self._hourly_load_config(hourly_lead_minutes=5),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "chronic timeouts" in out
+
+    def test_no_startup_warning_at_default_lead(self, capsys) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: False,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda dt=None, *, lead_minutes: 1860,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "can NEVER fire" not in out
+        assert "chronic timeouts" not in out
+
+    def test_timeout_records_session_in_budget(self) -> None:
+        # #545 intent: Anthropic charged for the killed subprocess — a
+        # clamp-killed hourly straggler must still count a session
+        _frozen = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
+        from gimmes.config import GIMMES_HOME
+        budget_path = GIMMES_HOME / "budget.json"
+
+        def comm_side_effect(proc, timeout):  # type: ignore[no-untyped-def]
+            raise _subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: _mock_popen()),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=comm_side_effect,
+            ),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("gimmes.budget._default_clock", lambda: _frozen),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        data = _json.loads(budget_path.read_text())
+        today = _frozen.date().isoformat()
+        assert data["days"][today]["sessions"] == 1

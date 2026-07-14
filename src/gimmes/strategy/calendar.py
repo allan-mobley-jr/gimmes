@@ -6,7 +6,7 @@ import calendar as _cal
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -329,3 +329,55 @@ def position_window(
     close_et = close_time.astimezone(ET)
     open_et = close_et - timedelta(hours=hours_before)
     return open_et, close_et
+
+
+def hourly_window(
+    dt: datetime | None = None,
+    *,
+    lead_minutes: int,
+) -> tuple[datetime, datetime]:
+    """Ad-hoc scan window for hourly-settled series (#723).
+
+    Hourly series (e.g. KXBTCD) settle at the top of every hour ET.
+    Returns [next_hour_top - lead_minutes, next_hour_top) as ET-aware
+    datetimes. Top-of-hour is computed in UTC (ET is always a
+    whole-hour offset), so the helper is DST-immune: fall-back's
+    repeated 1 AM ET hour yields two distinct windows, and
+    spring-forward's nonexistent 2 AM wall hour is naturally absent.
+    A *dt* exactly at a top of hour belongs to the NEXT settlement:
+    hourly_window(14:00) opens at 15:00 - lead. The caller passes
+    config.scanner.hourly_lead_minutes (keyword-only, no default —
+    the value is config-owned); WINDOWS stays config-blind.
+    """
+    if dt is None:
+        dt = datetime.now(ET)
+    dt_utc = dt.astimezone(UTC)
+    next_top = (dt_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    open_dt = next_top - timedelta(minutes=lead_minutes)
+    return open_dt.astimezone(ET), next_top.astimezone(ET)
+
+
+def is_in_hourly_window(
+    dt: datetime | None = None, *, lead_minutes: int,
+) -> bool:
+    """True when *dt* falls inside the current hourly scan window."""
+    if dt is None:
+        dt = datetime.now(ET)
+    open_dt, close_dt = hourly_window(dt, lead_minutes=lead_minutes)
+    return open_dt <= dt < close_dt
+
+
+def seconds_until_next_hourly_open(
+    dt: datetime | None = None, *, lead_minutes: int,
+) -> int:
+    """Seconds from *dt* until the next hourly window opens (minimum 1).
+
+    If *dt* is already inside a window, returns seconds to the
+    FOLLOWING window's open. Same contract as
+    seconds_until_next_window: int, math.ceil, floor of 1.
+    """
+    if dt is None:
+        dt = datetime.now(ET)
+    open_dt, _close = hourly_window(dt, lead_minutes=lead_minutes)
+    target = open_dt if dt < open_dt else open_dt + timedelta(hours=1)
+    return max(1, math.ceil((target - dt).total_seconds()))
