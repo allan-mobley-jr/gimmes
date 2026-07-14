@@ -242,6 +242,7 @@ CPI and GDP windows use actual BLS/BEA release dates (lookup table for 2025-2026
 
 - **Full cycle** (inside a trade window or position settlement window): runs the complete pipeline — Monitor → Scout → Caddie → Closer → Scorecard. Pauses `--pause` seconds (default 60) between cycles.
 - **Monitor-only cycle** (outside all windows): runs only Monitor and Groundskeeper, then sleeps until the next trade window or `--monitor-interval` (default 1 hour). Sleep is recalculated after each cycle to catch windows that open mid-cycle.
+- **Hourly cycle** (inside an hourly-ladder window, when `scanner.hourly_series` is set): a trimmed pipeline — Scout scans only the hourly series, Caddie sanity-checks against the backtested base rate, Closer executes taker orders, with Monitor's stop-loss backstop and Groundskeeper riding along. Clamped to the window remainder so a straggler cycle can't order into a settled market. See [Hourly ladders](#hourly-ladders-kxbtcd-paper-experiment).
 
 This reduces token usage ~80-90% compared to continuous cycling while being *more* responsive during data releases. Code staleness detection warns when the installed code has changed or the remote has newer commits — restart to pick up fixes.
 
@@ -589,6 +590,24 @@ gimmes config set scanner.yes_series "KXINX,KXINXW,KXNASDAQ100,KXNASDAQ100W"
 ```
 
 When `side = "yes"` or `"no"`, the flat strategy fields are used directly. Per-side overrides only apply when `side = "both"`.
+
+### Hourly ladders (KXBTCD paper experiment)
+
+BTC hourly strike ladders (`KXBTCD`) settle at the top of every hour. When you list a series in `scanner.hourly_series`, the loop opens a scan window `scanner.hourly_lead_minutes` before each close (default 29), buys **NO** in the 0.30–0.85 band against the backtested 0.70 base rate, and **holds to settlement** — the strategy takes no discretionary exits (Monitor's stop-loss backstop still applies; only the time-decay trigger is exempted). A 10-week backtest returned **+466% maker / +171% taker**; the live experiment runs the **taker twin**, because paper-mode maker fills are optimistic (they fill at your limit without a real counterparty crossing) and honest fills are the point.
+
+```bash
+gimmes config get strategy.side                  # MUST be "no" — the backtest is NO-side only
+gimmes config add scanner.hourly_series KXBTCD   # the feature switch (empty = off)
+gimmes config set budget.max_sessions_per_day 120  # hourly adds up to ~24-25 sessions/day
+```
+
+The side prerequisite is load-bearing: the hourly band is applied in the configured side's effective terms and the 0.70 base rate only anchors NO-side sizing — with `side = "yes"` (or the YES pass of `"both"`) you would be running an **unbacktested hourly YES lane** under the relaxed gates while believing you're running the experiment.
+
+Raising the session cap matters — at the default 80, the hourly lane plus release windows can hit the cap mid-day, and a cap hit sleeps the loop until UTC midnight, missing every window in between.
+
+**The timing budget.** Each hourly cycle is clamped to the window remainder — at the default lead that's **at most 1,740 seconds** for the full Scout → Caddie → Closer pass. A cycle that outruns the clamp is killed, still burns a session, and does **not** trip the circuit breaker — chronic timeouts look like a quiet day, not a failure. Compare cycle start/end timestamps in `${GIMMES_HOME}/logs/cycle-NNN.json` against the clamp; `scanner.hourly_lead_minutes` is the tuning knob. The loop warns loudly at startup when the lead leaves ≤120 s per window (the lane will never fire, but the loop still wakes every hour — fix the config, don't ignore the red text) and warns below 10 minutes; at runtime the per-window remainder gate skips any dispatch with under 120 s left.
+
+**Know what you're testing.** This is a **Driving Range (paper) experiment** — Championship (real-money) hourly is explicitly out of scope. The backtest's one un-modeled risk is **book depth**: it fills full Kelly size at the touch, and whether real hourly books can absorb that size is precisely what this experiment exists to measure. Release windows outrank hourly windows, so the 2:00–4:00 PM ET equity window masks ~2 hourly windows every weekday.
 
 ---
 
