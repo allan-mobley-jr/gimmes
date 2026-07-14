@@ -8,7 +8,10 @@ import re
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 import click
 import typer
@@ -38,6 +41,12 @@ pause + 3600s monitor interval (~390 in-window cycles + ~17 monitor cycles).
 Pass `--cycles 0` (or `--max-cycles 0`) to opt into unbounded runs; the loop
 prints a startup warning when it does.
 """
+
+HOURLY_MIN_CYCLE_SECONDS = 120
+"""Skip an hourly dispatch when less than this remains before settlement.
+
+A cycle that can't finish Scout -> Caddie -> Closer before the market
+settles would only burn a session (#723)."""
 
 
 def _api_error_detail(e) -> str:  # type: ignore[no-untyped-def]
@@ -5436,6 +5445,30 @@ def _detect_api_error(output: bytes) -> tuple[bool, bool, str]:
     return True, is_transient, detail
 
 
+def _position_window_hit(
+    close_times: list[tuple[str, datetime]],
+    config: GimmesConfig,
+    now: datetime,
+) -> tuple[bool, str | None]:
+    """Return (True, ticker) if any held position is inside its ad-hoc
+    settlement window.
+
+    Hourly-series tickers are EXCLUDED (#723): a held sub-hour position
+    must not trigger full cycles every 60s until settlement (~600
+    sessions/day); its settlement reconciles on the next hourly cycle's
+    Step 1 (<=1h lag, matching pull-based paper semantics).
+    """
+    from gimmes.strategy.calendar import position_window
+
+    for ticker, ct in close_times:
+        if config.is_hourly_ticker(ticker):
+            continue
+        pw_open, pw_close = position_window(ct)
+        if pw_open <= now < pw_close:
+            return True, ticker
+    return False, None
+
+
 def _resilient_sleep(seconds: float) -> None:
     """Sleep that survives macOS system sleep/wake.
 
@@ -5810,6 +5843,29 @@ def _autonomous_loop(
     consecutive_failures = 0
     session_status = "stopped"
 
+    # Hourly-ladder state (#723): track the single active window only —
+    # two scalars, bounded memory, no pruning needed. The key is the
+    # settlement instant in UTC, NOT an ET wall-clock stamp: on the DST
+    # fall-back day both 1 AM ET hours must get their own window.
+    hourly_enabled = bool(config.scanner.hourly_series)
+    hourly_lead = config.scanner.hourly_lead_minutes
+    _hourly_window_key: str | None = None
+    _hourly_window_count = 0
+    if hourly_enabled and hourly_lead * 60 <= HOURLY_MIN_CYCLE_SECONDS:
+        console.print(
+            f"[red bold]scanner.hourly_lead_minutes={hourly_lead} leaves"
+            f" <={HOURLY_MIN_CYCLE_SECONDS}s per window — the hourly lane"
+            " can NEVER fire (it still wakes the loop every hour)."
+            " Raise the lead or clear scanner.hourly_series.[/red bold]"
+        )
+    elif hourly_enabled and hourly_lead < 10:
+        console.print(
+            f"[yellow]scanner.hourly_lead_minutes={hourly_lead} clamps"
+            f" every hourly cycle to ~{hourly_lead * 60}s — expect"
+            " chronic timeouts. Leads under 10 minutes are untested"
+            " territory (#723).[/yellow]"
+        )
+
     # Code staleness detection
     _startup_commit: str | None = None
     _last_remote_check: float = 0.0
@@ -5838,11 +5894,15 @@ def _autonomous_loop(
     proc = None
     old_handler = signal.signal(signal.SIGINT, _sigint_handler)
     try:
+        from datetime import UTC, datetime
+
         from gimmes.strategy.calendar import (
             ET,
+            hourly_window,
+            is_in_hourly_window,
             is_in_trade_window,
             next_trade_window,
-            position_window,
+            seconds_until_next_hourly_open,
             seconds_until_next_window,
         )
 
@@ -5913,11 +5973,7 @@ def _autonomous_loop(
                         exc_info=True,
                     )
 
-            for ticker, ct in close_times:
-                pw_open, pw_close = position_window(ct)
-                if pw_open <= now < pw_close:
-                    return True, ticker
-            return False, None
+            return _position_window_hit(close_times, config, now)
 
         while max_cycles == 0 or cycles_run < max_cycles:
             # --- Daily budget guardrail (#545) ---
@@ -6019,8 +6075,40 @@ def _autonomous_loop(
                             )
                             _staleness_warned = True
 
-            # Determine cycle type based on trade window calendar
+            # Determine cycle type based on trade window calendar.
+            # Precedence: release > position > hourly > monitor.
+            # Position outranks hourly (#723 review): the post-hourly
+            # sleep lands exactly at the next hourly open, so anything
+            # below hourly is unreachable in steady state — a held
+            # NON-hourly position nearing settlement must keep its full
+            # cycles (hourly-series positions are excluded from position
+            # windows by _position_window_hit, so they can't preempt).
+            # Release windows fully mask any hourly window they cover
+            # (full cycles don't scan the hourly series) — e.g. the
+            # 14:00-16:00 ET index window masks 2 of 24 hourly windows
+            # every weekday. Accepted miss per #723.
+            effective_timeout = config.strategy.cycle_timeout
             in_window, release_name, _secs_to_close = is_in_trade_window()
+            in_pos_window, pos_ticker = False, None
+            if not in_window:
+                _pw_result = asyncio.run(_check_position_windows())
+                in_pos_window, pos_ticker = _pw_result or (False, None)
+            hourly_fire = False
+            if not in_window and not in_pos_window and hourly_enabled:
+                _now_et = datetime.now(ET)
+                if is_in_hourly_window(_now_et, lead_minutes=hourly_lead):
+                    _, h_close = hourly_window(_now_et, lead_minutes=hourly_lead)
+                    _key = h_close.astimezone(UTC).isoformat()
+                    if _key != _hourly_window_key:
+                        _hourly_window_key = _key
+                        _hourly_window_count = 0
+                    _remaining = int((h_close - _now_et).total_seconds())
+                    if (
+                        _hourly_window_count
+                        < config.scanner.hourly_max_cycles_per_window
+                        and _remaining >= HOURLY_MIN_CYCLE_SECONDS
+                    ):
+                        hourly_fire = True
             if in_window:
                 cycle_type = "full"
                 cycle_prompt = "Run one trading cycle."
@@ -6029,38 +6117,56 @@ def _autonomous_loop(
                     f"[cyan]--- Cycle {cycle} ---[/cyan]"
                     f" [green bold][TRADE WINDOW: {release_name}][/green bold]"
                 )
-            else:
-                # Check if any held position is near settlement
-                _pw_result = asyncio.run(
-                    _check_position_windows()
+            elif in_pos_window:
+                cycle_type = "full"
+                cycle_prompt = "Run one trading cycle."
+                post_sleep = pause_seconds
+                console.print(
+                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                    f" [magenta bold][POSITION WINDOW:"
+                    f" {pos_ticker}][/magenta bold]"
                 )
-                in_pos_window, pos_ticker = _pw_result or (False, None)
-                if in_pos_window:
-                    cycle_type = "full"
-                    cycle_prompt = "Run one trading cycle."
-                    post_sleep = pause_seconds
-                    console.print(
-                        f"[cyan]--- Cycle {cycle} ---[/cyan]"
-                        f" [magenta bold][POSITION WINDOW:"
-                        f" {pos_ticker}][/magenta bold]"
-                    )
-                else:
-                    cycle_type = "monitor"
-                    _, next_name = next_trade_window()
-                    secs_to_next = seconds_until_next_window()
-                    post_sleep = min(secs_to_next, monitor_interval)
-                    h, remainder = divmod(secs_to_next, 3600)
-                    m, _ = divmod(remainder, 60)
-                    console.print(
-                        f"[cyan]--- Cycle {cycle} ---[/cyan]"
-                        f" [yellow][MONITOR ONLY — next window:"
-                        f" {next_name} in {h}h {m:02d}m][/yellow]"
-                    )
-                    cycle_prompt = (
-                        "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
-                        " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
-                        " and Pro."
-                    )
+            elif hourly_fire:
+                _hourly_window_count += 1
+                cycle_type = "hourly"
+                # A straggler cycle must not order into a settled
+                # market — clamp the subprocess to the window close.
+                effective_timeout = min(config.strategy.cycle_timeout, _remaining)
+                post_sleep = pause_seconds  # recomputed post-cycle
+                _series = ", ".join(config.scanner.hourly_series)
+                console.print(
+                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                    f" [blue bold][HOURLY WINDOW: {_series} —"
+                    f" settles {h_close.strftime('%H:%M')} ET][/blue bold]"
+                )
+                cycle_prompt = (
+                    "Run an HOURLY-LADDER cycle. Only run Steps 0, 0.5, 1,"
+                    " 3, 4, 4c, 5, and 8. In Step 3, instruct Scout to scan"
+                    " ONLY the hourly series (run 'gimmes scan -s <series>'"
+                    f" for each of: {_series}). Skip Monitor, Scorecard,"
+                    " and Pro."
+                )
+            else:
+                cycle_type = "monitor"
+                _, next_name = next_trade_window()
+                secs_to_next = seconds_until_next_window()
+                if hourly_enabled:
+                    h_secs = seconds_until_next_hourly_open(lead_minutes=hourly_lead)
+                    if h_secs < secs_to_next:
+                        secs_to_next, next_name = h_secs, "Hourly ladder"
+                post_sleep = min(secs_to_next, monitor_interval)
+                h, remainder = divmod(secs_to_next, 3600)
+                m, _ = divmod(remainder, 60)
+                console.print(
+                    f"[cyan]--- Cycle {cycle} ---[/cyan]"
+                    f" [yellow][MONITOR ONLY — next window:"
+                    f" {next_name} in {h}h {m:02d}m][/yellow]"
+                )
+                cycle_prompt = (
+                    "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
+                    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
+                    " and Pro."
+                )
 
             update_session_cycle(config.db_path, session_id, cycle)
 
@@ -6094,7 +6200,7 @@ def _autonomous_loop(
                 _active_proc = proc
                 try:
                     stdout_bytes = _communicate_interruptible(
-                        proc, timeout=config.strategy.cycle_timeout,
+                        proc, timeout=effective_timeout,
                     )
                 finally:
                     _active_proc = None
@@ -6180,10 +6286,14 @@ def _autonomous_loop(
 
             except subprocess.TimeoutExpired:
                 _kill_process_group(proc)
+                # Anthropic charged for the killed subprocess's tokens —
+                # count the session (#545 intent; the hourly clamp makes
+                # timeouts a routine outcome rather than an anomaly, #723)
+                budget_tracker.record_session_no_usage()
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
-                    f" {config.strategy.cycle_timeout}s"
+                    f" {effective_timeout}s"
                     f" (failure {consecutive_failures}"
                     f"/{max_consecutive_failures})[/yellow]"
                 )
@@ -6218,7 +6328,25 @@ def _autonomous_loop(
             # may have opened during the cycle execution.
             if cycle_type == "monitor":
                 fresh_secs = seconds_until_next_window()
+                if hourly_enabled:
+                    fresh_secs = min(
+                        fresh_secs,
+                        seconds_until_next_hourly_open(lead_minutes=hourly_lead),
+                    )
                 post_sleep = min(fresh_secs, monitor_interval)
+            elif cycle_type == "hourly":
+                if _hourly_window_count < config.scanner.hourly_max_cycles_per_window:
+                    post_sleep = pause_seconds  # more cycles this window
+                else:
+                    # Land exactly at the next open (hourly or release) —
+                    # zero intermediate monitor sessions. NOT clamped by
+                    # monitor_interval: the hourly gap is <= ~61 min, so a
+                    # release window opening mid-gap is picked up within
+                    # the same bound as the monitor_interval path.
+                    post_sleep = min(
+                        seconds_until_next_window(),
+                        seconds_until_next_hourly_open(lead_minutes=hourly_lead),
+                    )
             console.print(f"[dim]Next cycle in {post_sleep}s...[/dim]")
             _resilient_sleep(post_sleep)
     except KeyboardInterrupt:

@@ -1130,7 +1130,13 @@ class BudgetConfig(BaseModel):
             "display_name": "Max Claude sessions per day",
             "description": (
                 "Hard cap on Claude Code sessions started per UTC"
-                " day. None = hardcoded default (80). 0 = unlimited."
+                " day. None = hardcoded default (80). 0 = unlimited.\n"
+                "\n"
+                "Enabling scanner.hourly_series adds up to 24 hourly"
+                " sessions per day (one per window at the default"
+                " hourly_max_cycles_per_window=1) on top of the"
+                " release/monitor load — raise this cap if the default"
+                " leaves insufficient headroom (#723)."
             ),
             "min_val": 0,
         },
