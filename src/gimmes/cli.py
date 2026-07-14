@@ -500,6 +500,7 @@ def scan(
                         "open_interest": m.open_interest,
                         "score": qs,
                         "side": scan_side,
+                        "hourly": side_cfg.is_hourly_ticker(m.ticker),
                     })
 
             all_scored.sort(key=lambda r: r["score"], reverse=True)
@@ -779,6 +780,14 @@ def order(
     size_up: bool = typer.Option(
         False, "--size-up", help="Allow adding to existing position (SIZE UP)",
     ),
+    taker: bool = typer.Option(
+        False, "--taker",
+        help=(
+            "Force taker execution for THIS order (post_only=False),"
+            " regardless of orders.preferred_order_type. Resting maker"
+            " orders in sub-hour markets are honest no-fills (#690/#721)."
+        ),
+    ),
     agent: str = typer.Option(
         "cli", "--agent", help="Agent identifier for trade/error logging",
     ),
@@ -857,7 +866,7 @@ def order(
 
             order_action = OrderAction(action.lower())
             is_buy = order_action == OrderAction.BUY
-            is_taker = config.orders.preferred_order_type != "maker"
+            is_taker = taker or config.orders.preferred_order_type != "maker"
 
             bankroll = config.bankroll
             true_prob = probability
@@ -865,6 +874,7 @@ def order(
                 true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
                 final_count = position_size(
                     bankroll, eff_price, true_prob,
+                    is_taker=is_taker,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
                     mode=config.sizing.mode,

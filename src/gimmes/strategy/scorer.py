@@ -166,7 +166,12 @@ def full_score(
             days = days_until(market.expiration_time)
         if days is not None:
             if days < 1:
-                time_score = 20.0  # Too soon — limited time to enter/exit
+                if config.is_hourly_ticker(market.ticker):
+                    # Sub-hour close IS the hourly design sweet spot; 70
+                    # not 100 — exit optionality is genuinely limited (#721)
+                    time_score = 70.0
+                else:
+                    time_score = 20.0  # Too soon — limited time to enter/exit
             elif days <= 14:
                 time_score = 100.0  # Sweet spot
             elif days <= 30:

@@ -1,6 +1,8 @@
 """Unit tests for gimme scorer."""
 
-from gimmes.config import GimmesConfig, Mode, StrategyConfig
+from datetime import UTC, datetime, timedelta
+
+from gimmes.config import GimmesConfig, Mode, ScannerConfig, StrategyConfig
 from gimmes.models.gimme import ConfidenceSignal, GimmeCandidate
 from gimmes.models.market import Market, Orderbook, OrderbookLevel
 from gimmes.strategy.scorer import full_score, quick_score
@@ -160,3 +162,60 @@ class TestFullScore:
         # depth_at_price(0.70, "no") checks YES bids where 1 - bid <= 0.70
         # → 1 - 0.30 = 0.70 <= 0.70 ✓ → depth = 200 → liq_score = 80.0
         assert score.liquidity_depth_score == 80.0
+
+
+class TestHourlyTimeScore:
+    """#722: hourly-series markets closing in <1 day score 70 (the
+    designed entry window), not 20; everything else is unchanged."""
+
+    @staticmethod
+    def _candidate(ticker: str) -> GimmeCandidate:
+        return GimmeCandidate(
+            ticker=ticker,
+            market_price=0.65,
+            model_probability=0.80,
+            edge=0.15,
+        )
+
+    @staticmethod
+    def _hourly_config() -> GimmesConfig:
+        return GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+            scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+        )
+
+    def test_hourly_sub_day_time_score_70(self) -> None:
+        ticker = "KXBTCD-26JUN23H14-T119999.99"
+        market = Market(
+            ticker=ticker,
+            last_price=0.35,
+            close_time=datetime.now(UTC) + timedelta(minutes=29),
+        )
+        score = full_score(
+            self._candidate(ticker), None, self._hourly_config(), market=market,
+        )
+        assert score.time_to_resolution_score == 70.0
+
+    def test_non_hourly_sub_day_time_score_20_unchanged(self, config: GimmesConfig) -> None:
+        ticker = "KXBTCD-26JUN23H14-T119999.99"
+        market = Market(
+            ticker=ticker,
+            last_price=0.35,
+            close_time=datetime.now(UTC) + timedelta(minutes=29),
+        )
+        # Default config: hourly_series empty, the <1-day branch is inert
+        score = full_score(self._candidate(ticker), None, config, market=market)
+        assert score.time_to_resolution_score == 20.0
+
+    def test_hourly_other_time_branches_unchanged(self) -> None:
+        ticker = "KXBTCD-26JUN30H14-T119999.99"
+        market = Market(
+            ticker=ticker,
+            last_price=0.35,
+            close_time=datetime.now(UTC) + timedelta(days=7),
+        )
+        score = full_score(
+            self._candidate(ticker), None, self._hourly_config(), market=market,
+        )
+        assert score.time_to_resolution_score == 100.0

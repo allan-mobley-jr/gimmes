@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger("gimmes.config")
 
@@ -104,6 +104,14 @@ CATEGORY_BASE_RATES: dict[str, float] = {
     "KXINX": 0.80,
     "KXNASDAQ100": 0.80,
     "KXISMPMI": 0.80,
+    # Hourly BTC strike ladders — NO side, 10-week backtest (#721).
+    # Deliberately equal to strategy.hourly_min_true_probability: the
+    # floor promotes any lower estimate to exactly the hourly gate, so
+    # validator check 5 is a formality on auto-sized NO orders — the
+    # binding gates are check 6 (edge after fees at the floored prob)
+    # and Caddie's pre-order sanity checks. Same floor==gate pattern
+    # as KXCPIYOY/KXCPICOREYOY vs the 0.90 global floor.
+    "KXBTCD": 0.70,
 }
 
 
@@ -307,6 +315,55 @@ class StrategyConfig(BaseModel):
                 "  • Lower (e.g. 0.85): More trades, but accepting weaker convictions"
             ),
             "min_val": 0.50,
+            "max_val": 0.99,
+        },
+    )
+    hourly_min_true_probability: float = Field(
+        default=0.70, gt=0.0, le=1.0,
+        json_schema_extra={
+            "display_name": "Hourly Min True Probability",
+            "description": (
+                "Minimum true probability for HOURLY-series candidates\n"
+                "(scanner.hourly_series). Hourly strike ladders are validated\n"
+                "against their own backtested base rate instead of Min True\n"
+                "Probability — the global 0.90 floor would reject every hourly\n"
+                "candidate. Only consulted for hourly tickers (#721).\n"
+                "\n"
+                "  • 0.70 (default): Matches the KXBTCD NO-side base rate"
+            ),
+            "min_val": 0.50,
+            "max_val": 0.99,
+        },
+    )
+    hourly_min_market_price: float = Field(
+        default=0.30, gt=0.0, lt=1.0,
+        json_schema_extra={
+            "display_name": "Hourly Min Market Price",
+            "description": (
+                "Lowest buy price considered for HOURLY-series markets, in the\n"
+                "configured side's effective terms. Replaces Min Market Price\n"
+                "for hourly tickers only (#721).\n"
+                "\n"
+                "  • 0.30 (default): The backtested KXBTCD NO-side band floor.\n"
+                "    Note: the band was validated NO-side — a YES-side operator\n"
+                "    enabling hourly gets a YES-denominated band instead."
+            ),
+            "min_val": 0.01,
+            "max_val": 0.99,
+        },
+    )
+    hourly_max_market_price: float = Field(
+        default=0.85, gt=0.0, lt=1.0,
+        json_schema_extra={
+            "display_name": "Hourly Max Market Price",
+            "description": (
+                "Highest buy price considered for HOURLY-series markets, in the\n"
+                "configured side's effective terms. Replaces Max Market Price\n"
+                "for hourly tickers only (#721).\n"
+                "\n"
+                "  • 0.85 (default): The backtested KXBTCD NO-side band ceiling"
+            ),
+            "min_val": 0.01,
             "max_val": 0.99,
         },
     )
@@ -797,6 +854,57 @@ class ScannerConfig(BaseModel):
             ),
         },
     )
+    hourly_series: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "display_name": "Hourly Series",
+            "description": (
+                "Series tickers traded on the hourly strike-ladder flow (#721).\n"
+                "Empty (default) disables ALL hourly behavior — the hourly price\n"
+                "band, min-days bypass, and scorer/validator branches. Add\n"
+                "'KXBTCD' to enable the hourly paper-trade experiment.\n"
+                "\n"
+                "CAUTION: every listed series gets the relaxed hourly gates\n"
+                "(0.70 probability floor, min-days bypass, wide price band) —\n"
+                "only list series with a backtested hourly edge."
+            ),
+        },
+    )
+
+    hourly_lead_minutes: int = Field(
+        default=29, ge=1, le=59,
+        json_schema_extra={
+            "display_name": "Hourly Lead Minutes",
+            "description": (
+                "Minutes before the top of the hour the hourly scan window\n"
+                "opens. Consumed by the trading loop (#721 part B); defined\n"
+                "here so operators can tune it ahead of that release."
+            ),
+            "min_val": 1,
+            "max_val": 59,
+        },
+    )
+    hourly_max_cycles_per_window: int = Field(
+        default=1, ge=1, le=10,
+        json_schema_extra={
+            "display_name": "Hourly Max Cycles Per Window",
+            "description": (
+                "Maximum trading cycles per hourly scan window — the budget\n"
+                "guardrail bounding hourly load to ~24 sessions/day at the\n"
+                "default. Consumed by the trading loop (#721 part B)."
+            ),
+            "min_val": 1,
+            "max_val": 10,
+        },
+    )
+
+    @field_validator("hourly_series", mode="after")
+    @classmethod
+    def _normalize_hourly_series(cls, v: list[str]) -> list[str]:
+        # A case/whitespace typo or a full market ticker would silently
+        # never match is_hourly_ticker — normalize to bare uppercase
+        # series prefixes and drop empties (#722 review).
+        return [e.strip().upper().split("-")[0] for e in v if e.strip()]
 
 
 class ScoringWeights(BaseModel):
@@ -1082,6 +1190,10 @@ class GimmesConfig(BaseModel):
         if self.strategy.side == "both":
             return ["yes", "no"]
         return [self.strategy.side]  # type: ignore[list-item]
+
+    def is_hourly_ticker(self, ticker: str) -> bool:
+        """True when the ticker's series prefix is in scanner.hourly_series (#721)."""
+        return ticker.split("-")[0] in self.scanner.hourly_series
 
     def effective_config_for_side(
         self, side: Literal["yes", "no"],

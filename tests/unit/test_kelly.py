@@ -188,3 +188,25 @@ class TestApplyBaseRateFloor:
         floored_prob = apply_base_rate_floor(0.70, "KXCPIYOY-26MAR-T3.5", side="no")
         floored_contracts = position_size(10000, 0.65, floored_prob)
         assert floored_contracts > low_contracts
+
+
+class TestKxbtcdBaseRate:
+    """#722: KXBTCD hourly ladders carry a 0.70 NO-side base rate."""
+
+    def test_kxbtcd_floor_raises_low_estimate(self) -> None:
+        result = apply_base_rate_floor(
+            0.60, "KXBTCD-26JUN23H14-T119999.99", side="no",
+        )
+        assert result == 0.70
+
+    def test_kxbtcd_higher_estimate_passes_through(self) -> None:
+        result = apply_base_rate_floor(
+            0.80, "KXBTCD-26JUN23H14-T119999.99", side="no",
+        )
+        assert result == 0.80
+
+    def test_kxbtcd_yes_side_skips_floor(self) -> None:
+        result = apply_base_rate_floor(
+            0.60, "KXBTCD-26JUN23H14-T119999.99", side="yes",
+        )
+        assert result == 0.60

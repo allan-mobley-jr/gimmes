@@ -55,6 +55,23 @@ class TestModelMetadata:
                 valid = ("int", "float", "str", "list")
                 assert s.type in valid, f"{s.key} has invalid type {s.type}"
 
+    def test_hourly_fields_in_sections(self) -> None:
+        # #722: the six hourly fields must be wizard-visible (a field
+        # without display_name is silently invisible to config set/get)
+        keys = {
+            s.key
+            for field_name, model_cls in CONFIG_SECTIONS
+            for s in _iter_section_settings(field_name, model_cls)
+        }
+        assert {
+            "scanner.hourly_series",
+            "scanner.hourly_lead_minutes",
+            "scanner.hourly_max_cycles_per_window",
+            "strategy.hourly_min_true_probability",
+            "strategy.hourly_min_market_price",
+            "strategy.hourly_max_market_price",
+        } <= keys
+
     def test_scoring_weights_have_five_entries(self) -> None:
         scoring_cls = type(GimmesConfig.model_fields["scoring"].default_factory())
         settings = _iter_section_settings("scoring", scoring_cls)

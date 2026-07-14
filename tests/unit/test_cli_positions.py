@@ -588,3 +588,42 @@ class TestPositionsStaleAndSuspect:
         )
         out = self._run(broker=None, live_positions=[pos])
         assert "BASIS-SUSPECT" not in out
+
+
+class TestHourlyScanColumn:
+    """#722: the Hourly column appears only when at least one scanned
+    row is an hourly-series market — output is byte-identical otherwise."""
+
+    @staticmethod
+    def _row(**overrides):
+        row = {
+            "ticker": "KXBTCD-26JUN23H14-T119999.99",
+            "event_ticker": "KXBTCD-26JUN23H14",
+            "title": "BTC above 119,999.99",
+            "price": 0.65,
+            "volume_24h": 100,
+            "open_interest": 50,
+            "score": 80,
+        }
+        row.update(overrides)
+        return row
+
+    def test_hourly_tag_shown_when_any_row_hourly(
+        self, narrow_console: StringIO,
+    ) -> None:
+        from gimmes.reporting.formatter import format_scan_results
+        format_scan_results([
+            self._row(hourly=True),
+            self._row(ticker="KXCPI-26APR-T0.5", event_ticker="", hourly=False),
+        ])
+        out = narrow_console.getvalue()
+        # Exactly one cell carries the tag — the non-hourly row's cell
+        # is empty (the header is "Hourly", different case)
+        assert out.count("HOURLY") == 1
+
+    def test_no_hourly_column_when_absent(self, narrow_console: StringIO) -> None:
+        from gimmes.reporting.formatter import format_scan_results
+        format_scan_results([self._row()])  # no "hourly" key at all
+        out = narrow_console.getvalue()
+        assert "HOURLY" not in out
+        assert "Hourly" not in out

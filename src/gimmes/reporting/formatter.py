@@ -241,11 +241,14 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
     )
 
     has_side = any(m.get("side") for m in markets)
+    has_hourly = any(m.get("hourly") for m in markets)
 
     table = Table(title=rich_escape(title))  # #644: title param is open to callers
     table.add_column("Ticker", style="cyan", overflow="fold")
     if has_side:
         table.add_column("Side", style="bold")
+    if has_hourly:
+        table.add_column("Hourly", style="bold yellow")
     table.add_column("Event", style="dim", max_width=25)
     table.add_column("Title", max_width=20)
     table.add_column("Price", justify="right")
@@ -260,6 +263,8 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
         row: list[str] = [m.get("ticker", "")]
         if has_side:
             row.append(m.get("side", "").upper())
+        if has_hourly:
+            row.append("HOURLY" if m.get("hourly") else "")
         row.extend([
             evt_label,
             rich_escape(m.get("title", "")[:20]),  # #644

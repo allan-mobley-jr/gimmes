@@ -149,14 +149,24 @@ def validate_trade(
         else:
             failures.append(ser_check.reason)
 
-    # 5. Minimum true probability gate (skipped when probability is unknown)
+    # 5. Minimum true probability gate (skipped when probability is unknown).
+    #    Hourly tickers are gated on their OWN backtested floor (#721) —
+    #    scoped so the global floor is untouched for everything else.
     if true_probability is not None:
-        min_prob = config.strategy.min_true_probability
+        if config.is_hourly_ticker(market.ticker):
+            min_prob = config.strategy.hourly_min_true_probability
+            ok_label, fail_label = " hourly floor", " hourly minimum"
+        else:
+            min_prob = config.strategy.min_true_probability
+            ok_label, fail_label = "", " minimum"
         if true_probability >= min_prob:
-            checks.append(f"True probability OK ({true_probability:.0%} >= {min_prob:.0%})")
+            checks.append(
+                f"True probability OK ({true_probability:.0%} >= {min_prob:.0%}{ok_label})"
+            )
         else:
             failures.append(
-                f"True probability too low: {true_probability:.0%} < {min_prob:.0%} minimum"
+                f"True probability too low: "
+                f"{true_probability:.0%} < {min_prob:.0%}{fail_label}"
             )
     else:
         checks.append("True probability check skipped (no probability provided)")

@@ -94,13 +94,15 @@ def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
     insert_error_side_effect=None, extra_args=None, market=None,
     snapshot_mock=None, validation=None, cli_args=None,
-    last_close=None, last_close_effect=None,
+    last_close=None, last_close_effect=None, config=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
     `market` overrides the stub market; `snapshot_mock` overrides the
     #643 rules-snapshot patch (defaults to AsyncMock(return_value=True)
-    so the real helper never runs against the mocked DB).
+    so the real helper never runs against the mocked DB); `config`
+    overrides the stub config (needed when a test must pin real
+    attribute values — a bare MagicMock compares unpredictably).
     """
     mock_console = MagicMock()
     mock_fees = MagicMock()
@@ -115,7 +117,10 @@ def _run_order_cli(
         return await b.get_positions()
 
     patches = [
-        patch("gimmes.cli.load_config", return_value=_stub_config()),
+        patch(
+            "gimmes.cli.load_config",
+            return_value=config if config is not None else _stub_config(),
+        ),
         patch("gimmes.cli.trading_context", _fake_trading_context(broker)),
         patch("gimmes.cli.console", mock_console),
         patch("gimmes.cli._mode_banner"),
@@ -1052,3 +1057,67 @@ class TestCanceledOrderContract:
         assert "Order NOT placed" in out
         assert "no opposing liquidity" in out
         sync_spy.assert_not_awaited()  # no trade row for a non-event
+
+
+def _maker_config():
+    """Stub config with a REAL maker preference — the bare MagicMock in
+    _stub_config() makes `preferred_order_type != "maker"` always True,
+    silently running every order as taker (#722)."""
+    c = _stub_config()
+    c.orders.preferred_order_type = "maker"
+    return c
+
+
+class TestTakerFlag:
+    """#722: --taker forces taker execution for one order without
+    touching the orders.preferred_order_type global."""
+
+    def test_taker_flag_forces_post_only_false(self) -> None:
+        broker = _make_mock_broker()
+        result, _, _ = _run_order_cli(
+            broker,
+            config=_maker_config(),
+            cli_args=_ORDER_CLI_ARGS + ["--taker"],
+        )
+        assert result.exit_code == 0
+        params = broker.create_order.call_args[0][0]
+        assert params.post_only is False
+
+    def test_maker_default_without_taker_flag(self) -> None:
+        broker = _make_mock_broker()
+        result, _, _ = _run_order_cli(broker, config=_maker_config())
+        assert result.exit_code == 0
+        params = broker.create_order.call_args[0][0]
+        assert params.post_only is True
+
+    def test_taker_preference_without_flag_is_taker(self) -> None:
+        # The config clause of `taker or preferred != "maker"` — a
+        # mutation dropping it would pass every other test in this file
+        # (the bare MagicMock stub always runs taker without asserting it)
+        config = _stub_config()
+        config.orders.preferred_order_type = "taker"
+        broker = _make_mock_broker()
+        result, _, _ = _run_order_cli(broker, config=config)
+        assert result.exit_code == 0
+        params = broker.create_order.call_args[0][0]
+        assert params.post_only is False
+
+    def test_taker_flag_reaches_auto_sizing(self) -> None:
+        # #722 review: taker fees must shrink Kelly sizing — the order
+        # command passes is_taker into position_size on the --prob path
+        broker = _make_mock_broker()
+        size_spy = MagicMock(return_value=10)
+        # position_size is imported inside the command body, so patch
+        # the source module attribute
+        with patch("gimmes.strategy.kelly.position_size", size_spy):
+            result, _, _ = _run_order_cli(
+                broker,
+                config=_maker_config(),
+                cli_args=[
+                    "order", "TEST-TICKER",
+                    "--side", "yes", "--count", "0",
+                    "--price", "40", "--prob", "0.55", "--yes", "--taker",
+                ],
+            )
+        assert result.exit_code == 0
+        assert size_spy.call_args.kwargs["is_taker"] is True

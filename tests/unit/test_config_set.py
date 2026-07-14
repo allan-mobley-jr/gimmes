@@ -515,3 +515,57 @@ class TestConfigRemove:
 
         assert result.exit_code == 1
         assert "Database not found" in result.output
+
+
+class TestHourlyConfigKeys:
+    """#722: the six hourly fields are settable via the config CLI."""
+
+    def test_set_hourly_lead_minutes_round_trip(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "scanner.hourly_lead_minutes", "25"]
+            )
+            shown = runner.invoke(app, ["config", "get", "scanner.hourly_lead_minutes"])
+
+        assert result.exit_code == 0
+        assert shown.exit_code == 0
+        assert "25" in shown.output
+
+    def test_add_hourly_series(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "add", "scanner.hourly_series", "KXBTCD"]
+            )
+
+        assert result.exit_code == 0
+        assert "KXBTCD" in result.output
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.hourly_series'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == ["KXBTCD"]
+
+    def test_set_hourly_series_json_round_trip(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app, ["config", "set", "scanner.hourly_series", '["KXBTCD"]']
+            )
+
+        assert result.exit_code == 0
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'scanner.hourly_series'"
+        ).fetchone()
+        conn.close()
+        assert json.loads(row[0]) == ["KXBTCD"]
+
+    def test_set_hourly_min_true_probability_out_of_range(self, db_file: Path) -> None:
+        with patch("gimmes.config.GIMMES_HOME", db_file.parent):
+            result = runner.invoke(
+                app,
+                ["config", "set", "strategy.hourly_min_true_probability", "0.4"],
+            )
+        assert result.exit_code == 1

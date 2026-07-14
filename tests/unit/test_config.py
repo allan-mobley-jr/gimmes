@@ -539,3 +539,71 @@ class TestSidesConfig:
         yes_cfg = config.effective_config_for_side("yes")
         assert yes_cfg.risk.bankroll_paper == 8000.0
         assert yes_cfg.mode == Mode.DRIVING_RANGE
+
+
+class TestHourlyConfig:
+    """#722: hourly-ladder config plumbing — default-inert while
+    scanner.hourly_series is empty."""
+
+    def test_hourly_defaults(self) -> None:
+        config = GimmesConfig(mode=Mode.DRIVING_RANGE)
+        assert config.scanner.hourly_series == []
+        assert config.scanner.hourly_lead_minutes == 29
+        assert config.scanner.hourly_max_cycles_per_window == 1
+        assert config.strategy.hourly_min_true_probability == 0.70
+        assert config.strategy.hourly_min_market_price == 0.30
+        assert config.strategy.hourly_max_market_price == 0.85
+
+    def test_is_hourly_ticker_empty_series_always_false(self) -> None:
+        config = GimmesConfig(mode=Mode.DRIVING_RANGE)
+        assert config.is_hourly_ticker("KXBTCD-26JUN23H14-T119999.99") is False
+        assert config.is_hourly_ticker("KXBTCD") is False
+
+    def test_is_hourly_ticker_prefix_match(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+        )
+        assert config.is_hourly_ticker("KXBTCD-26JUN23H14-T119999.99") is True
+        assert config.is_hourly_ticker("KXBTCD") is True
+        # Exact series match, not a substring: KXBTCDX is a different series
+        assert config.is_hourly_ticker("KXBTCDX-26JUN23H14-T1") is False
+        assert config.is_hourly_ticker("KXCPIYOY-26MAR-T3.5") is False
+
+    def test_hourly_fields_flow_through_side_split(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(
+                side="both",
+                no_overrides=SideOverrides(min_market_price=0.40),
+            ),
+            scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+        )
+        no_cfg = config.effective_config_for_side("no")
+        assert no_cfg.scanner.hourly_series == ["KXBTCD"]
+        assert no_cfg.scanner.hourly_lead_minutes == 29
+        assert no_cfg.strategy.hourly_min_true_probability == 0.70
+        assert no_cfg.strategy.hourly_min_market_price == 0.30
+        assert no_cfg.strategy.hourly_max_market_price == 0.85
+        assert no_cfg.is_hourly_ticker("KXBTCD-26JUN23H14-T119999.99") is True
+
+    def test_category_base_rate_kxbtcd(self) -> None:
+        from gimmes.config import CATEGORY_BASE_RATES
+
+        assert CATEGORY_BASE_RATES["KXBTCD"] == 0.70
+
+    def test_hourly_series_entries_normalized(self) -> None:
+        # A case/whitespace typo or a full market ticker would silently
+        # never activate the hourly lane (#722 review) — entries are
+        # normalized to bare uppercase series prefixes
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            scanner=ScannerConfig(hourly_series=[
+                " kxbtcd ",
+                "KXETHD-26JUN23H14-T2599.99",
+                "",
+                "  ",
+            ]),
+        )
+        assert config.scanner.hourly_series == ["KXBTCD", "KXETHD"]
+        assert config.is_hourly_ticker("KXBTCD-26JUN23H14-T119999.99") is True

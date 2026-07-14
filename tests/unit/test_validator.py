@@ -1,6 +1,6 @@
 """Unit tests for pre-trade validator."""
 
-from gimmes.config import GimmesConfig
+from gimmes.config import GimmesConfig, Mode, ScannerConfig, StrategyConfig
 from gimmes.models.market import Market, MarketStatus
 from gimmes.risk.validator import validate_trade
 
@@ -435,3 +435,92 @@ class TestPriceBoundGate:
         )
         assert not any("Price at bound" in f for f in result.failures)
         assert any("Edge" in c for c in result.checks)
+
+
+class TestHourlyProbabilityFloor:
+    """#722: hourly-series tickers gate on hourly_min_true_probability;
+    the global floor and its message literals stay untouched."""
+
+    HOURLY_TICKER = "KXBTCD-26JUN23H14-T119999.99"
+
+    @staticmethod
+    def _hourly_config() -> GimmesConfig:
+        return GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="no"),
+            scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+        )
+
+    def _validate(self, config: GimmesConfig, ticker: str, prob: float):
+        return validate_trade(
+            market=_make_market(ticker=ticker),
+            trade_dollars=200,
+            true_probability=prob,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+
+    def test_hourly_floor_accepts_072(self) -> None:
+        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.72)
+        assert not any("probability too low" in f.lower() for f in result.failures)
+        assert any("hourly floor" in c for c in result.checks)
+
+    def test_hourly_floor_boundary_at_070(self) -> None:
+        # >= not >: exactly 0.70 passes. This also pins the floor==gate
+        # composition (#722 review): apply_base_rate_floor promotes any
+        # lower KXBTCD estimate to exactly 0.70, so check 5 is a
+        # formality on auto-sized NO orders by design — check 6 (edge
+        # after fees) and Caddie's sanity checks are the binding gates.
+        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.70)
+        assert not any("probability too low" in f.lower() for f in result.failures)
+        assert any("hourly floor" in c for c in result.checks)
+
+    def test_hourly_floor_rejects_below(self) -> None:
+        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.65)
+        assert result.approved is False
+        assert any(
+            "70% hourly minimum" in f for f in result.failures
+        ), result.failures
+
+    def test_global_floor_untouched_for_non_hourly(self) -> None:
+        result = self._validate(self._hourly_config(), "KXTEST", 0.72)
+        assert result.approved is False
+        failures = [f for f in result.failures if "probability too low" in f.lower()]
+        assert failures == ["True probability too low: 72% < 90% minimum"]
+
+    def test_inertness_message_byte_identical(self, config: GimmesConfig) -> None:
+        # hourly_series empty: a KXBTCD ticker fails with the exact
+        # pre-#722 literal — no "hourly" wording anywhere
+        result = self._validate(config, self.HOURLY_TICKER, 0.85)
+        failures = [f for f in result.failures if "probability too low" in f.lower()]
+        assert failures == ["True probability too low: 85% < 90% minimum"]
+
+    def test_event_exposure_binds_across_hourly_strikes(self) -> None:
+        # Strikes of one hour share an event_ticker, so the 4c cap is the
+        # effective per-hour position cap. The KXBTCD event shape
+        # (KXBTCD-<date>H<hour> grouping all strikes) is asserted here
+        # from Kalshi's series convention; live verification of the API
+        # response shape is a #721 part D deliverable.
+        config = self._hourly_config()
+        market = _make_market(
+            ticker="KXBTCD-26JUN23H14-T118999.99",
+            event_ticker="KXBTCD-26JUN23H14",
+        )
+        result = validate_trade(
+            market=market,
+            trade_dollars=600,
+            true_probability=0.72,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=["KXBTCD-26JUN23H14-T119999.99"],
+            config=config,
+            # Sibling strike already deployed in the same hourly event:
+            # 1000 + 600 = 1600 > the 15% x 10k = 1500 cap
+            event_exposure=1000.0,
+        )
+        assert result.approved is False
+        assert any("event" in f.lower() for f in result.failures)
