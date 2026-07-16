@@ -848,3 +848,25 @@ class TestSweepCadence731:
             prior_observation_body=prior,
         )
         assert errors == []
+
+
+class TestInvalidAnchorDatetime731:
+    def test_calendar_invalid_anchor_rejected(self) -> None:
+        # Regex-valid but not a real datetime — must not bypass the
+        # age ceiling (Copilot review on #731)
+        rows = {
+            s.replace(" ", "_"): (
+                "not searched (cadence — last full sweep 2026-07-10:"
+                " no result)"
+            )
+            for s in PLAYBOOK_SOURCES
+        }
+        errors, _ = validate_playbook_footer(
+            ticker=TICKER,
+            observation_body=make_skipped_observation(
+                make_footer(**rows), anchor="2026-99-99 99:99:99",
+            ),
+            prior_observation_body=make_observation(make_footer()),
+            prior_observation_timestamp="2026-99-99 99:99:99",
+        )
+        assert any("not a valid datetime" in e for e in errors)

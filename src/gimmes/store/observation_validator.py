@@ -738,7 +738,19 @@ def validate_playbook_footer(
                 )
             else:
                 anchor_dt = parse_scanned_at(anchor_ts)
-                if anchor_dt is not None:
+                if anchor_dt is None:
+                    # Regex-valid but calendar-invalid (2026-99-99 ...)
+                    # must not slip past the age ceiling (Copilot
+                    # review) — an unverifiable anchor is an error,
+                    # not a pass.
+                    errors.append(
+                        f"`Sweep: skipped` observation for {ticker}"
+                        f" carries an anchor {anchor_ts!r} that is not"
+                        f" a valid datetime (#731) — the age ceiling"
+                        f" cannot be verified; run the full playbook"
+                        f" this cycle."
+                    )
+                else:
                     age_h = (
                         datetime.datetime.now(datetime.UTC) - anchor_dt
                     ).total_seconds() / 3600
