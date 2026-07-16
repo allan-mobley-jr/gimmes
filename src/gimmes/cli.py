@@ -3287,7 +3287,13 @@ def log_outcome(
 
 
 def _print_note(note: dict) -> None:  # type: ignore[type-arg]
-    """Print a single position note with its metadata header."""
+    """Print a single position note with its metadata header.
+
+    The timestamp prints RAW (SQLite datetime('now'), 19 chars) — the
+    #731 sweep-anchor grammar has Monitor copy it verbatim and the
+    observation validator compares it byte-for-byte; formatting it
+    here would desynchronize both.
+    """
     console.print(
         f"[dim][#{note['id']}] {note['timestamp']} | cycle={note['cycle']}"
         f" | {note['agent']} | {note['note_type']}[/dim]"
@@ -3526,6 +3532,14 @@ def position_note(
                 prior_observation_body = (
                     prior_obs[0].get("body") if prior_obs else None
                 )
+                # #731 sweep-anchor verification: the raw DB timestamp
+                # (SQLite datetime('now'), 19 chars) — position-context
+                # prints it raw too; if either site ever formats it,
+                # the copy-verbatim anchor grammar desynchronizes.
+                prior_observation_timestamp = (
+                    str(prior_obs[0].get("timestamp"))
+                    if prior_obs else None
+                )
                 rules_primary = await get_position_rules_snapshot(
                     db, resolved_ticker,
                 )
@@ -3535,6 +3549,7 @@ def position_note(
                     decision_body=decision_body,
                     prior_observation_body=prior_observation_body,
                     rules_primary=rules_primary,
+                    prior_observation_timestamp=prior_observation_timestamp,
                 )
                 # markup=False: validator messages embed settlement-
                 # language snippets whose bracketed clauses Rich would

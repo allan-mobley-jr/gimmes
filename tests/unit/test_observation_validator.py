@@ -7,6 +7,7 @@ live in test_cli_observation_validator.py.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from gimmes.store.observation_validator import (
@@ -347,6 +348,9 @@ class TestSyncWith643Rules:
         for literal in (
             "no result this cycle",
             "inherited: <prior cite>",
+            "not searched (cadence — last full sweep",  # #731
+            "Sweep: full (#731)",
+            "Sweep: skipped (cadence #731",
             "SUPERSEDED (pre-<event>, <date>) — refresh required",
             "Semantics:",
         ):
@@ -380,9 +384,11 @@ class TestSyncWith643Rules:
         )
 
     def test_template_footer_round_trips_through_validator(self) -> None:
-        """Render monitor.md's own heredoc footer with each of the four
-        canonical outcome forms and prove the validator accepts it —
-        the template and the parser must never drift apart (#643)."""
+        """Render monitor.md's own heredoc footer with each of the
+        sweep-legal canonical outcome forms and prove the validator
+        accepts it — the template and the parser must never drift
+        apart (#643). The body carries a `Sweep: full` marker (#731)
+        so the missing-marker warning stays out of warnings == []."""
         block = self._footer_template_block().rsplit("GIMMES_EOF", 1)[0]
         forms = {
             "Goldman Sachs": "+0.3% (Reuters, 2026-07-01)",
@@ -393,7 +399,7 @@ class TestSyncWith643Rules:
                 " — refresh required"
             ),
         }
-        rendered = re.sub(
+        rendered = "Sweep: full (#731)\n" + re.sub(
             r"^- ([^:]+): \[.*$",
             lambda m: (
                 f"- {m.group(1)}:"
@@ -415,6 +421,47 @@ class TestSyncWith643Rules:
             rows["Goldman Sachs"].kind, rows["JPMorgan"].kind,
             rows["Citi"].kind, rows["Wells Fargo"].kind,
         } == {"fresh", "no_result", "inherited", "superseded"}
+
+    def test_template_footer_round_trips_skipped_mode(self) -> None:
+        """#731: the non-sweep-cycle form — skipped marker with carried
+        anchor, inherited/not-searched/SUPERSEDED-verbatim rows — must
+        round-trip cleanly when the anchor matches the prior full
+        sweep's timestamp."""
+        block = self._footer_template_block().rsplit("GIMMES_EOF", 1)[0]
+        not_searched = (
+            "not searched (cadence — last full sweep 2026-07-10:"
+            " no result)"
+        )
+        forms = {
+            "Citi": "inherited: +0.2% (FXStreet, 2026-06-18)",
+            "Wells Fargo": (
+                "SUPERSEDED (pre-Hormuz-reopening, 2026-06-11)"
+                " — refresh required"
+            ),
+        }
+        def render(header: str, default: str) -> str:
+            return header + re.sub(
+                r"^- ([^:]+): \[.*$",
+                lambda m: f"- {m.group(1)}: {forms.get(m.group(1), default)}",
+                block,
+                flags=re.M,
+            )
+
+        anchor = (
+            datetime.now(UTC) - timedelta(hours=3)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        prior = render("Sweep: full (#731)\n", "no result this cycle")
+        skipped = render(
+            f"Sweep: skipped (cadence #731 — last full sweep {anchor})\n",
+            not_searched,
+        )
+        errors, _ = validate_playbook_footer(
+            ticker="KXCPI-26JUN-T-0.1",
+            observation_body=skipped,
+            prior_observation_body=prior,
+            prior_observation_timestamp=anchor,
+        )
+        assert errors == [], errors
 
     def test_monitor_md_canonical_semantics_example_passes(self) -> None:
         """The worked example in monitor.md's #641 grounding rule must

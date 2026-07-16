@@ -675,8 +675,8 @@ def test_monitor_audit_footer_enumerates_full_playbook_list(
 def test_monitor_audit_footer_allows_no_result_and_inheritance(
     monitor_text: str,
 ) -> None:
-    """Each source row MUST carry the explicit four-outcome grammar
-    inline. Without per-row grammar, agents may fill the `[...]`
+    """Each source row MUST carry the explicit five-outcome grammar
+    inline (#731 added not-searched). Without per-row grammar, agents may fill the `[...]`
     placeholders inconsistently and the audit value erodes — Copilot's
     review of #615 caught this exact vacuous-coverage path (#615).
     The fourth outcome (SUPERSEDED) was added by #641."""
@@ -704,11 +704,13 @@ def test_monitor_audit_footer_allows_no_result_and_inheritance(
     grammar = (
         "[value (publisher, YYYY-MM-DD) OR 'no result this cycle'"
         " OR 'inherited: <prior cite>'"
+        " OR 'not searched (cadence — last full sweep <YYYY-MM-DD>:"
+        " no result)'"
         " OR 'SUPERSEDED (pre-<event>, <date>) — refresh required']"
     )
     grammar_count = footer.count(grammar)
     assert grammar_count >= 13, (
-        f"Footer template must repeat the full four-outcome grammar"
+        f"Footer template must repeat the full five-outcome grammar"
         f" on every source row (13 sources: 9 banks + 4 aggregators)."
         f" Found grammar on {grammar_count} rows. Bare `[...]`"
         f" placeholders let agents fill inconsistently and erode"
@@ -864,6 +866,9 @@ def test_monitor_footer_freshness_rule_pinned(monitor_text: str) -> None:
         "freshly confirmed",
         "inherited: <prior cite>",
         "#641",
+        # #731: non-sweep cycles forbid fresh and no-result rows
+        "Sweep: skipped",
+        "not searched (cadence",
     ):
         assert needle in rule, (
             f"Freshness rule must contain {needle!r} — without the"
@@ -885,6 +890,7 @@ def test_monitor_footer_supersession_rule_pinned(monitor_text: str) -> None:
         "HOLD",
         "#641",
         "MUST NOT revert to",
+        "repeats verbatim",  # #731: stickiness across non-sweep cycles
     ):
         assert needle in rule, (
             f"Supersession rule must contain {needle!r} — the exact"
@@ -894,19 +900,26 @@ def test_monitor_footer_supersession_rule_pinned(monitor_text: str) -> None:
         )
 
 
-def test_monitor_footer_spec_declares_four_outcomes(
+def test_monitor_footer_spec_declares_five_outcomes(
     monitor_text: str,
 ) -> None:
-    """The footer spec paragraph must agree with the row grammar: four
-    outcomes, including superseded. Prose reverting to 'three
-    outcomes' would contradict the 13 pinned rows (#641)."""
-    assert "one of four outcomes" in monitor_text, (
-        "Footer spec paragraph must declare `one of four outcomes`"
-        " (#641 added SUPERSEDED as the fourth)."
+    """The footer spec paragraph must agree with the row grammar: five
+    outcomes (#641 added SUPERSEDED; #731 added not-searched). Prose
+    reverting to an older count would contradict the 13 pinned rows."""
+    assert "one of five outcomes" in monitor_text, (
+        "Footer spec paragraph must declare `one of five outcomes`"
+        " (#731 added not-searched as the fifth)."
+    )
+    assert "one of four outcomes" not in monitor_text, (
+        "Stale `one of four outcomes` prose contradicts the 5-outcome"
+        " row grammar (#731)."
     )
     assert "one of three outcomes" not in monitor_text, (
-        "Stale `one of three outcomes` prose contradicts the 4-outcome"
+        "Stale `one of three outcomes` prose contradicts the 5-outcome"
         " row grammar (#641)."
+    )
+    assert "not searched (cadence" in monitor_text, (
+        "Footer spec must carry the not-searched outcome (#731)."
     )
     assert "superseded" in monitor_text.lower(), (
         "Footer spec must mention the superseded outcome (#641)."
@@ -1139,8 +1152,11 @@ def test_monitor_source_playbook_lists_economic_categories(
 
 
 def test_monitor_48h_staleness_rule_pinned(monitor_text: str) -> None:
-    """The 48-hour CM-decision staleness rule is the core defense against
-    a stale baseline observation persisting across cycles (#577)."""
+    """The sweep-staleness rule (#577, restated by #731) is the core
+    defense against a stale baseline persisting across cycles. The
+    anchor moved from the CM decision note to the validator-pinned
+    `Sweep: full` marker — the old anchor would force a full sweep
+    EVERY cycle for positions held past 48h, defeating the cadence."""
     import re
 
     dedup_match = re.search(
@@ -1151,18 +1167,29 @@ def test_monitor_48h_staleness_rule_pinned(monitor_text: str) -> None:
     assert dedup_match is not None, "Flag deduplication block must exist"
     block = dedup_match.group(0)
     assert "48 hours" in block, (
-        "Dedup block must include the exact phrase `48 hours` so the"
-        " staleness threshold is unambiguous (#577)."
+        "Dedup block must retain the phrase `48 hours` — the cadence"
+        " cap is what preserves #577's staleness guarantee (#731)."
     )
-    assert "most recent CM `decision`-type note" in block, (
-        "Staleness rule must anchor on the CM decision-note timestamp,"
-        " not the prior observation timestamp (which Monitor controls"
-        " and can refresh by writing a stale-template observation)"
-        " (#577)."
+    assert "Sweep: full" in block, (
+        "Staleness rule must anchor on the validator-pinned"
+        " `Sweep: full` marker (#731)."
     )
-    assert "48h forces a re-search, NOT a flag" in block, (
-        "The 48h rule must clarify that re-search is required but flag"
-        " suppression still applies if the re-search confirms no change."
+    assert "risk.monitor_playbook_sweep_hours" in block, (
+        "Staleness rule must name the cadence knob (#731)."
+    )
+    assert "self-refreshed" in block or "self-refresh" in block, (
+        "Staleness rule must retain the retirement rationale — the old"
+        " CM anchor existed because the observation was"
+        " Monitor-controlled (#577/#731)."
+    )
+    assert "validator-pinned" in block, (
+        "Staleness rule must state the new anchor is validator-pinned"
+        " — that is what justifies retiring the CM anchor (#731)."
+    )
+    assert "staleness forces a re-search, NOT a flag" in block, (
+        "The staleness rule must clarify that re-search is required but"
+        " flag suppression still applies if the sweep confirms no"
+        " change."
     )
 
 
@@ -1173,7 +1200,7 @@ def test_monitor_48h_does_not_bypass_no_material_change_rule(
     AFTER the 48h staleness bullet, so 48h forces a re-search but doesn't
     cause spurious flags when the re-search confirms no change (#577)."""
     idx_48h = monitor_text.find(
-        "48-hour staleness re-search rule (REQUIRED — #577)",
+        "Sweep-staleness re-search rule (REQUIRED — #577, restated by #731)",
     )
     idx_no_change = monitor_text.find(
         'If the delta observation says "No material change," do NOT write',
@@ -2630,3 +2657,103 @@ def test_caddie_sibling_rule_hourly_exemption(caddie_text: str) -> None:
     assert "EXEMPT" in window
     assert "PROCEED every rung that passes the checks" in window
     assert "max_event_exposure_pct" in window
+
+
+# ---------------------------------------------------------------------------
+# #731: playbook sweep cadence guards
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_playbook_sweep_cadence_section(monitor_text: str) -> None:
+    """#731: the cadence subsection is what stops the 13-search sweep
+    from starving the trading lanes — pin the knob read, both marker
+    forms, the escape hatch, and the escalation valve."""
+    block = _playbook_block(monitor_text)
+    from gimmes.config import RiskConfig
+
+    default = RiskConfig.model_fields["monitor_playbook_sweep_hours"].default
+    for needle in (
+        "### Sweep cadence (#731)",
+        "gimmes config get risk.monitor_playbook_sweep_hours",
+        f"default {default}",  # prompt default tied to config default
+        "Sweep: full (#731)",
+        "Sweep: skipped (cadence #731",
+        "sweep every cycle",  # the 0-semantics escape hatch
+        "ESCALATION",
+        "regime-change",
+        "exactly ONE general news search",
+        # No-anchor fail-safe: missing marker forces a full sweep
+        "no `Sweep:` marker exists",
+        # The anchor is not the agent's to refresh
+        "copy the timestamp VERBATIM",
+        # UTC discipline — a local-clock comparison skews the cadence
+        # by more than the cadence itself
+        "Anchor timestamps are UTC",
+        "date -u",
+        # The validator's machine floor on sweep frequency
+        "older than 48 hours",
+    ):
+        assert needle in block, (
+            f"Sweep cadence subsection must contain {needle!r} (#731)"
+        )
+
+
+def test_monitor_observation_template_carries_sweep_marker(
+    monitor_text: str,
+) -> None:
+    """#731: the heredoc template must carry the Sweep: line between
+    the delta header and the audit footer, so every observation
+    declares its mode."""
+    import re
+
+    template = re.search(
+        r"Delta since cycle \[N.*?Playbook sources checked this cycle",
+        monitor_text, re.DOTALL,
+    )
+    assert template is not None
+    assert re.search(r"(?m)^Sweep: \[", template.group(0)), (
+        "Observation template must carry a `Sweep: [...]` line (#731)"
+    )
+    assert "OMIT this line for non-playbook tickers" in template.group(0), (
+        "The Sweep: line needs its omission rule — equity-index"
+        " observations must not imply a playbook sweep ran (#731)"
+    )
+
+
+def test_monitor_nonsweep_footer_outcome_restrictions(
+    monitor_text: str,
+) -> None:
+    """#731: non-sweep cycles must not fake searches — fresh and
+    no-result rows are forbidden and the prompt says so."""
+    block = _playbook_block(monitor_text)
+    assert "FORBIDDEN on non-sweep cycles" in block
+    assert "falsely claim a search ran" in block or (
+        "would falsely claim a search ran" in block
+    )
+
+
+def test_sweep_cadence_cap_matches_config(monitor_text: str) -> None:
+    """#731 cross-file: the prose claim 'hard-capped at 48 hours' is
+    backed by the config bound — le=48 IS the #577 staleness guarantee
+    under cadence."""
+    from gimmes.config import RiskConfig
+
+    field = RiskConfig.model_fields["monitor_playbook_sweep_hours"]
+    assert field.default == 6
+    from gimmes.store.observation_validator import (
+        SWEEP_ANCHOR_MAX_AGE_HOURS,
+    )
+
+    le_values = [
+        m.le for m in field.metadata if hasattr(m, "le")
+    ]
+    assert SWEEP_ANCHOR_MAX_AGE_HOURS == 48, (
+        "The validator's anchor-age ceiling must equal the config cap"
+        " — it is the machine floor on sweep frequency (#731/#577)"
+    )
+    assert le_values == [48], (
+        "monitor_playbook_sweep_hours must carry le=48 — the cap is"
+        " the machine half of monitor.md's 'hard-capped at 48 hours'"
+        " claim (#731/#577)"
+    )
+    assert "48 hours" in monitor_text
