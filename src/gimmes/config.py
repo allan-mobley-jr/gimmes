@@ -617,6 +617,25 @@ class RiskConfig(BaseModel):
             "max_val": 50,
         },
     )
+    monitor_playbook_sweep_hours: int = Field(
+        default=6, ge=0, le=48,
+        json_schema_extra={
+            "display_name": "Playbook Sweep Cadence",
+            "description": (
+                "How often (hours) Monitor runs the full 13-source bank/aggregator\n"
+                "playbook sweep per economic position (#731). Between sweeps Monitor\n"
+                "writes inheritance-based observations with a single general news\n"
+                "search — price checks, stop gates, and flag triggers still run\n"
+                "every cycle.\n"
+                "\n"
+                "  • 6 (default): Full sweep at most every 6 hours\n"
+                "  • 0: Sweep every cycle (pre-#731 behavior — regression escape hatch)\n"
+                "  • 48 (max): Hard cap — sources re-checked at most 48h apart (#577)"
+            ),
+            "min_val": 0,
+            "max_val": 48,
+        },
+    )
     position_stop_loss_pct: float = Field(
         default=0.15, ge=0.05, le=0.50,
         json_schema_extra={

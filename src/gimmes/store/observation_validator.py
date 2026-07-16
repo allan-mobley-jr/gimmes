@@ -462,12 +462,49 @@ def validate_semantics(
 _FOOTER_HEADER_RE = re.compile(r"(?m)^Playbook sources checked this cycle")
 _FOOTER_ROW_RE = re.compile(r"^[-\u2013\u2014\u2022*]\s*(?P<source>[^:]+):\s*(?P<outcome>.+)$")
 
+# #731 sweep-cadence marker. The anchor timestamp is the 19-char SQLite
+# datetime('now') form position-context prints raw \u2014 if _print_note ever
+# formats timestamps, this grammar desynchronizes (comment at both sites).
+_SWEEP_LINE_RE = re.compile(r"(?im)^Sweep:\s*(?P<mode>full|skipped)\b(?P<rest>.*)$")
+_SWEEP_ANCHOR_RE = re.compile(
+    r"(?i)last full sweep\s+(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})"
+)
+
+# The hard ceiling on skip chains: a skipped observation whose anchor is
+# older than this is rejected outright — the machine floor on sweep
+# frequency that makes monitor.md's "at most 48 hours old, preserved by
+# construction" claim literally true. Kept equal to the
+# RiskConfig.monitor_playbook_sweep_hours le=48 bound (sync-tested).
+SWEEP_ANCHOR_MAX_AGE_HOURS = 48
+
 PLAYBOOK_SOURCES: tuple[str, ...] = NAMED_BANKS + AGGREGATORS
+
+
+def parse_sweep_marker(body: str | None) -> tuple[str, str | None] | None:
+    """Extract the #731 `Sweep:` marker from an observation body.
+
+    Returns (mode, anchor_ts) where mode is 'full' or 'skipped' and
+    anchor_ts is the carried last-full-sweep timestamp (skipped mode
+    only, None when absent/unparseable). Returns None when no marker
+    line exists.
+    """
+    if not body:
+        return None
+    m = _SWEEP_LINE_RE.search(body)
+    if m is None:
+        return None
+    mode = m.group("mode").lower()
+    anchor = None
+    if mode == "skipped":
+        a = _SWEEP_ANCHOR_RE.search(m.group("rest"))
+        if a is not None:
+            anchor = a.group("ts").replace("T", " ")
+    return (mode, anchor)
 
 
 class _FooterRow(NamedTuple):
     """One parsed footer row. `kind` is one of: 'fresh', 'inherited',
-    'no_result', 'superseded'."""
+    'no_result', 'not_searched', 'superseded'."""
 
     kind: str
     pub_date: str | None
@@ -476,8 +513,9 @@ class _FooterRow(NamedTuple):
 
 
 def _classify_row(outcome: str) -> _FooterRow:
-    """Classify a footer row's outcome per the #642 four-outcome
-    grammar, leniently (real rows carry trailing prose).
+    """Classify a footer row's outcome per the five-outcome grammar
+    (#642 four outcomes + #731 not-searched), leniently (real rows
+    carry trailing prose).
 
     Publication date extraction: the FIRST ISO date in textual order.
     The template grammar puts the citation date immediately after the
@@ -503,6 +541,13 @@ def _classify_row(outcome: str) -> _FooterRow:
         )
     if lowered.startswith("no result this cycle"):
         return _FooterRow("no_result", None, None, stripped)
+    if lowered.startswith("not searched"):
+        # #731 non-sweep-cycle outcome. Dates in the row text (the
+        # last-sweep date) are deliberately NOT extracted: a pub_date
+        # here would become the "prior cite" in the freshness
+        # monotonicity check and falsely block future first-time
+        # fresh finds published before the sweep date.
+        return _FooterRow("not_searched", None, None, stripped)
     # Anything else is a bare fresh claim.
     return _FooterRow(
         "fresh", pub_date=first_date, event_date=None, text=stripped,
@@ -559,12 +604,14 @@ def validate_playbook_footer(
     ticker: str,
     observation_body: str,
     prior_observation_body: str | None,
+    prior_observation_timestamp: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Footer audit (#643): four-outcome grammar, 13-source
+    """Footer audit (#643): five-outcome grammar (#731), 13-source
     enumeration, date monotonicity for bare fresh rows, SUPERSEDED
-    stickiness. Prior-cycle rows parse best-effort — a prior row that
-    doesn't classify cleanly skips its cross-cycle checks (historical
-    pre-#615 prose), but the CURRENT write must conform.
+    stickiness, and the #731 sweep-marker chain. Prior-cycle rows
+    parse best-effort — a prior row that doesn't classify cleanly
+    skips its cross-cycle checks (historical pre-#615 prose), but the
+    CURRENT write must conform.
 
     Returns (errors, warnings).
     """
@@ -641,6 +688,115 @@ def validate_playbook_footer(
                 f" `no result this cycle`.{hint}"
             )
 
+    # --- #731 sweep-marker chain -------------------------------------
+    sweep_lines = _SWEEP_LINE_RE.findall(observation_body)
+    if len(sweep_lines) > 1:
+        warnings.append(
+            f"Observation for {ticker} contains {len(sweep_lines)}"
+            f" `Sweep:` lines (#731) — only the FIRST is parsed; quoted"
+            f" or duplicated markers can hijack the declared mode."
+        )
+    marker = parse_sweep_marker(observation_body)
+    mode: str | None = None
+    if marker is None:
+        warnings.append(
+            f"Observation for {ticker} has no `Sweep:` marker (#731) —"
+            f" sweep mode unauditable; the next cycle will be forced to"
+            f" a full sweep (no anchor on record)."
+        )
+    else:
+        mode, anchor_ts = marker
+        if mode == "full":
+            for source in PLAYBOOK_SOURCES:
+                row = footer.get(source)
+                if row is not None and row.kind == "not_searched":
+                    errors.append(
+                        f"Footer row `{source}` for {ticker} says"
+                        f" `not searched` on a `Sweep: full` observation"
+                        f" (#731) — a full sweep must search every"
+                        f" source; write `no result this cycle` for an"
+                        f" empty search."
+                    )
+        else:  # skipped
+            for source in PLAYBOOK_SOURCES:
+                row = footer.get(source)
+                if row is not None and row.kind in ("fresh", "no_result"):
+                    errors.append(
+                        f"Footer row `{source}` for {ticker} claims a"
+                        f" search ran (`{row.kind}`) on a"
+                        f" `Sweep: skipped` observation (#731) — no"
+                        f" search ran on a cadence-skipped cycle; use"
+                        f" `inherited: <prior cite>`, `not searched"
+                        f" (cadence — ...)`, or repeat the SUPERSEDED"
+                        f" row verbatim."
+                    )
+            if anchor_ts is None:
+                errors.append(
+                    f"`Sweep: skipped` observation for {ticker} carries"
+                    f" no parseable `last full sweep <YYYY-MM-DD"
+                    f" HH:MM:SS>` anchor (#731)."
+                )
+            else:
+                anchor_dt = parse_scanned_at(anchor_ts)
+                if anchor_dt is not None:
+                    age_h = (
+                        datetime.datetime.now(datetime.UTC) - anchor_dt
+                    ).total_seconds() / 3600
+                    if age_h > SWEEP_ANCHOR_MAX_AGE_HOURS:
+                        errors.append(
+                            f"`Sweep: skipped` observation for {ticker}"
+                            f" carries an anchor {age_h:.0f}h old —"
+                            f" older than the"
+                            f" {SWEEP_ANCHOR_MAX_AGE_HOURS}h hard"
+                            f" ceiling (#731/#577). An infinite skip"
+                            f" chain must not outrun the staleness"
+                            f" guarantee: run the full playbook this"
+                            f" cycle."
+                        )
+                prior_marker = parse_sweep_marker(prior_observation_body)
+                if prior_marker is None:
+                    errors.append(
+                        f"`Sweep: skipped` observation for {ticker} but"
+                        f" no sweep anchor exists on record (#731) — the"
+                        f" prior observation has no `Sweep:` marker. Run"
+                        f" the full playbook this cycle."
+                    )
+                elif prior_marker[0] == "full":
+                    expected = (prior_observation_timestamp or "")[:19]
+                    if prior_observation_timestamp is None:
+                        warnings.append(
+                            f"Sweep anchor for {ticker} unverifiable —"
+                            f" prior observation timestamp unavailable"
+                            f" (#731)."
+                        )
+                    elif anchor_ts != expected.replace("T", " "):
+                        errors.append(
+                            f"`Sweep: skipped` observation for {ticker}"
+                            f" carries anchor {anchor_ts!r} but the"
+                            f" prior full-sweep observation is stamped"
+                            f" {expected!r} (#731) — the anchor is not"
+                            f" yours to refresh (the #577 self-refresh"
+                            f" trap class)."
+                        )
+                else:  # prior was also skipped — chain must carry verbatim
+                    prior_anchor = prior_marker[1]
+                    if prior_anchor is None:
+                        warnings.append(
+                            f"Sweep anchor chain for {ticker}"
+                            f" unverifiable — the prior skipped"
+                            f" observation's anchor is unparseable"
+                            f" (#731)."
+                        )
+                    elif anchor_ts != prior_anchor:
+                        errors.append(
+                            f"`Sweep: skipped` observation for {ticker}"
+                            f" carries anchor {anchor_ts!r} but the"
+                            f" prior observation carried"
+                            f" {prior_anchor!r} (#731) — copy the"
+                            f" anchor VERBATIM; it is not yours to"
+                            f" refresh."
+                        )
+
     prior = (
         parse_playbook_footer(prior_observation_body)
         if prior_observation_body
@@ -654,6 +810,61 @@ def validate_playbook_footer(
         prev = prior.get(source)
         if cur is None or prev is None:
             continue
+        if prev.kind in ("fresh", "inherited") and cur.kind == "not_searched":
+            if mode == "skipped":
+                # The ONLY-clause is prior-state-keyed: a cited source
+                # inherits; not_searched drops the date chain and lets
+                # the #641 monotonicity audit be laundered through one
+                # skipped cycle.
+                errors.append(
+                    f"Footer row `{source}` for {ticker} dropped a"
+                    f" citation to `not searched` on a non-sweep cycle"
+                    f" (#731) — sources whose last sweep produced a"
+                    f" citation MUST use `inherited: <prior cite>`."
+                )
+            else:
+                warnings.append(
+                    f"Footer row `{source}` for {ticker} dropped a"
+                    f" citation to `not searched` (#731) — the prior"
+                    f" cite is lost; prefer `inherited: <prior cite>`"
+                    f" so the citation chain survives non-sweep cycles."
+                )
+        if (
+            mode == "skipped"
+            and prev.kind == "no_result"
+            and cur.kind == "inherited"
+        ):
+            errors.append(
+                f"Footer row `{source}` for {ticker} inherits a"
+                f" citation, but the last sweep recorded `no result`"
+                f" for this source (#731) — there is nothing to"
+                f" inherit; use `not searched (cadence — last full"
+                f" sweep <YYYY-MM-DD>: no result)`."
+            )
+        if (
+            mode == "skipped"
+            and cur.kind == "superseded"
+            and prev.kind != "superseded"
+        ):
+            errors.append(
+                f"Footer row `{source}` for {ticker} introduces a NEW"
+                f" SUPERSEDED marker on a `Sweep: skipped` observation"
+                f" (#731) — recognizing a regime-change event IS the"
+                f" escalation trigger; run the full playbook this"
+                f" cycle instead of skipping it."
+            )
+        if (
+            mode == "full"
+            and prev.kind in ("fresh", "inherited")
+            and cur.kind == "no_result"
+        ):
+            warnings.append(
+                f"Footer row `{source}` for {ticker} dropped a"
+                f" citation to `no result this cycle` on a full sweep"
+                f" (#731) — a 13x no-result full sweep is the quiet"
+                f" forgery path; verify the search actually ran and"
+                f" prefer `inherited: <prior cite>` when it did."
+            )
         if prev.kind in ("fresh", "inherited") and cur.kind == "fresh":
             if (
                 cur.pub_date is not None
@@ -704,6 +915,23 @@ def validate_playbook_footer(
                     f" prefer keeping the SUPERSEDED marker until"
                     f" refreshed."
                 )
+            elif cur.kind == "not_searched":
+                if mode == "skipped":
+                    errors.append(
+                        f"Footer row `{source}` for {ticker} dropped a"
+                        f" SUPERSEDED marker to `not searched` on a"
+                        f" non-sweep cycle (#731) — repeat the"
+                        f" SUPERSEDED row verbatim; dropping it would"
+                        f" launder the stickiness rule through one"
+                        f" skipped cycle."
+                    )
+                else:
+                    warnings.append(
+                        f"Footer row `{source}` for {ticker} dropped a"
+                        f" SUPERSEDED marker to `not searched` (#731) —"
+                        f" the supersession context is lost; repeat the"
+                        f" SUPERSEDED row verbatim on non-sweep cycles."
+                    )
     return (errors, warnings)
 
 
@@ -714,6 +942,7 @@ def validate_observation(
     decision_body: str | None,
     prior_observation_body: str | None,
     rules_primary: str | None,
+    prior_observation_timestamp: str | None = None,
 ) -> tuple[bool, list[str], list[str]]:
     """Combined observation-write validation (#614 + #643).
 
@@ -747,6 +976,7 @@ def validate_observation(
         ticker=ticker,
         observation_body=observation_body,
         prior_observation_body=prior_observation_body,
+        prior_observation_timestamp=prior_observation_timestamp,
     )
     errors.extend(footer_errors)
     warnings.extend(footer_warnings)
@@ -790,7 +1020,10 @@ FLIP_WARNING_MARKER = "[FLIP-WARNING]"
 
 
 def parse_scanned_at(value: str) -> datetime.datetime | None:
-    """Parse a candidates.scanned_at timestamp (UTC), None on failure."""
+    """Parse a 19-char SQLite datetime (UTC), None on failure.
+
+    Canonical parser for candidates.scanned_at and #731 sweep anchors.
+    """
     text = str(value).strip()
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:

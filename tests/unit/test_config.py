@@ -607,3 +607,25 @@ class TestHourlyConfig:
         )
         assert config.scanner.hourly_series == ["KXBTCD", "KXETHD"]
         assert config.is_hourly_ticker("KXBTCD-26JUN23H14-T119999.99") is True
+
+
+class TestMonitorPlaybookSweepCadence:
+    """#731: the sweep-cadence knob — bounded so the cap preserves
+    #577's 48h staleness guarantee by construction."""
+
+    def test_default(self) -> None:
+        config = GimmesConfig(mode=Mode.DRIVING_RANGE)
+        assert config.risk.monitor_playbook_sweep_hours == 6
+
+    def test_zero_allowed_as_escape_hatch(self) -> None:
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            risk=RiskConfig(monitor_playbook_sweep_hours=0),
+        )
+        assert config.risk.monitor_playbook_sweep_hours == 0
+
+    def test_capped_at_48(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            RiskConfig(monitor_playbook_sweep_hours=49)

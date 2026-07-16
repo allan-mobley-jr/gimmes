@@ -592,3 +592,82 @@ def test_validator_messages_survive_rich_markup(
     # The bracketed clause from the quoted rules must survive verbatim
     # in the rejection output.
     assert "[as reported" in result.output
+
+
+# ---------------------------------------------------------------------------
+# #731: sweep-cadence anchor plumbing end-to-end
+# ---------------------------------------------------------------------------
+
+
+def _sweep_full_body() -> str:
+    return "Delta since cycle 1:\nSweep: full (#731)\n\n" + _full_footer()
+
+
+def _skipped_footer() -> str:
+    return "\n".join(
+        ["Playbook sources checked this cycle (#615):"]
+        + [
+            f"- {source}: not searched (cadence — last full sweep"
+            f" 2026-07-16: no result)"
+            for source in PLAYBOOK_SOURCES
+        ]
+    )
+
+
+def test_skipped_observation_accepted_with_matching_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#731 e2e: a Sweep: skipped observation whose carried anchor
+    equals the prior full-sweep note's DB timestamp writes cleanly —
+    proves the prior_observation_timestamp plumbing."""
+    db_path = tmp_path / "test.db"
+    _seed_note(
+        db_path, "KXCPI-26APR-T0.5", _sweep_full_body(),
+        cycle=1406, agent="monitor", note_type="observation",
+    )
+    prior = _read_notes(db_path, "KXCPI-26APR-T0.5", "observation")
+    anchor = str(prior[0]["timestamp"])
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26APR-T0.5",
+        "--cycle", "1407",
+        "--agent", "monitor",
+        "--type", "observation",
+        "--body",
+        f"Delta since cycle 1406:\n"
+        f"Sweep: skipped (cadence #731 — last full sweep {anchor})\n\n"
+        + _skipped_footer(),
+    ])
+    assert result.exit_code == 0, result.output
+    # The plumbing must have VERIFIED the anchor, not shrugged — the
+    # unverifiable warning means prior_observation_timestamp was None
+    assert "unverifiable" not in result.output
+
+
+def test_forged_anchor_rejected_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#731 e2e: a skipped observation carrying a forged (refreshed)
+    anchor is rejected — the self-refresh trap is closed at the CLI."""
+    db_path = tmp_path / "test.db"
+    _seed_note(
+        db_path, "KXCPI-26APR-T0.5", _sweep_full_body(),
+        cycle=1406, agent="monitor", note_type="observation",
+    )
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXCPI-26APR-T0.5",
+        "--cycle", "1407",
+        "--agent", "monitor",
+        "--type", "observation",
+        "--body",
+        "Delta since cycle 1406:\n"
+        "Sweep: skipped (cadence #731 — last full sweep"
+        " 2030-01-01 00:00:00)\n\n" + _skipped_footer(),
+    ])
+    assert result.exit_code == 1
+    assert "not yours to refresh" in result.output
