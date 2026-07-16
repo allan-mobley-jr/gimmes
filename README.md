@@ -593,7 +593,7 @@ When `side = "yes"` or `"no"`, the flat strategy fields are used directly. Per-s
 
 ### Hourly ladders (KXBTCD paper experiment)
 
-BTC hourly strike ladders (`KXBTCD`) settle at the top of every hour. When you list a series in `scanner.hourly_series`, the loop opens a scan window `scanner.hourly_lead_minutes` before each close (default 29), buys **NO** in the 0.30–0.85 band against the backtested 0.70 base rate, and **holds to settlement** — the strategy takes no discretionary exits (Monitor's stop-loss backstop still applies; only the time-decay trigger is exempted). A 10-week backtest returned **+466% maker / +171% taker**; the live experiment runs the **taker twin**, because paper-mode maker fills are optimistic (they fill at your limit without a real counterparty crossing) and honest fills are the point.
+BTC hourly strike ladders (`KXBTCD`) settle at the top of every hour. When you list a series in `scanner.hourly_series`, the loop opens a scan window `scanner.hourly_lead_minutes` before each close (default 29), buys **NO** in the 0.30–0.85 band against the backtested 0.70 base rate, and **holds to settlement** — no exits execute on hourly positions (#732): Monitor still flags stop-loss breaches, but the flags are the experiment's data, not calls to action — minute-scale mechanical exits destroyed the backtested edge (−51.2% vs +121.6% held). A 10-week backtest returned **+466% maker / +171% taker**; the live experiment runs the **taker twin**, because paper-mode maker fills are optimistic (they fill at your limit without a real counterparty crossing) and honest fills are the point.
 
 ```bash
 gimmes config get strategy.side                  # MUST be "no" — the backtest is NO-side only
