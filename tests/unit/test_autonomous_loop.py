@@ -2099,9 +2099,10 @@ class TestHourlyLadder:
         assert "HOURLY-LADDER" in prompt
         assert "KXBTCD" in prompt
         # Step 2 (Monitor/stop-loss backstop) and 6.5 (Groundskeeper)
-        # ride the hourly lane (#724) — in steady state hourly cycles
-        # are the only overnight cycles
-        assert "0, 0.5, 1, 2, 3, 4, 4c, 5, 6.5, and 8" in prompt
+        # ride the hourly lane (#724); Step 2 runs AFTER the trade path
+        # so a slow surveillance pass can never block the entry (#732)
+        assert "0, 0.5, 1, 3, 4, 4c, 5, 2, 6.5, and 8" in prompt
+        assert "AFTER Step 5" in prompt
         assert "Skip Scorecard and Pro" in prompt
 
     def test_hourly_disabled_when_series_empty(self) -> None:

@@ -52,13 +52,18 @@ settles would only burn a session (#723)."""
 # lists against caddie-master.md's headings (#724). Step 2 rides the
 # hourly lane deliberately: in steady state hourly cycles are the only
 # cycles, so this is the #659 stop-loss backstop's overnight coverage
-# (it self-skips when no positions exist). Step 6.5 keeps Groundskeeper
-# error escalation flowing for the same reason.
+# (it self-skips when no positions exist). It runs AFTER the trade
+# path (#732) so a slow surveillance pass can never block the hour's
+# entry — the window clamp truncates post-trade surveillance, which
+# the next window repeats, never the entry. Step 6.5 keeps
+# Groundskeeper error escalation flowing for the same reason.
 HOURLY_CYCLE_PROMPT_TEMPLATE = (
-    "Run an HOURLY-LADDER cycle. Only run Steps 0, 0.5, 1, 2, 3, 4, 4c,"
-    " 5, 6.5, and 8. In Step 3, instruct Scout to scan ONLY the hourly"
-    " series (run 'gimmes scan -s <series>' for each of: {series})."
-    " Skip Scorecard and Pro."
+    "Run an HOURLY-LADDER cycle. Only run Steps 0, 0.5, 1, 3, 4, 4c,"
+    " 5, 2, 6.5, and 8. That list is the execution order: Step 2"
+    " (Monitor) runs AFTER Step 5 — trade path first, surveillance"
+    " with whatever window remains. In Step 3, instruct Scout to scan"
+    " ONLY the hourly series (run 'gimmes scan -s <series>' for each"
+    " of: {series}). Skip Scorecard and Pro."
 )
 
 MONITOR_CYCLE_PROMPT = (

@@ -2467,17 +2467,24 @@ def test_caddie_master_full_cycle_4c_conferral_untouched(
     assert "Go back and forth as many times as needed" in text
 
 
-def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
-    """#724: the hourly lane keeps every capital-discipline element and
-    names its one relaxation honestly."""
+def _hourly_lane_block(caddie_master_text: str) -> str:
     import re
 
-    block = re.search(
+    match = re.search(
         r"## Hourly Cycles \(GIMMES_CYCLE_TYPE=hourly\).*?(?=\n## )",
         caddie_master_text, re.DOTALL,
     )
-    assert block is not None
-    text = block.group(0)
+    assert match is not None, (
+        "Caddie Master MUST have a `## Hourly Cycles"
+        " (GIMMES_CYCLE_TYPE=hourly)` section (#724)."
+    )
+    return match.group(0)
+
+
+def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
+    """#724: the hourly lane keeps every capital-discipline element and
+    names its one relaxation honestly."""
+    text = _hourly_lane_block(caddie_master_text)
     assert "ONE batched" in text
     assert "apply verbatim" in text
     assert "REJECT criterion" in text
@@ -2494,6 +2501,18 @@ def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
     assert "gimmes scan -s <series>" in text  # Step 3 scope survives
     # Daily-loss-breach gate outranks the Step 2 mandate
     assert "daily-loss-breach gate still outranks this" in text
+    # #732: entries-first — Step 2 (surveillance) runs AFTER Step 5;
+    # a "helpful" renumber back to chronological order must fail here
+    assert "Run ONLY Steps 0, 0.5, 1, 3, 4, 4c, 5, 2, 6.5, and 8" in text
+    assert "AFTER Step 5" in text
+    assert "#732" in text
+    assert "never the entry" in text  # the causal claim, not just tokens
+    # #732 review: post-entry Monitor must not churn fresh hourly
+    # entries — hold-to-settlement is the strategy being measured
+    assert "Do NOT CLOSE and do NOT SIZE UP hourly-series positions" in text
+    assert "-51.2%" in text  # the backtest number that justifies it
+    # The carve-out must not weaken full-cycle discipline
+    assert "including the #659 MANDATORY-CLOSE backstop" in text
     # The env default must stay full — an unset var must never
     # self-classify a full cycle as hourly
     assert "treat unset as `full`" in caddie_master_text
@@ -2520,6 +2539,33 @@ def test_caddie_master_hourly_zero_candidate_override(
     # override and must survive too
     plain_exits = re.findall(r"skip to Step 6(?!\.5)", caddie_master_text)
     assert len(plain_exits) >= 3
+    # #732: trade-path exits reroute to Step 2 — the zero-candidate
+    # hour (the common overnight case) still gets its surveillance
+    # pass; only the daily-loss breach skips surveillance entirely
+    # Scope to the hourly lane block so the phrases can't migrate into
+    # full-cycle text and still pass (review finding)
+    lane_text = _hourly_lane_block(caddie_master_text)
+    # Whole-sentence pins bind each exit to its correct target — bare
+    # substring pins survived a full semantic inversion in review
+    assert (
+        "skip directly to Step 2 instead, then continue with"
+        " Steps 6.5 and 8" in lane_text
+    )
+    assert (
+        "daily-loss-breach gate, skip directly to Step 6.5 —"
+        " NEVER Step 2" in lane_text
+    )
+    # The max-positions/bankroll route (gate runs Step 2, then 6.5)
+    assert (
+        "log the skip, run Step 2), then skip directly to Step 6.5"
+        in lane_text
+    )
+    # #732 review: the two full-cycle texts that pointed backward now
+    # carry hourly carve-outs — Step 2's no-positions branch and the
+    # Execution Order sequencing MUST both name the inversion
+    assert "continue with Step 6.5 instead" in caddie_master_text
+    assert "HOURLY cycles deliberately invert this (#732" in caddie_master_text
+    assert "Run Step 2 exactly ONCE per cycle" in caddie_master_text
 
 
 def test_hourly_prompt_steps_exist_in_caddie_master(
@@ -2555,15 +2601,17 @@ def test_hourly_prompt_steps_exist_in_caddie_master(
 
     # The hourly lane section's own step list must name the same steps
     hourly_tokens = step_tokens(hourly_prompt)
-    lane = re.search(
-        r"## Hourly Cycles \(GIMMES_CYCLE_TYPE=hourly\).*?(?=\n## )",
-        caddie_master_text, re.DOTALL,
+    lane_tokens = step_tokens(
+        _hourly_lane_block(caddie_master_text), "Run ONLY"
     )
-    assert lane is not None
-    lane_tokens = step_tokens(lane.group(0), "Run ONLY")
     assert lane_tokens == hourly_tokens, (
         f"cli.py hourly prompt steps {hourly_tokens} != caddie-master.md"
         f" hourly lane steps {lane_tokens} (#724)"
+    )
+    # #732: entries-first — equality alone can't catch a coordinated
+    # renumber of BOTH lists back to chronological order
+    assert hourly_tokens.index("2") > hourly_tokens.index("5"), (
+        "hourly step list lost entries-first ordering (#732)"
     )
 
 
