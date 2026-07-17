@@ -69,6 +69,8 @@ def days_until(
         return None
     if now is None:
         now = datetime.now(UTC)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)  # same coercion as dt below
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     delta = dt - now
@@ -95,7 +97,7 @@ def filter_markets(
       instead of the min-days floor, #736)
 
     *now* anchors every time comparison (tests inject it; live callers
-    omit it for the wall clock). When provided it MUST be tz-aware.
+    omit it for the wall clock). Naive values coerce to UTC.
 
     Category filtering is handled upstream by fetching markets per series.
     Returns filtered markets sorted by volume (descending).
@@ -104,6 +106,11 @@ def filter_markets(
     st = config.strategy
     if now is None:
         now = datetime.now(UTC)
+    elif now.tzinfo is None:
+        # Coerce like days_until does for dt — a naive now would
+        # otherwise be interpreted as SYSTEM-LOCAL time by
+        # next_hour_top's astimezone(), silently skewing the bound
+        now = now.replace(tzinfo=UTC)
     hourly_close_bound = next_hour_top(now) + HOURLY_CLOSE_TOLERANCE
     candidates: list[Market] = []
 

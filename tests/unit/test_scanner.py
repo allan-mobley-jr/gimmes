@@ -348,3 +348,16 @@ class TestHourlyFilter:
             yes_bid=0.38, yes_ask=0.42, last_price=0.40,
         )
         assert filter_markets([sub_day, cheap], cfg, now=_HOURLY_NOW) == []
+
+    def test_naive_now_coerces_to_utc(self) -> None:
+        # Copilot review on #736: a naive injected clock must behave
+        # exactly like its UTC-aware twin, not TypeError or silently
+        # shift to system-local time
+        naive_now = _HOURLY_NOW.replace(tzinfo=None)
+        m = _make_market(
+            ticker="KXBTCD-26JUN23H14-T119999.99",
+            close_time=_NEXT_TOP,
+        )
+        result = filter_markets([m], _hourly_config(), now=naive_now)
+        assert [r.ticker for r in result] == [m.ticker]
+        assert days_until(_NEXT_TOP, now=naive_now) == 0.5 / 24
