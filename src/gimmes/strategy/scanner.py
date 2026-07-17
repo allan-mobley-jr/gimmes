@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from gimmes.config import GimmesConfig
 from gimmes.models.market import Market, MarketStatus
+from gimmes.strategy.calendar import next_hour_top
 
 
 def effective_price(yes_price: float, side: str) -> float:
@@ -54,11 +55,20 @@ def tradeable_edge(prob: float, yes_price: float, side: str) -> float:
     return prob - eff
 
 
-def days_until(dt: datetime | None) -> float | None:
-    """Calculate days from now until a datetime."""
+# Hourly ladders settle exactly at the top of the hour; the tolerance
+# absorbs second-level stamping jitter in API close_times without ever
+# admitting the following hour's ladder (anything < 1h cannot) (#736).
+HOURLY_CLOSE_TOLERANCE = timedelta(seconds=60)
+
+
+def days_until(
+    dt: datetime | None, *, now: datetime | None = None,
+) -> float | None:
+    """Calculate days from *now* (default: wall clock) until a datetime."""
     if dt is None:
         return None
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     delta = dt - now
@@ -70,6 +80,7 @@ def filter_markets(
     config: GimmesConfig,
     *,
     exclude_tickers: set[str] | None = None,
+    now: datetime | None = None,
 ) -> list[Market]:
     """Filter markets by gimme scanning criteria.
 
@@ -79,13 +90,21 @@ def filter_markets(
       tickers use hourly_min/max_market_price instead)
     - Minimum volume / open interest
     - Market status (active only)
-    - Time to resolution (hourly-series tickers skip the min-days floor)
+    - Time to resolution (hourly-series tickers must settle at the
+      NEXT top of hour — close_time in (now, next_hour_top + 60s] —
+      instead of the min-days floor, #736)
+
+    *now* anchors every time comparison (tests inject it; live callers
+    omit it for the wall clock). When provided it MUST be tz-aware.
 
     Category filtering is handled upstream by fetching markets per series.
     Returns filtered markets sorted by volume (descending).
     """
     sc = config.scanner
     st = config.strategy
+    if now is None:
+        now = datetime.now(UTC)
+    hourly_close_bound = next_hour_top(now) + HOURLY_CLOSE_TOLERANCE
     candidates: list[Market] = []
 
     for m in markets:
@@ -117,13 +136,28 @@ def filter_markets(
             continue
 
         # Time to resolution — reject markets with no time info
-        days = days_until(m.close_time)
-        if days is None:
-            days = days_until(m.expiration_time)
-        if days is None:
+        resolve_dt = (
+            m.close_time if m.close_time is not None else m.expiration_time
+        )
+        if resolve_dt is None:
             continue  # Perpetual or unknown — skip
-        # Hourly ladders resolve in <1h by design — the min-days floor
-        # would reject every candidate (#721). max_days still applies.
+        if resolve_dt.tzinfo is None:
+            resolve_dt = resolve_dt.replace(tzinfo=UTC)
+        days = days_until(resolve_dt, now=now)
+        # Hourly ladders settle at the NEXT top of hour (#736): the
+        # #721 min-days bypass had no bound of its own, so far-hour
+        # strikes (and stale past-close stragglers) leaked through.
+        # (now, next_top + tolerance] rejects both; max_days below is
+        # implied but kept as defense in depth.
+        if hourly and not (now < resolve_dt <= hourly_close_bound):
+            # Observability (#736 review): a mis-stamped ladder would
+            # otherwise silently yield 0 candidates every hour
+            logging.getLogger(__name__).debug(
+                "hourly ticker %s rejected by close bound:"
+                " close=%s not in (%s, %s]",
+                m.ticker, resolve_dt, now, hourly_close_bound,
+            )
+            continue
         if not hourly and days < sc.min_days_to_resolution:
             continue
         if days > sc.max_days_to_resolution:

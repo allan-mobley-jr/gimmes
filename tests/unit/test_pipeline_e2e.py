@@ -25,6 +25,7 @@ from gimmes.paper.broker import PaperBroker
 from gimmes.risk.validator import validate_trade
 from gimmes.store.database import Database
 from gimmes.store.queries import get_daily_pnl, insert_trade, sync_positions
+from gimmes.strategy.calendar import next_hour_top
 from gimmes.strategy.fees import edge_after_fees, fee_for_order
 from gimmes.strategy.kelly import apply_base_rate_floor, position_size
 from gimmes.strategy.scanner import effective_price, filter_markets
@@ -352,7 +353,7 @@ def _hourly_config(series: list[str] | None = None) -> GimmesConfig:
     )
 
 
-def _hourly_market() -> Market:
+def _hourly_market(now: datetime | None = None) -> Market:
     return Market(
         ticker=HOURLY_TICKER,
         event_ticker="KXBTCD-26JUN23H14",
@@ -365,7 +366,10 @@ def _hourly_market() -> Market:
         volume=5000,
         volume_24h=1200,
         open_interest=800,
-        close_time=datetime.now(UTC) + timedelta(minutes=29),
+        # Hourly markets settle exactly at the next top of hour — the
+        # #736 close bound requires it, and a naive now+29min would
+        # cross the hour boundary for half of every wall-clock hour
+        close_time=next_hour_top(now if now is not None else datetime.now(UTC)),
         rules_primary="Resolves YES if BTC price is above the strike at the hour close.",
     )
 
@@ -408,11 +412,13 @@ async def _enter_hourly_position(
     filter -> score -> base-rate floor -> size (taker) -> validate
     (hourly floor) -> log open trade -> taker order. Returns count."""
     cfg = _hourly_config()
-    market = _hourly_market()
+    now = datetime.now(UTC)
+    market = _hourly_market(now)
 
-    # Scanner admission: min-days bypass + hourly band (NO 0.45 in
-    # 0.30-0.85; the flat 0.55 floor would reject it)
-    passed = filter_markets([market], cfg)
+    # Scanner admission: next-hour close bound (#736) + hourly band
+    # (NO 0.45 in 0.30-0.85; the flat 0.55 floor would reject it) —
+    # one injected clock, zero wall-clock race
+    passed = filter_markets([market], cfg, now=now)
     assert [m.ticker for m in passed] == [HOURLY_TICKER]
 
     # quick_score under-scores hourly NO honestly (~55 < threshold 75):

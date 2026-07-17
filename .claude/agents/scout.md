@@ -33,7 +33,7 @@ A gimme candidate MUST meet ALL of these minimum thresholds (applied by `gimmes 
 - Price between configured `strategy.min_market_price` and `strategy.max_market_price`
 - 24h volume >= configured `scanner.min_volume`
 - Open interest >= configured `scanner.min_open_interest`
-- Resolution between configured `scanner.min_days_to_resolution` and `scanner.max_days_to_resolution` (hourly-series tickers bypass the min-days floor — see Hourly Series below)
+- Resolution between configured `scanner.min_days_to_resolution` and `scanner.max_days_to_resolution` (hourly-series tickers instead must settle at the next top of hour — see Hourly Series below)
 - Clear settlement rules (no discretion clauses or ambiguity)
 
 Preferred (not required):
@@ -44,7 +44,7 @@ Preferred (not required):
 
 When the Caddie Master instructs an hourly scan, run `gimmes scan -s SERIES` once per named series (e.g. `gimmes scan -s KXBTCD`) — do NOT run an unscoped `gimmes scan`. Hourly-series candidates print an `HOURLY` tag in the scan results; expect a strike ladder — many strikes settling on the same top-of-hour close.
 
-The CLI already applies the relaxed hourly gates (no action needed from you): hourly tickers bypass the `scanner.min_days_to_resolution` floor (sub-hour resolution is the design, not a defect) and use the hourly price band (`strategy.hourly_min_market_price` to `strategy.hourly_max_market_price`) instead of the global band. NEVER skip an hourly candidate for resolving "too soon".
+The CLI already applies the hourly gates (no action needed from you): hourly tickers must settle at the NEXT top of hour (#736) — far-hour strikes and stale stragglers are silently dropped by the scanner, so a thin result is the bound working, not an error — and they use the hourly price band (`strategy.hourly_min_market_price` to `strategy.hourly_max_market_price`) instead of the global band with no min-days floor. NEVER skip an hourly candidate for resolving "too soon", and NEVER re-run the scan because the ladder looks thin.
 
 **Batched skip-logging (hourly ladders only).** A ladder can put ~20 sibling strikes below threshold for the same reason. Per-candidate skip rows remain REQUIRED — zero exceptions, every skipped strike gets its own `gimmes log-trade TICKER --action skip` with its own real `--price`/`--prob`/`--score` — but the rationale file may be shared: group skipped strikes by reason, write ONE rationale file per group stating the shared reason, reuse that `--rationale-file` across the group's log-trade commands, and `rm` it after the group's last command. Liquidity skips keep `--reason liquidity` per command (#710). This bounds the mktemp/heredoc overhead to once per group instead of once per strike — the scan window is short.
 

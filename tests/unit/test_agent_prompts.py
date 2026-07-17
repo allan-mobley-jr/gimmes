@@ -2667,7 +2667,10 @@ def test_scout_hourly_scan_section(scout_text: str) -> None:
     keeps per-candidate rows (#710)."""
     assert "gimmes scan -s" in scout_text
     assert "HOURLY" in scout_text
-    assert "bypass the `scanner.min_days_to_resolution` floor" in scout_text
+    # #736: the min-days bypass became the next-top-of-hour bound
+    assert "must settle at the NEXT top of hour (#736)" in scout_text
+    assert "a thin result is the bound working, not an error" in scout_text
+    assert "NEVER re-run the scan" in scout_text
     assert "Per-candidate skip rows remain REQUIRED" in scout_text
     assert "ONE rationale file per group" in scout_text
     assert "do NOT run an unscoped `gimmes scan`" in scout_text

@@ -331,6 +331,19 @@ def position_window(
     return open_et, close_et
 
 
+def next_hour_top(dt: datetime) -> datetime:
+    """Next top-of-hour strictly after *dt*, as a UTC-aware datetime.
+
+    Computed in UTC so it is DST-immune (#723): ET is always a
+    whole-hour offset from UTC. A *dt* exactly at a top of hour maps
+    to the FOLLOWING top.
+    """
+    dt_utc = dt.astimezone(UTC)
+    return (dt_utc + timedelta(hours=1)).replace(
+        minute=0, second=0, microsecond=0,
+    )
+
+
 def hourly_window(
     dt: datetime | None = None,
     *,
@@ -351,8 +364,7 @@ def hourly_window(
     """
     if dt is None:
         dt = datetime.now(ET)
-    dt_utc = dt.astimezone(UTC)
-    next_top = (dt_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    next_top = next_hour_top(dt)
     open_dt = next_top - timedelta(minutes=lead_minutes)
     return open_dt.astimezone(ET), next_top.astimezone(ET)
 

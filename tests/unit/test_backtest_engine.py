@@ -477,6 +477,11 @@ def _backtest_config_with_overrides(**overrides):
     cfg.scanner.series = ["KXCPI"]
     cfg.scanner.no_series = []
     cfg.scanner.yes_series = []
+    # load_config() reads the LIVE installed DB — with the hourly
+    # experiment armed there, the #736 engine guard would fire in
+    # every test using this helper. Same isolation reset as the
+    # series lists above.
+    cfg.scanner.hourly_series = []
     return BacktestConfig(
         start_date=date(2026, 3, 1),
         end_date=date(2026, 5, 11),
@@ -1728,6 +1733,63 @@ class TestEntryOffset(_EntryDayHarness):
             with pytest.raises(ValueError, match="entry_offset_days"):
                 await run_backtest(client=None, config=config)
         assert list_calls == []  # guard fired before any fetch
+
+    @pytest.mark.asyncio
+    async def test_hourly_series_fails_fast(self, monkeypatch) -> None:
+        """#736: entry-day views carry a SYNTHETIC now-anchored
+        close_time, so the hourly next-top-of-hour bound would reject
+        every view nondeterministically — the engine must fail loudly
+        before any fetch instead of silently returning zero trades."""
+        list_calls = []
+
+        async def _fake_list(*args, **kwargs):
+            list_calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        config = self._offset_config(1.0)
+        gc = config.gimmes_config
+        # The guard fires only on OVERLAP with the fetched watchlist —
+        # KXBTCD must be in BOTH hourly_series and series
+        config.gimmes_config = gc.model_copy(update={
+            "scanner": gc.scanner.model_copy(update={
+                "hourly_series": ["KXBTCD"],
+                "series": ["KXBTCD"],
+            }),
+        })
+        with pytest.raises(ValueError, match="KXBTCD"):
+            await run_backtest(client=None, config=config)
+        assert list_calls == []  # guard fired before any fetch
+
+    @pytest.mark.asyncio
+    async def test_hourly_series_disjoint_from_watchlist_allowed(
+        self, monkeypatch,
+    ) -> None:
+        """#736 review: hourly_series armed for the LIVE loop but absent
+        from the backtest watchlists cannot affect any fetched view —
+        the guard must NOT block backtests on the production config."""
+        list_calls = []
+
+        async def _fake_list(*args, **kwargs):
+            list_calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            "gimmes.backtest.engine.list_all_markets", _fake_list,
+        )
+        config = self._offset_config(1.0)
+        gc = config.gimmes_config
+        # The live shape: KXBTCD hourly-armed, watchlist is econ series
+        config.gimmes_config = gc.model_copy(update={
+            "scanner": gc.scanner.model_copy(
+                update={"hourly_series": ["KXBTCD"]},
+            ),
+        })
+        result = await run_backtest(client=None, config=config)
+        assert list_calls  # fetch ran — no spurious guard
+        assert result.trades == []
 
     @pytest.mark.asyncio
     async def test_subday_offset_warns(
