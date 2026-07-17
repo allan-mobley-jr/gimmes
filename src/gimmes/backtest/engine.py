@@ -640,6 +640,36 @@ async def run_backtest(
             f" {ALLOWED_CANDLE_PERIODS}, got"
             f" {config.candle_period_minutes!r}",
         )
+    # Union all series across sides — the fetch watchlist, also scoping
+    # the hourly guard below
+    all_series: set[str] = (
+        set(gc.scanner.series)
+        | set(gc.scanner.yes_series)
+        | set(gc.scanner.no_series or [])
+    )
+    _hourly_overlap = set(gc.scanner.hourly_series) & all_series
+    if _hourly_overlap:
+        # Fail fast (#713 doctrine): entry-day views carry a SYNTHETIC
+        # now-anchored close_time (now + entry_offset_days, see
+        # _entry_day_view), so the hourly next-top-of-hour close bound
+        # (#736) would reject every view — nondeterministically, by
+        # the wall-clock minute the run starts. Hourly backtests need
+        # a per-entry clock model; until then, fail loudly instead of
+        # silently returning zero trades. Scoped to the OVERLAP with
+        # the fetched series (review-found): hourly_series armed for
+        # the LIVE loop but absent from the backtest watchlists cannot
+        # affect any fetched view and must not block backtests.
+        raise ValueError(
+            f"hourly series {sorted(_hourly_overlap)!r} cannot be"
+            " backtested through this engine: entry-day views use"
+            " synthetic now-anchored close times that the hourly"
+            " next-top-of-hour bound (#736) rejects. Remove the series"
+            " from the backtest watchlist (scanner.series/yes_series/"
+            "no_series) — do NOT clear scanner.hourly_series, which"
+            " arms the live loop (hourly ladders are explored with"
+            " min_days overrides instead, as the pre-#722 KXBTCD"
+            " backtests did)",
+        )
     ledger = BacktestLedger(config.starting_balance)
 
     # --- 1. Fetch settled markets per series via live API ---
@@ -651,12 +681,6 @@ async def run_backtest(
         config.end_date.year, config.end_date.month,
         config.end_date.day, 23, 59, 59, tzinfo=UTC,
     )
-    # Union all series across sides to ensure we fetch everything needed
-    all_series: set[str] = set(gc.scanner.series or [])
-    if gc.scanner.yes_series:
-        all_series.update(gc.scanner.yes_series)
-    if gc.scanner.no_series:
-        all_series.update(gc.scanner.no_series)
     series_list = sorted(all_series)
     chunks = monthly_chunks(config.start_date, config.end_date)
     logger.info(
