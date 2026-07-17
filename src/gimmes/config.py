@@ -108,9 +108,11 @@ CATEGORY_BASE_RATES: dict[str, float] = {
     # Deliberately equal to strategy.hourly_min_true_probability: the
     # floor promotes any lower estimate to exactly the hourly gate, so
     # validator check 5 is a formality on auto-sized NO orders — the
-    # binding gates are check 6 (edge after fees at the floored prob)
-    # and Caddie's pre-order sanity checks. Same floor==gate pattern
-    # as KXCPIYOY/KXCPICOREYOY vs the 0.90 global floor.
+    # binding gates are check 6 (edge after fees) and the caps. Under
+    # #739 shadow mode this entry is the FLOOR HALF of the backtest's
+    # probability model, max(min(NO_mid + 0.10, 0.99), 0.70) — Caddie
+    # supplies the price-anchored prob; this floor backstops sizing.
+    # Same floor==gate pattern as KXCPIYOY/KXCPICOREYOY vs 0.90.
     "KXBTCD": 0.70,
 }
 

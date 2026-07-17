@@ -2501,6 +2501,16 @@ def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
     assert "gimmes scan -s <series>" in text  # Step 3 scope survives
     # Daily-loss-breach gate outranks the Step 2 mandate
     assert "daily-loss-breach gate still outranks this" in text
+    # #739: CM review is mechanical for hourly — score intake bypassed,
+    # flat probabilities are the norm, subjective rejects advisory
+    assert "Hourly review is mechanical (#739 shadow mode)" in text
+    assert (
+        "review EVERY hourly candidate with `recommendation = proceed`"
+        " regardless of GimmeScore" in text
+    )
+    assert "NEVER reject an hourly event for probability flatness" in text
+    assert "Concern (advisory):" in text
+    assert "relocate the exact uninstrumented gate" in text
     # #732: entries-first — Step 2 (surveillance) runs AFTER Step 5;
     # a "helpful" renumber back to chronological order must fail here
     assert "Run ONLY Steps 0, 0.5, 1, 3, 4, 4c, 5, 2, 6.5, and 8" in text
@@ -2677,26 +2687,99 @@ def test_scout_hourly_scan_section(scout_text: str) -> None:
 
 
 def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
-    """#724: the crypto-substitution block is the entire hourly analysis
-    method — pin its existence, its check names, and the PASS polarity
-    (a PASS→PROCEED swap would invert the safety direction)."""
+    """#739: hourly shadow mode — Caddie still runs the full distance
+    analysis, but the verdict is recorded (Shadow line), not gating.
+    Pin the block, the Shadow line field grammar, the memo-first
+    mandate, the real gates, and the no-agent-revert clause. A drift
+    back to a gating distance check (or a format drift in the Shadow
+    line) breaks the retrospective dataset this mode exists to build."""
     import re
 
     block = re.search(
-        r"\*\*Hourly-series substitution \(#721.*?"
+        r"\*\*Hourly-series substitution \(#721/#739.*?"
         r"(?=\*\*If all three checks pass)",
         caddie_text, re.DOTALL,
     )
     assert block is not None, (
-        "caddie.md lost the Hourly-series substitution block (#724)"
+        "caddie.md lost the Hourly-series substitution block or its"
+        " #721/#739 marker, or the '**If all three checks pass'"
+        " boundary sentence lost its literal prefix (the block regex"
+        " anchors on it)"
     )
     text = block.group(0)
-    assert "Distance check" in text
-    assert "Imminence check" in text
-    assert "NOT a gimme -> PASS" in text
+
+    # The analysis itself survives — arithmetic kept, playbooks banned
+    assert "Shadow distance analysis" in text
+    assert "records, never gates" in text
     assert "Do NOT run the macro playbooks" in text
-    # Both substituted verdicts must point the safe direction
-    assert "-> PROCEED" not in text
+
+    # The Shadow line template with its exact field grammar — the
+    # retrospective parser depends on this shape (#739)
+    assert re.search(
+        r"Shadow: WOULD-(?:PASS|PROCEED) \| strike=\$[^,\s]+ spot=\$[^,\s]+"
+        r" distance=\$[^,\s]+ move30m=\$[^,\s]+",
+        text,
+    ), (
+        "caddie.md lost the pinned Shadow line template"
+        " (`Shadow: WOULD-PASS | strike=$X spot=$Y distance=$Z"
+        " move30m=$W`) — the #739 retrospective dataset is"
+        " unparseable without it"
+    )
+    assert "WOULD-PASS" in text and "WOULD-PROCEED" in text, (
+        "both counterfactual verdict tokens must be defined"
+    )
+    assert "FIRST line of the research memo" in text
+
+    # Real gates: settlement clarity still blocks; an imminence
+    # failure now means the #736 scanner bound is broken — flag it
+    assert "REAL gate — blocking" in text
+    assert "Imminence check" in text
+    assert "scanner bug" in text
+
+    # The verdict rule: real-gates-pass => proceed with the BACKTEST'S
+    # price-anchored probability model, shadow verdict recorded even on
+    # real-gate skips, and reverting shadow mode is a retrospective
+    # decision, not agent judgment
+    assert "Hourly verdict rule (#739 shadow mode)" in text
+    assert "`--recommendation proceed`" in text
+    assert "regardless of the shadow verdict" in text
+    assert "Shadow line FIRST in the memo" in text
+    assert "NOT agent judgment" in text
+    # The Recommendation Thresholds score bands must not re-gate
+    # hourly candidates (whole-file: the carve-out lives in the
+    # boundary sentence outside the block regex)
+    assert (
+        "the Recommendation Thresholds score bands do NOT apply"
+        in caddie_text
+    )
+    # Sentence-level gate-flip drift (review: the old negative polarity
+    # assert caught this class; pin the operative sentences)
+    assert "still PROCEEDs" in text
+    assert "never decides the recommendation" in text
+    # The comparator definitions — a swapped/ambiguous boundary makes
+    # the retrospective dataset internally inconsistent over time
+    assert "move30m >= distance" in text
+    assert "distance > move30m" in text
+    # The lookup-failure form — never fabricate, never gate on it
+    assert "Shadow: UNAVAILABLE | reason=" in text
+    assert "NEVER fabricate numbers" in text
+
+    # The edge model (#739 review): the prob is the backtest's exact
+    # formula, mid-anchored — a flat base rate excludes the upper half
+    # of the validated band; tie the constants to their sources
+    from gimmes.backtest.engine import BacktestConfig
+    from gimmes.config import CATEGORY_BASE_RATES
+
+    edge = BacktestConfig.__dataclass_fields__["assumed_edge"].default
+    floor = CATEGORY_BASE_RATES["KXBTCD"]
+    formula = f"max(min(NO_mid + ${edge:.2f}, 0.99), {floor:.2f})"
+    assert formula in text, (
+        f"caddie.md verdict rule must carry the backtest's exact"
+        f" probability formula {formula!r} — constants tied to"
+        f" BacktestConfig.assumed_edge and CATEGORY_BASE_RATES (#739)"
+    )
+    assert "MIDPOINT, never the ask" in text
+    assert "A flat 0.70 for every rung is WRONG" in text
 
 
 def test_caddie_sibling_rule_hourly_exemption(caddie_text: str) -> None:
@@ -2706,7 +2789,7 @@ def test_caddie_sibling_rule_hourly_exemption(caddie_text: str) -> None:
     idx = caddie_text.index("Hourly-ladder exemption (#721/#724)")
     window = caddie_text[idx:idx + 600]
     assert "EXEMPT" in window
-    assert "PROCEED every rung that passes the checks" in window
+    assert "PROCEED every rung that passes the REAL gates (#739)" in window
     assert "max_event_exposure_pct" in window
 
 
