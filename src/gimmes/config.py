@@ -110,9 +110,12 @@ CATEGORY_BASE_RATES: dict[str, float] = {
     # validator check 5 is a formality on auto-sized NO orders — the
     # binding gates are check 6 (edge after fees) and the caps. Under
     # #739 shadow mode this entry is the FLOOR HALF of the backtest's
-    # probability model, max(min(NO_mid + 0.10, 0.99), 0.70) — Caddie
-    # supplies the price-anchored prob; this floor backstops sizing.
-    # Same floor==gate pattern as KXCPIYOY/KXCPICOREYOY vs 0.90.
+    # probability model, max(min(NO_mid + assumed_edge, 0.99), floor)
+    # with assumed_edge from BacktestConfig and THIS value as the
+    # floor — Caddie supplies the price-anchored prob; this floor
+    # backstops sizing. The caddie.md formula text is drift-guarded
+    # against both sources (test_caddie_hourly_crypto_checks). Same
+    # floor==gate pattern as KXCPIYOY/KXCPICOREYOY vs 0.90.
     "KXBTCD": 0.70,
 }
 
