@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     no_price INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'resting',
     post_only INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT DEFAULT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -281,3 +281,49 @@ class TestCreateOrderRequestBody:
                 f"price={price_dollars}: expected {expected_str},"
                 f" got {actual}"
             )
+
+
+class TestExpirationTs:
+    _RESPONSE = {
+        "order": {
+            "order_id": "ord-exp",
+            "ticker": "TEST",
+            "action": "buy",
+            "side": "no",
+            "no_price_dollars": "0.4000",
+            "initial_count_fp": "5.00",
+            "remaining_count_fp": "5.00",
+        }
+    }
+
+    async def test_sends_expiration_ts_when_set(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.post.return_value = self._RESPONSE
+
+        params = CreateOrderParams(
+            ticker="TEST",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=5,
+            no_price=0.40,
+            post_only=False,
+            expiration_ts=1_800_000_000,
+        )
+        await create_order(mock_client, params)
+        body = _get_post_body(mock_client)
+        assert body["expiration_ts"] == 1_800_000_000
+
+    async def test_omits_expiration_ts_by_default(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.post.return_value = self._RESPONSE
+
+        params = CreateOrderParams(
+            ticker="TEST",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=5,
+            no_price=0.40,
+        )
+        await create_order(mock_client, params)
+        body = _get_post_body(mock_client)
+        assert "expiration_ts" not in body

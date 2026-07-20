@@ -272,3 +272,33 @@ def mark_stale_sessions(db_path: Path) -> int:
         return 0
     finally:
         conn.close()
+
+
+def has_active_resting_paper_orders(db_path: Path) -> bool:
+    """True when a rest-on-miss paper order awaits a sweep (#743).
+
+    Called from the autonomous loop's between-cycle sleep, so it must be
+    cheap and fail closed to False: no DB, no paper_orders table (fresh
+    install), or any read failure means "nothing to sweep".
+    """
+    if not db_path.exists():
+        return False
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM paper_orders WHERE status = 'resting' LIMIT 1"
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        # "no such table" is normal pre-first-order; anything else is
+        # worth a log line since it silently disables the sweep.
+        if "no such table" not in str(exc):
+            logger.warning(
+                "resting-order check failed (%s) — between-cycle sweep"
+                " disabled this window", exc,
+            )
+        return False

@@ -2626,9 +2626,10 @@ def test_hourly_prompt_steps_exist_in_caddie_master(
 
 
 def test_closer_hourly_taker_rule() -> None:
-    """#724: Closer orders hourly tickers with --taker (resting maker
-    orders in sub-hour books are honest no-fills, #690), and the flag
-    actually exists on the order command."""
+    """#724/#743: Closer opens hourly tickers with --taker plus the
+    approval-price cap and rest-on-miss; closes stay taker-only (a
+    resting stop-loss exit in a sub-hour book never fills, #690/#659).
+    The flags must actually exist on the order command."""
     import inspect
 
     from gimmes.cli import order
@@ -2638,18 +2639,36 @@ def test_closer_hourly_taker_rule() -> None:
     assert "honest no-fill" in closer_text
     assert "#690" in closer_text
     assert (
-        "gimmes order TICKER --prob P --taker --yes --agent closer"
-        in closer_text
+        "gimmes order TICKER --prob P --price XX --taker --rest-on-miss"
+        " --yes --agent closer" in closer_text
     )
+    # #743: the approved price comes from the CM dispatch and is never
+    # invented by the Closer; a resting outcome is a success, not an
+    # order failure.
+    assert "Approved price" in closer_text
+    assert "NEVER invent a price" in closer_text
+    assert "Do NOT log an `order_failed` skip for a resting order" in closer_text
     # The CLOSE path is the one that matters most: a maker stop-loss
     # exit in a sub-hour book never fills (#659 backstop would be inert)
     assert (
         "gimmes order TICKER --action sell --side SIDE --count COUNT"
         " --taker --yes --agent closer" in closer_text
     )
+    assert "never rest-on-miss" in closer_text
     assert "EVERY order" in closer_text
-    assert "NEVER add `--taker` to non-hourly tickers" in closer_text
-    assert "taker" in inspect.signature(order).parameters
+    assert (
+        "NEVER add `--taker` or `--rest-on-miss` to non-hourly tickers"
+        in closer_text
+    )
+    order_params = inspect.signature(order).parameters
+    assert "taker" in order_params
+    assert "rest_on_miss" in order_params
+
+    # #743: the CM side of the contract — Step 5 instructs the hourly
+    # dispatch to carry the approval-time price the Closer passes through.
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    assert "Approved price: XX" in cm_text
+    assert "--price XX --rest-on-miss" in cm_text
 
 
 def test_monitor_time_decay_hourly_carveout(monitor_text: str) -> None:

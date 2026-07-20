@@ -51,6 +51,18 @@ class PaperBroker:
         await self._conn.executescript(PAPER_SCHEMA_SQL)
         await self._conn.commit()
 
+        # Rest-on-miss (#743): add expires_at to pre-existing
+        # paper_orders tables (CREATE TABLE IF NOT EXISTS above skips
+        # them). Same idempotent-ALTER idiom as store/migrations.py.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE paper_orders ADD COLUMN expires_at TEXT DEFAULT NULL"
+            )
+            await self._conn.commit()
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+
         # Seed balance on first run
         cursor = await self._conn.execute("SELECT balance FROM paper_balance WHERE id = 1")
         row = await cursor.fetchone()
@@ -190,9 +202,24 @@ class PaperBroker:
                 total_fees=result.total_fees + fill_fee,
             )
 
-        # Determine status — any fill counts as executed (partial taker
-        # fills abandon the remainder rather than resting).
-        status = "executed" if result.total_filled > 0 else "canceled"
+        # Determine status. Default: any fill counts as executed and a
+        # partial taker fill abandons the remainder. With an expiration
+        # set (#743 rest-on-miss), a BUY's unfilled remainder rests
+        # until expiry instead — including the partial-fill case, so a
+        # 1-of-10 taker fill doesn't silently undersize the position.
+        # Resting is honest even against an empty book — the order
+        # POSTS liquidity; only fabricating a FILL there is forbidden
+        # (#690).
+        if (
+            params.action == OrderAction.BUY
+            and params.expiration_ts is not None
+            and result.remaining_count > 0
+        ):
+            status = "resting"
+        elif result.total_filled > 0:
+            status = "executed"
+        else:
+            status = "canceled"
         cancel_reason = ""
         if status == "canceled" and not opposing_liquidity:
             cancel_reason = (
@@ -200,9 +227,21 @@ class PaperBroker:
                 " at any price (#690)"
             )
 
+        # Resting BUYs reserve the unfilled notional at the limit price
+        # up front — cancel_order refunds remaining * stored cents on
+        # that assumption, and fill_resting_orders debits only fees.
+        # Reserve at the cents-rounded price so the round trip is exact.
+        reserve = 0.0
+        if status == "resting":
+            reserve = (
+                result.remaining_count * round(params.price * 100) / 100.0
+            )
+
         # Pre-transaction balance validation
-        if result.total_filled > 0 and params.action == OrderAction.BUY:
-            cost = result.total_notional + result.total_fees
+        if params.action == OrderAction.BUY and (
+            result.total_filled > 0 or status == "resting"
+        ):
+            cost = result.total_notional + result.total_fees + reserve
             balance = await self.get_balance()
             if balance < cost:
                 return await self._reject_order(
@@ -224,13 +263,22 @@ class PaperBroker:
                     await self._update_balance(
                         result.total_notional - result.total_fees
                     )
+            if reserve > 0:
+                await self._update_balance(-reserve)
+
+            expires_at: str | None = None
+            if params.expiration_ts is not None:
+                expires_at = datetime.datetime.fromtimestamp(
+                    params.expiration_ts, tz=datetime.UTC,
+                ).isoformat()
 
             # Insert order record
             await self._conn.execute(
                 """INSERT INTO paper_orders
                    (order_id, ticker, action, side, count, remaining_count,
-                    yes_price, no_price, status, post_only, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    yes_price, no_price, status, post_only, expires_at,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     order_id,
                     params.ticker,
@@ -242,6 +290,7 @@ class PaperBroker:
                     int(round((params.no_price or 0) * 100)),
                     status,
                     1 if params.post_only else 0,
+                    expires_at,
                     now.isoformat(),
                     now.isoformat(),
                 ),
@@ -292,9 +341,8 @@ class PaperBroker:
     async def cancel_order(self, order_id: str) -> None:
         """Cancel a resting order and refund reserved balance.
 
-        Note: since #255 maker orders fill immediately, so no new orders
-        enter 'resting' status.  This method is retained for any legacy
-        rows and for the CLI cancel command contract.
+        Resting rows come from the rest-on-miss path (zero-fill BUY
+        with an expiration) and from legacy pre-#255 orders.
         """
         cursor = await self._conn.execute(
             "SELECT * FROM paper_orders WHERE order_id = ? AND status = 'resting'",
@@ -344,39 +392,90 @@ class PaperBroker:
             else:
                 import logging
 
-                logging.getLogger("gimmes").warning(
+                # #743: fill-time ledger rows cover only contracts that
+                # actually filled, so a partial fill leaves nothing to
+                # annul — the kept rows are real. (Pre-#743 legacy rows
+                # logged the FULL count at placement; for those this
+                # branch still overstates, hence the log line.)
+                logging.getLogger("gimmes").info(
                     "canceled order %s was partially filled (%d/%d)"
-                    " — placement-time trade rows kept (#690)",
+                    " — fill-time trade rows kept (#690/#743)",
                     order_id, int(row["count"]) - remaining,
                     int(row["count"]),
                 )
+
+    async def expire_resting_orders(self) -> list[str]:
+        """Cancel resting orders whose expiration has passed.
+
+        Mirrors the exchange-side `expiration_ts` enforcement the real
+        Kalshi API applies. Returns the canceled order ids. Refunds and
+        trade-row annulment ride on cancel_order (#690).
+        """
+        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        # expires_at IS NULL rows are pre-#743 legacy resting orders:
+        # under marketable-only fill semantics they could otherwise
+        # neither fill nor expire, locking their reservation forever —
+        # cancel them on sight (the #690 annulment was built for them).
+        cursor = await self._conn.execute(
+            "SELECT order_id FROM paper_orders WHERE status = 'resting'"
+            " AND (expires_at IS NULL OR expires_at <= ?)",
+            (now_iso,),
+        )
+        rows = await cursor.fetchall()
+        expired: list[str] = []
+        for row in rows:
+            await self.cancel_order(row["order_id"])
+            expired.append(row["order_id"])
+        if expired:
+            import logging
+
+            logging.getLogger("gimmes").info(
+                "expired %d resting paper order(s): %s",
+                len(expired), ", ".join(expired),
+            )
+        return expired
 
     async def fill_resting_orders(
         self,
         orderbooks: dict[str, Orderbook],
         *,
         fees: FeeMultipliers = DEFAULT_FEE_MULTIPLIERS,
-    ) -> list[Order]:
+    ) -> list[tuple[Order, int]]:
         """Re-check resting orders against current orderbooks and fill any
         that have become marketable.
 
-        Since #255, maker orders fill immediately at creation so no new
-        orders enter 'resting' status.  This method is retained for any
-        legacy rows and is called by the CLI reconciliation loop.
+        Rest-on-miss orders (and legacy pre-#255 rows) fill ONLY when
+        the market has come back to the limit — maker semantics at the
+        limit price, up to the opposing depth at eligible levels. The
+        pre-rework #215 behavior (fill at limit whenever ANY opposing
+        depth exists, price-blind) overstated fills in exactly the thin
+        sub-hour books the rest-on-miss lane targets.
 
-        Returns orders that received at least one new fill.
+        Expired orders are skipped here — expire_resting_orders()
+        cancels them. Returns (order, newly_filled_count) pairs for
+        orders that received at least one new fill — the count is THIS
+        sweep's fill, which callers need for ledger rows (the Order's
+        own count/remaining_count only give the lifetime total).
         """
         cursor = await self._conn.execute(
             "SELECT * FROM paper_orders WHERE status = 'resting'"
         )
         rows = await cursor.fetchall()
 
-        filled_orders: list[Order] = []
+        filled_orders: list[tuple[Order, int]] = []
         now = datetime.datetime.now(datetime.UTC)
 
         for row in rows:
             ticker = row["ticker"]
             if ticker not in orderbooks:
+                continue
+
+            # Expired rows are expire_resting_orders()' job — never
+            # fill past the deadline the order was placed under. (The
+            # skip is defense in depth for a caller that fills without
+            # expiring first.)
+            expires_at = row["expires_at"]
+            if expires_at and expires_at <= now.isoformat():
                 continue
 
             try:
@@ -430,21 +529,15 @@ class PaperBroker:
                     )
                     continue
 
-                # Paper mode: fill at limit price unconditionally.
-                # Real markets have opposing flow that hits resting bids;
-                # paper mode has none, so we simulate immediate fill to
-                # enable full position lifecycle testing.  (#215)
-                fill_fee = fee_for_order(fillable, price, is_taker=False, fees=fees)
-                fill = SimulatedFill(
-                    count=fillable, price=price, fee=fill_fee, is_taker=False,
-                )
-                result = FillResult(
-                    fills=[fill],
-                    remaining_count=0,
-                    total_filled=fillable,
-                    total_notional=fillable * price,
-                    total_fees=fill_fee,
-                )
+                # Maker semantics at the limit: fill only when the
+                # market has come back to the limit price, and only up
+                # to the opposing depth at eligible levels. (Replaces
+                # the price-blind #215 immediate fill, which overstated
+                # fills in exactly the thin sub-hour books the
+                # rest-on-miss lane targets.)
+                result = simulate_fill(params, orderbooks[ticker], fees=fees)
+                if result.total_filled <= 0:
+                    continue
 
                 async with self._db.transaction():
                     # Balance: BUY reservation already covers notional, just debit fees.
@@ -494,17 +587,20 @@ class PaperBroker:
                         (new_remaining, new_status, row["order_id"]),
                     )
 
-                filled_orders.append(Order(
-                    order_id=row["order_id"],
-                    ticker=ticker,
-                    action=action,
-                    side=side,
-                    status=new_status,
-                    yes_price=int(row["yes_price"]) / 100.0,
-                    no_price=int(row["no_price"]) / 100.0,
-                    count=int(row["count"]),
-                    remaining_count=new_remaining,
-                    created_time=row["created_at"],
+                filled_orders.append((
+                    Order(
+                        order_id=row["order_id"],
+                        ticker=ticker,
+                        action=action,
+                        side=side,
+                        status=new_status,
+                        yes_price=int(row["yes_price"]) / 100.0,
+                        no_price=int(row["no_price"]) / 100.0,
+                        count=int(row["count"]),
+                        remaining_count=new_remaining,
+                        created_time=row["created_at"],
+                    ),
+                    result.total_filled,
                 ))
             except Exception:
                 import logging

@@ -255,6 +255,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
    - Closer runs `gimmes validate TICKER --prob P --size-up`
    - If validation passes, `gimmes size TICKER --prob P`
    - Place order: `gimmes order TICKER --prob P --size-up --yes`
+   - **HOURLY tickers (#743):** include `Approved price: XX¢` in the dispatch — the side-relative price you verified during THIS size-up review (from `gimmes market-info`, fetched this cycle), same contract as the Step 5 open dispatch. The Closer passes it as `--price XX --rest-on-miss`.
 
 ### Step 3: Scout
 
@@ -474,6 +475,8 @@ Launch the Closer agent (`closer.md`) to:
 2. If validation passes, run `gimmes size TICKER --prob P`
 3. Place the order: `gimmes order TICKER --prob P --yes`
    (The order command logs the trade and syncs positions atomically — no separate log-trade needed.)
+
+**HOURLY candidates — approval price snapshot (#743).** For each approved HOURLY candidate, your dispatch prompt to the Closer MUST include the line `Approved price: XX¢` — the side-relative price (for a NO candidate, the NO price) you verified during the Step 4c review, in whole cents. This is the price your edge citation was computed against; the Closer passes it as `--price XX --rest-on-miss` so execution is capped at the price the review approved instead of chasing a market that moved during dispatch. Use the freshest price YOU verified (from `gimmes market-info` during review) — never Caddie's research-time price, and never a price you did not personally fetch this cycle.
 
 **Safety**: The Closer MUST pass all validation checks before any trade. NEVER override risk limits.
 

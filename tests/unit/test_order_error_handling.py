@@ -1121,3 +1121,142 @@ class TestTakerFlag:
             )
         assert result.exit_code == 0
         assert size_spy.call_args.kwargs["is_taker"] is True
+
+
+# ---------------------------------------------------------------------------
+# Rest-on-miss CLI plumbing (#743)
+# ---------------------------------------------------------------------------
+
+
+class TestRestOnMissCli:
+    def _market_with_close(self, minutes_out: int):
+        from datetime import UTC, datetime, timedelta
+
+        m = _stub_market()
+        m.close_time = datetime.now(UTC) + timedelta(minutes=minutes_out)
+        m.expiration_time = None
+        return m
+
+    def test_sets_expiration_before_close(self) -> None:
+        from datetime import UTC, datetime
+
+        broker = _make_mock_broker()
+        market = self._market_with_close(30)
+
+        result, _, _ = _run_order_cli(
+            broker, market=market, extra_args=["--rest-on-miss"],
+        )
+
+        assert result.exit_code == 0
+        params = broker.create_order.call_args.args[0]
+        assert params.expiration_ts is not None
+        # Expires 60s before close (REST_ON_MISS_CLOSE_BUFFER_SECONDS)
+        expected = int(market.close_time.timestamp()) - 60
+        assert abs(params.expiration_ts - expected) <= 1
+        assert params.expiration_ts > int(datetime.now(UTC).timestamp())
+
+    def test_ignored_without_close_time(self) -> None:
+        broker = _make_mock_broker()
+        market = _stub_market()
+        market.expiration_time = None  # close_time already None
+
+        result, mock_console, _ = _run_order_cli(
+            broker, market=market, extra_args=["--rest-on-miss"],
+        )
+
+        assert result.exit_code == 0
+        params = broker.create_order.call_args.args[0]
+        assert params.expiration_ts is None
+        assert "rest-on-miss ignored" in _printed(mock_console)
+
+    def test_ignored_when_market_closes_too_soon(self) -> None:
+        broker = _make_mock_broker()
+        market = self._market_with_close(0)  # closes now
+
+        result, mock_console, _ = _run_order_cli(
+            broker, market=market, extra_args=["--rest-on-miss"],
+        )
+
+        assert result.exit_code == 0
+        params = broker.create_order.call_args.args[0]
+        assert params.expiration_ts is None
+        assert "closes too soon" in _printed(mock_console)
+
+    def test_no_expiration_without_flag(self) -> None:
+        broker = _make_mock_broker()
+        market = self._market_with_close(30)
+
+        result, _, _ = _run_order_cli(broker, market=market)
+
+        assert result.exit_code == 0
+        params = broker.create_order.call_args.args[0]
+        assert params.expiration_ts is None
+
+    def test_resting_result_exits_zero(self) -> None:
+        """A resting order is a success (#743) — not the canceled/exit-1
+        path the Closer treats as order_failed."""
+        broker = _make_mock_broker(
+            create_order_side_effect=lambda *a, **kw: _ok_order(
+                status="resting",
+            ),
+        )
+        market = self._market_with_close(30)
+
+        result, mock_console, _ = _run_order_cli(
+            broker, market=market, extra_args=["--rest-on-miss"],
+        )
+
+        assert result.exit_code == 0
+        out = _printed(mock_console)
+        assert "resting" in out.lower()
+        assert "Order NOT placed" not in out
+
+    def test_zero_fill_resting_logs_no_trade(self) -> None:
+        """#743 log-on-fill: an unfilled resting order writes NO trade
+        row at placement."""
+        resting = _ok_order(status="resting")
+        resting.remaining_count = 10  # nothing filled
+        broker = _make_mock_broker(
+            create_order_side_effect=lambda *a, **kw: resting,
+        )
+        market = self._market_with_close(30)
+
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        with (
+            patch(
+                "gimmes.store.queries.sync_positions_with_trade",
+                new_callable=_AsyncMock,
+            ) as trade_spy,
+            # The no-trade branch falls through to a plain positions
+            # sync, which must not run for real against the mock DB.
+            patch(
+                "gimmes.store.queries.sync_positions",
+                new_callable=_AsyncMock,
+            ),
+        ):
+            result, mock_console, _ = _run_order_cli(
+                broker, market=market, extra_args=["--rest-on-miss"],
+            )
+
+        assert result.exit_code == 0
+        assert trade_spy.await_count == 0
+        assert "Resting" in _printed(mock_console)
+
+    def test_championship_ignores_rest_on_miss(self) -> None:
+        """#743 scopes rest-on-miss to paper mode — championship has no
+        local expiry reconciliation."""
+        champ = _stub_config()
+        champ.is_championship = True
+        create_order = AsyncMock(return_value=_ok_order())
+        market = self._market_with_close(30)
+
+        result, mock_console, _ = _run_order_cli(
+            None, config=champ, championship_create_order=create_order,
+            market=market, extra_args=["--rest-on-miss"],
+        )
+
+        assert result.exit_code == 0
+        params = create_order.call_args.args[1]
+        assert params.expiration_ts is None
+        assert "paper-only" in _printed(mock_console)

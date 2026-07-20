@@ -1427,9 +1427,252 @@ class TestCancelOrderAnnulment:
         from gimmes.store.queries import get_trades
 
         await self._seed_resting_with_close_row(broker, remaining=4)
-        with caplog.at_level(logging.WARNING, logger="gimmes"):
+        # #743: downgraded to INFO — fill-time rows are legitimately
+        # kept; only pre-#743 legacy placement rows overstate.
+        with caplog.at_level(logging.INFO, logger="gimmes"):
             await broker.cancel_order("legacy-2")
 
         rows = await get_trades(broker._db, ticker="KXOLD")
         assert rows[0]["action"] == "close"  # kept
         assert "partially filled" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Rest-on-miss (#743)
+# ---------------------------------------------------------------------------
+
+
+class TestRestOnMiss:
+    """Zero-fill BUYs with an expiration rest until expiry (#743)."""
+
+    def _miss_params(self, expiration_ts: int | None) -> CreateOrderParams:
+        """Taker BUY NO at 25c — implied NO ask is 32c, so zero fill."""
+        return CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.25,
+            post_only=False,
+            expiration_ts=expiration_ts,
+        )
+
+    @pytest.mark.asyncio
+    async def test_zero_fill_without_expiration_cancels(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """Pre-#743 behavior preserved: no expiration -> canceled."""
+        order = await broker.create_order(self._miss_params(None), orderbook)
+        assert order.status == "canceled"
+        assert await broker.get_balance() == 10_000.00
+
+    @pytest.mark.asyncio
+    async def test_zero_fill_with_expiration_rests_and_reserves(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) + 3600), orderbook,
+        )
+        assert order.status == "resting"
+        assert order.remaining_count == 10
+        # Notional reserved at the limit price: 10 * $0.25
+        assert await broker.get_balance() == pytest.approx(10_000.00 - 2.50)
+
+    @pytest.mark.asyncio
+    async def test_expire_resting_orders_cancels_and_refunds(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) - 100), orderbook,
+        )
+        assert order.status == "resting"
+
+        expired = await broker.expire_resting_orders()
+        assert expired == [order.order_id]
+        assert await broker.get_balance() == 10_000.00
+        rows = await broker.list_orders(status="canceled")
+        assert any(o.order_id == order.order_id for o in rows)
+
+    @pytest.mark.asyncio
+    async def test_resting_order_fills_when_market_returns(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) + 3600), orderbook,
+        )
+        assert order.status == "resting"
+
+        # Market comes back: YES bid 0.76 -> implied NO ask 0.24 <= 0.25
+        returned = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.76, quantity=50)],
+            no_bids=[],
+        )
+        filled = await broker.fill_resting_orders({"TEST-MKT": returned})
+        assert len(filled) == 1
+        forder, n = filled[0]
+        assert forder.status == "executed"
+        assert forder.remaining_count == 0
+        assert n == 10
+
+        positions = await broker.get_positions()
+        assert len(positions) == 1
+        assert positions[0].side == "no"
+        assert positions[0].count == 10
+        # Reservation consumed by the fill; only fees debited beyond it
+        fee = fee_for_order(10, 0.25, is_taker=False)
+        assert await broker.get_balance() == pytest.approx(
+            10_000.00 - 2.50 - fee,
+        )
+
+    @pytest.mark.asyncio
+    async def test_resting_order_stays_when_not_marketable(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) + 3600), orderbook,
+        )
+        assert order.status == "resting"
+
+        # Book unchanged: implied NO ask still 0.32 > limit 0.25
+        filled = await broker.fill_resting_orders({"TEST-MKT": orderbook})
+        assert filled == []
+        rows = await broker.list_orders(status="resting")
+        assert any(o.order_id == order.order_id for o in rows)
+
+    @pytest.mark.asyncio
+    async def test_resting_order_stays_on_empty_book(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """#690: never fill against an empty counterparty side."""
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) + 3600), orderbook,
+        )
+        assert order.status == "resting"
+
+        empty = Orderbook(ticker="TEST-MKT", yes_bids=[], no_bids=[])
+        filled = await broker.fill_resting_orders({"TEST-MKT": empty})
+        assert filled == []
+        rows = await broker.list_orders(status="resting")
+        assert any(o.order_id == order.order_id for o in rows)
+
+    @pytest.mark.asyncio
+    async def test_fill_resting_orders_skips_expired(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """A marketable book must not fill an already-expired order."""
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) - 100), orderbook,
+        )
+        assert order.status == "resting"
+
+        returned = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.76, quantity=50)],
+            no_bids=[],
+        )
+        filled = await broker.fill_resting_orders({"TEST-MKT": returned})
+        assert filled == []
+
+    @pytest.mark.asyncio
+    async def test_partial_resting_fill_keeps_resting(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        import time
+
+        order = await broker.create_order(
+            self._miss_params(int(time.time()) + 3600), orderbook,
+        )
+        assert order.status == "resting"
+
+        # Only 4 contracts of depth at an eligible price
+        thin = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.76, quantity=4)],
+            no_bids=[],
+        )
+        filled = await broker.fill_resting_orders({"TEST-MKT": thin})
+        assert len(filled) == 1
+        forder, n = filled[0]
+        assert forder.status == "resting"
+        assert forder.remaining_count == 6
+        assert n == 4
+
+        positions = await broker.get_positions()
+        assert positions[0].count == 4
+
+    @pytest.mark.asyncio
+    async def test_partial_placement_fill_rests_remainder(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """#743: a partial taker fill rests the remainder instead of
+        abandoning it."""
+        import time
+
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=300,
+            no_price=0.32,
+            post_only=False,
+            expiration_ts=int(time.time()) + 3600,
+        )
+        # Implied NO asks: 0.32 (200 deep), 0.33 (150 deep). Limit 0.32
+        # fills 200 and leaves 100 unfilled.
+        order = await broker.create_order(params, orderbook)
+        assert order.status == "resting"
+        assert order.remaining_count == 100
+
+        positions = await broker.get_positions()
+        assert positions[0].count == 200
+
+        # Balance: 200 filled at 0.32 (+taker fee) plus 100 * 0.32 reserved
+        fee = fee_for_order(200, 0.32, is_taker=True)
+        assert await broker.get_balance() == pytest.approx(
+            10_000.00 - 200 * 0.32 - fee - 32.00,
+        )
+
+        # Expiry refunds only the reservation
+        await broker._conn.execute(
+            "UPDATE paper_orders SET expires_at = '2000-01-01T00:00:00'"
+            " WHERE order_id = ?", (order.order_id,),
+        )
+        await broker._conn.commit()
+        expired = await broker.expire_resting_orders()
+        assert expired == [order.order_id]
+        assert await broker.get_balance() == pytest.approx(
+            10_000.00 - 200 * 0.32 - fee,
+        )
+
+    @pytest.mark.asyncio
+    async def test_legacy_resting_row_without_expiry_is_expired(
+        self, broker: PaperBroker
+    ) -> None:
+        """Pre-#743 resting rows (expires_at NULL) are canceled on the
+        next expiry pass instead of locking their reservation forever."""
+        await broker._conn.execute(
+            """INSERT INTO paper_orders
+               (order_id, ticker, action, side, count, remaining_count,
+                yes_price, no_price, status, post_only)
+               VALUES ('legacy-1', 'OLD-MKT', 'buy', 'yes', 5, 5,
+                       40, 0, 'resting', 1)""",
+        )
+        await broker._conn.commit()
+
+        expired = await broker.expire_resting_orders()
+        assert expired == ["legacy-1"]
+        rows = await broker.list_orders(status="canceled")
+        assert any(o.order_id == "legacy-1" for o in rows)
