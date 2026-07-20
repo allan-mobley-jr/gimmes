@@ -209,6 +209,11 @@ NON_ENTRY_SKIP_REASONS = frozenset({
     # missed entry — its inherited analytics would otherwise land it
     # in the FNR numerator as an automatic false negative.
     "order_canceled",
+    # #746: shed by the per-cycle candidate cap — "not a verdict on
+    # the candidate; it stays eligible next cycle", so counting it as
+    # a missed entry double-counts the SAME candidate against the
+    # cycle that actually decides it.
+    "deferred_capacity",
 })
 
 MIN_TRADES_THRESHOLD = 30

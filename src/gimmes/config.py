@@ -434,6 +434,27 @@ class StrategyConfig(BaseModel):
         },
     )
 
+    max_candidates_per_cycle: int = Field(
+        default=5, ge=1,
+        json_schema_extra={
+            "display_name": "Max Candidates Per Cycle",
+            "description": (
+                "How many Scout candidates the Caddie Master researches and\n"
+                "reviews in one cycle (#746). Measured cost is ~2.5 min of\n"
+                "research plus ~4 min of review per candidate — an unbounded\n"
+                "intake overflows the cycle timeout and the cycle dies before\n"
+                "the Closer runs. Candidates over the cap are logged as\n"
+                "deferred_capacity skips and stay eligible next cycle.\n"
+                "\n"
+                "  • 5 (default): fits a 60-minute cycle with margin\n"
+                "  • Lower (e.g. 3): favors depth on the highest scorers\n"
+                "  • Higher: only with a raised strategy.cycle_timeout"
+            ),
+            "min_val": 1,
+            "max_val": 20,
+        },
+    )
+
     @model_validator(mode="after")
     def _reconcile_cm_floor(self) -> StrategyConfig:
         cm_explicit = "cm_min_edge_after_fees" in self.model_fields_set
