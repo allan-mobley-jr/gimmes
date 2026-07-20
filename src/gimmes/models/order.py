@@ -34,6 +34,11 @@ class CreateOrderParams(BaseModel):
     client_order_id: str = ""
     time_in_force: str = "good_till_canceled"
     post_only: bool = True  # Maker guarantee
+    # Unix seconds after which an unfilled order self-cancels. On the
+    # real exchange Kalshi enforces this server-side; the paper broker
+    # rests unfilled BUYs until expiry instead of canceling them at
+    # placement (hourly rest-on-miss lane).
+    expiration_ts: int | None = Field(default=None, gt=0)
 
     @property
     def price(self) -> float:

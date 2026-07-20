@@ -995,13 +995,36 @@ async def get_daily_pnl(db: Database, *, today: str | None = None) -> float:
 
 
 async def get_deployed_cost_basis(db: Database) -> float:
-    """Total cost basis of all open positions."""
+    """Total cost basis of all open positions.
+
+    #743: resting rest-on-miss BUYs count as deployed — their notional
+    is reserved out of the balance and fills without a re-check, so a
+    bankroll gate that ignored them could be stacked past the cap by
+    successive resting opens.
+    """
     cursor = await db.conn.execute(
         "SELECT COALESCE(SUM(cost_basis), 0) AS deployed"
         " FROM positions WHERE count > 0"
     )
     row = await cursor.fetchone()
-    return float(row["deployed"]) if row else 0.0
+    deployed = float(row["deployed"]) if row else 0.0
+
+    try:
+        cursor = await db.conn.execute(
+            "SELECT COALESCE(SUM(remaining_count"
+            " * MAX(yes_price, no_price)), 0) AS reserved"
+            " FROM paper_orders"
+            " WHERE status = 'resting' AND action = 'buy'"
+        )
+        row = await cursor.fetchone()
+        if row:
+            deployed += float(row["reserved"]) / 100.0  # cents -> dollars
+    except Exception:
+        # Championship DBs have no paper tables — resting exposure is
+        # a paper-mode concept (#743 scopes rest-on-miss to paper).
+        pass
+
+    return deployed
 
 
 # ---------------------------------------------------------------------------

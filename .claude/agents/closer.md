@@ -38,16 +38,27 @@ For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`
 
 The `--rationale-file` variant reads prose from a file path, bypassing argv. The single-quoted heredoc delimiter (`<<'GIMMES_EOF'`) is load-bearing — it suppresses ALL parameter expansion inside the body, so `$0.41`, `$VAR`, and backticks survive verbatim. Never fall back to inline `--rationale "..."` for prose that includes captured CLI output, prices, or any text you didn't author yourself. If `mktemp` or the heredoc write fails, treat as a logging failure and skip — never fall back to the inline form.
 
-## Hourly Tickers — EVERY order gets `--taker` (#690/#721)
+## Hourly Tickers — `--taker` on every order; `--price` + `--rest-on-miss` on opens (#690/#721/#743)
 
-For any ticker whose series prefix is in `scanner.hourly_series` (check with `gimmes config get scanner.hourly_series`; hourly candidates also arrive tagged HOURLY), add `--taker` to EVERY order you place — open, SIZE UP, and CLOSE alike:
+For any ticker whose series prefix is in `scanner.hourly_series` (check with `gimmes config get scanner.hourly_series`; hourly candidates also arrive tagged HOURLY), add `--taker` to EVERY order you place — open, SIZE UP, and CLOSE alike.
+
+**Opens and SIZE UPs** additionally get the approval-price cap and rest-on-miss (#743). The Caddie Master's dispatch includes `Approved price: XX¢` — the side-relative price it verified during review. Pass it through as `--price XX` and add `--rest-on-miss`:
 
 ```bash
-gimmes order TICKER --prob P --taker --yes --agent closer
+gimmes order TICKER --prob P --price XX --taker --rest-on-miss --yes --agent closer
+```
+
+If the dispatch has no `Approved price` line, omit `--price` (the order uses the live price) but still pass `--rest-on-miss`. NEVER invent a price the dispatch didn't give you.
+
+**Closes** are unchanged — taker only, never rest-on-miss (a missed close must fail loudly so Caddie Master can escalate, #659):
+
+```bash
 gimmes order TICKER --action sell --side SIDE --count COUNT --taker --yes --agent closer
 ```
 
-Justification: a maker order resting in a market that settles within the hour is an honest no-fill (#690) — it signals intent without ever executing, because the window closes before the queue reaches it. Crossing the spread as a taker is the only real fill path, and the hourly edge was backtested against taker fills and taker fees. This matters MOST on a CLOSE: a stop-loss or mandatory-close (#659) exit that rests as a maker order never fills, so the "executed" close is a fiction while the position rides to settlement anyway. NEVER add `--taker` to non-hourly tickers — their maker preference is unchanged.
+**Reading the outcome (#743):** a rest-on-miss order that doesn't fill at placement exits 0 with `status: resting` — that is a SUCCESS, not an order failure: the order is live at the approved limit and the between-cycle sweep fills it if the market comes back, or it expires unfilled before close. Report it as `Status: resting` in the Execution Report. Do NOT log an `order_failed` skip for a resting order, and do NOT cancel it. A canceled/exit-1 order remains a failure per the Order Failure Protocol.
+
+Justification: crossing the spread as a taker is the primary fill path — the hourly edge was backtested against taker fills and taker fees, and `--price` caps the taker at the price the review approved instead of chasing a moved market. Rest-on-miss converts the miss into a bounded resting limit that dies before settlement (#743) — unlike the unbounded maker rest that #690 rightly called an honest no-fill. This matters MOST on a CLOSE: a stop-loss or mandatory-close (#659) exit that rests never fills, so the "executed" close is a fiction while the position rides to settlement anyway — which is why closes never rest. NEVER add `--taker` or `--rest-on-miss` to non-hourly tickers — their maker preference is unchanged.
 
 ## SIZE UP Execution
 

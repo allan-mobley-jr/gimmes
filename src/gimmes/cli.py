@@ -48,6 +48,48 @@ HOURLY_MIN_CYCLE_SECONDS = 120
 A cycle that can't finish Scout -> Caddie -> Closer before the market
 settles would only burn a session (#723)."""
 
+REST_ON_MISS_CLOSE_BUFFER_SECONDS = 60
+"""How long before market close a rest-on-miss order expires.
+
+An unfilled resting order must die before settlement so it can never
+fill against the settlement print itself."""
+
+
+def _rest_on_miss_expiration(
+    market, *, is_buy: bool, is_championship: bool,  # type: ignore[no-untyped-def]
+) -> tuple[int | None, str]:
+    """(expiration_ts, "") when the order may rest, else (None, reason).
+
+    Guards, in order (#743): paper-only — championship has no local
+    expire/annul path, so a server-side expiry would orphan ledger
+    state; BUY-only — a missed close must fail loudly, not rest
+    silently (#659); and the market must close far enough out that the
+    order can expire BEFORE settlement.
+    """
+    import datetime as _dt
+
+    if is_championship:
+        return None, (
+            "paper-only (#743) — championship orders have no local"
+            " expiry reconciliation"
+        )
+    if not is_buy:
+        return None, (
+            "BUY orders only (a missed close must fail loudly, not"
+            " rest silently)"
+        )
+    close_dt = market.close_time or market.expiration_time
+    if close_dt is None:
+        return None, "market has no close time"
+    if close_dt.tzinfo is None:
+        close_dt = close_dt.replace(tzinfo=_dt.UTC)
+    expiry = close_dt - _dt.timedelta(
+        seconds=REST_ON_MISS_CLOSE_BUFFER_SECONDS,
+    )
+    if expiry <= _dt.datetime.now(_dt.UTC):
+        return None, "market closes too soon to rest"
+    return int(expiry.timestamp()), ""
+
 # Cycle prompts are module constants so drift guards can pin the step
 # lists against caddie-master.md's headings (#724). Step 2 rides the
 # hourly lane deliberately: in steady state hourly cycles are the only
@@ -821,6 +863,16 @@ def order(
             " orders in sub-hour markets are honest no-fills (#690/#721)."
         ),
     ),
+    rest_on_miss: bool = typer.Option(
+        False, "--rest-on-miss",
+        help=(
+            "BUY only: if the order does not fill at placement, rest"
+            " it at the limit price with an expiration shortly before"
+            " market close instead of canceling. The between-cycle"
+            " sweep fills it if the market comes back to the limit;"
+            " otherwise it expires unfilled (hourly lane)."
+        ),
+    ),
     agent: str = typer.Option(
         "cli", "--agent", help="Agent identifier for trade/error logging",
     ),
@@ -1131,8 +1183,39 @@ def order(
                 from gimmes.risk.limits import compute_exposure_for_group
 
                 existing_tickers = [p.ticker for p in positions]
-                evt_exp = compute_exposure_for_group(positions, market.event_ticker)
-                ser_exp = compute_exposure_for_group(positions, market.series_ticker)
+
+                # #743: resting rest-on-miss BUYs are committed capital
+                # awaiting a fill with no re-validation, so their
+                # reserved notional counts toward event/series
+                # concentration exactly like an open position — without
+                # this, successive resting rungs on one hourly event
+                # could collectively breach the caps when they fill.
+                exposure_basis = list(positions)
+                if broker:
+                    from gimmes.models.portfolio import Position as _RestPos
+
+                    for o in await broker.list_orders(status="resting"):
+                        if o.action.value != "buy":
+                            continue
+                        r_price = (
+                            o.yes_price if o.side.value == "yes"
+                            else o.no_price
+                        )
+                        exposure_basis.append(_RestPos(
+                            ticker=o.ticker,
+                            side=o.side.value,
+                            count=o.remaining_count,
+                            avg_price=r_price,
+                            cost_basis=o.remaining_count * r_price,
+                            market_price=r_price,
+                        ))
+
+                evt_exp = compute_exposure_for_group(
+                    exposure_basis, market.event_ticker,
+                )
+                ser_exp = compute_exposure_for_group(
+                    exposure_basis, market.series_ticker,
+                )
                 validation = validate_trade(
                     market, trade_dollars, true_prob, bankroll,
                     total_daily_pnl, len(positions), existing_tickers,
@@ -1196,6 +1279,22 @@ def order(
                 ):
                     raise typer.Abort()
 
+            # --- Rest-on-miss expiration (#743) ---
+            # An unfilled order rests only when it can expire BEFORE
+            # the market closes — a resting order with no deadline in a
+            # settling market is the #690 honest-no-fill fiction.
+            expiration_ts: int | None = None
+            if rest_on_miss:
+                expiration_ts, ignore_reason = _rest_on_miss_expiration(
+                    market, is_buy=is_buy,
+                    is_championship=config.is_championship,
+                )
+                if ignore_reason:
+                    console.print(
+                        f"[yellow]--rest-on-miss ignored:"
+                        f" {ignore_reason}[/yellow]"
+                    )
+
             # --- Place the order ---
             params = CreateOrderParams(
                 ticker=ticker,
@@ -1205,6 +1304,7 @@ def order(
                 yes_price=final_price if side == "yes" else None,
                 no_price=final_price if side == "no" else None,
                 post_only=not is_taker,
+                expiration_ts=expiration_ts,
             )
 
             try:
@@ -1316,6 +1416,17 @@ def order(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
                 f" (status: {result.status})"
             )
+            # #743 log-on-fill: the ledger records only contracts that
+            # actually filled. An unfilled resting order writes NO trade
+            # row now — the between-cycle sweep logs each fill as it
+            # lands, and an expiry needs no annulment.
+            filled_now = max(0, final_count - result.remaining_count)
+            if result.status == "resting":
+                console.print(
+                    f"[yellow]Resting {result.remaining_count} unfilled"
+                    f" (rest-on-miss #743) — ledger rows land on"
+                    f" fill.[/yellow]"
+                )
 
             # Sync positions + log THIS ORDER's trade atomically so a
             # crash can't leave positions stale while the trade is
@@ -1340,7 +1451,10 @@ def order(
                         client, db, positions_for_sync,
                     )
 
-                if result.status in ("executed", "resting"):
+                if (
+                    result.status in ("executed", "resting")
+                    and filled_now > 0
+                ):
                     from gimmes.models.trade import TradeDecision
                     from gimmes.store.queries import (
                         get_entry_analytics,
@@ -1437,11 +1551,14 @@ def order(
                                 " analytics (#656)",
                                 ticker, exc_info=True,
                             )
+                    # #743: the ledger row covers the FILLED count, not
+                    # the requested count — a partial fill's abandoned
+                    # or resting remainder never traded.
                     trade = TradeDecision(
                         ticker=ticker,
                         action=trade_action,
                         side=side,
-                        count=final_count,
+                        count=filled_now,
                         price=final_price,
                         model_probability=(
                             entry.get("model_probability", 0.0)
@@ -2403,6 +2520,147 @@ async def _consume_settlements_before_sync(
         )
 
 
+async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no-untyped-def]
+    """Write the ledger row for a sweep fill (#743 log-on-fill).
+
+    Resting orders log NO trade at placement — the row lands here, when
+    contracts actually fill, with the actually-filled count. Analytics
+    come from the ticker's latest candidate record (the research that
+    produced the order); a missing record degrades to zeros with the
+    cause named in the rationale, the #656 pattern.
+    """
+    from gimmes.models.order import OrderSide
+    from gimmes.models.trade import TradeDecision
+    from gimmes.store.queries import (
+        get_recent_candidates,
+        get_thesis_for_ticker,
+        sync_positions_with_trade,
+    )
+
+    price = (
+        order.yes_price if order.side == OrderSide.YES else order.no_price
+    )
+    prob = score = edge = 0.0
+    thesis = ""
+    try:
+        rows = await get_recent_candidates(db, ticker=order.ticker, limit=1)
+        if rows:
+            cand = rows[0]
+            prob = float(cand["model_probability"] or 0.0)
+            score = float(cand["gimme_score"] or 0.0)
+            edge = float(cand["edge"] or 0.0)
+        thesis = await get_thesis_for_ticker(db, order.ticker)
+    except Exception:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "sweep fill for %s: candidate analytics lookup failed —"
+            " recording with zeros (#743)", order.ticker, exc_info=True,
+        )
+
+    # First fill of the order opens the position; a later partial fill
+    # adds to it (position count > this fill's count) — a size_up in
+    # ledger terms, matching how the CLI logs adds.
+    positions = await broker.get_positions()
+    pos = next(
+        (p for p in positions
+         if p.ticker == order.ticker and p.side == order.side.value),
+        None,
+    )
+    is_add = pos is not None and pos.count > n
+    trade = TradeDecision(
+        ticker=order.ticker,
+        action=(
+            TradeDecision.Action.SIZE_UP if is_add
+            else TradeDecision.Action.OPEN
+        ),
+        side=order.side.value,
+        count=n,
+        price=price,
+        model_probability=prob,
+        gimme_score=score,
+        edge=edge,
+        rationale=(
+            thesis
+            or f"rest-on-miss sweep fill (order {order.order_id}, #743)"
+        ),
+        thesis=thesis,
+        agent="sweep",
+        order_id=order.order_id,
+    )
+    await sync_positions_with_trade(db, positions, trade)
+
+
+async def _sweep_resting_paper_orders(broker, client, db, *, quiet: bool = False):  # type: ignore[no-untyped-def]
+    """Expire overdue resting paper orders, then fill any that have
+    become marketable (rest-on-miss lane, #743). Returns
+    (order, newly_filled) pairs and writes ledger rows for the fills."""
+    import logging
+
+    logger = logging.getLogger("gimmes")
+    try:
+        await broker.expire_resting_orders()
+    except Exception:
+        logger.warning("Failed to expire resting orders", exc_info=True)
+
+    resting = await broker.list_orders(status="resting")
+    if not resting:
+        return []
+
+    from gimmes.kalshi.markets import get_orderbook
+
+    tickers = sorted({o.ticker for o in resting})
+    books = await asyncio.gather(
+        *(get_orderbook(client, t) for t in tickers),
+        return_exceptions=True,
+    )
+    orderbooks = {}
+    for t, book in zip(tickers, books, strict=True):
+        if isinstance(book, BaseException):
+            logger.warning("Could not fetch orderbook for %s: %s", t, book)
+            if not quiet:
+                console.print(
+                    f"  [yellow]Warning: could not fetch"
+                    f" orderbook for {t}: {book}[/yellow]"
+                )
+        else:
+            orderbooks[t] = book
+    try:
+        filled = await broker.fill_resting_orders(orderbooks)
+    except Exception as exc:
+        logger.warning(
+            "Failed to process resting orders: %s", exc, exc_info=True,
+        )
+        if not quiet:
+            console.print(
+                f"  [yellow]Warning: could not process"
+                f" resting orders: {exc}[/yellow]"
+            )
+        filled = []
+    for o, n in filled:
+        logger.info(
+            "Filled resting order %s: %s %d %s %s",
+            o.order_id, o.action.value.upper(), n,
+            o.side.value.upper(), o.ticker,
+        )
+        if not quiet:
+            console.print(
+                f"  [green]Filled resting order {o.order_id}:"
+                f" {o.action.value.upper()} {n}"
+                f" {o.side.value.upper()} {o.ticker}[/green]"
+            )
+        try:
+            await _log_sweep_fill(db, broker, o, n)
+        except Exception:
+            # The broker fill is already committed — a ledger miss must
+            # not fail the sweep, but it is a data-integrity event.
+            logger.error(
+                "sweep fill for %s: ledger row failed to write (#743)",
+                o.ticker, exc_info=True,
+            )
+    return filled
+
+
 @app.command(rich_help_panel="Portfolio")
 def reconcile() -> None:
     """Sync local position data with the authoritative source.
@@ -2417,49 +2675,9 @@ def reconcile() -> None:
         from gimmes.store.queries import get_positions, sync_positions
 
         async with trading_context(config) as (client, broker, db):
-            # Fill resting paper orders against current market data
+            # Expire + fill resting paper orders against current market data
             if broker:
-                resting = await broker.list_orders(status="resting")
-                if resting:
-                    from gimmes.kalshi.markets import get_orderbook
-
-                    tickers = {o.ticker for o in resting}
-                    orderbooks = {}
-                    for t in tickers:
-                        try:
-                            orderbooks[t] = await get_orderbook(client, t)
-                        except Exception as exc:
-                            import logging
-
-                            logging.getLogger("gimmes").warning(
-                                "Could not fetch orderbook for %s", t,
-                                exc_info=True,
-                            )
-                            console.print(
-                                f"  [yellow]Warning: could not fetch"
-                                f" orderbook for {t}: {exc}[/yellow]"
-                            )
-                    try:
-                        filled = await broker.fill_resting_orders(orderbooks)
-                    except Exception as exc:
-                        import logging
-
-                        logging.getLogger("gimmes").warning(
-                            "Failed to process resting orders: %s", exc,
-                            exc_info=True,
-                        )
-                        console.print(
-                            f"  [yellow]Warning: could not process"
-                            f" resting orders: {exc}[/yellow]"
-                        )
-                        filled = []
-                    for o in filled:
-                        n = o.count - o.remaining_count
-                        console.print(
-                            f"  [green]Filled resting order {o.order_id}:"
-                            f" {o.action.value.upper()} {n}"
-                            f" {o.side.value.upper()} {o.ticker}[/green]"
-                        )
+                await _sweep_resting_paper_orders(broker, client, db)
 
             old_positions = await get_positions(db)
             old_tickers = {p.ticker: p for p in old_positions}
@@ -5526,6 +5744,64 @@ def _resilient_sleep(seconds: float) -> None:
         _time.sleep(min(remaining, 60))
 
 
+def _sleep_with_resting_sweep(config: GimmesConfig, seconds: float) -> None:
+    """_resilient_sleep that sweeps resting paper orders while waiting.
+
+    Rest-on-miss orders (hourly lane, #743) live for minutes in markets
+    that reprice in seconds — sweeping once a minute lets them fill or
+    expire while the loop waits for its next cycle, instead of only at
+    the next cycle's reconcile. Orders are only created by cycles, so
+    an entry-time check is complete: when no active resting order
+    exists (or in championship mode, where the exchange enforces
+    expiration server-side) this is exactly one _resilient_sleep call —
+    the call shape the loop tests assert on.
+
+    The sweep window holds ONE trading context (client auth + DB) for
+    all its iterations and exits as soon as the last resting order
+    fills or expires; any leftover wait falls through to a plain
+    _resilient_sleep.
+    """
+    import time as _time
+
+    from gimmes.store.session import has_active_resting_paper_orders
+
+    if config.is_championship or not has_active_resting_paper_orders(
+        config.db_path,
+    ):
+        _resilient_sleep(seconds)
+        return
+
+    deadline = _time.monotonic() + seconds
+
+    async def _sweep_window() -> None:
+        async with trading_context(config) as (client, broker, db):
+            if broker is None:
+                return
+            while True:
+                await _sweep_resting_paper_orders(
+                    broker, client, db, quiet=True,
+                )
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    return
+                if not await broker.list_orders(status="resting"):
+                    return
+                await asyncio.sleep(min(remaining, 60))
+
+    try:
+        _run(_sweep_window())
+    except Exception:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "Between-cycle resting-order sweep failed", exc_info=True,
+        )
+
+    remaining = deadline - _time.monotonic()
+    if remaining > 0:
+        _resilient_sleep(remaining)
+
+
 def _apply_failure_backoff(
     consecutive_failures: int,
     max_consecutive_failures: int,
@@ -6069,7 +6345,7 @@ def _autonomous_loop(
                             stdout=_subprocess.DEVNULL,
                             stderr=_subprocess.DEVNULL,
                         )
-                _resilient_sleep(secs)
+                _sleep_with_resting_sweep(config, secs)
                 continue
 
             cycle += 1
@@ -6379,7 +6655,7 @@ def _autonomous_loop(
                         seconds_until_next_hourly_open(lead_minutes=hourly_lead),
                     )
             console.print(f"[dim]Next cycle in {post_sleep}s...[/dim]")
-            _resilient_sleep(post_sleep)
+            _sleep_with_resting_sweep(config, post_sleep)
     except KeyboardInterrupt:
         if proc is not None and proc.poll() is None:
             _kill_process_group(proc)

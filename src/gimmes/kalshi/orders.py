@@ -69,6 +69,8 @@ async def create_order(client: KalshiClient, params: CreateOrderParams) -> Order
         body["time_in_force"] = params.time_in_force
     if params.post_only:
         body["post_only"] = True
+    if params.expiration_ts is not None:
+        body["expiration_ts"] = params.expiration_ts
 
     data = await client.post("/portfolio/orders", json=body)  # type: ignore[arg-type]
     return _parse_order(data.get("order", data))
