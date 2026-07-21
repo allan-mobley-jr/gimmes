@@ -2910,3 +2910,52 @@ def test_sweep_cadence_cap_matches_config(monitor_text: str) -> None:
         " claim (#731/#577)"
     )
     assert "48 hours" in monitor_text
+
+
+def test_cycle_deadline_protocol() -> None:
+    """#746: deadline protocol, candidate cap, review reuse, and the
+    time-boxed Monitor contract — all four load-bearing strings must
+    stay in sync across caddie-master.md, monitor.md, config, and the
+    loop's env export."""
+    import inspect
+
+    from gimmes import cli as cli_mod
+    from gimmes.cli import _SKIP_REASONS
+    from gimmes.config import StrategyConfig
+
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    assert "## Deadline Protocol (#746)" in cm_text
+    assert "$GIMMES_CYCLE_DEADLINE" in cm_text
+    assert "Never shed, in any time budget" in cm_text
+    assert "strategy.max_candidates_per_cycle" in cm_text
+    assert "Review reuse (#746)" in cm_text
+    # A shed candidate must be logged, never silently dropped
+    assert "deferred_capacity" in cm_text
+
+    # Review reuse must never bypass the mandatory conferral (#721)
+    assert "Review reuse NEVER applies to APPROVE notes" in cm_text
+
+    # The time-boxed dispatch line is verbatim-matched by Monitor
+    timebox_line = (
+        "TIME-BOXED: defer any due playbook sweep — general search,"
+        " price checks, StopGate, and flag triggers only this cycle."
+    )
+    assert timebox_line in cm_text
+    mon_text = (AGENTS_DIR / "monitor.md").read_text()
+    assert timebox_line in mon_text
+    assert "TIME-BOXED mode (#746)" in mon_text
+    # Time-boxed observations must inherit, not launder (#731 validator)
+    assert "never downgraded to `not searched`" in mon_text
+    # Safety overrides beat the time box in BOTH docs: the 48h anchor
+    # hard-cap and the rule-3d escalation valve stay live
+    assert "48-hour anchor hard-cap" in mon_text
+    assert "48-hour anchor hard-cap" in cm_text
+
+    # The config knob the cap instruction reads must exist
+    assert StrategyConfig().max_candidates_per_cycle == 5
+    # The skip vocabulary accepts the deferral reason
+    assert "deferred_capacity" in _SKIP_REASONS
+    # The loop exports the deadline the protocol reads
+    assert "GIMMES_CYCLE_DEADLINE" in inspect.getsource(
+        cli_mod._autonomous_loop,
+    )

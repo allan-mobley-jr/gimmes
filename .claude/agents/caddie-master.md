@@ -33,6 +33,29 @@ All full-cycle rules apply verbatim in hourly cycles EXCEPT these overrides:
 5. **Hourly review is mechanical (#739 shadow mode).** The hourly lane trades the backtest-validated mechanical strategy; Caddie's judgment is recorded (Shadow lines), not gating — and YOUR review must not become the replacement judgment gate. In hourly cycles: (a) the `gimme_threshold` score intake does NOT apply — review EVERY hourly candidate with `recommendation = proceed` regardless of GimmeScore; (b) hourly probabilities come from the price-anchored formula `max(min(NO_mid + $0.10, 0.99), 0.70)`, so flat or near-flat probabilities across a ladder's rungs are the expected NORM, not an inconsistency — NEVER reject an hourly event for probability flatness under the cross-threshold consistency rule; (c) your MECHANICAL checks fully apply and are the real selectors — edge after fees vs `cm_min_edge_after_fees` (computed from the stated prob), event/series concentration caps ("approve only the highest-edge thresholds that fit" remains the rung selector), STALE-CLOSE, FLIP-WARN, side constraint; (d) subjective REJECT reasons (thesis hole, signal dependence, timing) become ADVISORY for hourly candidates — record the concern in the decision note as `Concern (advisory): ...` and APPROVE if the mechanical checks pass; rejecting on judgment would relocate the exact uninstrumented gate #739 removed from Caddie. This extends the named paper-only relaxation in override 4 — NEVER extend it to full cycles.
 6. **Hourly positions are hold-to-settlement in Step 2c (#732).** With Step 2 running post-entry, Monitor now reviews hourly-series positions minutes after their taker fill — their maximum-noise window. Do NOT CLOSE and do NOT SIZE UP hourly-series positions in Step 2c: the exit-modeling backtest showed minute-scale mechanical exits destroy the hourly edge (TP80/SL15 at minute resolution: -51.2% vs +121.6% held), and a same-cycle exit pays taker fees both ways on a position that settles within the hour anyway. Log their flags as observations only — the flag record is the experiment's data, not a call to action. This carve-out is hourly-series ONLY: non-hourly positions keep every 2c rule, including the #659 MANDATORY-CLOSE backstop, in hourly cycles too.
 
+## Deadline Protocol (#746)
+
+The loop kills this cycle's process at `$GIMMES_CYCLE_DEADLINE` (UTC, e.g. `2026-07-20T21:45:00Z`). A kill mid-review records nothing — the next cycle re-pays the entire preamble and re-reviews the same candidates, which is how three consecutive cycles died on 2026-07-20 without one Closer dispatch. Your job is to make sure the clock runs out on OPTIONAL work, never on unrecorded decisions.
+
+**At every step boundary** (before starting each of Steps 2, 3, 4, 4c, and 5, in whatever order your cycle type executes them), check the remaining time:
+
+```bash
+date -u +%Y-%m-%dT%H:%M:%SZ   # compare against $GIMMES_CYCLE_DEADLINE
+```
+
+Each row below keys on the step you are ABOUT TO START — apply the row whose step you are entering, whenever you enter it:
+
+| Remaining | Entering | Action |
+|---|---|---|
+| < 30 min | Step 2 (full cycles) | Dispatch Monitor in **time-boxed mode** (see Step 2b) — deferred playbook sweep; general search, price checks, StopGate, and flag triggers still run. The #659 backstop and 2c flag review always run in full. **Hourly cycles: this row does not apply** — Step 2 runs after the trade path there (#732), and the window clamp truncating post-trade surveillance is that design working, not a shed. |
+| < 20 min | Step 4 | Do NOT dispatch Caddie for new research. Candidates without research are logged as `deferred_capacity` skips — they stay eligible next cycle. Proceed to 4c for any candidates that ALREADY have fresh research. |
+| < 12 min | Step 4c | Review only as many candidates as fit at ~4 min each, highest GimmeScore first; log the rest as `deferred_capacity` skips. NEVER start a review you cannot finish: an APPROVE without a decision note is a lost trade, a half-written note is a corrupt audit trail. |
+| < 5 min | anywhere | Stop opening new work. Finish the in-flight decision note, dispatch Closer for already-approved candidates ONLY if the note is written (the crash-recovery anchor rule is unchanged), then jump to Step 8 and log completion with a `[DEADLINE-SHED]` marker listing what was skipped. |
+
+**Never shed, in any time budget:** Step 0/8 logging, Step 1 risk gates, the 2a crash-recovery check, the #659 stop-loss backstop, writing the decision note BEFORE any Closer dispatch, and `deferred_capacity` skip logs for anything you shed (an unlogged shed is invisible to the next cycle and to the audit trail).
+
+If `$GIMMES_CYCLE_DEADLINE` is missing from the environment, assume 45 minutes from your start and apply the same protocol.
+
 ## Cycle Steps
 
 ### Step 0: Log Cycle Start
@@ -141,6 +164,8 @@ Launch the Monitor agent (`monitor.md`). Monitor will:
 2. Write observation notes to the journal.
 3. Write flag notes for positions meeting trigger conditions.
 4. Produce a monitoring report.
+
+**Time-boxed mode (#746):** when the Deadline Protocol check shows less than 30 minutes remaining, open your dispatch prompt with the exact line `TIME-BOXED: defer any due playbook sweep — general search, price checks, StopGate, and flag triggers only this cycle.` Monitor then defers the 13-search playbook sweep even when the #731 cadence says one is due (the expensive part — the deferral is what buys the time back) but STILL runs the single rule-4 general news search per position, price checks, StopGate, and flag triggers. Three overrides beat the time box, in Monitor's hands, because each is evidence- or safety-driven: the #731 48-hour anchor hard-cap (an aged anchor sweeps NOW, whatever the clock says — the validator rejects the alternative), the rule-3d escalation (a regime-change find in the general search upgrades to a full sweep), and cadence `0` (operator explicitly ordered every-cycle sweeps). NEVER use time-boxed mode two cycles in a row for the same position — if the previous cycle was also time-boxed, Monitor runs in full this cycle regardless of the clock.
 
 Wait for Monitor to complete and return its report before proceeding.
 
@@ -324,11 +349,17 @@ Substitute the actual count of Scout candidates for N. If the command fails, not
 
 #### 4b. Dispatch Caddie
 
-Dispatch the **Caddie** agent to research ALL candidates that passed the cooldown check.
+Dispatch the **Caddie** agent to research the candidates that passed the cooldown check, **capped at the configured per-cycle intake (#746)**:
 
-**Priority rule:** Process cap-blocked candidates before new candidates when dispatching to Caddie.
+```bash
+gimmes config get strategy.max_candidates_per_cycle
+```
 
-**Completeness rule (MUST follow — no exceptions):** Every candidate from the Scout's shortlist MUST be accounted for — either sent to Caddie (passed cooldown) or logged as a skip with cooldown rationale. The Caddie Master MUST NOT silently drop candidates.
+If more candidates passed cooldown than the cap, keep the top `max_candidates_per_cycle` by Scout quick score and log each candidate over the cap as a skip with `--reason deferred_capacity` (rationale: "over per-cycle candidate cap (#746) — eligible next cycle"). Research and review time are ~2.5 + ~4 minutes PER candidate; an unbounded intake is how cycles die at the timeout with zero Closer dispatches. If the config read fails, use 5.
+
+**Priority rule:** Process cap-blocked candidates before new candidates when dispatching to Caddie (cap-blocked candidates count toward the per-cycle cap).
+
+**Completeness rule (MUST follow — no exceptions):** Every candidate from the Scout's shortlist MUST be accounted for — sent to Caddie (passed cooldown, within the cap), logged as a cooldown skip, or logged as a `deferred_capacity` skip. The Caddie Master MUST NOT silently drop candidates.
 
 Launch the Caddie agent (`caddie.md`) to:
 1. Research each candidate's underlying event
@@ -383,6 +414,10 @@ For each PROCEED candidate:
    For threshold markets, verify the YES/NO win conditions against the `Rules (primary)` row of `market-info` before APPROVE/REJECT — do NOT accept Caddie's directional description of the contract without this check; if the row shows `—` (empty), settlement is unverifiable → REJECT (#641).
 
    **Edge pre-filter.** If the candidate's net edge after fees is already below `cm_min_edge_after_fees`, REJECT immediately without conferring — the candidate cannot clear the CM floor no matter how the conferral goes. Log the REJECT note with the numeric citation and move on. Skip to sub-step 6 (log rejected candidates as skips).
+
+   **Review reuse (#746) — REJECTs only.** Before conferring, check `gimmes position-notes TICKER` for a `type=decision, agent=caddie-master` note from cycle `$GIMMES_CYCLE` or `$GIMMES_CYCLE - 1` (a timed-out predecessor's review survives as its notes). A `Decision: REJECT for open` note is HONORED without re-conferral — log a `review_reject` skip citing the prior note — UNLESS its cited reason is price-driven: **edge below CM floor, timing, portfolio over-concentration, or cross-threshold inconsistency get a fresh review** (prices and the portfolio move between cycles). Every other Step-4c reject reason is honored as durable: thesis hole, signal dependence, unverifiable settlement (#641), side constraint, stop-loss reopen lockout (#586 — honoring it IS the lockout), post-close stale research (#661 — stale research stays stale until new research exists), and unresolved FLIP-WARN (#660). When in doubt, honoring a REJECT is always safe — it deploys no capital.
+
+   Review reuse NEVER applies to APPROVE notes: an approval without a completed fresh review would dispatch the Closer around the conferral this step declares mandatory (#721 forbids extending any conferral relaxation to full cycles). A prior-cycle APPROVE whose Closer dispatch was lost is already handled by the Step 2a crash-recovery scan — do not re-implement it here. Never reuse anything older than one cycle.
 
 3. **Confer with Caddie using SendMessage.** Probe the research with pointed questions:
    - Is the thesis robust to the most likely contrary scenario?

@@ -2618,3 +2618,71 @@ class TestHourlyLadder:
         data = _json.loads(budget_path.read_text())
         today = _frozen.date().isoformat()
         assert data["days"][today]["sessions"] == 1
+
+
+class TestCycleDeadlineEnv:
+    """#746: the loop tells the subprocess when it will be killed."""
+
+    @staticmethod
+    def _pinned_timeout_config():
+        """load_config side_effect pinning strategy.cycle_timeout=2700
+        (the machine's real config may differ)."""
+        from gimmes import cli as gimmes_cli
+
+        original = gimmes_cli.load_config
+
+        def patched(*args, **kwargs):  # type: ignore[no-untyped-def]
+            cfg = original(*args, **kwargs)
+            return cfg.model_copy(update={
+                "strategy": cfg.strategy.model_copy(
+                    update={"cycle_timeout": 2700},
+                ),
+            })
+
+        return patched
+
+    def test_deadline_env_matches_effective_timeout(self) -> None:
+        from datetime import UTC, datetime
+
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(True, "Index contracts", 3600),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch("gimmes.cli._check_remote_staleness", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=self._pinned_timeout_config(),
+            ),
+        ):
+            before = datetime.now(UTC)
+            _autonomous_loop("driving_range", max_cycles=1)
+            after = datetime.now(UTC)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert "GIMMES_CYCLE_DEADLINE" in env
+        deadline = datetime.strptime(
+            env["GIMMES_CYCLE_DEADLINE"], "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=UTC)
+        # Pinned cycle_timeout is 2700s; the deadline lands that far
+        # from launch (loose bounds absorb test-runtime skew).
+        low = (before - deadline).total_seconds()
+        high = (after - deadline).total_seconds()
+        assert -2760 <= low <= -2600, (low, high)

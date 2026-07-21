@@ -2924,6 +2924,9 @@ _SKIP_REASONS = frozenset({
     "cooldown", "research_failed", "review_reject", "validation_failed",
     "order_failed", "close_failed", "no_position", "price_moved",
     "liquidity", "infra_failed", "already_traded", "order_canceled",
+    # #746: shed by the candidate cap / deadline protocol — not a
+    # verdict on the candidate; it stays eligible next cycle.
+    "deferred_capacity",
 })
 
 # Non-entry skips carry no entry decision — backfilling scan-time
@@ -6479,6 +6482,18 @@ def _autonomous_loop(
 
             env["GIMMES_CYCLE"] = str(cycle)
             env["GIMMES_CYCLE_TYPE"] = cycle_type
+            # #746 deadline protocol: the subprocess is killed at
+            # effective_timeout, so tell it when — Caddie Master checks
+            # remaining time at step boundaries and sheds load instead
+            # of being killed mid-review with nothing recorded.
+            import datetime as _dl
+
+            _deadline = _dl.datetime.now(_dl.UTC) + _dl.timedelta(
+                seconds=effective_timeout,
+            )
+            env["GIMMES_CYCLE_DEADLINE"] = _deadline.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
             log_path = logs_dir / f"cycle-{cycle:03d}.json"
             cmd = [
                 claude_path,
