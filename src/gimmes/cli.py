@@ -2591,13 +2591,15 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
     await sync_positions_with_trade(db, positions, trade)
 
 
-async def _sweep_resting_paper_orders(broker, client, db, *, quiet: bool = False):  # type: ignore[no-untyped-def]
+async def _sweep_resting_paper_orders(broker, client, db, *, config=None, quiet: bool = False):  # type: ignore[no-untyped-def]
     """Expire overdue resting paper orders, then fill any that have
     become marketable (rest-on-miss lane, #743). Returns
     (order, newly_filled) pairs and writes ledger rows for the fills."""
     import logging
 
     logger = logging.getLogger("gimmes")
+    if config is None:
+        config = load_config()
     try:
         await broker.expire_resting_orders()
     except Exception:
@@ -2625,6 +2627,42 @@ async def _sweep_resting_paper_orders(broker, client, db, *, quiet: bool = False
                 )
         else:
             orderbooks[t] = book
+
+    # #750: an hourly resting order advances only when the market is
+    # back INSIDE the validated band — the book touching the limit
+    # while the effective mid sits outside it is the adverse-repricing
+    # case the band exists to exclude. An undeterminable mid
+    # (one-sided book) skips the fill pass conservatively; the order
+    # keeps its expiry either way and stays eligible next sweep.
+    from gimmes.strategy.scanner import effective_price
+
+    for t in list(orderbooks):
+        if not config.is_hourly_ticker(t):
+            continue
+        book = orderbooks[t]
+        yes_bid, yes_ask = book.best_yes_bid, book.best_yes_ask
+        eff_mid = (
+            effective_price((yes_bid + yes_ask) / 2, config.strategy.side)
+            if yes_bid is not None and yes_ask is not None
+            else None
+        )
+        band_lo = config.strategy.hourly_min_market_price
+        band_hi = config.strategy.hourly_max_market_price
+        if eff_mid is not None and band_lo <= eff_mid <= band_hi:
+            continue
+        del orderbooks[t]
+        shown = f"${eff_mid:.2f}" if eff_mid is not None else "undeterminable"
+        logger.info(
+            "Skipping resting fills for %s: effective mid %s outside"
+            " hourly band $%.2f-$%.2f (#750)",
+            t, shown, band_lo, band_hi,
+        )
+        if not quiet:
+            console.print(
+                f"  [yellow]Resting fill for {t} skipped: effective"
+                f" mid {shown} outside hourly band"
+                f" ${band_lo:.2f}-${band_hi:.2f} (#750)[/yellow]"
+            )
     try:
         filled = await broker.fill_resting_orders(orderbooks)
     except Exception as exc:
@@ -2677,7 +2715,9 @@ def reconcile() -> None:
         async with trading_context(config) as (client, broker, db):
             # Expire + fill resting paper orders against current market data
             if broker:
-                await _sweep_resting_paper_orders(broker, client, db)
+                await _sweep_resting_paper_orders(
+                    broker, client, db, config=config,
+                )
 
             old_positions = await get_positions(db)
             old_tickers = {p.ticker: p for p in old_positions}
@@ -5782,7 +5822,7 @@ def _sleep_with_resting_sweep(config: GimmesConfig, seconds: float) -> None:
                 return
             while True:
                 await _sweep_resting_paper_orders(
-                    broker, client, db, quiet=True,
+                    broker, client, db, config=config, quiet=True,
                 )
                 remaining = deadline - _time.monotonic()
                 if remaining <= 0:

@@ -197,6 +197,27 @@ def validate_trade(
     else:
         checks.append("Edge check skipped (no probability provided)")
 
+    # 6b. Hourly price band (#750). The backtest validated hourly
+    # entries only inside the side-relative band; review enforces it,
+    # but the price can leave the band between approval and placement
+    # — and for a NO buy a collapsed price passes the #743
+    # approval-price cap as "improvement" while the market is
+    # repricing against the thesis. Enforced here so no agent path
+    # can skip it.
+    if config.is_hourly_ticker(market.ticker):
+        band_lo = config.strategy.hourly_min_market_price
+        band_hi = config.strategy.hourly_max_market_price
+        if band_lo <= price <= band_hi:
+            checks.append(
+                f"Hourly band OK (${price:.2f} in"
+                f" ${band_lo:.2f}-${band_hi:.2f})"
+            )
+        else:
+            failures.append(
+                f"Hourly price outside band: effective ${price:.2f}"
+                f" not in ${band_lo:.2f}-${band_hi:.2f} (#750)"
+            )
+
     # 7. Duplicate check (skipped for SIZE UP — adding to existing position)
     if market.ticker in existing_tickers:
         if size_up:
