@@ -2978,7 +2978,15 @@ def test_hourly_4c_latency_instrumentation() -> None:
     # The budget must never license skipping safety steps
     assert (
         "You cannot skip the conferral, the decision notes, or any"
-        " safety gate to meet it" in cm_text
+        " safety gate to meet the budget" in cm_text
     )
-    # The markers are mandatory, not shed-eligible
-    assert "NEVER optional in hourly cycles" in cm_text
+    # Mandatory when their event fires; unfired events omit, never
+    # fabricate (a fake "conferral done" would poison the latency data)
+    assert "NEVER skippable when its bracketing event occurs" in cm_text
+    assert "its marker is simply OMITTED" in cm_text
+    # The markers ride the never-shed list and the log-activity wiring
+    assert "#749 hourly 4c activity markers" in cm_text
+    assert "--agent caddie-master --phase info" in cm_text
+    # The hourly carve-out from the shed table's per-candidate math —
+    # a deferred hourly rung is forfeited, not deferred
+    assert "~4-min-per-candidate arithmetic does NOT apply" in cm_text
