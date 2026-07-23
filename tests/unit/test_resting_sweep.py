@@ -298,3 +298,39 @@ class TestSweepHourlyBand:
             )
         assert len(filled) == 1
         assert filled[0][0].order_id == order.order_id
+
+    @pytest.mark.asyncio
+    async def test_band_judged_in_order_side_terms(
+        self, broker: PaperBroker, db: Database
+    ) -> None:
+        from gimmes.cli import _sweep_resting_paper_orders
+
+        # Review-found: config side can be flipped after placement.
+        # Config says "yes" (YES mid 0.825 IS in band) but the resting
+        # order is NO (NO mid 0.175 is below the floor) — the order's
+        # own side terms govern, so the fill must be skipped.
+        config = GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="yes"),
+            scanner=ScannerConfig(hourly_series=["KXTEST"]),
+        )
+        order = await _place_resting(
+            broker, no_price=0.40, book=self._hourly_miss_book(),
+        )
+        crashed_book = Orderbook(
+            ticker="KXTEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.80, quantity=200)],
+            no_bids=[OrderbookLevel(price=0.15, quantity=200)],
+        )
+        client = AsyncMock()
+        with patch(
+            "gimmes.kalshi.markets.get_orderbook",
+            AsyncMock(return_value=crashed_book),
+        ):
+            filled = await _sweep_resting_paper_orders(
+                broker, client, db, config=config, quiet=True,
+            )
+        assert filled == []
+        assert [
+            o.order_id for o in await broker.list_orders(status="resting")
+        ] == [order.order_id]

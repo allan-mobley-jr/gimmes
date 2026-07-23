@@ -2629,25 +2629,41 @@ async def _sweep_resting_paper_orders(broker, client, db, *, config, quiet: bool
     # #750: an hourly resting order advances only when the market is
     # back INSIDE the validated band — the book touching the limit
     # while the effective mid sits outside it is the adverse-repricing
-    # case the band exists to exclude. An undeterminable mid
-    # (one-sided book) skips the fill pass conservatively; the order
-    # keeps its expiry either way and stays eligible next sweep.
+    # case the band exists to exclude. Band membership is judged in
+    # each resting ORDER's own side terms (review-found): the config
+    # side can be flipped between placement and sweep, and a ticker's
+    # book survives only if EVERY resting side's mid is in band —
+    # over-blocking deploys no capital and the order keeps its expiry.
+    # An undeterminable mid (one-sided book) skips conservatively.
     from gimmes.strategy.scanner import effective_price
 
     band_lo = config.strategy.hourly_min_market_price
     band_hi = config.strategy.hourly_max_market_price
+    sides_by_ticker: dict[str, set[str]] = {}
+    for o in resting:
+        sides_by_ticker.setdefault(o.ticker, set()).add(o.side.value)
     for t in list(orderbooks):
         if not config.is_hourly_ticker(t):
             continue
         book = orderbooks[t]
         yes_bid, yes_ask = book.best_yes_bid, book.best_yes_ask
-        eff_mid = (
-            effective_price((yes_bid + yes_ask) / 2, config.strategy.side)
+        yes_mid = (
+            (yes_bid + yes_ask) / 2
             if yes_bid is not None and yes_ask is not None
             else None
         )
-        if eff_mid is not None and config.strategy.in_hourly_band(eff_mid):
-            continue
+        eff_mid = None
+        if yes_mid is not None:
+            out_of_band = [
+                effective_price(yes_mid, side)
+                for side in sorted(sides_by_ticker.get(t, ()))
+                if not config.strategy.in_hourly_band(
+                    effective_price(yes_mid, side)
+                )
+            ]
+            if not out_of_band:
+                continue
+            eff_mid = out_of_band[0]
         del orderbooks[t]
         shown = f"${eff_mid:.2f}" if eff_mid is not None else "undeterminable"
         logger.info(
