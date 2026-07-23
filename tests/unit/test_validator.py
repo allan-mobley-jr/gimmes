@@ -18,6 +18,19 @@ def _make_market(**kwargs) -> Market:  # type: ignore[no-untyped-def]
     return Market(**defaults)
 
 
+HOURLY_TICKER = "KXBTCD-26JUN23H14-T119999.99"
+
+
+def _hourly_config() -> GimmesConfig:
+    """KXBTCD is an hourly series, NO side — shared by the hourly
+    floor (#722) and band (#750) test classes."""
+    return GimmesConfig(
+        mode=Mode.DRIVING_RANGE,
+        strategy=StrategyConfig(side="no"),
+        scanner=ScannerConfig(hourly_series=["KXBTCD"]),
+    )
+
+
 class TestValidateTrade:
     def test_all_checks_pass(self, config: GimmesConfig) -> None:
         market = _make_market()
@@ -441,16 +454,6 @@ class TestHourlyProbabilityFloor:
     """#722: hourly-series tickers gate on hourly_min_true_probability;
     the global floor and its message literals stay untouched."""
 
-    HOURLY_TICKER = "KXBTCD-26JUN23H14-T119999.99"
-
-    @staticmethod
-    def _hourly_config() -> GimmesConfig:
-        return GimmesConfig(
-            mode=Mode.DRIVING_RANGE,
-            strategy=StrategyConfig(side="no"),
-            scanner=ScannerConfig(hourly_series=["KXBTCD"]),
-        )
-
     def _validate(self, config: GimmesConfig, ticker: str, prob: float):
         return validate_trade(
             market=_make_market(ticker=ticker),
@@ -464,7 +467,7 @@ class TestHourlyProbabilityFloor:
         )
 
     def test_hourly_floor_accepts_072(self) -> None:
-        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.72)
+        result = self._validate(_hourly_config(), HOURLY_TICKER, 0.72)
         assert not any("probability too low" in f.lower() for f in result.failures)
         assert any("hourly floor" in c for c in result.checks)
 
@@ -474,19 +477,19 @@ class TestHourlyProbabilityFloor:
         # lower KXBTCD estimate to exactly 0.70, so check 5 is a
         # formality on auto-sized NO orders by design — check 6 (edge
         # after fees) and Caddie's sanity checks are the binding gates.
-        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.70)
+        result = self._validate(_hourly_config(), HOURLY_TICKER, 0.70)
         assert not any("probability too low" in f.lower() for f in result.failures)
         assert any("hourly floor" in c for c in result.checks)
 
     def test_hourly_floor_rejects_below(self) -> None:
-        result = self._validate(self._hourly_config(), self.HOURLY_TICKER, 0.65)
+        result = self._validate(_hourly_config(), HOURLY_TICKER, 0.65)
         assert result.approved is False
         assert any(
             "70% hourly minimum" in f for f in result.failures
         ), result.failures
 
     def test_global_floor_untouched_for_non_hourly(self) -> None:
-        result = self._validate(self._hourly_config(), "KXTEST", 0.72)
+        result = self._validate(_hourly_config(), "KXTEST", 0.72)
         assert result.approved is False
         failures = [f for f in result.failures if "probability too low" in f.lower()]
         assert failures == ["True probability too low: 72% < 90% minimum"]
@@ -494,7 +497,7 @@ class TestHourlyProbabilityFloor:
     def test_inertness_message_byte_identical(self, config: GimmesConfig) -> None:
         # hourly_series empty: a KXBTCD ticker fails with the exact
         # pre-#722 literal — no "hourly" wording anywhere
-        result = self._validate(config, self.HOURLY_TICKER, 0.85)
+        result = self._validate(config, HOURLY_TICKER, 0.85)
         failures = [f for f in result.failures if "probability too low" in f.lower()]
         assert failures == ["True probability too low: 85% < 90% minimum"]
 
@@ -504,7 +507,7 @@ class TestHourlyProbabilityFloor:
         # (KXBTCD-<date>H<hour> grouping all strikes) is asserted here
         # from Kalshi's series convention; live verification of the API
         # response shape is a #721 part D deliverable.
-        config = self._hourly_config()
+        config = _hourly_config()
         market = _make_market(
             ticker="KXBTCD-26JUN23H14-T118999.99",
             event_ticker="KXBTCD-26JUN23H14",
@@ -524,3 +527,82 @@ class TestHourlyProbabilityFloor:
         )
         assert result.approved is False
         assert any("event" in f.lower() for f in result.failures)
+
+
+class TestHourlyPriceBand:
+    """#750: hourly tickers gate on the side-relative market price band
+    at validation time — review-level band checks can be minutes stale,
+    and the #743 approval-price cap alone passes a collapsed NO price
+    as "improvement". Non-hourly tickers see no band lines at all."""
+
+    def _validate(self, config: GimmesConfig, ticker: str, *, yes_bid: float, yes_ask: float):
+        return validate_trade(
+            market=_make_market(
+                ticker=ticker, yes_bid=yes_bid, yes_ask=yes_ask,
+                last_price=round((yes_bid + yes_ask) / 2, 4),
+            ),
+            trade_dollars=200,
+            true_probability=0.72,
+            bankroll=10000,
+            daily_pnl=0,
+            open_position_count=3,
+            existing_tickers=[],
+            config=config,
+        )
+
+    def test_in_band_passes(self) -> None:
+        # NO effective mid 0.40 — inside 0.30-0.85
+        result = self._validate(
+            _hourly_config(), HOURLY_TICKER,
+            yes_bid=0.58, yes_ask=0.62,
+        )
+        assert any("Hourly band OK" in c for c in result.checks)
+        assert not any("outside band" in f for f in result.failures)
+
+    def test_floor_boundary_passes(self) -> None:
+        # NO effective mid exactly 0.30 — >= not >, the floor is in-band
+        result = self._validate(
+            _hourly_config(), HOURLY_TICKER,
+            yes_bid=0.68, yes_ask=0.72,
+        )
+        assert any("Hourly band OK" in c for c in result.checks)
+
+    def test_below_floor_rejected(self) -> None:
+        # NO effective mid 0.21 — the c1989 loss shape (#750)
+        result = self._validate(
+            _hourly_config(), HOURLY_TICKER,
+            yes_bid=0.77, yes_ask=0.81,
+        )
+        assert result.approved is False
+        assert any(
+            "Hourly price outside band" in f and "#750" in f
+            for f in result.failures
+        ), result.failures
+
+    def test_above_ceiling_rejected(self) -> None:
+        # NO effective mid 0.90 — above the 0.85 ceiling
+        result = self._validate(
+            _hourly_config(), HOURLY_TICKER,
+            yes_bid=0.08, yes_ask=0.12,
+        )
+        assert result.approved is False
+        assert any("Hourly price outside band" in f for f in result.failures)
+
+    def test_non_hourly_sees_no_band_lines(self) -> None:
+        # Same collapsed price on a non-hourly ticker: no band check,
+        # no band failure — the band is scoped to the hourly lane.
+        result = self._validate(
+            _hourly_config(), "KXTEST",
+            yes_bid=0.77, yes_ask=0.81,
+        )
+        assert not any("band" in c.lower() for c in result.checks)
+        assert not any("band" in f.lower() for f in result.failures)
+
+    def test_inert_when_hourly_series_empty(self, config: GimmesConfig) -> None:
+        # Stock install: KXBTCD is not an hourly ticker, no band lines
+        result = self._validate(
+            config, HOURLY_TICKER,
+            yes_bid=0.77, yes_ask=0.81,
+        )
+        assert not any("band" in c.lower() for c in result.checks)
+        assert not any("band" in f.lower() for f in result.failures)

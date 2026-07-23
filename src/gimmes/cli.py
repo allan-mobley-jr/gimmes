@@ -2591,7 +2591,7 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
     await sync_positions_with_trade(db, positions, trade)
 
 
-async def _sweep_resting_paper_orders(broker, client, db, *, quiet: bool = False):  # type: ignore[no-untyped-def]
+async def _sweep_resting_paper_orders(broker, client, db, *, config, quiet: bool = False):  # type: ignore[no-untyped-def]
     """Expire overdue resting paper orders, then fill any that have
     become marketable (rest-on-miss lane, #743). Returns
     (order, newly_filled) pairs and writes ledger rows for the fills."""
@@ -2625,6 +2625,58 @@ async def _sweep_resting_paper_orders(broker, client, db, *, quiet: bool = False
                 )
         else:
             orderbooks[t] = book
+
+    # #750: an hourly resting order advances only when the market is
+    # back INSIDE the validated band — the book touching the limit
+    # while the effective mid sits outside it is the adverse-repricing
+    # case the band exists to exclude. Band membership is judged in
+    # each resting ORDER's own side terms (review-found): the config
+    # side can be flipped between placement and sweep, and a ticker's
+    # book survives only if EVERY resting side's mid is in band —
+    # over-blocking deploys no capital and the order keeps its expiry.
+    # An undeterminable mid (one-sided book) skips conservatively.
+    from gimmes.strategy.scanner import effective_price
+
+    band_lo = config.strategy.hourly_min_market_price
+    band_hi = config.strategy.hourly_max_market_price
+    sides_by_ticker: dict[str, set[str]] = {}
+    for o in resting:
+        sides_by_ticker.setdefault(o.ticker, set()).add(o.side.value)
+    for t in list(orderbooks):
+        if not config.is_hourly_ticker(t):
+            continue
+        book = orderbooks[t]
+        yes_bid, yes_ask = book.best_yes_bid, book.best_yes_ask
+        yes_mid = (
+            (yes_bid + yes_ask) / 2
+            if yes_bid is not None and yes_ask is not None
+            else None
+        )
+        eff_mid = None
+        if yes_mid is not None:
+            out_of_band = [
+                effective_price(yes_mid, side)
+                for side in sorted(sides_by_ticker.get(t, ()))
+                if not config.strategy.in_hourly_band(
+                    effective_price(yes_mid, side)
+                )
+            ]
+            if not out_of_band:
+                continue
+            eff_mid = out_of_band[0]
+        del orderbooks[t]
+        shown = f"${eff_mid:.2f}" if eff_mid is not None else "undeterminable"
+        logger.info(
+            "Skipping resting fills for %s: effective mid %s outside"
+            " hourly band $%.2f-$%.2f (#750)",
+            t, shown, band_lo, band_hi,
+        )
+        if not quiet:
+            console.print(
+                f"  [yellow]Resting fill for {t} skipped: effective"
+                f" mid {shown} outside hourly band"
+                f" ${band_lo:.2f}-${band_hi:.2f} (#750)[/yellow]"
+            )
     try:
         filled = await broker.fill_resting_orders(orderbooks)
     except Exception as exc:
@@ -2677,7 +2729,9 @@ def reconcile() -> None:
         async with trading_context(config) as (client, broker, db):
             # Expire + fill resting paper orders against current market data
             if broker:
-                await _sweep_resting_paper_orders(broker, client, db)
+                await _sweep_resting_paper_orders(
+                    broker, client, db, config=config,
+                )
 
             old_positions = await get_positions(db)
             old_tickers = {p.ticker: p for p in old_positions}
@@ -5782,7 +5836,7 @@ def _sleep_with_resting_sweep(config: GimmesConfig, seconds: float) -> None:
                 return
             while True:
                 await _sweep_resting_paper_orders(
-                    broker, client, db, quiet=True,
+                    broker, client, db, config=config, quiet=True,
                 )
                 remaining = deadline - _time.monotonic()
                 if remaining <= 0:

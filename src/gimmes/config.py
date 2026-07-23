@@ -372,6 +372,16 @@ class StrategyConfig(BaseModel):
             "max_val": 0.99,
         },
     )
+    def in_hourly_band(self, price: float) -> bool:
+        """True when a side-effective price sits inside the hourly band,
+        bounds inclusive (#750). The single source of the membership
+        semantics for the validator and the resting-order sweep — the
+        scanner's band SELECTION (hourly vs. regular, scanner.py) stays
+        separate by design."""
+        return (
+            self.hourly_min_market_price <= price <= self.hourly_max_market_price
+        )
+
     min_edge_after_fees: float = Field(
         default=0.05, gt=0.0, le=1.0,
         json_schema_extra={
