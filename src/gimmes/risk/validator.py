@@ -207,7 +207,7 @@ def validate_trade(
     if config.is_hourly_ticker(market.ticker):
         band_lo = config.strategy.hourly_min_market_price
         band_hi = config.strategy.hourly_max_market_price
-        if band_lo <= price <= band_hi:
+        if config.strategy.in_hourly_band(price):
             checks.append(
                 f"Hourly band OK (${price:.2f} in"
                 f" ${band_lo:.2f}-${band_hi:.2f})"

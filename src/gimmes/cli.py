@@ -2591,15 +2591,13 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
     await sync_positions_with_trade(db, positions, trade)
 
 
-async def _sweep_resting_paper_orders(broker, client, db, *, config=None, quiet: bool = False):  # type: ignore[no-untyped-def]
+async def _sweep_resting_paper_orders(broker, client, db, *, config, quiet: bool = False):  # type: ignore[no-untyped-def]
     """Expire overdue resting paper orders, then fill any that have
     become marketable (rest-on-miss lane, #743). Returns
     (order, newly_filled) pairs and writes ledger rows for the fills."""
     import logging
 
     logger = logging.getLogger("gimmes")
-    if config is None:
-        config = load_config()
     try:
         await broker.expire_resting_orders()
     except Exception:
@@ -2636,6 +2634,8 @@ async def _sweep_resting_paper_orders(broker, client, db, *, config=None, quiet:
     # keeps its expiry either way and stays eligible next sweep.
     from gimmes.strategy.scanner import effective_price
 
+    band_lo = config.strategy.hourly_min_market_price
+    band_hi = config.strategy.hourly_max_market_price
     for t in list(orderbooks):
         if not config.is_hourly_ticker(t):
             continue
@@ -2646,9 +2646,7 @@ async def _sweep_resting_paper_orders(broker, client, db, *, config=None, quiet:
             if yes_bid is not None and yes_ask is not None
             else None
         )
-        band_lo = config.strategy.hourly_min_market_price
-        band_hi = config.strategy.hourly_max_market_price
-        if eff_mid is not None and band_lo <= eff_mid <= band_hi:
+        if eff_mid is not None and config.strategy.in_hourly_band(eff_mid):
             continue
         del orderbooks[t]
         shown = f"${eff_mid:.2f}" if eff_mid is not None else "undeterminable"
