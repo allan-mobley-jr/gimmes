@@ -2959,3 +2959,34 @@ def test_cycle_deadline_protocol() -> None:
     assert "GIMMES_CYCLE_DEADLINE" in inspect.getsource(
         cli_mod._autonomous_loop,
     )
+
+
+def test_hourly_4c_latency_instrumentation() -> None:
+    """#749: the four Step 4c activity markers must stay pinned — they
+    are the instrumentation that must exist before any hourly review
+    step may be cut, and downstream latency analysis greps for these
+    exact prefixes in activity_log."""
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    assert "Step 4c latency instrumentation (#749)" in cm_text
+    for marker in (
+        "Hourly 4c: review start",
+        "Hourly 4c: conferral done",
+        "Hourly 4c: decisions logged",
+        "Hourly 4c: dispatching Closer",
+    ):
+        assert marker in cm_text, marker
+    # The budget must never license skipping safety steps
+    assert (
+        "You cannot skip the conferral, the decision notes, or any"
+        " safety gate to meet the budget" in cm_text
+    )
+    # Mandatory when their event fires; unfired events omit, never
+    # fabricate (a fake "conferral done" would poison the latency data)
+    assert "NEVER skippable when its bracketing event occurs" in cm_text
+    assert "its marker is simply OMITTED" in cm_text
+    # The markers ride the never-shed list and the log-activity wiring
+    assert "#749 hourly 4c activity markers" in cm_text
+    assert "--agent caddie-master --phase info" in cm_text
+    # The hourly carve-out from the shed table's per-candidate math —
+    # a deferred hourly rung is forfeited, not deferred
+    assert "~4-min-per-candidate arithmetic does NOT apply" in cm_text
