@@ -2959,3 +2959,26 @@ def test_cycle_deadline_protocol() -> None:
     assert "GIMMES_CYCLE_DEADLINE" in inspect.getsource(
         cli_mod._autonomous_loop,
     )
+
+
+def test_hourly_4c_latency_instrumentation() -> None:
+    """#749: the four Step 4c activity markers must stay pinned — they
+    are the instrumentation that must exist before any hourly review
+    step may be cut, and downstream latency analysis greps for these
+    exact prefixes in activity_log."""
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    assert "Step 4c latency instrumentation (#749)" in cm_text
+    for marker in (
+        "Hourly 4c: review start",
+        "Hourly 4c: conferral done",
+        "Hourly 4c: decisions logged",
+        "Hourly 4c: dispatching Closer",
+    ):
+        assert marker in cm_text, marker
+    # The budget must never license skipping safety steps
+    assert (
+        "You cannot skip the conferral, the decision notes, or any"
+        " safety gate to meet it" in cm_text
+    )
+    # The markers are mandatory, not shed-eligible
+    assert "NEVER optional in hourly cycles" in cm_text
