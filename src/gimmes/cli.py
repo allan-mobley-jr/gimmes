@@ -6484,15 +6484,20 @@ def _autonomous_loop(
                     # tail is too short for a useful full cycle, sleep
                     # to the open instead of spawning a doomed
                     # subprocess (a clamp kill would count toward the
-                    # failure breaker for zero work). Reuse _now_et —
-                    # a fresh now() here could cross the open during
-                    # the position-window DB check and mis-derive the
-                    # gap as the FOLLOWING window's open (review-found
-                    # TOCTOU), spawning an unclamped cycle inside the
-                    # window this clamp exists to protect.
+                    # failure breaker for zero work). Two clocks, both
+                    # review-found: the TARGET open derives from
+                    # _now_et — a fresh now() could cross the open
+                    # during the position-window DB check and
+                    # mis-derive the gap as the FOLLOWING window's —
+                    # while the REMAINING time subtracts the probe's
+                    # own duration, so a slow probe can't inflate the
+                    # clamp past the open it protects.
                     _gap = seconds_until_next_hourly_open(
                         _now_et, lead_minutes=hourly_lead,
                     )
+                    _gap = max(1, _gap - int(
+                        (datetime.now(ET) - _now_et).total_seconds()
+                    ))
                     if _gap < HOURLY_MIN_CYCLE_SECONDS:
                         console.print(
                             f"[dim]Position window ({pos_ticker}) yields"
