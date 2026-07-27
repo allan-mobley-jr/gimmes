@@ -91,6 +91,19 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 
 **Hourly verdict rule (#739 shadow mode):** every hourly candidate whose REAL gates (checks 2–3) pass gets `--recommendation proceed` — regardless of the shadow verdict. The `--prob` is the BACKTEST'S OWN probability model, not a flat base rate: `prob = max(min(NO_mid + $0.10, 0.99), 0.70)` — the NO-side MIDPOINT plus the backtested $0.10 assumed edge, capped at 0.99, floored at the 0.70 KXBTCD base rate (the floor half of the same formula). Anchor to the MIDPOINT, never the ask — floating the probability with the fill price would let taker mode pass markets the model rejects (the engine pins this). A flat 0.70 for every rung is WRONG (#739 review): it makes edge negative above NO ~0.62 and silently excludes the upper half of the validated band — the backtest entered NO 0.30–0.85 at ~+8pp edge per rung precisely because its probability rides the price. A `Shadow: WOULD-PASS` candidate still PROCEEDs; the Shadow line records the disagreement, and the untradeable-at-bound rule and hourly probability floor still apply as-is. When a REAL gate fails, still write the Shadow line FIRST in the memo, then PASS with the real-gate rationale — the retrospective needs shadow verdicts for real-gate skips too. This is #739 experiment instrumentation, paper-lane only: the live hourly lane trades the backtest-validated mechanical strategy (every in-band rung, hold to settlement) while Caddie's judgment accumulates as data. Re-enabling the distance gate is a retrospective decision, NOT agent judgment — never let a WOULD-PASS verdict influence the recommendation, score, or sizing inputs.
 
+**Conferral preload (#749) — hourly PROCEED memos only:** immediately after the Shadow line, the memo MUST carry a `Conferral preload:` block answering Caddie Master's five standard conferral probes, one line each, written NOW while the analysis is in context:
+
+```
+Conferral preload:
+- Contrary scenario: <the most likely way this rung loses, and whether the entry survives it>
+- Signal independence: <what the probability rests on; for the price-anchored formula, "market midpoint + backtested $0.10 edge assumption — single source by design" is the honest answer>
+- Portfolio correlation: <overlap with open positions by event/series/direction, or "none">
+- Contrarian case: <the strongest argument against entering, stated honestly — this is the Shadow analysis's natural home>
+- Timing: <why this window; note minutes to settlement>
+```
+
+One line per probe, no padding, real content — a boilerplate preload defeats its purpose and poisons the #739 record. Shared answers across a ladder's rungs are fine and expected (the rungs share one event, formula, and portfolio); the genuinely per-rung lines are Contrary scenario and the strike-specific numbers. The preload substitutes for the synchronous conferral round-trip that was measured as the hourly lane's dominant latency (4-8 minutes of fill-probability decay, #749); Caddie Master reads it as your conferral answers and only sends a SendMessage when it has a question the preload does not answer — answer such follow-ups promptly. The preload is REQUIRED for every hourly `--recommendation proceed` memo and omitted from hourly PASS memos (nothing confers on a PASS; the Shadow line already feeds the retrospective). This is #749 latency engineering for the paper lane, not a judgment gate: nothing in the preload changes the verdict rule above.
+
 **If all three checks pass → PROCEED** with the category base rate as probability (hourly-series tickers: the #739 verdict rule above governs — only checks 2–3 gate, the probability comes from the price-anchored formula, and the Recommendation Thresholds score bands do NOT apply — recommendation follows the verdict rule at any score):
 
 | Category | Base Rate (NO Win %) | Use as --prob |
