@@ -3031,3 +3031,14 @@ def test_hourly_conferral_preload() -> None:
         "where the full Step 4c SendMessage conferral mandate applies"
         " verbatim" in cm_text
     )
+
+
+def test_preload_boilerplate_definition() -> None:
+    """#749 review-found: without a boilerplate definition, CM could
+    classify a ladder's legitimately-shared preload lines as
+    boilerplate and reflex-fallback to the exchange every multi-rung
+    cycle — silently restoring the latency the preload removes."""
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    assert "Near-identical lines ACROSS a ladder's rungs are EXPECTED" in cm_text
+    assert "never against its siblings" in cm_text
+    assert "pre-filter and review-reuse deaths never confer" in cm_text
