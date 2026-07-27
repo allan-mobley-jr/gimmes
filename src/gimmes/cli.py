@@ -6405,9 +6405,6 @@ def _autonomous_loop(
                 _sleep_with_resting_sweep(config, secs)
                 continue
 
-            cycle += 1
-            cycles_run += 1
-
             # Code staleness check
             _cur, _stale, _stale_msg = _check_code_staleness(
                 project_root, _startup_commit,
@@ -6448,23 +6445,17 @@ def _autonomous_loop(
                             _staleness_warned = True
 
             # Determine cycle type based on trade window calendar.
-            # Precedence: release > hourly > position > monitor (#755).
-            # Hourly outranks position (reversing #723's original
-            # ordering): every hourly cycle runs full Step 2
-            # surveillance — StopGate, flags, 2c review, and the #659
-            # backstop — for NON-hourly positions too, so preempting
-            # the hourly lane bought no protection while one held
-            # position could silence the experiment for a whole session
-            # (2026-07-24: cycles 2026-2032, ~7 hourly windows lost).
-            # Position windows now interleave in the inter-window gaps,
-            # clamped so a gap cycle can never eat the next hourly open
-            # (hourly-series positions remain excluded from position
-            # windows by _position_window_hit). With hourly disabled,
-            # position windows behave exactly as before (#723).
-            # Release windows fully mask any hourly window they cover
-            # (full cycles don't scan the hourly series) — e.g. the
-            # 14:00-16:00 ET index window masks 2 of 24 hourly windows
-            # every weekday. Accepted miss per #723.
+            # Precedence: release > hourly > position > monitor (#755,
+            # reversing #723's position>hourly): every hourly cycle
+            # runs full Step 2 surveillance — StopGate, flags, 2c
+            # review, the #659 backstop — for NON-hourly positions too,
+            # so preempting the hourly lane bought no protection; see
+            # #755 for the starvation incident. Position windows
+            # interleave in the inter-window gaps (hourly-series
+            # positions stay excluded via _position_window_hit); with
+            # hourly disabled they behave exactly as before (#723).
+            # Release windows fully mask any hourly window they cover —
+            # accepted miss per #723.
             effective_timeout = config.strategy.cycle_timeout
             in_window, release_name, _secs_to_close = is_in_trade_window()
             hourly_fire = False
@@ -6493,9 +6484,14 @@ def _autonomous_loop(
                     # tail is too short for a useful full cycle, sleep
                     # to the open instead of spawning a doomed
                     # subprocess (a clamp kill would count toward the
-                    # failure breaker for zero work).
+                    # failure breaker for zero work). Reuse _now_et —
+                    # a fresh now() here could cross the open during
+                    # the position-window DB check and mis-derive the
+                    # gap as the FOLLOWING window's open (review-found
+                    # TOCTOU), spawning an unclamped cycle inside the
+                    # window this clamp exists to protect.
                     _gap = seconds_until_next_hourly_open(
-                        lead_minutes=hourly_lead,
+                        _now_et, lead_minutes=hourly_lead,
                     )
                     if _gap < HOURLY_MIN_CYCLE_SECONDS:
                         console.print(
@@ -6503,13 +6499,15 @@ def _autonomous_loop(
                             f" — hourly window opens in {_gap}s;"
                             f" sleeping to the open (#755)[/dim]"
                         )
-                        # No subprocess spawns on this path — give the
-                        # cycle number and the --max-cycles slot back.
-                        cycle -= 1
-                        cycles_run -= 1
                         _sleep_with_resting_sweep(config, _gap)
                         continue
                     effective_timeout = min(effective_timeout, _gap)
+
+            # Counters increment only once an iteration is committed to
+            # spawning — every skip path above (budget, #755 yield)
+            # exits via `continue` without burning a --max-cycles slot.
+            cycle += 1
+            cycles_run += 1
             if in_window:
                 cycle_type = "full"
                 cycle_prompt = "Run one trading cycle."

@@ -2468,39 +2468,6 @@ class TestHourlyLadder:
         assert types.count("monitor") == 1
         assert len(types) == 25
 
-    def test_position_precedence_over_hourly(self, capsys) -> None:
-        # #723 review: a held NON-hourly position near settlement must
-        # keep its full cycles even when an hourly window is open —
-        # otherwise the steady-state hourly cadence starves position
-        # surveillance (overnight/weekends have no release windows)
-        mock_proc = _mock_popen()
-        with (
-            patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch("gimmes.cli._communicate_interruptible", return_value=b""),
-            patch("gimmes.clubhouse.server.start_background", return_value=None),
-            patch("gimmes.cli.load_config", side_effect=self._hourly_load_config()),
-            patch(
-                "asyncio.run",
-                side_effect=lambda coro: (
-                    coro.close(), (True, "KXINX-26JUN23-B5000"),
-                )[1],
-            ),
-            patch(
-                "gimmes.strategy.calendar.is_in_hourly_window",
-                lambda dt=None, *, lead_minutes: True,
-            ),
-            patch(
-                "gimmes.strategy.calendar.hourly_window",
-                self._dt_relative_window(1500),
-            ),
-        ):
-            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
-
-        env = mock_popen.call_args.kwargs["env"]
-        assert env["GIMMES_CYCLE_TYPE"] == "full"
-        assert "POSITION WINDOW" in capsys.readouterr().out
-
     def test_post_hourly_sleep_takes_sooner_release_window(self) -> None:
         # The post-hourly min must consider the release calendar too —
         # a release window opening before the next hourly open wins
@@ -2688,6 +2655,45 @@ class TestCycleDeadlineEnv:
         assert -2760 <= low <= -2600, (low, high)
 
 
+def _loop_isolation(tmp_path, monkeypatch, *, asyncio_run):  # type: ignore[no-untyped-def]
+    """Shared loop-isolation stack: outside any release window, session
+    store stubbed, staleness checks quiet. `asyncio_run` controls the
+    position-window probe result (close the coro, return the hit).
+    TestAutonomousLoop/TestHourlyLadder predate this helper and keep
+    their own copies; new loop test classes should delegate here."""
+    from contextlib import ExitStack
+
+    monkeypatch.setenv("GIMMES_MODE", "driving_range")
+    monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+    stack = ExitStack()
+    for p in (
+        patch("gimmes.store.session.create_session", return_value=1),
+        patch("gimmes.store.session.end_session"),
+        patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+        patch("gimmes.store.session.update_session_cycle"),
+        patch("asyncio.run", side_effect=asyncio_run),
+        patch(
+            "gimmes.strategy.calendar.is_in_trade_window",
+            return_value=(False, None, None),
+        ),
+        patch(
+            "gimmes.strategy.calendar.next_trade_window",
+            return_value=(_make_future_dt(), "Index contracts"),
+        ),
+        patch(
+            "gimmes.strategy.calendar.seconds_until_next_window",
+            return_value=3600,
+        ),
+        patch(
+            "gimmes.cli._check_code_staleness",
+            return_value=("abc123", False, None),
+        ),
+        patch("gimmes.cli._check_remote_staleness", return_value=None),
+    ):
+        stack.enter_context(p)
+    return stack
+
+
 class TestPositionYieldsToHourly:
     """#755: precedence is release > hourly > position > monitor.
     Hourly cycles run full Step 2 surveillance for non-hourly positions
@@ -2697,42 +2703,11 @@ class TestPositionYieldsToHourly:
 
     @pytest.fixture(autouse=True)
     def _patch_session_funcs(self, tmp_path, monkeypatch):
-        # Same isolation as TestHourlyLadder: outside any release window,
-        # but asyncio.run reports a position-window HIT (the #755 seam).
-        monkeypatch.setenv("GIMMES_MODE", "driving_range")
-        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
-
         def _pos_hit(coro):  # type: ignore[no-untyped-def]
             coro.close()
             return (True, "KXGDP-26JUL30-T2.0")
 
-        with (
-            patch("gimmes.store.session.create_session", return_value=1),
-            patch("gimmes.store.session.end_session"),
-            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
-            patch("gimmes.store.session.update_session_cycle"),
-            patch("asyncio.run", side_effect=_pos_hit),
-            patch(
-                "gimmes.strategy.calendar.is_in_trade_window",
-                return_value=(False, None, None),
-            ),
-            patch(
-                "gimmes.strategy.calendar.next_trade_window",
-                return_value=(_make_future_dt(), "Index contracts"),
-            ),
-            patch(
-                "gimmes.strategy.calendar.seconds_until_next_window",
-                return_value=3600,
-            ),
-            patch(
-                "gimmes.cli._check_code_staleness",
-                return_value=("abc123", False, None),
-            ),
-            patch(
-                "gimmes.cli._check_remote_staleness",
-                return_value=None,
-            ),
-        ):
+        with _loop_isolation(tmp_path, monkeypatch, asyncio_run=_pos_hit):
             yield
 
     def test_hourly_outranks_position_window(self) -> None:
@@ -2782,7 +2757,7 @@ class TestPositionYieldsToHourly:
             ),
             patch(
                 "gimmes.strategy.calendar.seconds_until_next_hourly_open",
-                lambda *, lead_minutes: 900,
+                lambda dt=None, *, lead_minutes: 900,
             ),
         ):
             _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
@@ -2808,7 +2783,7 @@ class TestPositionYieldsToHourly:
             ),
             patch(
                 "gimmes.strategy.calendar.seconds_until_next_hourly_open",
-                lambda *, lead_minutes: 60,
+                lambda dt=None, *, lead_minutes: 60,
             ),
             patch(
                 "gimmes.cli._sleep_with_resting_sweep",
