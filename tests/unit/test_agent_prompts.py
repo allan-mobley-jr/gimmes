@@ -2990,3 +2990,44 @@ def test_hourly_4c_latency_instrumentation() -> None:
     # The hourly carve-out from the shed table's per-candidate math —
     # a deferred hourly rung is forfeited, not deferred
     assert "~4-min-per-candidate arithmetic does NOT apply" in cm_text
+
+
+def test_hourly_conferral_preload() -> None:
+    """#749 phase 2: the preload contract must stay in sync across
+    caddie.md (writes it) and caddie-master.md (accepts it as the
+    batched conferral) — and must never leak into full cycles."""
+    caddie_text = (AGENTS_DIR / "caddie.md").read_text()
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+
+    # Caddie writes the block, PROCEED memos only, all five probes
+    assert "Conferral preload (#749)" in caddie_text
+    for probe in (
+        "- Contrary scenario:",
+        "- Signal independence:",
+        "- Portfolio correlation:",
+        "- Contrarian case:",
+        "- Timing:",
+    ):
+        assert probe in caddie_text, probe
+    assert (
+        "REQUIRED for every hourly `--recommendation proceed` memo"
+        in caddie_text
+    )
+
+    # CM accepts complete preloads as the conferral; exchange is the
+    # exception, not the reflex; both marker variants exist
+    assert "Conferral preload (#749)" in cm_text
+    assert "preloads ARE the batched conferral" in cm_text
+    assert "Hourly 4c: conferral done — preload" in cm_text
+    assert "Hourly 4c: conferral done — exchange" in cm_text
+    assert "never as a reflex" in cm_text
+    # An incomplete or boilerplate preload forces the real exchange
+    assert "missing, incomplete, or boilerplate" in cm_text
+
+    # Paper-only scoping: full-cycle conferral stays verbatim (also
+    # enforced structurally by
+    # test_caddie_master_full_cycle_4c_conferral_untouched)
+    assert (
+        "where the full Step 4c SendMessage conferral mandate applies"
+        " verbatim" in cm_text
+    )
