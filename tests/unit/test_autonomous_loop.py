@@ -2686,3 +2686,153 @@ class TestCycleDeadlineEnv:
         low = (before - deadline).total_seconds()
         high = (after - deadline).total_seconds()
         assert -2760 <= low <= -2600, (low, high)
+
+
+class TestPositionYieldsToHourly:
+    """#755: precedence is release > hourly > position > monitor.
+    Hourly cycles run full Step 2 surveillance for non-hourly positions
+    (#659 backstop included), so a held position must never silence the
+    hourly lane; position cycles interleave in the inter-window gaps,
+    clamped so they can't eat the next hourly open."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_funcs(self, tmp_path, monkeypatch):
+        # Same isolation as TestHourlyLadder: outside any release window,
+        # but asyncio.run reports a position-window HIT (the #755 seam).
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+
+        def _pos_hit(coro):  # type: ignore[no-untyped-def]
+            coro.close()
+            return (True, "KXGDP-26JUL30-T2.0")
+
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch("asyncio.run", side_effect=_pos_hit),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(False, None, None),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch(
+                "gimmes.cli._check_remote_staleness",
+                return_value=None,
+            ),
+        ):
+            yield
+
+    def test_hourly_outranks_position_window(self) -> None:
+        # Both active: the hourly window fires; the position check is
+        # never consulted (hourly Step 2 surveils the position anyway).
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=TestHourlyLadder._hourly_load_config(),
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: True,
+            ),
+            patch(
+                "gimmes.strategy.calendar.hourly_window",
+                TestHourlyLadder._dt_relative_window(1500),
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "hourly"
+
+    def test_position_cycle_clamped_to_next_hourly_open(self) -> None:
+        # Gap case: no hourly window now, position cycle fires but its
+        # timeout is clamped to the next hourly open.
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=_mock_popen()) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=TestHourlyLadder._hourly_load_config(),
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: False,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda *, lead_minutes: 900,
+            ),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "full"
+        assert mock_comm.call_args.kwargs["timeout"] == 900
+
+    def test_position_yields_sleep_when_gap_tiny(self) -> None:
+        # Tail shorter than a useful cycle: no subprocess spawns; the
+        # loop sleeps straight to the hourly open.
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch(
+                "gimmes.cli.load_config",
+                side_effect=TestHourlyLadder._hourly_load_config(),
+            ),
+            patch(
+                "gimmes.strategy.calendar.is_in_hourly_window",
+                lambda dt=None, *, lead_minutes: False,
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_hourly_open",
+                lambda *, lead_minutes: 60,
+            ),
+            patch(
+                "gimmes.cli._sleep_with_resting_sweep",
+                side_effect=KeyboardInterrupt,
+            ) as mock_sleep,
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        mock_popen.assert_not_called()
+        assert mock_sleep.call_args.args[1] == 60
+
+    def test_position_unclamped_when_hourly_disabled(self) -> None:
+        # Stock install (empty hourly_series): position windows behave
+        # exactly as before #755 — full cycle, full timeout.
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=_mock_popen()) as mock_popen,
+            patch(
+                "gimmes.cli._communicate_interruptible", return_value=b"",
+            ) as mock_comm,
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["GIMMES_CYCLE_TYPE"] == "full"
+        assert mock_comm.call_args.kwargs["timeout"] == 2700
