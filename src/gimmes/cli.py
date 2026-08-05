@@ -5551,7 +5551,11 @@ def _communicate_interruptible(
     closes the pipe and unblocks the daemon reader thread.
 
     Returns the captured stdout bytes.  Raises ``subprocess.TimeoutExpired``
-    if the subprocess has not finished within *timeout* seconds.
+    if the subprocess has not finished within *timeout* seconds; the
+    bytes read so far are attached as the exception's ``output`` so a
+    killed cycle still leaves its partial transcript (#761 — before
+    this, a timed-out cycle discarded everything it had streamed and
+    left no evidence of where it stalled).
     """
     import threading
     import time
@@ -5563,14 +5567,20 @@ def _communicate_interruptible(
 
     stdout = proc.stdout  # narrowed to IO[bytes] for the closure
 
-    output: list[bytes] = []
+    buf = bytearray()
+    buf_lock = threading.Lock()
     error: list[BaseException] = []
 
     def _reader() -> None:
+        # Chunked reads (not one blocking read-to-EOF) so the buffer
+        # holds everything streamed so far when the deadline fires.
         try:
-            data = stdout.read()
-            if data:
-                output.append(data)
+            while True:
+                data = stdout.read(65536)
+                if not data:
+                    break
+                with buf_lock:
+                    buf.extend(data)
         except BaseException as exc:
             error.append(exc)
 
@@ -5589,7 +5599,11 @@ def _communicate_interruptible(
         reader.join(timeout=min(poll_interval, remaining))
 
     if reader.is_alive():
-        raise subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
+        with buf_lock:
+            partial = bytes(buf)
+        raise subprocess.TimeoutExpired(
+            cmd=proc.args, timeout=timeout, output=partial,
+        )
 
     if error:
         raise error[0]
@@ -5606,7 +5620,66 @@ def _communicate_interruptible(
             "killing process group",
         )
         _kill_process_group(proc)
-    return b"".join(output)
+    return bytes(buf)
+
+
+def _classify_timeout_outcome(
+    db_path: Path,
+    cycle: int,
+    since_utc: datetime,
+) -> str:
+    """Classify a clamp-killed cycle from its activity_log trail (#761).
+
+    Returns one of:
+
+    - ``"complete"`` — the cycle logged its own completion marker before
+      the kill (it finished its work; only process exit was outrun).
+    - ``"trade_path_done"`` — the trade path concluded (Closer ran or
+      was explicitly skipped); the clamp truncated only post-trade
+      steps, which the deadline protocol already treats as sheddable.
+    - ``"failure"`` — neither marker exists, or the DB is unreadable.
+      Unreadable defaults to failure so the circuit breaker never loses
+      coverage to a telemetry problem.
+
+    The markers are the same activity_log rows operators already use to
+    diagnose timeouts by hand.  Rows are matched by their ``cycle``
+    column; ``since_utc`` additionally bounds the query so a same-
+    numbered cycle from an earlier loop run (fresh-DB restart) can
+    never match.
+    """
+    import sqlite3
+
+    since = since_utc.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=5,
+        )
+        try:
+            rows = conn.execute(
+                "SELECT message FROM activity_log"
+                " WHERE cycle = ? AND timestamp >= ?",
+                (cycle, since),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return "failure"
+
+    messages = [row[0] for row in rows]
+    if any(m.startswith(f"Cycle {cycle} complete") for m in messages):
+        return "complete"
+    trade_path_markers = (
+        "Closer executed",
+        "Closer skipped",
+        "Hourly 4c: dispatching Closer",
+    )
+    if any(
+        m.startswith(marker)
+        for m in messages
+        for marker in trade_path_markers
+    ):
+        return "trade_path_done"
+    return "failure"
 
 
 def _result_dict_to_text(data: dict[str, object]) -> bytes:
@@ -6032,6 +6105,29 @@ def _resolve_budget_cap(
     if config_value is not None:
         return config_value
     return default
+
+
+def _write_cycle_log(log_path: Path, raw: bytes) -> None:
+    """Write a cycle's stream-json transcript to its log file.
+
+    Shared by the success and timeout paths (#761) — a clamp-killed
+    cycle writes whatever it streamed before the kill, so stalls leave
+    a transcript instead of nothing.
+    """
+    try:
+        with open(log_path, "wb") as log_file:
+            log_file.write(_wrap_stream_json(raw))
+    except OSError:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "Failed to write cycle log to %s", log_path,
+            exc_info=True,
+        )
+        console.print(
+            f"[yellow]Warning: could not write log"
+            f" {log_path}[/yellow]"
+        )
 
 
 def _wrap_stream_json(raw: bytes) -> bytes:
@@ -6574,7 +6670,8 @@ def _autonomous_loop(
             # of being killed mid-review with nothing recorded.
             import datetime as _dl
 
-            _deadline = _dl.datetime.now(_dl.UTC) + _dl.timedelta(
+            _cycle_started_utc = _dl.datetime.now(_dl.UTC)
+            _deadline = _cycle_started_utc + _dl.timedelta(
                 seconds=effective_timeout,
             )
             env["GIMMES_CYCLE_DEADLINE"] = _deadline.strftime(
@@ -6612,19 +6709,7 @@ def _autonomous_loop(
                     )
                 finally:
                     _active_proc = None
-                try:
-                    with open(log_path, "wb") as log_file:
-                        log_file.write(_wrap_stream_json(stdout_bytes))
-                except OSError:
-                    import logging
-                    logging.getLogger("gimmes").warning(
-                        "Failed to write cycle log to %s", log_path,
-                        exc_info=True,
-                    )
-                    console.print(
-                        f"[yellow]Warning: could not write log"
-                        f" {log_path}[/yellow]"
-                    )
+                _write_cycle_log(log_path, stdout_bytes)
                 terminal_text = _extract_terminal_text(stdout_bytes)
                 sys.stdout.buffer.write(terminal_text)
                 sys.stdout.buffer.flush()
@@ -6692,12 +6777,40 @@ def _autonomous_loop(
                         break
                     continue
 
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as timeout_exc:
                 _kill_process_group(proc)
                 # Anthropic charged for the killed subprocess's tokens —
                 # count the session (#545 intent; the hourly clamp makes
                 # timeouts a routine outcome rather than an anomaly, #723)
                 budget_tracker.record_session_no_usage()
+                # #761: the partial transcript is the only evidence of
+                # where a stalled cycle spent its time — write it.
+                _write_cycle_log(log_path, timeout_exc.output or b"")
+                # #761: a clamp kill is not automatically a failure.
+                # c2134 logged "Cycle complete" 24s before its clamp;
+                # hourly clamp kills routinely truncate only sheddable
+                # post-trade steps. Only cycles whose trade path never
+                # concluded feed the circuit breaker.
+                outcome = _classify_timeout_outcome(
+                    config.db_path, cycle, _cycle_started_utc,
+                )
+                if outcome == "complete":
+                    consecutive_failures = 0
+                    console.print(
+                        f"[yellow]Cycle {cycle} completed but overran"
+                        f" the {effective_timeout}s clamp before"
+                        f" process exit — not counted as a failure"
+                        f" (#761)[/yellow]"
+                    )
+                    continue
+                if outcome == "trade_path_done":
+                    console.print(
+                        f"[yellow]Cycle {cycle} clamp-killed at"
+                        f" {effective_timeout}s after its trade path"
+                        f" concluded — post-trade steps truncated, not"
+                        f" counted as a failure (#761)[/yellow]"
+                    )
+                    continue
                 consecutive_failures += 1
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
