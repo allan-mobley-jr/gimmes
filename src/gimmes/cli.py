@@ -822,30 +822,6 @@ def validate(
     _run(_validate())
 
 
-def _depth_snapshot(
-    orderbook,  # type: ignore[no-untyped-def]
-    side: str,
-    limit_price: float,
-) -> tuple[int, int, float | None]:
-    """Displayed depth at order placement, in the ORDER's side terms (#762).
-
-    Returns ``(touch_qty, executable_within_limit, best_implied_ask)``:
-    contracts displayed at the best opposing level, contracts executable
-    at or under ``limit_price``, and the best implied ask price (None on
-    a one-sided book). Volume/OI pass the scanner's liquidity gates
-    while saying nothing about instantaneous depth at the limit — the
-    only number that governs the fill (a 686-contract order filled
-    1-of-686 at a 1-contract touch, 2026-08-04).
-    """
-    opposing = orderbook.no_bids if side == "yes" else orderbook.yes_bids
-    if not opposing:
-        return 0, 0, None
-    touch_qty = opposing[0].quantity
-    best_ask = round(1.0 - opposing[0].price, 2)
-    executable = orderbook.depth_at_price(limit_price, side)
-    return touch_qty, executable, best_ask
-
-
 @app.command(rich_help_panel="Trading")
 def order(
     ticker: str = typer.Argument(..., help="Market ticker"),
@@ -1338,12 +1314,17 @@ def order(
                     label = "[yellow]PAPER[/yellow] "
                 else:
                     # #762: depth telemetry wants the book even on the
-                    # real path — but a failed snapshot fetch must
-                    # never block a real order.
+                    # real path — but a failed OR SLOW snapshot fetch
+                    # must never delay a real, deadline-sensitive
+                    # order (the client's own timeout is 30s; 2s is
+                    # the most telemetry may cost pre-placement).
                     orderbook = None
                     if is_buy:
                         try:
-                            orderbook = await get_orderbook(client, ticker)
+                            async with asyncio.timeout(2):
+                                orderbook = await get_orderbook(
+                                    client, ticker,
+                                )
                         except Exception:
                             logger.debug(
                                 "Depth snapshot fetch failed (#762)",
@@ -1434,8 +1415,8 @@ def order(
 
                     from gimmes.store.queries import insert_activity
 
-                    touch_qty, executable, best_ask = _depth_snapshot(
-                        orderbook, side, final_price,
+                    touch_qty, executable, best_ask = (
+                        orderbook.depth_snapshot(side, final_price)
                     )
                     shown_ask = (
                         f"${best_ask:.2f}" if best_ask is not None
@@ -1447,10 +1428,26 @@ def order(
                         f" {executable} (sized {final_count})"
                         f" (#762)[/dim]"
                     )
-                    _session_env = _os.getenv("GIMMES_SESSION_ID")
+                    # Malformed env degrades ONE field, never the row —
+                    # a bad export is session-wide, and int() raising
+                    # here would silently kill the whole telemetry
+                    # stream for that session (review-found).
+                    try:
+                        _cycle_env = int(
+                            _os.getenv("GIMMES_CYCLE", "0") or 0,
+                        )
+                    except ValueError:
+                        _cycle_env = 0
+                    try:
+                        _session_raw = _os.getenv("GIMMES_SESSION_ID")
+                        _session_env = (
+                            int(_session_raw) if _session_raw else None
+                        )
+                    except ValueError:
+                        _session_env = None
                     await insert_activity(
                         db,
-                        cycle=int(_os.getenv("GIMMES_CYCLE", "0") or 0),
+                        cycle=_cycle_env,
                         agent=agent,
                         phase="info",
                         message=(
@@ -1468,10 +1465,9 @@ def order(
                             "executable_within_limit": executable,
                             "best_implied_ask": best_ask,
                             "order_status": result.status,
+                            "order_id": result.order_id,
                         }),
-                        session_id=(
-                            int(_session_env) if _session_env else None
-                        ),
+                        session_id=_session_env,
                     )
                 except Exception:
                     logger.error(
