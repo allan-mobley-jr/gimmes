@@ -113,3 +113,26 @@ class Orderbook(BaseModel):
                 if implied_ask <= price:
                     total += level.quantity
         return total
+
+    def depth_snapshot(
+        self, side: str, limit_price: float,
+    ) -> tuple[int, int, float | None]:
+        """Displayed depth for a buyer of ``side``, in that side's terms (#762).
+
+        Returns ``(touch_qty, executable_within_limit, best_implied_ask)``:
+        contracts displayed at the best opposing level, contracts
+        executable at or under ``limit_price``, and the best implied ask
+        price (None on a one-sided book). The touch is found by best
+        PRICE, not array position — the parser copies the API arrays
+        verbatim and guarantees no ordering (review-found: a best-last
+        book would otherwise report the far end of the ladder as the
+        touch, inverting the thin-touch signal this exists to record).
+        """
+        opposing = self.no_bids if side == "yes" else self.yes_bids
+        if not opposing:
+            return 0, 0, None
+        best = max(opposing, key=lambda level: level.price)
+        touch_qty = best.quantity
+        best_ask = round(1.0 - best.price, 2)
+        executable = self.depth_at_price(limit_price, side)
+        return touch_qty, executable, best_ask

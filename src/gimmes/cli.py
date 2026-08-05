@@ -1313,6 +1313,23 @@ def order(
                     result = await broker.create_order(params, orderbook, fees=fees)
                     label = "[yellow]PAPER[/yellow] "
                 else:
+                    # #762: depth telemetry wants the book even on the
+                    # real path — but a failed OR SLOW snapshot fetch
+                    # must never delay a real, deadline-sensitive
+                    # order (the client's own timeout is 30s; 2s is
+                    # the most telemetry may cost pre-placement).
+                    orderbook = None
+                    if is_buy:
+                        try:
+                            async with asyncio.timeout(2):
+                                orderbook = await get_orderbook(
+                                    client, ticker,
+                                )
+                        except Exception:
+                            logger.debug(
+                                "Depth snapshot fetch failed (#762)",
+                                exc_info=True,
+                            )
                     from gimmes.kalshi.orders import create_order
 
                     result = await create_order(client, params)
@@ -1387,6 +1404,76 @@ def order(
                     logger.error("Failed to log error to DB", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
                 raise typer.Exit(1)
+
+            # #762: record displayed depth for every BUY — including
+            # canceled no-fills, which are exactly the thin-touch case
+            # the telemetry exists to measure. Never blocks the order
+            # flow; failures degrade to an error log line.
+            if is_buy and orderbook is not None:
+                try:
+                    import os as _os
+
+                    from gimmes.store.queries import insert_activity
+
+                    touch_qty, executable, best_ask = (
+                        orderbook.depth_snapshot(side, final_price)
+                    )
+                    shown_ask = (
+                        f"${best_ask:.2f}" if best_ask is not None
+                        else "one-sided"
+                    )
+                    console.print(
+                        f"[dim]Depth: touch {touch_qty} @ {shown_ask},"
+                        f" executable within ${final_price:.2f} limit:"
+                        f" {executable} (sized {final_count})"
+                        f" (#762)[/dim]"
+                    )
+                    # Malformed env degrades ONE field, never the row —
+                    # a bad export is session-wide, and int() raising
+                    # here would silently kill the whole telemetry
+                    # stream for that session (review-found).
+                    try:
+                        _cycle_env = int(
+                            _os.getenv("GIMMES_CYCLE", "0") or 0,
+                        )
+                    except ValueError:
+                        _cycle_env = 0
+                    try:
+                        _session_raw = _os.getenv("GIMMES_SESSION_ID")
+                        _session_env = (
+                            int(_session_raw) if _session_raw else None
+                        )
+                    except ValueError:
+                        _session_env = None
+                    await insert_activity(
+                        db,
+                        cycle=_cycle_env,
+                        agent=agent,
+                        phase="info",
+                        message=(
+                            f"Depth: {ticker} sized {final_count}"
+                            f" {side.upper()} @ ${final_price:.2f} —"
+                            f" touch {touch_qty}, executable-within-"
+                            f"limit {executable} (#762)"
+                        ),
+                        details=json.dumps({
+                            "ticker": ticker,
+                            "side": side,
+                            "sized": final_count,
+                            "limit_price": final_price,
+                            "touch_qty": touch_qty,
+                            "executable_within_limit": executable,
+                            "best_implied_ask": best_ask,
+                            "order_status": result.status,
+                            "order_id": result.order_id,
+                        }),
+                        session_id=_session_env,
+                    )
+                except Exception:
+                    logger.error(
+                        "Depth telemetry failed for %s (#762)",
+                        ticker, exc_info=True,
+                    )
 
             if result.status == "canceled":
                 # #690: a canceled order placed NOTHING — green

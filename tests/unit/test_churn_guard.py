@@ -382,10 +382,6 @@ class TestSellRoundtripWarning:
 
         with (
             patch(
-                "gimmes.store.queries.get_last_entry_trade",
-                AsyncMock(return_value=open_row),
-            ),
-            patch(
                 "gimmes.store.queries.get_entry_analytics",
                 AsyncMock(return_value=None),
             ),
@@ -394,8 +390,12 @@ class TestSellRoundtripWarning:
                 AsyncMock(return_value=None),
             ),
         ):
+            # last_entry rides the harness param — an outer
+            # get_last_entry_trade patch would be overridden by the
+            # harness's own inner patch (#762 harness change).
             result, console, insert_error = h._run_order_cli(
                 broker, sync_side_effect=_sync,
+                last_entry=open_row,
                 cli_args=[
                     "order", "TEST-TICKER", "--action", "sell",
                     "--side", "yes", "--count", "10",
