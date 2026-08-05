@@ -8,12 +8,14 @@ against a 1-contract touch.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from gimmes.models.market import Orderbook, OrderbookLevel
 
 
 def _book(
-    yes_bids: list[tuple[float, int]] = (),
-    no_bids: list[tuple[float, int]] = (),
+    yes_bids: Sequence[tuple[float, int]] = (),
+    no_bids: Sequence[tuple[float, int]] = (),
 ) -> Orderbook:
     return Orderbook(
         ticker="KXTEST-MKT",

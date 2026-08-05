@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from gimmes.models.error import ErrorCategory, ErrorSeverity
+from gimmes.models.market import Orderbook
 from gimmes.models.order import Order, OrderAction, OrderSide
 from gimmes.models.portfolio import Position
 from gimmes.models.trade import TradeDecision
@@ -141,8 +142,11 @@ def _run_order_cli(
         patch(
             "gimmes.kalshi.markets.get_orderbook",
             AsyncMock(
+                # A real (empty) book by default: a MagicMock would
+                # shunt every unrelated BUY test through the #762
+                # telemetry exception path with logger.error noise.
                 return_value=orderbook if orderbook is not None
-                else MagicMock(),
+                else Orderbook(ticker="TEST-TICKER"),
                 side_effect=orderbook_side_effect,
             ),
         ),
