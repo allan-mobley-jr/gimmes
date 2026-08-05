@@ -96,7 +96,7 @@ def _run_order_cli(
     snapshot_mock=None, validation=None, cli_args=None,
     last_close=None, last_close_effect=None, config=None,
     orderbook=None, orderbook_side_effect=None,
-    insert_activity_mock=None,
+    insert_activity_mock=None, last_entry=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -174,11 +174,13 @@ def _run_order_cli(
             ),
         ),
         # #661 sell path: round-trip churn check reads the last entry;
-        # None keeps it out of unrelated tests (mocked DB rows are not
-        # dict()-able).
+        # None default keeps it out of unrelated tests (mocked DB rows
+        # are not dict()-able). Patched INSIDE the harness, so callers
+        # needing a row must pass `last_entry`, not an outer patch —
+        # this one starts later and wins.
         patch(
             "gimmes.store.queries.get_last_entry_trade",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value=last_entry),
         ),
     ]
 
