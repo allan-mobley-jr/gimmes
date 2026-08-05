@@ -5535,6 +5535,8 @@ def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
 def _communicate_interruptible(
     proc: subprocess.Popen[bytes],
     timeout: float,
+    *,
+    kill_on_timeout: bool = False,
 ) -> bytes:
     """Read subprocess stdout in a background thread so the main thread
     remains interruptible by KeyboardInterrupt.
@@ -5548,7 +5550,12 @@ def _communicate_interruptible(
 
     The caller is responsible for killing the subprocess on
     ``TimeoutExpired`` or ``KeyboardInterrupt``; killing the process
-    closes the pipe and unblocks the daemon reader thread.
+    closes the pipe and unblocks the daemon reader thread.  With
+    ``kill_on_timeout=True`` the deadline path kills the process group
+    itself BEFORE snapshotting, so bytes the child flushes as it dies
+    — the closest evidence to the stall point — make it into the
+    snapshot (review-found; the caller-side kill happens after the
+    raise, too late for the buffer).
 
     Returns the captured stdout bytes.  Raises ``subprocess.TimeoutExpired``
     if the subprocess has not finished within *timeout* seconds; the
@@ -5599,6 +5606,12 @@ def _communicate_interruptible(
         reader.join(timeout=min(poll_interval, remaining))
 
     if reader.is_alive():
+        if kill_on_timeout:
+            # Kill first: process death closes the pipe, the reader
+            # drains the final flushed bytes and hits EOF — then the
+            # snapshot includes the transcript's diagnostic tail.
+            _kill_process_group(proc)
+            reader.join(timeout=5)
         with buf_lock:
             partial = bytes(buf)
         raise subprocess.TimeoutExpired(
@@ -5623,6 +5636,19 @@ def _communicate_interruptible(
     return bytes(buf)
 
 
+# #761 clamp-kill classification markers. Both are MANDATED
+# log-activity templates in the agent prompts — "Cycle $GIMMES_CYCLE
+# complete" (caddie-master.md Step 8) and "Closer executed N trades"
+# (closer.md completion) — and both are pinned by drift-guard tests in
+# tests/unit/test_agent_prompts.py so a prompt rewording cannot
+# silently degrade every clamp kill back to "failure". Deliberately
+# NOT in the set: "Hourly 4c: dispatching Closer" fires BEFORE the
+# Closer runs — a Closer hanging mid-order-placement must classify as
+# a failure (review-found breaker blind spot).
+CYCLE_COMPLETE_MARKER_TEMPLATE = "Cycle {cycle} complete"
+CLOSER_CONCLUDED_MARKER_PREFIX = "Closer executed"
+
+
 def _classify_timeout_outcome(
     db_path: Path,
     cycle: int,
@@ -5634,9 +5660,9 @@ def _classify_timeout_outcome(
 
     - ``"complete"`` — the cycle logged its own completion marker before
       the kill (it finished its work; only process exit was outrun).
-    - ``"trade_path_done"`` — the trade path concluded (Closer ran or
-      was explicitly skipped); the clamp truncated only post-trade
-      steps, which the deadline protocol already treats as sheddable.
+    - ``"trade_path_done"`` — the Closer concluded ("Closer executed N
+      trades" logged); the clamp truncated only post-trade steps, which
+      the deadline protocol already treats as sheddable.
     - ``"failure"`` — neither marker exists, or the DB is unreadable.
       Unreadable defaults to failure so the circuit breaker never loses
       coverage to a telemetry problem.
@@ -5663,20 +5689,23 @@ def _classify_timeout_outcome(
         finally:
             conn.close()
     except sqlite3.Error:
+        # Loud degradation (#659 rule): a systematically-broken
+        # classifier silently reverts every clamp kill to pre-#761
+        # breaker behavior — the operator must be able to see that.
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "Clamp-kill classification failed for cycle %s —"
+            " counting as failure (#761)", cycle, exc_info=True,
+        )
         return "failure"
 
     messages = [row[0] for row in rows]
-    if any(m.startswith(f"Cycle {cycle} complete") for m in messages):
+    complete_marker = CYCLE_COMPLETE_MARKER_TEMPLATE.format(cycle=cycle)
+    if any(m.startswith(complete_marker) for m in messages):
         return "complete"
-    trade_path_markers = (
-        "Closer executed",
-        "Closer skipped",
-        "Hourly 4c: dispatching Closer",
-    )
     if any(
-        m.startswith(marker)
-        for m in messages
-        for marker in trade_path_markers
+        m.startswith(CLOSER_CONCLUDED_MARKER_PREFIX) for m in messages
     ):
         return "trade_path_done"
     return "failure"
@@ -6309,6 +6338,9 @@ def _autonomous_loop(
     cycle = get_max_global_cycle(config.db_path)
     cycles_run = 0
     consecutive_failures = 0
+    # #761: unbroken runs of trade-path-done clamp kills (post-trade
+    # steps shed every cycle) warn without feeding the breaker.
+    consecutive_trade_path_kills = 0
     session_status = "stopped"
 
     # Hourly-ladder state (#723): track the single active window only —
@@ -6706,6 +6738,7 @@ def _autonomous_loop(
                 try:
                     stdout_bytes = _communicate_interruptible(
                         proc, timeout=effective_timeout,
+                        kill_on_timeout=True,
                     )
                 finally:
                     _active_proc = None
@@ -6778,6 +6811,8 @@ def _autonomous_loop(
                     continue
 
             except subprocess.TimeoutExpired as timeout_exc:
+                # Idempotent backstop — the helper already killed the
+                # group on the kill_on_timeout path.
                 _kill_process_group(proc)
                 # Anthropic charged for the killed subprocess's tokens —
                 # count the session (#545 intent; the hourly clamp makes
@@ -6796,20 +6831,40 @@ def _autonomous_loop(
                 )
                 if outcome == "complete":
                     consecutive_failures = 0
+                    consecutive_trade_path_kills = 0
                     console.print(
                         f"[yellow]Cycle {cycle} completed but overran"
                         f" the {effective_timeout}s clamp before"
                         f" process exit — not counted as a failure"
                         f" (#761)[/yellow]"
                     )
+                    # A kill path must never respawn hot: same
+                    # inter-cycle pause (and rest-on-miss sweep
+                    # window) as a normal completion.
+                    _sleep_with_resting_sweep(config, pause_seconds)
                     continue
                 if outcome == "trade_path_done":
+                    consecutive_trade_path_kills += 1
                     console.print(
                         f"[yellow]Cycle {cycle} clamp-killed at"
                         f" {effective_timeout}s after its trade path"
                         f" concluded — post-trade steps truncated, not"
                         f" counted as a failure (#761)[/yellow]"
                     )
+                    if consecutive_trade_path_kills >= 3:
+                        # Not a breaker matter (#746 deems post-trade
+                        # steps sheddable), but an UNBROKEN run of
+                        # sheds is a capacity regression the operator
+                        # should see.
+                        console.print(
+                            f"[yellow bold]"
+                            f"{consecutive_trade_path_kills}"
+                            f" consecutive clamp kills have truncated"
+                            f" post-trade steps — surveillance is"
+                            f" being shed every cycle (#761)"
+                            f"[/yellow bold]"
+                        )
+                    _sleep_with_resting_sweep(config, pause_seconds)
                     continue
                 consecutive_failures += 1
                 console.print(
@@ -6841,6 +6896,7 @@ def _autonomous_loop(
                 continue
             else:
                 consecutive_failures = 0
+                consecutive_trade_path_kills = 0
 
             if max_cycles > 0 and cycles_run >= max_cycles:
                 break
