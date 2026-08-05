@@ -531,7 +531,7 @@ class TestAutonomousLoop:
         """A TimeoutExpired cycle counts as a failure but the loop continues."""
         comm_count = 0
 
-        def comm_side_effect(proc, timeout):
+        def comm_side_effect(proc, timeout, **kwargs):
             nonlocal comm_count
             comm_count += 1
             if comm_count == 1:
@@ -951,7 +951,7 @@ class TestAutonomousLoop:
 
         captured = []
 
-        def comm_side_effect(proc, timeout):
+        def comm_side_effect(proc, timeout, **kwargs):
             captured.append(signal.getsignal(signal.SIGINT))
             return b""
 
@@ -2933,7 +2933,7 @@ class TestHourlyLadder:
         from gimmes.config import GIMMES_HOME
         budget_path = GIMMES_HOME / "budget.json"
 
-        def comm_side_effect(proc, timeout):  # type: ignore[no-untyped-def]
+        def comm_side_effect(proc, timeout, **kwargs):  # type: ignore[no-untyped-def]
             raise _subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
 
         with (
