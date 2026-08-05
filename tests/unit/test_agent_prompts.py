@@ -3042,3 +3042,36 @@ def test_preload_boilerplate_definition() -> None:
     assert "Near-identical lines ACROSS a ladder's rungs are EXPECTED" in cm_text
     assert "never against its siblings" in cm_text
     assert "pre-filter and review-reuse deaths never confer" in cm_text
+
+
+def test_clamp_kill_classification_markers_pinned() -> None:
+    """#761: the loop classifies clamp-killed cycles from two mandated
+    activity markers — "Cycle $GIMMES_CYCLE complete" (Caddie Master
+    Step 8) and "Closer executed N trades" (Closer completion). If a
+    prompt rewording drops either template, every clamp kill silently
+    degrades back to a breaker failure, the exact false-positive #761
+    removes. The cli constants and the prompt templates must agree."""
+    from gimmes.cli import (
+        CLOSER_CONCLUDED_MARKER_PREFIX,
+        CYCLE_COMPLETE_MARKER_TEMPLATE,
+    )
+
+    cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
+    closer_text = (AGENTS_DIR / "closer.md").read_text()
+
+    # The prompt templates the agents are mandated to log
+    prompt_complete = CYCLE_COMPLETE_MARKER_TEMPLATE.format(
+        cycle="$GIMMES_CYCLE",
+    )
+    assert f'--message "{prompt_complete}"' in cm_text, (
+        "caddie-master.md must mandate the Step 8 completion marker"
+        " the #761 classifier keys on"
+    )
+    assert '--message "Closer executed N trades"' in closer_text, (
+        "closer.md must mandate the Closer completion marker the #761"
+        " classifier keys on"
+    )
+    # The classifier prefix must match the template's fixed prefix
+    assert "Closer executed N trades".startswith(
+        CLOSER_CONCLUDED_MARKER_PREFIX,
+    )

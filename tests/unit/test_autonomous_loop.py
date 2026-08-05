@@ -16,6 +16,7 @@ from gimmes.cli import (
     _autonomous_loop,
     _check_code_staleness,
     _check_remote_staleness,
+    _classify_timeout_outcome,
     _communicate_interruptible,
     _detect_api_error,
     _detect_rate_limit,
@@ -37,7 +38,9 @@ def _make_future_dt() -> datetime:
 def _mock_popen(returncode: int = 0, output: bytes = b"") -> MagicMock:
     """Return a mock Popen instance with the given returncode and stdout output."""
     mock_proc = MagicMock()
-    mock_proc.stdout.read.return_value = output
+    # Chunked-read semantics (#761): first read returns the output,
+    # the next returns b"" (EOF) — mirroring a real pipe.
+    mock_proc.stdout.read.side_effect = [output, b""]
     mock_proc.returncode = returncode
     mock_proc.pid = 12345
     mock_proc.args = ["claude"]
@@ -528,7 +531,7 @@ class TestAutonomousLoop:
         """A TimeoutExpired cycle counts as a failure but the loop continues."""
         comm_count = 0
 
-        def comm_side_effect(proc, timeout):
+        def comm_side_effect(proc, timeout, **kwargs):
             nonlocal comm_count
             comm_count += 1
             if comm_count == 1:
@@ -550,6 +553,276 @@ class TestAutonomousLoop:
         assert mock_popen.call_count == 2
         output = capsys.readouterr().out
         assert "timed out" in output
+
+    def test_timeout_writes_partial_cycle_log(self, tmp_path) -> None:
+        """A clamp-killed cycle writes the bytes it streamed (#761)."""
+        partial = b'{"step": "conferral"}'
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700, output=partial,
+                ),
+            ),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1,
+                max_consecutive_failures=1,
+            )
+
+        log_file = tmp_path / "logs" / "cycle-001.json"
+        assert log_file.exists()
+        assert log_file.read_bytes() == partial
+
+    def test_timeout_after_complete_marker_resets_failures(
+        self, tmp_path, capsys,
+    ) -> None:
+        """c2134 shape (#761): 'Cycle N complete' logged before the
+        clamp — the kill is a process-exit race, not a failure."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db", [(1, "Cycle 1 complete", _ts(300))],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1, pause_seconds=0,
+                max_consecutive_failures=1,
+            )
+
+        output = capsys.readouterr().out
+        assert "completed but overran" in output
+        assert "Circuit breaker tripped" not in output
+
+    def test_complete_classified_timeout_resets_accumulated_failures(
+        self, tmp_path, capsys,
+    ) -> None:
+        """The reset is only observable with a NONZERO counter: cycles
+        1 and 3 are plain failures, cycle 2 classifies complete — with
+        max=2 the breaker never trips because the counter went
+        1 → 0 → 1, not 1 → 1 → 2 (#761)."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db", [(2, "Cycle 2 complete", _ts(300))],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=3, pause_seconds=0,
+                max_consecutive_failures=2,
+            )
+
+        output = capsys.readouterr().out
+        assert output.count("failure 1/2") == 2
+        assert "failure 2/2" not in output
+        assert "Circuit breaker tripped" not in output
+
+    def test_timeout_after_trade_path_not_counted(
+        self, tmp_path, capsys,
+    ) -> None:
+        """Hourly clamp shape (#761): Closer concluded, clamp truncated
+        only post-trade steps — breaker untouched."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [(1, "Closer executed 1 trades", _ts(300))],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=1740,
+                ),
+            ),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1, pause_seconds=0,
+                max_consecutive_failures=1,
+            )
+
+        # Rich wraps console lines — normalize before phrase asserts
+        output = " ".join(capsys.readouterr().out.split())
+        assert "post-trade steps truncated" in output
+        assert "not counted as a failure" in output
+        assert "Circuit breaker tripped" not in output
+
+    def test_trade_path_done_preserves_failure_counter(
+        self, tmp_path, capsys,
+    ) -> None:
+        """trade_path_done must PRESERVE the counter, not reset it:
+        failure (1/2) → trade-path kill (unchanged) → failure trips at
+        2/2 (#761). Fails if the branch resets like 'complete'."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [(2, "Closer executed 1 trades", _ts(300))],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=3, pause_seconds=0,
+                max_consecutive_failures=2,
+            )
+
+        output = capsys.readouterr().out
+        assert "failure 2/2" in output
+        assert "Circuit breaker tripped" in output
+
+    def test_failure_breaks_trade_path_kill_run(
+        self, tmp_path, capsys,
+    ) -> None:
+        """A real failure resets the unbroken-run counter: TPD, TPD,
+        failure, TPD → never reaches 3 consecutive, no shed warning
+        (Copilot-review-found on #763)."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [
+                (1, "Closer executed 1 trades", _ts(300)),
+                (2, "Closer executed 1 trades", _ts(300)),
+                (4, "Closer executed 1 trades", _ts(300)),
+            ],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=4, pause_seconds=0,
+                max_consecutive_failures=5,
+            )
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert "consecutive clamp kills have truncated" not in output
+
+    def test_three_consecutive_trade_path_kills_warn(
+        self, tmp_path, capsys,
+    ) -> None:
+        """An UNBROKEN run of 3 trade-path kills prints the shed
+        warning — post-trade surveillance shed every cycle is a
+        capacity regression the operator must see (#761)."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [
+                (1, "Closer executed 1 trades", _ts(300)),
+                (2, "Closer executed 1 trades", _ts(300)),
+                (3, "Closer executed 1 trades", _ts(300)),
+            ],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=3, pause_seconds=0,
+                max_consecutive_failures=5,
+            )
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert "3 consecutive clamp kills have truncated" in output
+
+    def test_timeout_without_output_writes_empty_log(
+        self, tmp_path,
+    ) -> None:
+        """Old-style TimeoutExpired (no output attached) still writes
+        the log file — empty, not absent (#761)."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=1, pause_seconds=0,
+                max_consecutive_failures=1,
+            )
+
+        log_file = tmp_path / "logs" / "cycle-001.json"
+        assert log_file.exists()
+        assert log_file.read_bytes() == b""
 
     def test_timeout_feeds_circuit_breaker(self, capsys) -> None:
         """Consecutive timeouts trip the circuit breaker."""
@@ -754,7 +1027,7 @@ class TestAutonomousLoop:
 
         captured = []
 
-        def comm_side_effect(proc, timeout):
+        def comm_side_effect(proc, timeout, **kwargs):
             captured.append(signal.getsignal(signal.SIGINT))
             return b""
 
@@ -946,12 +1219,66 @@ class TestCommunicateInterruptible:
         block = threading.Event()
         mock_proc = MagicMock()
         mock_proc.args = ["claude"]
-        mock_proc.stdout.read = lambda: (block.wait(), b"")[-1]
+        mock_proc.stdout.read = lambda *_: (block.wait(), b"")[-1]
 
         with pytest.raises(_subprocess.TimeoutExpired):
             _communicate_interruptible(mock_proc, timeout=0.1)
 
         block.set()  # Let daemon thread exit cleanly
+
+    def test_timeout_attaches_partial_output(self) -> None:
+        """Bytes streamed before the deadline ride the exception (#761)."""
+        import threading
+
+        block = threading.Event()
+        chunks = [b'{"step": "research"}\n']
+
+        def _read(*_):
+            if chunks:
+                return chunks.pop(0)
+            block.wait()
+            return b""
+
+        mock_proc = MagicMock()
+        mock_proc.args = ["claude"]
+        mock_proc.stdout.read = _read
+
+        with pytest.raises(_subprocess.TimeoutExpired) as excinfo:
+            _communicate_interruptible(mock_proc, timeout=0.3)
+
+        block.set()
+        assert excinfo.value.output == b'{"step": "research"}\n'
+
+    def test_timeout_accumulates_multiple_chunks(self) -> None:
+        """Chunks must ACCUMULATE, not overwrite (#761)."""
+        import threading
+
+        block = threading.Event()
+        chunks = [b'{"a": 1}\n', b'{"b": 2}\n']
+
+        def _read(*_):
+            if chunks:
+                return chunks.pop(0)
+            block.wait()
+            return b""
+
+        mock_proc = MagicMock()
+        mock_proc.args = ["claude"]
+        mock_proc.stdout.read = _read
+
+        with pytest.raises(_subprocess.TimeoutExpired) as excinfo:
+            _communicate_interruptible(mock_proc, timeout=0.3)
+
+        block.set()
+        assert excinfo.value.output == b'{"a": 1}\n{"b": 2}\n'
+
+    def test_success_concatenates_chunks(self) -> None:
+        mock_proc = _mock_popen()
+        mock_proc.stdout.read.side_effect = [b"cycle ", b"output", b""]
+
+        result = _communicate_interruptible(mock_proc, timeout=10)
+
+        assert result == b"cycle output"
 
     def test_raises_when_reader_hits_os_error(self) -> None:
         """Exceptions from proc.stdout.read() propagate to the caller."""
@@ -983,6 +1310,123 @@ class TestCommunicateInterruptible:
             result = _communicate_interruptible(mock_proc, timeout=2700)
 
         assert result == b"cycle output"
+
+
+# ---------------------------------------------------------------------------
+# _classify_timeout_outcome (#761)
+# ---------------------------------------------------------------------------
+
+
+def _seed_activity_log(
+    db_path: Path, rows: list[tuple[int, str, str]],
+) -> None:
+    """Create a minimal activity_log and insert (cycle, message, ts) rows."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle INTEGER NOT NULL DEFAULT 0,
+            agent TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '',
+            timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+        )"""
+    )
+    conn.executemany(
+        "INSERT INTO activity_log (cycle, message, timestamp)"
+        " VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _ts(offset_seconds: int) -> str:
+    """UTC activity_log timestamp string offset from now."""
+    return (
+        datetime.now(UTC) + timedelta(seconds=offset_seconds)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class TestClassifyTimeoutOutcome:
+    """#761: clamp kills are classified from the cycle's own
+    activity_log trail — completed cycles and concluded trade paths
+    must not feed the circuit breaker."""
+
+    @pytest.fixture()
+    def since(self) -> datetime:
+        return datetime.now(UTC) - timedelta(seconds=1)
+
+    def test_complete_marker(self, tmp_path, since) -> None:
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(
+            db, [(7, "Cycle 7 complete [DEADLINE-SHED: Step 2]", _ts(60))],
+        )
+        assert _classify_timeout_outcome(db, 7, since) == "complete"
+
+    @pytest.mark.parametrize("marker", [
+        "Closer executed 1 trades",
+        "Closer executed 0 trades",
+    ])
+    def test_closer_concluded_markers(
+        self, tmp_path, since, marker,
+    ) -> None:
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(db, [(7, marker, _ts(60))])
+        assert (
+            _classify_timeout_outcome(db, 7, since) == "trade_path_done"
+        )
+
+    def test_dispatch_marker_alone_is_failure(self, tmp_path, since) -> None:
+        # "Hourly 4c: dispatching Closer" fires BEFORE the Closer runs
+        # — a Closer hanging mid-order-placement must stay a failure,
+        # or the breaker goes blind to a permanently hanging Closer
+        # (review-found).
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(
+            db, [(7, "Hourly 4c: dispatching Closer", _ts(60))],
+        )
+        assert _classify_timeout_outcome(db, 7, since) == "failure"
+
+    def test_complete_outranks_trade_path(self, tmp_path, since) -> None:
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(db, [
+            (7, "Closer executed 1 trades", _ts(50)),
+            (7, "Cycle 7 complete", _ts(60)),
+        ])
+        assert _classify_timeout_outcome(db, 7, since) == "complete"
+
+    def test_no_markers_is_failure(self, tmp_path, since) -> None:
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(
+            db, [(7, "Monitor checking open positions", _ts(60))],
+        )
+        assert _classify_timeout_outcome(db, 7, since) == "failure"
+
+    def test_other_cycles_markers_do_not_match(
+        self, tmp_path, since,
+    ) -> None:
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(db, [(6, "Cycle 6 complete", _ts(60))])
+        assert _classify_timeout_outcome(db, 7, since) == "failure"
+
+    def test_marker_from_before_this_run_is_ignored(
+        self, tmp_path, since,
+    ) -> None:
+        # Fresh-DB restart guard: a same-numbered cycle from an earlier
+        # loop run sits BEFORE since_utc and must not match.
+        db = tmp_path / "gimmes.db"
+        _seed_activity_log(db, [(7, "Cycle 7 complete", _ts(-3600))])
+        assert _classify_timeout_outcome(db, 7, since) == "failure"
+
+    def test_unreadable_db_is_failure(self, tmp_path, since) -> None:
+        # Conservative default: telemetry problems never blind the
+        # circuit breaker.
+        missing = tmp_path / "nope.db"
+        assert _classify_timeout_outcome(missing, 7, since) == "failure"
 
 
 # ---------------------------------------------------------------------------
@@ -2565,7 +3009,7 @@ class TestHourlyLadder:
         from gimmes.config import GIMMES_HOME
         budget_path = GIMMES_HOME / "budget.json"
 
-        def comm_side_effect(proc, timeout):  # type: ignore[no-untyped-def]
+        def comm_side_effect(proc, timeout, **kwargs):  # type: ignore[no-untyped-def]
             raise _subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout)
 
         with (
