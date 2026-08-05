@@ -822,6 +822,30 @@ def validate(
     _run(_validate())
 
 
+def _depth_snapshot(
+    orderbook,  # type: ignore[no-untyped-def]
+    side: str,
+    limit_price: float,
+) -> tuple[int, int, float | None]:
+    """Displayed depth at order placement, in the ORDER's side terms (#762).
+
+    Returns ``(touch_qty, executable_within_limit, best_implied_ask)``:
+    contracts displayed at the best opposing level, contracts executable
+    at or under ``limit_price``, and the best implied ask price (None on
+    a one-sided book). Volume/OI pass the scanner's liquidity gates
+    while saying nothing about instantaneous depth at the limit — the
+    only number that governs the fill (a 686-contract order filled
+    1-of-686 at a 1-contract touch, 2026-08-04).
+    """
+    opposing = orderbook.no_bids if side == "yes" else orderbook.yes_bids
+    if not opposing:
+        return 0, 0, None
+    touch_qty = opposing[0].quantity
+    best_ask = round(1.0 - opposing[0].price, 2)
+    executable = orderbook.depth_at_price(limit_price, side)
+    return touch_qty, executable, best_ask
+
+
 @app.command(rich_help_panel="Trading")
 def order(
     ticker: str = typer.Argument(..., help="Market ticker"),
@@ -1313,6 +1337,18 @@ def order(
                     result = await broker.create_order(params, orderbook, fees=fees)
                     label = "[yellow]PAPER[/yellow] "
                 else:
+                    # #762: depth telemetry wants the book even on the
+                    # real path — but a failed snapshot fetch must
+                    # never block a real order.
+                    orderbook = None
+                    if is_buy:
+                        try:
+                            orderbook = await get_orderbook(client, ticker)
+                        except Exception:
+                            logger.debug(
+                                "Depth snapshot fetch failed (#762)",
+                                exc_info=True,
+                            )
                     from gimmes.kalshi.orders import create_order
 
                     result = await create_order(client, params)
@@ -1387,6 +1423,61 @@ def order(
                     logger.error("Failed to log error to DB", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
                 raise typer.Exit(1)
+
+            # #762: record displayed depth for every BUY — including
+            # canceled no-fills, which are exactly the thin-touch case
+            # the telemetry exists to measure. Never blocks the order
+            # flow; failures degrade to an error log line.
+            if is_buy and orderbook is not None:
+                try:
+                    import os as _os
+
+                    from gimmes.store.queries import insert_activity
+
+                    touch_qty, executable, best_ask = _depth_snapshot(
+                        orderbook, side, final_price,
+                    )
+                    shown_ask = (
+                        f"${best_ask:.2f}" if best_ask is not None
+                        else "one-sided"
+                    )
+                    console.print(
+                        f"[dim]Depth: touch {touch_qty} @ {shown_ask},"
+                        f" executable within ${final_price:.2f} limit:"
+                        f" {executable} (sized {final_count})"
+                        f" (#762)[/dim]"
+                    )
+                    _session_env = _os.getenv("GIMMES_SESSION_ID")
+                    await insert_activity(
+                        db,
+                        cycle=int(_os.getenv("GIMMES_CYCLE", "0") or 0),
+                        agent=agent,
+                        phase="info",
+                        message=(
+                            f"Depth: {ticker} sized {final_count}"
+                            f" {side.upper()} @ ${final_price:.2f} —"
+                            f" touch {touch_qty}, executable-within-"
+                            f"limit {executable} (#762)"
+                        ),
+                        details=json.dumps({
+                            "ticker": ticker,
+                            "side": side,
+                            "sized": final_count,
+                            "limit_price": final_price,
+                            "touch_qty": touch_qty,
+                            "executable_within_limit": executable,
+                            "best_implied_ask": best_ask,
+                            "order_status": result.status,
+                        }),
+                        session_id=(
+                            int(_session_env) if _session_env else None
+                        ),
+                    )
+                except Exception:
+                    logger.error(
+                        "Depth telemetry failed for %s (#762)",
+                        ticker, exc_info=True,
+                    )
 
             if result.status == "canceled":
                 # #690: a canceled order placed NOTHING — green

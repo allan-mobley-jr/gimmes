@@ -95,6 +95,7 @@ def _run_order_cli(
     insert_error_side_effect=None, extra_args=None, market=None,
     snapshot_mock=None, validation=None, cli_args=None,
     last_close=None, last_close_effect=None, config=None,
+    orderbook=None, insert_activity_mock=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -136,7 +137,20 @@ def _run_order_cli(
             snapshot_mock if snapshot_mock is not None
             else AsyncMock(return_value=True),
         ),
-        patch("gimmes.kalshi.markets.get_orderbook", AsyncMock(return_value=MagicMock())),
+        patch(
+            "gimmes.kalshi.markets.get_orderbook",
+            AsyncMock(
+                return_value=orderbook if orderbook is not None
+                else MagicMock(),
+            ),
+        ),
+        # #762: depth telemetry writes an activity row after placement;
+        # always mocked so no test touches the mocked DB's internals.
+        patch(
+            "gimmes.store.queries.insert_activity",
+            insert_activity_mock if insert_activity_mock is not None
+            else AsyncMock(return_value=1),
+        ),
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
         patch(
             "gimmes.risk.validator.validate_trade",
@@ -156,6 +170,13 @@ def _run_order_cli(
             AsyncMock(
                 return_value=last_close, side_effect=last_close_effect,
             ),
+        ),
+        # #661 sell path: round-trip churn check reads the last entry;
+        # None keeps it out of unrelated tests (mocked DB rows are not
+        # dict()-able).
+        patch(
+            "gimmes.store.queries.get_last_entry_trade",
+            AsyncMock(return_value=None),
         ),
     ]
 
@@ -1260,3 +1281,103 @@ class TestRestOnMissCli:
         params = create_order.call_args.args[1]
         assert params.expiration_ts is None
         assert "paper-only" in _printed(mock_console)
+
+
+# ---------------------------------------------------------------------------
+# Depth telemetry at placement (#762)
+# ---------------------------------------------------------------------------
+
+
+class TestDepthTelemetry:
+    """#762: every BUY records displayed depth at placement — touch
+    quantity and executable-within-limit — as an activity row. The
+    686-sized/1-filled order of 2026-08-04 was invisible to analysis
+    because depth was recorded nowhere."""
+
+    @staticmethod
+    def _thin_touch_book():
+        from gimmes.models.market import Orderbook, OrderbookLevel
+
+        # NO buyer at 0.58: touch (yes_bid 0.42 -> implied NO ask 0.58)
+        # shows only 1 contract; a worse level (yes_bid 0.40 -> ask
+        # 0.60) is outside the 0.58 limit.
+        return Orderbook(
+            ticker="TEST-TICKER",
+            yes_bids=[
+                OrderbookLevel(price=0.42, quantity=1),
+                OrderbookLevel(price=0.40, quantity=500),
+            ],
+            no_bids=[OrderbookLevel(price=0.40, quantity=200)],
+        )
+
+    def test_buy_writes_depth_activity_row(self) -> None:
+        activity = AsyncMock(return_value=1)
+        broker = _make_mock_broker()
+
+        result, mock_console, _ = _run_order_cli(
+            broker,
+            cli_args=[
+                "order", "TEST-TICKER",
+                "--side", "no", "--count", "686",
+                "--price", "58", "--yes", "--agent", "closer",
+            ],
+            orderbook=self._thin_touch_book(),
+            insert_activity_mock=activity,
+        )
+
+        assert result.exit_code == 0
+        activity.assert_awaited_once()
+        kwargs = activity.await_args.kwargs
+        assert kwargs["agent"] == "closer"
+        assert kwargs["message"].startswith("Depth: TEST-TICKER")
+        details = json.loads(kwargs["details"])
+        assert details["sized"] == 686
+        assert details["touch_qty"] == 1
+        assert details["executable_within_limit"] == 1
+        assert details["best_implied_ask"] == 0.58
+        assert "Depth:" in _printed(mock_console)
+
+    def test_sell_writes_no_depth_row(self) -> None:
+        activity = AsyncMock(return_value=1)
+        broker = _make_mock_broker()
+        broker.get_positions = AsyncMock(return_value=[
+            Position(
+                ticker="TEST-TICKER", side="yes", count=20,
+                avg_price=0.30, current_price=0.40,
+            ),
+        ])
+
+        result, mock_console, _ = _run_order_cli(
+            broker,
+            cli_args=[
+                "order", "TEST-TICKER", "--action", "sell",
+                "--side", "yes", "--count", "10", "--price", "40",
+                "--yes",
+            ],
+            orderbook=self._thin_touch_book(),
+            insert_activity_mock=activity,
+        )
+
+        # The mocked-DB harness cannot run the sell path's post-order
+        # sync to completion; "Order placed" proves execution passed
+        # THROUGH the depth-telemetry site without writing a row.
+        assert "Order placed" in _printed(mock_console)
+        activity.assert_not_awaited()
+
+    def test_telemetry_failure_never_blocks_the_order(self) -> None:
+        activity = AsyncMock(side_effect=RuntimeError("db locked"))
+        broker = _make_mock_broker()
+
+        result, mock_console, _ = _run_order_cli(
+            broker,
+            cli_args=[
+                "order", "TEST-TICKER",
+                "--side", "no", "--count", "10",
+                "--price", "58", "--yes",
+            ],
+            orderbook=self._thin_touch_book(),
+            insert_activity_mock=activity,
+        )
+
+        assert result.exit_code == 0
+        assert "Order placed" in _printed(mock_console)

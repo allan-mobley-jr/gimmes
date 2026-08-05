@@ -1,0 +1,72 @@
+"""Tests for _depth_snapshot — displayed depth at order placement (#762).
+
+Depth is judged in the ORDER's own side terms: a NO buyer's asks are
+implied from YES bids (1 - bid) and vice versa. Volume/OI say nothing
+about instantaneous depth at the limit — the 2026-08-04 fill sized 686
+against a 1-contract touch.
+"""
+
+from __future__ import annotations
+
+from gimmes.cli import _depth_snapshot
+from gimmes.models.market import Orderbook, OrderbookLevel
+
+
+def _book(
+    yes_bids: list[tuple[float, int]] = (),
+    no_bids: list[tuple[float, int]] = (),
+) -> Orderbook:
+    return Orderbook(
+        ticker="KXTEST-MKT",
+        yes_bids=[
+            OrderbookLevel(price=p, quantity=q) for p, q in yes_bids
+        ],
+        no_bids=[
+            OrderbookLevel(price=p, quantity=q) for p, q in no_bids
+        ],
+    )
+
+
+class TestDepthSnapshot:
+    def test_no_buyer_reads_yes_bids(self) -> None:
+        # yes_bid 0.42 -> implied NO ask 0.58 (touch, 1 contract);
+        # yes_bid 0.40 -> implied NO ask 0.60 (outside a 0.58 limit).
+        book = _book(yes_bids=[(0.42, 1), (0.40, 500)])
+        touch, executable, best_ask = _depth_snapshot(book, "no", 0.58)
+        assert touch == 1
+        assert executable == 1
+        assert best_ask == 0.58
+
+    def test_limit_above_second_level_includes_it(self) -> None:
+        book = _book(yes_bids=[(0.42, 1), (0.40, 500)])
+        touch, executable, best_ask = _depth_snapshot(book, "no", 0.60)
+        assert touch == 1
+        assert executable == 501
+        assert best_ask == 0.58
+
+    def test_yes_buyer_reads_no_bids(self) -> None:
+        # no_bid 0.55 -> implied YES ask 0.45 (touch, 30 contracts)
+        book = _book(
+            yes_bids=[(0.40, 99)], no_bids=[(0.55, 30), (0.50, 70)],
+        )
+        touch, executable, best_ask = _depth_snapshot(book, "yes", 0.45)
+        assert touch == 30
+        assert executable == 30
+        assert best_ask == 0.45
+
+    def test_one_sided_book_is_zero_depth(self) -> None:
+        # NO buyer with no YES bids anywhere: nothing to take.
+        book = _book(no_bids=[(0.55, 30)])
+        touch, executable, best_ask = _depth_snapshot(book, "no", 0.58)
+        assert touch == 0
+        assert executable == 0
+        assert best_ask is None
+
+    def test_limit_below_best_ask_is_zero_executable(self) -> None:
+        # Book displayed but the limit misses it — the rest-on-miss
+        # shape: touch is visible, executable is zero.
+        book = _book(yes_bids=[(0.42, 100)])
+        touch, executable, best_ask = _depth_snapshot(book, "no", 0.50)
+        assert touch == 100
+        assert executable == 0
+        assert best_ask == 0.58
