@@ -681,7 +681,7 @@ class TestAutonomousLoop:
         # Rich wraps console lines — normalize before phrase asserts
         output = " ".join(capsys.readouterr().out.split())
         assert "post-trade steps truncated" in output
-        assert "counted as a failure" in output
+        assert "not counted as a failure" in output
         assert "Circuit breaker tripped" not in output
 
     def test_trade_path_done_preserves_failure_counter(
@@ -718,6 +718,82 @@ class TestAutonomousLoop:
         output = capsys.readouterr().out
         assert "failure 2/2" in output
         assert "Circuit breaker tripped" in output
+
+    def test_failure_breaks_trade_path_kill_run(
+        self, tmp_path, capsys,
+    ) -> None:
+        """A real failure resets the unbroken-run counter: TPD, TPD,
+        failure, TPD → never reaches 3 consecutive, no shed warning
+        (Copilot-review-found on #763)."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [
+                (1, "Closer executed 1 trades", _ts(300)),
+                (2, "Closer executed 1 trades", _ts(300)),
+                (4, "Closer executed 1 trades", _ts(300)),
+            ],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=4, pause_seconds=0,
+                max_consecutive_failures=5,
+            )
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert "consecutive clamp kills have truncated" not in output
+
+    def test_three_consecutive_trade_path_kills_warn(
+        self, tmp_path, capsys,
+    ) -> None:
+        """An UNBROKEN run of 3 trade-path kills prints the shed
+        warning — post-trade surveillance shed every cycle is a
+        capacity regression the operator must see (#761)."""
+        _seed_activity_log(
+            tmp_path / "gimmes.db",
+            [
+                (1, "Closer executed 1 trades", _ts(300)),
+                (2, "Closer executed 1 trades", _ts(300)),
+                (3, "Closer executed 1 trades", _ts(300)),
+            ],
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.cli._communicate_interruptible",
+                side_effect=_subprocess.TimeoutExpired(
+                    cmd="claude", timeout=2700,
+                ),
+            ),
+            patch("gimmes.cli._resilient_sleep"),
+            patch("os.killpg"),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+        ):
+            _autonomous_loop(
+                "driving_range", max_cycles=3, pause_seconds=0,
+                max_consecutive_failures=5,
+            )
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert "3 consecutive clamp kills have truncated" in output
 
     def test_timeout_without_output_writes_empty_log(
         self, tmp_path,

@@ -6784,6 +6784,7 @@ def _autonomous_loop(
                     )
                     _resilient_sleep(rl_pause)
                     consecutive_failures = 0
+                    consecutive_trade_path_kills = 0
                     continue
 
                 # --- Anthropic API error detection ---
@@ -6795,6 +6796,7 @@ def _autonomous_loop(
                 )
                 if had_api_error:
                     consecutive_failures += 1
+                    consecutive_trade_path_kills = 0
                     kind = "transient API error" if is_transient else "API error"
                     snippet = api_detail[:200].replace("\n", " ")
                     console.print(
@@ -6867,6 +6869,9 @@ def _autonomous_loop(
                     _sleep_with_resting_sweep(config, pause_seconds)
                     continue
                 consecutive_failures += 1
+                # A real failure breaks any unbroken run of
+                # trade-path-done kills (Copilot-review-found).
+                consecutive_trade_path_kills = 0
                 console.print(
                     f"[yellow]Cycle {cycle} timed out after"
                     f" {effective_timeout}s"
@@ -6882,6 +6887,7 @@ def _autonomous_loop(
 
             if returncode != 0:
                 consecutive_failures += 1
+                consecutive_trade_path_kills = 0
                 console.print(
                     f"[yellow]Cycle {cycle} exited with code"
                     f" {returncode}"
