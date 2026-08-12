@@ -124,6 +124,8 @@ No validate or size step is needed — the order command validates that the posi
 
 A permission-denied `gimmes order` (the command was blocked and never ran) counts as an order failure: log the `order_failed` skip exactly as below. That skip arms a CLI gate (#768) making the failure terminal for every session this cycle — CLI-enforced for BUY retries; SELL/CLOSE retries are not CLI-blocked (the close_failed backstop governs those) but remain forbidden by this protocol.
 
+An `Hourly shadow gate (#769)` rejection is the same FINAL class: the distance gate refused the entry even though validation passed. Log the `order_failed` skip citing the shadow gate, never retry or resize.
+
 If the order command fails (non-zero exit code or error output), MUST:
 1. Log the failure via the `--rationale-file` heredoc pattern — captured CLI output may contain `$` or backticks (#589):
    ```bash

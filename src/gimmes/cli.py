@@ -914,6 +914,7 @@ def order(
             _session_id_from_env,
             get_daily_pnl,
             get_deployed_cost_basis,
+            get_shadow_verdict_for_ticker,
             has_terminal_order_attempt,
             insert_activity,
             insert_error,
@@ -1044,6 +1045,114 @@ def order(
                             ),
                         ),
                         "Failed to record order_terminal_retry_blocked audit row",
+                    )
+                    raise typer.Exit(1)
+            if gate_cycle > 0 and is_buy and config.is_hourly_ticker(ticker):
+                # #769: the distance gate governs. A WOULD-PASS shadow
+                # verdict (move30m >= distance) in the ticker's newest
+                # research memo hard-blocks the entry — the floored
+                # 0.70 probability is fiction exactly on these rungs
+                # (WOULD-PASS entries ran 2W-4L, -$1,244, the entire
+                # in-band deficit). WOULD-PROCEED and UNAVAILABLE
+                # proceed; fail-open on lookup errors (#661 pattern).
+                shadow_verdict: str | None
+                shadow_rows = 0
+                try:
+                    shadow_verdict, shadow_rows = (
+                        await get_shadow_verdict_for_ticker(db, ticker)
+                    )
+                except Exception:
+                    logger.error(
+                        "Shadow verdict lookup failed for %s",
+                        ticker,
+                        exc_info=True,
+                    )
+                    shadow_verdict = None
+                    console.print(
+                        f"[yellow]Warning: shadow verdict lookup failed"
+                        f" for {rich_escape(ticker)} — the #769 gate"
+                        f" failed open for this order.[/yellow]"
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.DATA_INTEGRITY,
+                            error_code="shadow_gate_lookup_failed",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Shadow verdict lookup failed for"
+                                f" {ticker} — gate failed open (#769)"
+                            ),
+                            context=json.dumps(
+                                {"ticker": ticker, "cycle": gate_cycle}
+                            ),
+                        ),
+                        "Failed to record shadow_gate_lookup_failed audit row",
+                    )
+                else:
+                    if shadow_verdict is None:
+                        # In-cycle hourly BUYs should always carry a
+                        # Caddie memo with a Shadow line — its absence
+                        # is drift worth a durable record, but blocking
+                        # would break legitimate no-candidate paths.
+                        # candidate_rows disambiguates template drift
+                        # (rows exist, none parseable) from the
+                        # legitimate no-candidate case (0 rows).
+                        await _audit_row(
+                            ErrorLogEntry(
+                                severity=ErrorSeverity.WARNING,
+                                category=ErrorCategory.DATA_INTEGRITY,
+                                error_code="shadow_gate_no_verdict",
+                                component="cli.order",
+                                agent=agent,
+                                cycle=gate_cycle,
+                                message=(
+                                    f"No shadow verdict found for"
+                                    f" hourly BUY {ticker}"
+                                    f" ({shadow_rows} candidate rows"
+                                    f" scanned) — gate inert (#769)"
+                                ),
+                                context=json.dumps(
+                                    {
+                                        "ticker": ticker,
+                                        "cycle": gate_cycle,
+                                        "candidate_rows": shadow_rows,
+                                    }
+                                ),
+                            ),
+                            "Failed to record shadow_gate_no_verdict audit row",
+                        )
+                if shadow_verdict == "WOULD-PASS":
+                    console.print(
+                        f"[red]Hourly shadow gate (#769): Shadow verdict"
+                        f" WOULD-PASS for {rich_escape(ticker)} — the"
+                        f" distance gate governs; the entry is refused."
+                        f" Do not retry or resize.[/red]"
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.ERROR,
+                            category=ErrorCategory.RISK_BREACH,
+                            error_code="shadow_gate_blocked",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Hourly BUY {ticker} blocked: shadow"
+                                f" verdict WOULD-PASS (#769)"
+                            ),
+                            context=json.dumps(
+                                {
+                                    "ticker": ticker,
+                                    "side": side,
+                                    "cycle": gate_cycle,
+                                    "verdict": shadow_verdict,
+                                }
+                            ),
+                        ),
+                        "Failed to record shadow_gate_blocked audit row",
                     )
                     raise typer.Exit(1)
 

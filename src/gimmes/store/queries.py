@@ -1139,6 +1139,29 @@ async def get_thesis_for_ticker(db: Database, ticker: str) -> str:
     return row["research_memo"] if row else ""
 
 
+async def get_shadow_verdict_for_ticker(
+    db: Database, ticker: str,
+) -> tuple[str | None, int]:
+    """The shadow distance verdict from the ticker's memos (#769).
+
+    Returns ``(verdict, rows_scanned)``. Scans the newest candidate
+    rows (not just the newest — a #676-style bookkeeping row logged
+    after research must not shadow a researched memo's verdict) and
+    returns the first recognizable verdict. Hourly tickers embed
+    date+hour, so same-ticker rows are same-window by construction.
+    ``rows_scanned`` lets the caller's audit trail distinguish "no
+    candidate at all" (0) from "candidates exist but none parseable".
+    """
+    from gimmes.store.observation_validator import parse_shadow_verdict
+
+    rows = await get_candidate_for_ticker(db, ticker, limit=10)
+    for row in rows:
+        verdict = parse_shadow_verdict(row["research_memo"] or "")
+        if verdict is not None:
+            return verdict, len(rows)
+    return None, len(rows)
+
+
 async def get_candidate_for_ticker(
     db: Database, ticker: str, *, limit: int = 1,
     scored_only: bool = False,

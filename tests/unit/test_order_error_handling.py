@@ -88,6 +88,11 @@ def _stub_config():
     c.is_championship = False
     c.db_path = ":memory:"
     c.paper = MagicMock()
+    # #769: a bare MagicMock is truthy, which would route every
+    # in-cycle BUY test through the hourly shadow gate's no-verdict
+    # path — unrealistic for the non-hourly TEST-TICKER. Shadow-gate
+    # tests opt in with their own config.
+    c.is_hourly_ticker = MagicMock(return_value=False)
     return c
 
 
@@ -98,7 +103,7 @@ def _run_order_cli(
     last_close=None, last_close_effect=None, config=None,
     orderbook=None, orderbook_side_effect=None,
     insert_activity_mock=None, last_entry=None,
-    terminal_attempt_mock=None,
+    terminal_attempt_mock=None, shadow_verdict_mock=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -165,6 +170,14 @@ def _run_order_cli(
             "gimmes.store.queries.has_terminal_order_attempt",
             terminal_attempt_mock if terminal_attempt_mock is not None
             else AsyncMock(return_value=False),
+        ),
+        # #769: the shadow gate reads candidates.research_memo;
+        # (None, 0) — no verdict, no rows — keeps it inert for
+        # unrelated in-cycle tests.
+        patch(
+            "gimmes.store.queries.get_shadow_verdict_for_ticker",
+            shadow_verdict_mock if shadow_verdict_mock is not None
+            else AsyncMock(return_value=(None, 0)),
         ),
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
         patch(

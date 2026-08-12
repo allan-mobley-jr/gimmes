@@ -1030,6 +1030,36 @@ FLIP_STALENESS_HOURS = 48
 # [flip-warning] would be silently swallowed as markup (#644 class).
 FLIP_WARNING_MARKER = "[FLIP-WARNING]"
 
+# #769: the Caddie's shadow distance verdict, recorded as the first
+# memo line (`Shadow: <verdict> | strike=$X spot=$Y distance=$Z
+# move30m=$W`, or `Shadow: UNAVAILABLE | reason=...`). The [FLIP-WARNING]
+# marker may be PREPENDED to a memo, so the line is prefix-searched,
+# never assumed byte-first (CHANGELOG #745 note). Matching is liberal
+# ("Shadow:" with or without the space) because a parse miss fails the
+# gate OPEN — when in doubt, recognize.
+SHADOW_LINE_PREFIX = "Shadow:"
+SHADOW_VERDICTS = frozenset({"WOULD-PASS", "WOULD-PROCEED", "UNAVAILABLE"})
+
+
+def parse_shadow_verdict(memo: str) -> str | None:
+    """Extract the shadow distance verdict from a research memo (#769).
+
+    Returns the first recognizable verdict token (SHADOW_VERDICTS)
+    from a line starting with `Shadow:`, or None when no line carries
+    one. Lines with unrecognized tokens are skipped, not terminal —
+    a malformed line must not mask a valid one later in the memo.
+    """
+    for line in (memo or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(SHADOW_LINE_PREFIX):
+            continue
+        token = (
+            stripped[len(SHADOW_LINE_PREFIX):].split("|", 1)[0].strip()
+        )
+        if token in SHADOW_VERDICTS:
+            return token
+    return None
+
 
 def parse_scanned_at(value: str) -> datetime.datetime | None:
     """Parse a 19-char SQLite datetime (UTC), None on failure.

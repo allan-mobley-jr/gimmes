@@ -2503,7 +2503,12 @@ def test_caddie_master_hourly_lane_section(caddie_master_text: str) -> None:
     assert "daily-loss-breach gate still outranks this" in text
     # #739: CM review is mechanical for hourly — score intake bypassed,
     # flat probabilities are the norm, subjective rejects advisory
-    assert "Hourly review is mechanical (#739 shadow mode)" in text
+    assert "Hourly review is mechanical (#739/#769)" in text
+    # #769: the distance verdict joined the mechanical checks
+    assert "Shadow verdict (#769)" in text
+    assert "is a mechanical REJECT" in text
+    # The retired shadow-era framing must stay gone
+    assert "recorded (Shadow lines), not gating" not in text
     assert (
         "review EVERY hourly candidate with `recommendation = proceed`"
         " regardless of GimmeScore" in text
@@ -2706,12 +2711,12 @@ def test_scout_hourly_scan_section(scout_text: str) -> None:
 
 
 def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
-    """#739: hourly shadow mode — Caddie still runs the full distance
-    analysis, but the verdict is recorded (Shadow line), not gating.
-    Pin the block, the Shadow line field grammar, the memo-first
-    mandate, the real gates, and the no-agent-revert clause. A drift
-    back to a gating distance check (or a format drift in the Shadow
-    line) breaks the retrospective dataset this mode exists to build."""
+    """#739/#769: the distance gate governs. #769 is the sanctioned
+    retrospective decision that re-enabled it (WOULD-PASS entries ran
+    2W-4L, -$1,244 — the entire in-band deficit); the Shadow line
+    template and verdict tokens stay byte-identical so the dataset
+    remains continuous. A drift back to NON-gating shadow mode (or a
+    format drift in the Shadow line) now fails this test."""
     import re
 
     block = re.search(
@@ -2727,9 +2732,11 @@ def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
     )
     text = block.group(0)
 
-    # The analysis itself survives — arithmetic kept, playbooks banned
+    # The analysis itself survives — arithmetic kept, playbooks banned,
+    # and the verdict now gates (#769)
     assert "Shadow distance analysis" in text
-    assert "records, never gates" in text
+    assert "#739/#769 — records AND gates" in text
+    assert "records, never gates" not in text
     assert "Do NOT run the macro playbooks" in text
 
     # The Shadow line template with its exact field grammar — the
@@ -2755,15 +2762,35 @@ def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
     assert "Imminence check" in text
     assert "scanner bug" in text
 
-    # The verdict rule: real-gates-pass => proceed with the BACKTEST'S
-    # price-anchored probability model, shadow verdict recorded even on
-    # real-gate skips, and reverting shadow mode is a retrospective
-    # decision, not agent judgment
-    assert "Hourly verdict rule (#739 shadow mode)" in text
+    # The verdict rule (#769): WOULD-PROCEED/UNAVAILABLE => proceed
+    # with the BACKTEST'S price-anchored probability model; WOULD-PASS
+    # => pass. Shadow verdict recorded even on real-gate skips, and
+    # applying the verdict is mechanical, not agent judgment — in
+    # BOTH directions.
+    assert "Hourly verdict rule (#739/#769" in text
     assert "`--recommendation proceed`" in text
-    assert "regardless of the shadow verdict" in text
+    # Tie the pass-mapping to WOULD-PASS specifically — a drifted
+    # "UNAVAILABLE gets --recommendation pass" must not satisfy it
+    assert (
+        "a `Shadow: WOULD-PASS` verdict gets `--recommendation pass`"
+        in text
+    )
+    assert "`WOULD-PROCEED` or `UNAVAILABLE`" in text
     assert "Shadow line FIRST in the memo" in text
     assert "NOT agent judgment" in text
+    assert "never override a WOULD-PASS to proceed" in text
+    assert "never PASS a WOULD-PROCEED on distance grounds" in text
+    assert "#769 IS the retrospective decision" in text
+    # The retired shadow-only phrases must stay gone — their return
+    # means the gate was silently disabled again. Checked against the
+    # WHOLE file: the boundary sentence sits outside the block regex.
+    assert "regardless of the shadow verdict" not in caddie_text
+    assert "still PROCEEDs" not in caddie_text
+    assert "never decides the recommendation" not in caddie_text
+    assert "never gates" not in caddie_text
+    assert "only checks 2\u20133" not in caddie_text
+    # The boundary sentence carries the new gating scope
+    assert "checks 1\u20133 gate" in caddie_text
     # The Recommendation Thresholds score bands must not re-gate
     # hourly candidates (whole-file: the carve-out lives in the
     # boundary sentence outside the block regex)
@@ -2771,10 +2798,6 @@ def test_caddie_hourly_crypto_checks(caddie_text: str) -> None:
         "the Recommendation Thresholds score bands do NOT apply"
         in caddie_text
     )
-    # Sentence-level gate-flip drift (review: the old negative polarity
-    # assert caught this class; pin the operative sentences)
-    assert "still PROCEEDs" in text
-    assert "never decides the recommendation" in text
     # The comparator definitions — a swapped/ambiguous boundary makes
     # the retrospective dataset internally inconsistent over time
     assert "move30m >= distance" in text
@@ -2808,7 +2831,7 @@ def test_caddie_sibling_rule_hourly_exemption(caddie_text: str) -> None:
     idx = caddie_text.index("Hourly-ladder exemption (#721/#724)")
     window = caddie_text[idx:idx + 600]
     assert "EXEMPT" in window
-    assert "PROCEED every rung that passes the REAL gates (#739)" in window
+    assert "PROCEED every rung that passes checks 1–3 (#739/#769)" in window
     assert "max_event_exposure_pct" in window
 
 
