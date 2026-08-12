@@ -3355,18 +3355,24 @@ async def _report_consistency_footnote(db, summary) -> None:
         f" {only_ledger or '—'}, positions-only {only_pos or '—'},"
         f" count-drift {count_drift or '—'}[/dim]"
     )
-    payload = {
-        "ledger_only": only_ledger,
-        "positions_only": only_pos,
-        "count_drift": drift_detail,
-    }
+    # Canonical serialization, computed ONCE and reused for both the
+    # dedup comparison and the insert — key-order or encoding drift
+    # must not defeat the change-detection (Copilot review).
+    payload = _json.dumps(
+        {
+            "ledger_only": only_ledger,
+            "positions_only": only_pos,
+            "count_drift": drift_detail,
+        },
+        sort_keys=True,
+    )
     cursor = await db.conn.execute(
         "SELECT context FROM error_log"
         " WHERE error_code = 'position_count_mismatch'"
         " ORDER BY id DESC LIMIT 1"
     )
     last = await cursor.fetchone()
-    if last and last["context"] == _json.dumps(payload):
+    if last and last["context"] == payload:
         return
     await _log_cli_error(db, ErrorLogEntry(
         severity=ErrorSeverity.WARNING,
@@ -3378,7 +3384,7 @@ async def _report_consistency_footnote(db, summary) -> None:
             f" ledger-only {only_ledger}, positions-only {only_pos},"
             f" count-drift {count_drift}"
         ),
-        context=_json.dumps(payload),
+        context=payload,
     ))
 
 
@@ -4346,11 +4352,14 @@ def position_context(
                 db, resolved, limit=25, note_type="decision",
             )
 
-        if not trade and not last_close:
+        if not is_open and not trade and not last_close:
             # Resolved (e.g. a candidates-only ticker) but never
-            # traded — the real position_not_found. This also covers
-            # the old position_closed_during_lookup race: a position
-            # closed mid-lookup now has history and renders below.
+            # traded and not open — the real position_not_found. This
+            # also covers the old position_closed_during_lookup race:
+            # a position closed mid-lookup now has history and renders
+            # below. An OPEN position with a missing trade log
+            # (imported/synced without an open row) must still render
+            # (Copilot review).
             async with Database(config.db_path) as db:
                 await _log_cli_error(db, ErrorLogEntry(
                     severity=ErrorSeverity.WARNING,
@@ -4384,8 +4393,7 @@ def position_context(
                 )
         if not trade:
             console.print(
-                "[dim]No open trade row recorded (legacy close-only"
-                " history).[/dim]"
+                "[dim]No open trade row recorded.[/dim]"
             )
         else:
             console.print("[bold]--- OPEN TRADE ---[/bold]")

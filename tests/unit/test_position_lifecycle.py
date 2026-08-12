@@ -457,3 +457,30 @@ class TestLegacyAndOrdering:
         row = _db_run(db_path, _go)
         assert row["agent"] == "settlement"
         assert row["count"] == 683
+
+
+class TestOpenPositionMissingTradeLog:
+    def test_open_position_without_trade_rows_renders(
+        self, tmp_path,
+    ) -> None:
+        """Copilot review: a positions row with no trade log (imported/
+        synced) must render context, not claim position_not_found."""
+        db_path = tmp_path / "gimmes.db"
+
+        async def _seed(db):
+            await db.conn.execute(
+                "INSERT INTO positions"
+                " (ticker, side, count, avg_price, cost_basis)"
+                " VALUES (?, 'no', 100, 0.5, 50.0)",
+                (TICKER,),
+            )
+            await db.conn.commit()
+
+        _db_run(db_path, _seed)
+        with patch("gimmes.cli.load_config", return_value=_config(db_path)):
+            result = runner.invoke(app, ["position-context", TICKER])
+        assert result.exit_code == 0, result.output
+        assert "Position Context:" in result.output
+        assert "No open trade row recorded" in result.output
+        assert "POSITION CLOSED/SETTLED" not in result.output
+        assert _read_errors(db_path) == []
