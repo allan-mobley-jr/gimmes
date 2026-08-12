@@ -287,7 +287,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 2. **Dispatch Closer** to execute the buy with `--size-up`:
    - Closer runs `gimmes validate TICKER --prob P --size-up`
    - If validation passes, `gimmes size TICKER --prob P`
-   - Place order: `gimmes order TICKER --prob P --size-up --yes`
+   - Place order: `gimmes order TICKER --prob P --size-up --yes --agent closer`
    - **HOURLY tickers (#743):** include `Approved price: XX¢` in the dispatch — the side-relative price you verified during THIS size-up review (from `gimmes market-info`, fetched this cycle), same contract as the Step 5 open dispatch. The Closer passes it as `--price XX --rest-on-miss`.
 
 ### Step 3: Scout
@@ -516,12 +516,14 @@ For each APPROVED candidate from Step 4c, dispatch the **Closer** agent.
 Launch the Closer agent (`closer.md`) to:
 1. Run `gimmes validate TICKER --prob P` for each candidate
 2. If validation passes, run `gimmes size TICKER --prob P`
-3. Place the order: `gimmes order TICKER --prob P --yes`
+3. Place the order: `gimmes order TICKER --prob P --yes --agent closer`
    (The order command logs the trade and syncs positions atomically — no separate log-trade needed.)
 
 **HOURLY candidates — approval price snapshot (#743).** For each approved HOURLY candidate, your dispatch prompt to the Closer MUST include the line `Approved price: XX¢` — the side-relative price (for a NO candidate, the NO price) you verified during the Step 4c review, in whole cents. This is the price your edge citation was computed against; the Closer passes it as `--price XX --rest-on-miss` so execution is capped at the price the review approved instead of chasing a market that moved during dispatch. Use the freshest price YOU verified (from `gimmes market-info` during review) — never Caddie's research-time price, and never a price you did not personally fetch this cycle.
 
 **Safety**: The Closer MUST pass all validation checks before any trade. NEVER override risk limits.
+
+**Closer outcomes are final (#768).** If the Closer reports 0 trades, order failures, or rejections, accept the outcome: record it in your cycle report and proceed to Step 6. The Step 2a crash-recovery scan and dispatches for *different* candidates are the only legitimate re-dispatches — never re-dispatch the Closer for the same candidate in the same cycle after a failure.
 
 ### Step 6: Scorecard
 
@@ -584,5 +586,6 @@ No special recovery logic needed — the state machine is the database.
 - All market interaction through CLI commands only
 - NEVER modify source code
 - Respect all risk limits unconditionally — NEVER override or bypass
+- NEVER run `gimmes order` — order placement is EXCLUSIVELY the Closer's job (#768). A Closer order failure — an `order_failed`/`order_canceled` skip, a permission-denied order command, or a "Closer executed 0 trades" report — is FINAL for that candidate this cycle: NEVER place the order yourself and NEVER re-dispatch the Closer for the same candidate in the same cycle. Reasoning of the form "the Closer's failure was procedural, so I'll save the trade by placing it myself" is FORBIDDEN.
 - MUST log every decision (trades, skips, closes) to the database
 - MUST complete exactly one cycle per invocation — NEVER run multiple cycles

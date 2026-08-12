@@ -437,6 +437,14 @@ def _cycle_from_env() -> int:
         return 0
 
 
+def _session_id_from_env() -> int | None:
+    """Session ID from GIMMES_SESSION_ID (None if unset or invalid)."""
+    try:
+        return int(os.environ["GIMMES_SESSION_ID"])
+    except (KeyError, ValueError):
+        return None
+
+
 def settlement_outcome(side: str, won: bool) -> str:
     """Resolution outcome implied by a settlement result (#653).
 
@@ -1060,6 +1068,32 @@ async def get_recent_activity(db: Database, limit: int = 50) -> list[dict]:
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+# #768: a failed BUY attempt is terminal for its candidate for the rest of
+# the cycle — for every agent session, not just the one that failed. The
+# marker lives in activity_log because trades has no cycle column.
+ORDER_TERMINAL_MARKER_PREFIX = "Order attempt terminal:"
+
+
+def order_terminal_marker(ticker: str) -> str:
+    """Activity-log message marking a terminal order attempt (#768)."""
+    return f"{ORDER_TERMINAL_MARKER_PREFIX} {ticker}"
+
+
+async def has_terminal_order_attempt(db: Database, ticker: str, cycle: int) -> bool:
+    """True if a terminal order-attempt marker exists for ticker+cycle (#768).
+
+    Bounded to 24h so a same-numbered cycle from an earlier loop run
+    (fresh-DB restart) can never match — same bounding as #761.
+    """
+    cursor = await db.conn.execute(
+        "SELECT 1 FROM activity_log"
+        " WHERE cycle = ? AND message = ?"
+        " AND timestamp >= datetime('now', '-1 day') LIMIT 1",
+        (cycle, order_terminal_marker(ticker)),
+    )
+    return await cursor.fetchone() is not None
 
 
 # ---------------------------------------------------------------------------

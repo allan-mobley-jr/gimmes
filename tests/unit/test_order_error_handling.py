@@ -98,6 +98,7 @@ def _run_order_cli(
     last_close=None, last_close_effect=None, config=None,
     orderbook=None, orderbook_side_effect=None,
     insert_activity_mock=None, last_entry=None,
+    terminal_attempt_mock=None,
 ):
     """Invoke the order CLI command with a mocked broker.
 
@@ -156,6 +157,14 @@ def _run_order_cli(
             "gimmes.store.queries.insert_activity",
             insert_activity_mock if insert_activity_mock is not None
             else AsyncMock(return_value=1),
+        ),
+        # #768: the terminal-attempt gate reads activity_log; against
+        # the mocked DB the real query returns a truthy AsyncMock and
+        # would spuriously block every in-cycle buy.
+        patch(
+            "gimmes.store.queries.has_terminal_order_attempt",
+            terminal_attempt_mock if terminal_attempt_mock is not None
+            else AsyncMock(return_value=False),
         ),
         patch("gimmes.strategy.fee_cache.get_multipliers", MagicMock(return_value=mock_fees)),
         patch(
@@ -1538,7 +1547,7 @@ class TestDepthTelemetryOutcomes:
             cli_args=[
                 "order", "TEST-TICKER",
                 "--side", "no", "--count", "10",
-                "--price", "58", "--yes",
+                "--price", "58", "--yes", "--agent", "closer",
             ],
             orderbook=self._thin_touch_book(),
             insert_activity_mock=activity,
