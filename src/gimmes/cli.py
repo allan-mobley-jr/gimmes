@@ -6981,7 +6981,35 @@ def _autonomous_loop(
             f"[dim]Closed {orphans} orphan activity entries[/dim]"
         )
 
-    session_id = create_session(config.db_path, mode, os.getpid())
+    from gimmes.store.session import SessionConflictError
+
+    try:
+        session_id = create_session(config.db_path, mode, os.getpid())
+    except SessionConflictError as conflict:
+        live = conflict.session
+        console.print(
+            f"[red bold]Error: an active {live.get('mode')} session"
+            f" (id {live.get('id')}) is already running"
+            f" (PID {live.get('pid')}, started"
+            f" {live.get('started_at')})."
+            f" Refusing to start a second loop (#638).[/red bold]"
+        )
+        console.print(
+            f"  Verify first: ps -o command= -p {live.get('pid')}"
+            f"    (should show a gimmes loop — if it shows an"
+            f" unrelated process, the row is stale from PID reuse:"
+            f" do NOT kill it; end the row instead)"
+        )
+        console.print(
+            f"  Stop it:      kill -TERM {live.get('pid')}"
+            f"    (the loop cleans up its agent and session)"
+        )
+        # Deliberately NOT recommending `launchctl kickstart -k`
+        # here: the launchd job's main process is the wrapper script,
+        # which has no signal trap — kickstart's kill escalates to a
+        # SIGKILL of the process group, which bypasses this cleanup
+        # and orphans the agent (the #638 incident shape).
+        raise typer.Exit(1)
 
     # Set mode and session ID in process env for subprocesses
     os.environ["GIMMES_MODE"] = mode
@@ -7108,17 +7136,31 @@ def _autonomous_loop(
     # CPython.  Assignment is atomic under the GIL.
     _active_proc: subprocess.Popen[bytes] | None = None
 
-    def _sigint_handler(signum: int, frame: object) -> None:
+    _shutting_down = False
+
+    def _shutdown_handler(signum: int, frame: object) -> None:
+        # #638: shared by SIGINT and SIGTERM — the launchd wrapper's
+        # deadline watchdog SIGTERMs the loop, which previously died
+        # WITHOUT killing the agent process group or ending its
+        # session, leaving an orphan agent trading alongside the
+        # replacement loop. Idempotent (review-found): a second
+        # signal during _kill_process_group's escalation wait must
+        # not raise again and abort the TERM->KILL escalation.
+        nonlocal _shutting_down
         p = _active_proc
         if p is not None:
             try:
                 os.killpg(p.pid, signal.SIGTERM)
             except OSError:
                 pass
+        if _shutting_down:
+            return
+        _shutting_down = True
         raise KeyboardInterrupt
 
     proc = None
-    old_handler = signal.signal(signal.SIGINT, _sigint_handler)
+    old_handler = signal.signal(signal.SIGINT, _shutdown_handler)
+    old_term_handler = signal.signal(signal.SIGTERM, _shutdown_handler)
     try:
         from datetime import UTC, datetime
 
@@ -7666,6 +7708,7 @@ def _autonomous_loop(
         raise
     finally:
         signal.signal(signal.SIGINT, old_handler)
+        signal.signal(signal.SIGTERM, old_term_handler)
         end_session(config.db_path, session_id, session_status)
 
     console.print("\n[yellow]Autonomous loop stopped.[/yellow]")

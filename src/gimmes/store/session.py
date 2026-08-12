@@ -106,10 +106,45 @@ def get_latest_session(db_path: Path) -> dict | None:
         return None
 
 
+class SessionConflictError(Exception):
+    """An active session with a live PID already exists (#638)."""
+
+    def __init__(self, session: dict) -> None:
+        self.session = session
+        super().__init__(
+            f"active {session.get('mode')} session"
+            f" {session.get('id')} already running"
+            f" (PID {session.get('pid')})"
+        )
+
+
 def create_session(db_path: Path, mode: str, pid: int) -> int:
-    """Create a new active session. Returns the session ID."""
+    """Create a new active session. Returns the session ID.
+
+    #638: exclusive — two loop processes deployed conflicting capital
+    (an orphaned session's Closer executed a trade 22 minutes after
+    its replacement started). BEGIN IMMEDIATE serializes simultaneous
+    starters; an active row with a LIVE pid raises
+    SessionConflictError, a dead-pid row is inline-reclaimed as
+    crashed. Manual CLI commands never call this — only the loop.
+    """
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT * FROM sessions WHERE status = 'active'"
+        ).fetchall()
+        for row in rows:
+            if pid_alive(int(row["pid"])):
+                # close() in the finally rolls back the open
+                # transaction — no explicit rollback needed.
+                raise SessionConflictError(dict(row))
+            conn.execute(
+                "UPDATE sessions SET status = 'crashed',"
+                " ended_at = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
         cursor = conn.execute(
             "INSERT INTO sessions (mode, pid) VALUES (?, ?)",
             (mode, pid),
