@@ -3034,6 +3034,39 @@ class TestHourlyLadder:
 class TestCycleDeadlineEnv:
     """#746: the loop tells the subprocess when it will be killed."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_sessions(self, tmp_path, monkeypatch):
+        """#638 review-found: this class ran the loop with the REAL
+        load_config (it model_copies the real config to pin
+        cycle_timeout) and NO session patches — every full-suite run
+        wrote a real sessions row to the live DB (rows 175-178,
+        2026-08-12), and the new session mutex correctly refuses that
+        whenever the real loop is running. Session functions are
+        patched; the real load_config stays (its model_copy is the
+        point of the class). GIMMES_HOME is redirected too
+        (review-found: the class was rewriting the LIVE budget.json
+        and truncating the live cycle-001.json every suite run)."""
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch(
+                "gimmes.store.session.mark_stale_sessions",
+                return_value=0,
+            ),
+            patch(
+                "gimmes.store.session.close_orphan_activities",
+                return_value=0,
+            ),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch(
+                "gimmes.store.session.get_max_global_cycle",
+                return_value=0,
+            ),
+        ):
+            yield
+
     @staticmethod
     def _pinned_timeout_config():
         """load_config side_effect pinning strategy.cycle_timeout=2700
@@ -3255,3 +3288,278 @@ class TestPositionYieldsToHourly:
         env = mock_popen.call_args.kwargs["env"]
         assert env["GIMMES_CYCLE_TYPE"] == "full"
         assert mock_comm.call_args.kwargs["timeout"] == 2700
+
+
+class TestSessionMutexLoop:
+    """#638: the loop refuses to start over a live session and cleans
+    up on SIGTERM exactly as on SIGINT."""
+
+    def test_refuses_startup_on_conflict(self, tmp_path, monkeypatch) -> None:
+        from gimmes.store.session import SessionConflictError
+
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        conflict = SessionConflictError({
+            "id": 7, "mode": "driving_range", "pid": 12345,
+            "started_at": "2026-08-12 08:00:00",
+        })
+        popen = MagicMock()
+        with (
+            patch(
+                "gimmes.store.session.create_session",
+                side_effect=conflict,
+            ),
+            patch("gimmes.store.session.end_session") as end,
+            patch(
+                "gimmes.store.session.mark_stale_sessions",
+                return_value=0,
+            ),
+            patch("gimmes.store.session.close_orphan_activities",
+                  return_value=0),
+            patch("subprocess.Popen", popen),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+        ):
+            with pytest.raises(ClickExit) as exc:
+                _autonomous_loop("driving_range")
+        assert exc.value.exit_code == 1
+        popen.assert_not_called()
+        end.assert_not_called()
+
+    def test_refusal_output_names_pid_and_kill_command(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """The refusal hints are operator-facing contract: the PID,
+        the verification step, and the kill command — and NO
+        kickstart advice (it SIGKILLs the pgroup and recreates the
+        incident)."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from gimmes.store.session import SessionConflictError
+
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        conflict = SessionConflictError({
+            "id": 7, "mode": "driving_range", "pid": 12345,
+            "started_at": "2026-08-12 08:00:00",
+        })
+        buf = StringIO()
+        with (
+            patch(
+                "gimmes.store.session.create_session",
+                side_effect=conflict,
+            ),
+            patch("gimmes.store.session.mark_stale_sessions",
+                  return_value=0),
+            patch("gimmes.store.session.close_orphan_activities",
+                  return_value=0),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("gimmes.cli.console", Console(file=buf, width=200)),
+        ):
+            with pytest.raises(ClickExit):
+                _autonomous_loop("driving_range")
+        out = buf.getvalue()
+        assert "PID 12345" in out
+        assert "kill -TERM 12345" in out
+        assert "ps -o command= -p 12345" in out
+        assert "kickstart" not in out
+
+    def test_both_signals_share_the_shutdown_handler(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """SIGINT and SIGTERM must register the SAME handler, and both
+        old handlers must be restored in the finally."""
+        import signal as signal_mod
+
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # asyncio.run registers its own transient SIGINT handler, so
+        # record EVERY call and identify the loop's handler by name.
+        calls: list[tuple[int, object]] = []
+        originals = {
+            signal_mod.SIGINT: object(),
+            signal_mod.SIGTERM: object(),
+        }
+
+        def _fake_signal(signum, handler):
+            calls.append((signum, handler))
+            return originals.get(signum)
+
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.end_session"),
+            patch(
+                "gimmes.store.session.mark_stale_sessions",
+                return_value=0,
+            ),
+            patch(
+                "gimmes.store.session.close_orphan_activities",
+                return_value=0,
+            ),
+            # Review-found: without these, this test started a REAL
+            # uvicorn dashboard and ran a REAL `git ls-remote`.
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch("gimmes.cli._check_remote_staleness", return_value=None),
+            patch("signal.signal", side_effect=_fake_signal),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(False, "", 0),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            try:
+                _autonomous_loop("driving_range")
+            except (KeyboardInterrupt, ClickExit, Exception):
+                pass
+
+        def _shutdown_regs(signum):
+            return [
+                h for (sn, h) in calls
+                if sn == signum
+                and getattr(h, "__name__", "") == "_shutdown_handler"
+            ]
+
+        int_regs = _shutdown_regs(signal_mod.SIGINT)
+        term_regs = _shutdown_regs(signal_mod.SIGTERM)
+        assert int_regs, "no _shutdown_handler registered for SIGINT"
+        assert term_regs, "no _shutdown_handler registered for SIGTERM"
+        assert int_regs[0] is term_regs[0]
+        # Both original handlers restored in the finally
+        assert (signal_mod.SIGINT, originals[signal_mod.SIGINT]) in calls
+        assert (signal_mod.SIGTERM, originals[signal_mod.SIGTERM]) in calls
+
+
+class TestShutdownHandlerBody:
+    """#638 review-found: the handler BODY was untested — signal
+    delivery is synchronous on the main thread, so a real SIGTERM to
+    self exercises it end-to-end. Standalone class (subclassing
+    TestAutonomousLoop would inherit and re-run its ~40 tests) with
+    its own isolation fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_session_funcs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GIMMES_MODE", "driving_range")
+        monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        with (
+            patch("gimmes.store.session.create_session", return_value=1),
+            patch("gimmes.store.session.mark_stale_sessions", return_value=0),
+            patch("gimmes.store.session.close_orphan_activities",
+                  return_value=0),
+            patch("gimmes.store.session.update_session_cycle"),
+            patch("asyncio.run", side_effect=lambda coro: coro.close()),
+            patch(
+                "gimmes.strategy.calendar.is_in_trade_window",
+                return_value=(True, "Index contracts", 3600),
+            ),
+            patch(
+                "gimmes.strategy.calendar.next_trade_window",
+                return_value=(_make_future_dt(), "Index contracts"),
+            ),
+            patch(
+                "gimmes.strategy.calendar.seconds_until_next_window",
+                return_value=3600,
+            ),
+            patch(
+                "gimmes.cli._check_code_staleness",
+                return_value=("abc123", False, None),
+            ),
+            patch(
+                "gimmes.cli._check_remote_staleness",
+                return_value=None,
+            ),
+        ):
+            yield
+
+    def test_sigterm_kills_agent_group_and_stops_cleanly(
+        self,
+    ) -> None:
+        import os
+        import signal as signal_mod
+
+        def _comm(*args, **kwargs):
+            os.kill(os.getpid(), signal_mod.SIGTERM)
+            return b""
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+            patch("gimmes.cli._communicate_interruptible",
+                  side_effect=_comm),
+            patch("os.killpg") as mock_killpg,
+            patch("gimmes.store.session.end_session") as end,
+        ):
+            _autonomous_loop("driving_range", pause_seconds=0)
+
+        # The handler killpg'd the agent group with SIGTERM, and the
+        # loop ended its session as 'stopped' — the full #638 cleanup.
+        assert any(
+            c.args == (12345, signal_mod.SIGTERM)
+            for c in mock_killpg.call_args_list
+        ), mock_killpg.call_args_list
+        end.assert_called_once()
+        assert end.call_args.args[2] == "stopped"
+
+    def test_second_signal_does_not_reraise(self) -> None:
+        """Idempotence: a second SIGTERM during the escalation wait
+        must not raise a second KeyboardInterrupt (it would abort the
+        TERM->KILL escalation)."""
+        import signal as signal_mod
+
+        captured: dict[str, object] = {}
+
+        real_signal = signal_mod.signal
+
+        def _capture(signum, handler):
+            if getattr(handler, "__name__", "") == "_shutdown_handler":
+                captured[signum] = handler
+            return real_signal(signum, handler)
+
+        def _comm(*args, **kwargs):
+            handler = captured[signal_mod.SIGTERM]
+            try:
+                handler(signal_mod.SIGTERM, None)
+            except KeyboardInterrupt:
+                # First delivery raised; the second must NOT.
+                handler(signal_mod.SIGTERM, None)
+                raise
+            raise AssertionError("first delivery did not raise")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "subprocess.Popen",
+                side_effect=lambda *a, **kw: _mock_popen(),
+            ),
+            patch(
+                "gimmes.clubhouse.server.start_background",
+                return_value=None,
+            ),
+            patch("signal.signal", side_effect=_capture),
+            patch("gimmes.cli._communicate_interruptible",
+                  side_effect=_comm),
+            patch("os.killpg") as mock_killpg,
+        ):
+            _autonomous_loop("driving_range", pause_seconds=0)
+
+        # Both deliveries killpg'd (the second still re-kills), plus
+        # the except-block's escalation kill.
+        assert mock_killpg.call_count >= 2
+
