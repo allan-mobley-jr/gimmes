@@ -697,15 +697,13 @@ class TestErrorLogging:
             for e in errors
         ), errors
 
-    def test_position_context_race_condition_logs_error(
+    def test_position_context_race_renders_closed_context(
         self, seeded_db: Path,
     ) -> None:
-        # Resolver returns a match (position exists at first read),
-        # but `has_open_position` returns False (another process
-        # closed it between reads). This is the race-condition branch
-        # at the bottom of position-context; it must log a distinct
-        # error_code so Groundskeeper can distinguish it from a plain
-        # no-match miss.
+        # #751: the old race branch (position closed between resolver
+        # read and trade lookup) now renders the closed-position
+        # context — history exists, so this is a legitimate read, not
+        # a data-integrity fault. No error row of any kind.
         with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
              patch(
                 "gimmes.store.queries.has_open_position",
@@ -715,13 +713,13 @@ class TestErrorLogging:
                 app,
                 ["position-context", "KXJOBLESSCLAIMS-26MAY14-210000"],
             )
-        # The user-facing path treats this as no-match (exit 0, yellow).
         assert result.exit_code == 0, result.output
+        assert "POSITION CLOSED/SETTLED" in result.output
+        assert "Position Context:" in result.output
         errors = _read_error_log(seeded_db)
-        assert any(
-            e["category"] == "data_integrity"
-            and e["error_code"] == "position_closed_during_lookup"
-            and e["component"] == "cli.position-context"
+        assert not any(
+            e["error_code"]
+            in ("position_closed_during_lookup", "position_not_found")
             for e in errors
         ), errors
 

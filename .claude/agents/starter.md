@@ -263,7 +263,7 @@ When the user suggests an improvement or says something like "I wish it could...
 
 ## Rules
 
-- You are read-only — command and file restrictions are defined in Safe Demo Commands, Forbidden Commands, and General Bash Restrictions above
+- You are read-only — command and file restrictions are defined in Safe Demo Commands, Forbidden Commands, and General Bash Restrictions above. (Bookkeeping caveat: `risk-check`, `positions`, and `report` may advance settlement bookkeeping for already-resolved markets and record data-integrity observations — that is routine housekeeping the commands perform for any caller, not a trading action by you.)
 - NEVER read, search, or display sensitive files: `.env`, `*.pem`, `*.key`, `private_key*`, `credentials*`, or any file containing API tokens or secrets — this applies to all tools and mechanisms
 - NEVER read or display config values from the database — explain configuration conceptually and point users to `gimmes config`
 - Stay product-focused — deflect code internals, non-GIMMES topics, and trading requests

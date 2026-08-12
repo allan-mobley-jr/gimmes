@@ -1257,6 +1257,25 @@ async def get_last_entry_trade(
     return dict(row) if row else None
 
 
+async def get_last_close_row(
+    db: Database, ticker: str,
+) -> dict | None:  # type: ignore[type-arg]
+    """The ticker's most recent close row from ANY agent, or None.
+
+    Unlike get_last_close_trade (#661, decision closes only), this
+    includes settlement and reconcile closes — it answers "did this
+    position ever close?" for the closed-position context read (#751).
+    """
+    cursor = await db.conn.execute(
+        "SELECT price, timestamp, count, agent, side FROM trades"
+        " WHERE ticker = ? AND action = 'close'"
+        " ORDER BY replace(timestamp, ' ', 'T') DESC, id DESC LIMIT 1",
+        (ticker,),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def get_last_close_trade(
     db: Database, ticker: str,
 ) -> dict | None:  # type: ignore[type-arg]
