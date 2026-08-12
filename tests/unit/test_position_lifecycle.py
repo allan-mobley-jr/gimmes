@@ -312,6 +312,9 @@ class TestReportConsistencyFootnote:
         assert ctx["ledger_only"] == ["KXGHOST-26JUL-T1"]
         assert ctx["positions_only"] == []
         assert ctx["count_drift"] == {}
+        # Canonical serialization pin (second-review-found): the dedup
+        # depends on a stable byte form.
+        assert rows[0]["context"] == json.dumps(ctx, sort_keys=True)
 
         # Change-detection (review-found): an unchanged divergence on
         # the next report run prints the footnote but writes NO second
