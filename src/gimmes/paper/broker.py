@@ -767,14 +767,6 @@ class PaperBroker:
         NO position + NO result → pays $1/contract
         NO position + YES result → pays $0
         """
-        cursor = await self._conn.execute(
-            "SELECT * FROM paper_positions WHERE ticker = ? AND count > 0",
-            (ticker,),
-        )
-        rows = await cursor.fetchall()
-        if not rows:
-            return
-
         from gimmes.store.queries import (
             count_opened_closed,
             fill_resolved_outcome,
@@ -783,9 +775,24 @@ class PaperBroker:
         )
 
         async with self._db.transaction():
+            # #751 review: read INSIDE the transaction (BEGIN
+            # IMMEDIATE) — with settle now reachable from
+            # risk-check/order/validate (not just `positions`), a
+            # pre-transaction read was a TOCTOU window where a
+            # concurrent settle of the same position could
+            # double-credit the payout.
+            cursor = await self._conn.execute(
+                "SELECT * FROM paper_positions"
+                " WHERE ticker = ? AND count > 0",
+                (ticker,),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return
+
             for row in rows:
-                count = int(row["count"])
                 side = row["side"]
+                count = int(row["count"])
                 cost_basis = float(row["cost_basis"])
 
                 won = (side == result)

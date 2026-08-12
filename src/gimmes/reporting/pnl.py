@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from gimmes.strategy.fees import fee_for_order
 
@@ -16,6 +16,11 @@ class PnLSummary:
 
     total_trades: int = 0
     open_trades: int = 0
+    # #767: residual open contracts per ticker in the ledger —
+    # compared against the positions table by the report command so a
+    # ledger/positions divergence (missing ticker OR count drift) is
+    # visible instead of silently skewing the open count.
+    open_residuals: dict[str, int] = field(default_factory=dict)
     winning_trades: int = 0
     losing_trades: int = 0
     scratch_trades: int = 0
@@ -180,6 +185,9 @@ def calculate_pnl(
         if remaining > 0:
             summary.total_trades += 1
             summary.open_trades += 1
+            summary.open_residuals[ticker] = (
+                summary.open_residuals.get(ticker, 0) + remaining
+            )
 
     summary.net_pnl = summary.gross_pnl - summary.total_fees
     return summary

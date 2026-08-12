@@ -7,7 +7,7 @@ from gimmes.store.database import Database
 # The version a fully-migrated DB reports (#680): read-only consumers
 # (the clubhouse) compare against this at startup. Drift-guarded by
 # test_latest_schema_version_constant_matches_migrations.
-LATEST_SCHEMA_VERSION = 18
+LATEST_SCHEMA_VERSION = 19
 
 # Migrations are applied sequentially. Each is a tuple of (version, sql).
 MIGRATIONS: list[tuple[int, str]] = [
@@ -361,5 +361,29 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 18
+
+    # Version 19 (#751/#767): repair the one pre-#743 poisoned ledger
+    # row — order paper-da2137458555 requested 523 contracts but filled
+    # 185; the open row logged 523 while the settlement close logged
+    # the true 185, leaving a permanent 338-contract residual that made
+    # `gimmes report` count a phantom open position forever. #743 fixed
+    # the generator (open rows log filled_now); this retires the sole
+    # surviving pre-fix row. Fingerprinted by order_id (uuid4-derived;
+    # not schema-enforced unique, so the count=523 term is load-
+    # bearing) + action, idempotent and a no-op on any other database.
+    if current < 19:
+        await db.conn.execute(
+            "UPDATE trades SET count = 185,"
+            " rationale = rationale ||"
+            " ' — count corrected 523→185 (order filled 185;"
+            " pre-#743 open row, #751)'"
+            " WHERE order_id = 'paper-da2137458555'"
+            " AND action = 'open' AND count = 523"
+        )
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (19,)
+        )
+        await db.conn.commit()
+        current = 19
 
     return current

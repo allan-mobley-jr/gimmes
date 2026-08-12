@@ -29,7 +29,7 @@ from typing import Literal
 
 from gimmes.store.database import Database
 
-TickerSource = Literal["open_positions", "known_markets"]
+TickerSource = Literal["open_positions", "known_markets", "traded"]
 
 
 # Kalshi tickers are canonical uppercase alphanumerics with ``-`` and
@@ -53,6 +53,18 @@ _KNOWN_MARKETS_SQL = (
     "WHERE ticker LIKE ? || '%' "
     "UNION SELECT ticker FROM trades "
     "WHERE ticker LIKE ? || '%' "
+    "ORDER BY ticker"
+)
+
+# #751: tickers with actual POSITION history (opens/closes/size-ups).
+# The closed-position context fallback must not resolve against
+# candidates or skip rows — Scout logs sibling strikes every hour, so
+# a prefix read after settlement would explode into ambiguity on
+# research noise that was never a position.
+_TRADED_TICKERS_SQL = (
+    "SELECT DISTINCT ticker FROM trades "
+    "WHERE ticker LIKE ? || '%' "
+    "AND action IN ('open', 'close', 'size_up') "
     "ORDER BY ticker"
 )
 
@@ -103,6 +115,10 @@ async def resolve_ticker(
             - ``"known_markets"``: distinct tickers from any of
               ``positions``, ``candidates``, ``trades``. Use for
               ``gimmes market-info``.
+            - ``"traded"``: distinct tickers with open/close/size_up
+              trade rows — position history only, excluding candidate
+              and skip noise. Use for the closed-position context
+              fallback (#751).
 
     Returns:
         Sorted list of matching tickers (deduplicated). If the cleaned
@@ -114,6 +130,8 @@ async def resolve_ticker(
 
     if source == "open_positions":
         cursor = await db.conn.execute(_OPEN_POSITIONS_SQL, (cleaned,))
+    elif source == "traded":
+        cursor = await db.conn.execute(_TRADED_TICKERS_SQL, (cleaned,))
     else:
         cursor = await db.conn.execute(
             _KNOWN_MARKETS_SQL, (cleaned, cleaned, cleaned),

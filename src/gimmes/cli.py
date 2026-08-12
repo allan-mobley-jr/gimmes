@@ -349,8 +349,16 @@ async def _mark_positions_to_market(
     *,
     known_prices: dict[str, float] | None = None,
 ) -> list:
-    """Mark all paper positions to market and return refreshed list."""
+    """Mark all paper positions to market and return refreshed list.
+
+    #751/#720/#635: a DETERMINED/FINALIZED market is settled here, not
+    just marked — previously only the `positions` command settled, so
+    every other consumer (risk-check, the order/validate position
+    load) kept counting a resolved position's cost basis and stale
+    unrealized P&L until the next `gimmes positions` run.
+    """
     from gimmes.kalshi.markets import get_market
+    from gimmes.models.market import MarketStatus
 
     positions = await broker.get_positions()
     prices = dict(known_prices or {})
@@ -362,6 +370,39 @@ async def _mark_positions_to_market(
                 market = await get_market(client, pos.ticker)
                 prices[pos.ticker] = market.midpoint or market.last_price
                 markets[pos.ticker] = market
+            resolved_market = markets.get(pos.ticker)
+            if (
+                resolved_market is not None
+                and resolved_market.status
+                in (MarketStatus.DETERMINED, MarketStatus.FINALIZED)
+                and resolved_market.result in ("yes", "no")
+            ):
+                # Settle instead of marking — marking a determined
+                # market at a stale mid is itself wrong, and settle()
+                # removes the position (and its mirror row, #653) so
+                # the refetch below excludes it. Named loudly: the
+                # position vanishes between two commands otherwise
+                # (review-found); settle() itself writes the durable
+                # settlement close row + position note.
+                try:
+                    await broker.settle(
+                        pos.ticker, resolved_market.result,
+                    )
+                    console.print(
+                        f"[dim]Settled {pos.ticker}"
+                        f" ({resolved_market.result}) — market"
+                        f" {resolved_market.status.value}[/dim]"
+                    )
+                except Exception as exc:
+                    # An accurate diagnosis, not the mark warning: a
+                    # lock-contended settle silently retried-and-
+                    # failed every run would hide behind "could not
+                    # mark" (review-found).
+                    console.print(
+                        f"[yellow]Warning: could not settle"
+                        f" {pos.ticker}: {exc}[/yellow]"
+                    )
+                continue
             await broker.mark_to_market(
                 pos.ticker,
                 prices[pos.ticker],
@@ -2612,8 +2653,14 @@ def positions() -> None:
                             await broker.mark_to_market(
                                 pos.ticker, current_price,
                             )
-                        # Auto-settle if market resolved
-                        if market.status in (MarketStatus.DETERMINED, MarketStatus.FINALIZED):
+                        # Auto-settle if market resolved. Guard on a
+                        # settleable result (#751 review) — an empty
+                        # result would score every side as a loss.
+                        if (
+                            market.status
+                            in (MarketStatus.DETERMINED, MarketStatus.FINALIZED)
+                            and market.result in ("yes", "no")
+                        ):
                             await broker.settle(pos.ticker, market.result)
                     except Exception as exc:
                         # #674: the position keeps its LAST mark — the
@@ -2675,8 +2722,13 @@ def risk_check() -> None:
 
         async with trading_context(config) as (client, broker, db):
             if broker:
-                balance = await broker.get_balance()
+                # #751/#720: mark AND settle before counting — a
+                # resolved-but-unswept position must not inflate the
+                # count, deployed capital, or unrealized P&L. Balance
+                # is read AFTER so the settlement credit and the
+                # position list come from the same snapshot.
                 pos = await _mark_positions_to_market(broker, client)
+                balance = await broker.get_balance()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
                 from gimmes.store.queries import sync_positions
@@ -3259,6 +3311,77 @@ def reconcile() -> None:
     _run(_reconcile())
 
 
+async def _report_consistency_footnote(db, summary) -> None:
+    """#767: name a ledger-vs-positions divergence and leave a durable
+    row — missing tickers in either direction AND per-ticker count
+    drift (a live re-poisoning of the #751 shape is visible while the
+    position is still open, not only after settlement).
+
+    The error row is change-detected: an unchanged divergence across
+    report runs prints the footnote but writes no new row, so a
+    persistent divergence is one Groundskeeper signal per state
+    change, not one per cycle.
+    """
+    import json as _json
+
+    from gimmes.models.error import (
+        ErrorCategory,
+        ErrorLogEntry,
+        ErrorSeverity,
+    )
+
+    cursor = await db.conn.execute(
+        "SELECT ticker, count FROM positions WHERE count > 0"
+    )
+    pos_counts = {
+        row["ticker"]: row["count"] for row in await cursor.fetchall()
+    }
+    ledger = summary.open_residuals
+    only_ledger = sorted(set(ledger) - set(pos_counts))
+    only_pos = sorted(set(pos_counts) - set(ledger))
+    count_drift = sorted(
+        t for t in set(ledger) & set(pos_counts)
+        if ledger[t] != pos_counts[t]
+    )
+    if not (only_ledger or only_pos or count_drift):
+        return
+
+    drift_detail = {
+        t: {"ledger": ledger[t], "positions": pos_counts[t]}
+        for t in count_drift
+    }
+    console.print(
+        f"[dim]Open-count divergence (#767): ledger-only"
+        f" {only_ledger or '—'}, positions-only {only_pos or '—'},"
+        f" count-drift {count_drift or '—'}[/dim]"
+    )
+    payload = {
+        "ledger_only": only_ledger,
+        "positions_only": only_pos,
+        "count_drift": drift_detail,
+    }
+    cursor = await db.conn.execute(
+        "SELECT context FROM error_log"
+        " WHERE error_code = 'position_count_mismatch'"
+        " ORDER BY id DESC LIMIT 1"
+    )
+    last = await cursor.fetchone()
+    if last and last["context"] == _json.dumps(payload):
+        return
+    await _log_cli_error(db, ErrorLogEntry(
+        severity=ErrorSeverity.WARNING,
+        category=ErrorCategory.DATA_INTEGRITY,
+        error_code="position_count_mismatch",
+        component="cli.report",
+        message=(
+            f"Ledger open state diverges from positions table:"
+            f" ledger-only {only_ledger}, positions-only {only_pos},"
+            f" count-drift {count_drift}"
+        ),
+        context=_json.dumps(payload),
+    ))
+
+
 @app.command(rich_help_panel="Portfolio")
 def report() -> None:
     """Generate performance scorecard."""
@@ -3282,6 +3405,22 @@ def report() -> None:
                 trades = opens + closes + size_ups
                 summary = calculate_pnl(trades)
                 format_pnl_summary(summary)
+                # #767: the report's open count comes from ledger
+                # residuals; the positions table is the broker's view.
+                # A divergence — missing ticker OR count drift — means
+                # a poisoned ledger row (the #751 phantom) or a missed
+                # settlement. Own try/except: a failure here must not
+                # fall into the outer catch-all and double-print a
+                # zeroed summary under the real one (review-found).
+                try:
+                    await _report_consistency_footnote(db, summary)
+                except Exception:
+                    import logging
+
+                    logging.getLogger("gimmes").warning(
+                        "report: consistency footnote failed",
+                        exc_info=True,
+                    )
         except Exception as exc:
             import logging
             logging.getLogger("gimmes").warning("report: failed to load trades: %s", exc)
@@ -4141,6 +4280,7 @@ def position_context(
         from gimmes.reporting.formatter import format_local_timestamp
         from gimmes.store.database import Database
         from gimmes.store.queries import (
+            get_last_close_row,
             get_open_trade_for_ticker,
             get_position_notes,
             has_open_position,
@@ -4151,6 +4291,19 @@ def position_context(
             matches = await resolve_ticker(
                 db, ticker, source="open_positions",
             )
+            if not matches:
+                # #751: a just-closed/settled position is a LEGITIMATE
+                # read — agents fetch note history minutes (or a day)
+                # after settlement, and hourly markets settle inside
+                # the cycle that watches them. Fall through to tickers
+                # with POSITION history (opens/closes only — the
+                # known-markets universe would explode into ambiguity
+                # on Scout's sibling-strike candidate rows); only a
+                # ticker with NO trade history is a real
+                # position_not_found.
+                matches = await resolve_ticker(
+                    db, ticker, source="traded",
+                )
             if not matches:
                 await _log_cli_error(db, ErrorLogEntry(
                     severity=ErrorSeverity.WARNING,
@@ -4185,6 +4338,7 @@ def position_context(
             resolved = matches[0]
             trade = await get_open_trade_for_ticker(db, resolved)
             is_open = await has_open_position(db, resolved)
+            last_close = await get_last_close_row(db, resolved)
             notes = await get_position_notes(db, resolved, limit=20)
             # Fetch decisions separately so chatty observations can't
             # evict the CM governance trail (#580).
@@ -4192,45 +4346,67 @@ def position_context(
                 db, resolved, limit=25, note_type="decision",
             )
 
-        if not trade or not is_open:
-            # Another process (clubhouse server, autonomous loop) may
-            # have closed the position between the resolver's read and
-            # the lookups. Treat it the same as no-match.
+        if not trade and not last_close:
+            # Resolved (e.g. a candidates-only ticker) but never
+            # traded — the real position_not_found. This also covers
+            # the old position_closed_during_lookup race: a position
+            # closed mid-lookup now has history and renders below.
             async with Database(config.db_path) as db:
                 await _log_cli_error(db, ErrorLogEntry(
                     severity=ErrorSeverity.WARNING,
                     category=ErrorCategory.DATA_INTEGRITY,
-                    error_code="position_closed_during_lookup",
+                    error_code="position_not_found",
                     component="cli.position-context",
-                    message=(
-                        f"Position {resolved} closed between resolver"
-                        f" and trade lookup"
-                    ),
+                    message=f"No open position found for {ticker}",
                     context=json.dumps({"ticker": ticker, "resolved": resolved}),
                 ))
             console.print(f"[yellow]No open position found for {ticker}[/yellow]")
             return
 
         console.print(f"\n[bold]Position Context: {resolved}[/bold]\n")
-        console.print("[bold]--- OPEN TRADE ---[/bold]")
-        console.print(f"Opened:           {format_local_timestamp(str(trade['timestamp']))}")
-        console.print(
-            f"Side:             {trade['side'].upper()}"
-            f"  Count: {trade['count']}  Entry: ${trade['price']:.2f}"
-        )
-        console.print(
-            f"Model Prob:       {trade['model_probability']:.1%}"
-            f"  Edge: {trade['edge']:+.1%}"
-            f"  GimmeScore: {trade['gimme_score']:.0f}"
-        )
-        console.print(f"Agent:            {trade['agent']}  Order ID: {trade['order_id']}")
-
-        console.print("\n[bold]--- ORIGINAL THESIS ---[/bold]")
-        thesis = trade.get("thesis", "")
-        if thesis:
-            console.print(thesis, markup=False)
+        if not is_open:
+            # #751: closed/settled position — full history renders,
+            # clearly bannered, with NO error row. The console banner
+            # is the observability; a DATA_INTEGRITY row here was the
+            # false-positive noise Groundskeeper kept escalating.
+            if last_close:
+                console.print(
+                    f"[yellow bold]POSITION CLOSED/SETTLED — last close"
+                    f" {format_local_timestamp(str(last_close['timestamp']))}"
+                    f" ({last_close['count']} @"
+                    f" ${last_close['price']:.2f},"
+                    f" {last_close['agent']})[/yellow bold]\n"
+                )
+            else:
+                console.print(
+                    "[yellow bold]POSITION CLOSED/SETTLED — no close"
+                    " row recorded[/yellow bold]\n"
+                )
+        if not trade:
+            console.print(
+                "[dim]No open trade row recorded (legacy close-only"
+                " history).[/dim]"
+            )
         else:
-            console.print("[dim][No thesis stored — position predates v8 migration][/dim]")
+            console.print("[bold]--- OPEN TRADE ---[/bold]")
+            console.print(f"Opened:           {format_local_timestamp(str(trade['timestamp']))}")
+            console.print(
+                f"Side:             {trade['side'].upper()}"
+                f"  Count: {trade['count']}  Entry: ${trade['price']:.2f}"
+            )
+            console.print(
+                f"Model Prob:       {trade['model_probability']:.1%}"
+                f"  Edge: {trade['edge']:+.1%}"
+                f"  GimmeScore: {trade['gimme_score']:.0f}"
+            )
+            console.print(f"Agent:            {trade['agent']}  Order ID: {trade['order_id']}")
+
+            console.print("\n[bold]--- ORIGINAL THESIS ---[/bold]")
+            thesis = trade.get("thesis", "")
+            if thesis:
+                console.print(thesis, markup=False)
+            else:
+                console.print("[dim][No thesis stored — position predates v8 migration][/dim]")
 
         console.print("\n[bold]--- POSITION NOTES (last 20) ---[/bold]")
         if notes:
