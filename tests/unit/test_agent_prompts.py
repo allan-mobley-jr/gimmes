@@ -3124,6 +3124,12 @@ def test_closer_permission_denial_is_order_failure() -> None:
     assert "permission-denied `gimmes order`" in closer_text
     assert "counts as an order failure" in closer_text
     assert "arms a CLI gate (#768)" in closer_text
+    # BUY-only CLI scoping + the protocol prohibition that backstops
+    # the unenforced SELL/CLOSE side — dropping either re-broadens or
+    # weakens the claim (Copilot review on #770).
+    assert "CLI-enforced for BUY retries" in closer_text
+    assert "SELL/CLOSE retries are not CLI-blocked" in closer_text
+    assert "remain forbidden by this protocol" in closer_text
 
 
 def test_every_order_literal_carries_agent_closer() -> None:
