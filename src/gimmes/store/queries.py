@@ -1144,13 +1144,15 @@ async def get_shadow_verdict_for_ticker(
 ) -> tuple[str | None, int]:
     """The shadow distance verdict from the ticker's memos (#769).
 
-    Returns ``(verdict, rows_scanned)``. Scans the newest candidate
+    Returns ``(verdict, candidate_rows)``. Scans the newest candidate
     rows (not just the newest — a #676-style bookkeeping row logged
     after research must not shadow a researched memo's verdict) and
     returns the first recognizable verdict. Hourly tickers embed
     date+hour, so same-ticker rows are same-window by construction.
-    ``rows_scanned`` lets the caller's audit trail distinguish "no
-    candidate at all" (0) from "candidates exist but none parseable".
+    ``candidate_rows`` is the number of recent rows fetched (up to 10,
+    regardless of where the verdict was found) — it lets the caller's
+    audit trail distinguish "no candidate at all" (0) from "candidates
+    exist but none parseable".
     """
     from gimmes.store.observation_validator import parse_shadow_verdict
 
