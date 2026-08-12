@@ -3523,7 +3523,7 @@ class TestShutdownHandlerBody:
         TERM->KILL escalation)."""
         import signal as signal_mod
 
-        captured: dict[str, object] = {}
+        captured: dict[int, object] = {}
 
         real_signal = signal_mod.signal
 
