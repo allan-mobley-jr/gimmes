@@ -3169,3 +3169,18 @@ def test_every_order_literal_carries_agent_closer() -> None:
                 f" --agent closer — it would trip the #768 identity"
                 f" gate in-cycle: {line.strip()!r}"
             )
+
+
+def test_closer_cap_sizing_note_pinned() -> None:
+    """#766: the order command sizes at the approval-price cap and a
+    zero count is an order FAILURE (exit 1). Dropping either half would
+    make the Closer misread cap-shrunk fills as failures or a silent
+    zero as success."""
+    closer_text = _CLOSER.read_text()
+    assert "auto-sizes at the cap" in closer_text
+    assert (
+        "may be smaller than the validate/size preview" in closer_text
+    )
+    assert "not a failure" in closer_text
+    assert "Sized to zero contracts" in closer_text
+    assert "that IS an order failure" in closer_text

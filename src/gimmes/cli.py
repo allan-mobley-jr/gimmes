@@ -1234,10 +1234,26 @@ def order(
 
             bankroll = config.bankroll
             true_prob = probability
-            if is_buy and count <= 0 and probability is not None:
+            # #766: with a #743 approval-price cap, the worst-case fill
+            # cost is count × cap (the broker reserves at the limit), so
+            # auto-sizing must use the worst-case price. Sizing at the
+            # live mid while costing at the cap deterministically
+            # overshot the position/event caps whenever cap > mid
+            # (trades 31268/31431/31513: validator approved at mid,
+            # order rejected at cap).
+            cap_price = price / 100.0 if price > 0 else None
+            auto_sized = is_buy and count <= 0 and probability is not None
+            if auto_sized:
                 true_prob = apply_base_rate_floor(probability, ticker, side=config.strategy.side)
+                # A degenerate quote (dead book, eff_price 0) must not
+                # let the cap alone produce a positive size.
+                sizing_price = (
+                    max(eff_price, cap_price)
+                    if cap_price is not None and eff_price > 0
+                    else eff_price
+                )
                 final_count = position_size(
-                    bankroll, eff_price, true_prob,
+                    bankroll, sizing_price, true_prob,
                     is_taker=is_taker,
                     fraction=config.sizing.kelly_fraction,
                     max_position_pct=config.sizing.max_position_pct, fees=fees,
@@ -1247,6 +1263,45 @@ def order(
                 final_count = count
 
             if final_count <= 0:
+                if auto_sized:
+                    # #766: sizing at the worst-case cap can honestly
+                    # produce zero — the entry could only fill at
+                    # negative edge. That is a REJECTION of an approved
+                    # candidate, not a missing-input error: exit 1 so
+                    # the Closer's Order Failure Protocol fires, and
+                    # leave a durable row so a re-dispatch loop is
+                    # visible to Groundskeeper.
+                    console.print(
+                        f"[red]Sized to zero contracts: no positive"
+                        f" edge at the worst-case price"
+                        f" (prob {true_prob:.2f} vs sizing price"
+                        f" ${sizing_price:.2f})."
+                        f" The order is refused (#766).[/red]"
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.ERROR,
+                            category=ErrorCategory.ORDER_FAILURE,
+                            error_code="sized_zero",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Auto-size returned 0 contracts for"
+                                f" {ticker} — no positive edge at the"
+                                f" worst-case price (#766)"
+                            ),
+                            context=json.dumps({
+                                "ticker": ticker,
+                                "side": side,
+                                "probability": true_prob,
+                                "eff_price": eff_price,
+                                "cap_price": cap_price,
+                            }),
+                        ),
+                        "Failed to record sized_zero audit row",
+                    )
+                    raise typer.Exit(1)
                 hint = (
                     " Provide --count N or --prob P for auto-sizing."
                     if is_buy else " Provide --count N."
@@ -1254,7 +1309,7 @@ def order(
                 console.print(f"[red]No contracts to order (count=0).{hint}[/red]")
                 return
 
-            final_price = price / 100.0 if price > 0 else eff_price
+            final_price = cap_price if cap_price is not None else eff_price
             trade_dollars = final_count * final_price
 
             # --- Sell validation: check position exists and count ---
@@ -1524,6 +1579,39 @@ def order(
                         console.print(
                             "[dim]Use --force to override"
                             " (not recommended)[/dim]"
+                        )
+                        # #766: an order-time rejection previously left
+                        # no error_log trail — only the Closer's
+                        # voluntary skip row. The context carries both
+                        # price bases so a validator/order divergence
+                        # is diagnosable from the row alone. No #768
+                        # terminal marker: a validation rejection
+                        # placed nothing and is price-dependent —
+                        # next-cycle re-dispatch at fresh prices is
+                        # legitimate.
+                        await _audit_row(
+                            ErrorLogEntry(
+                                severity=ErrorSeverity.ERROR,
+                                category=ErrorCategory.ORDER_FAILURE,
+                                error_code="validation_failed",
+                                component="cli.order",
+                                agent=agent,
+                                cycle=gate_cycle,
+                                message=(
+                                    f"Order-time validation rejected"
+                                    f" {ticker}: {validation.summary}"
+                                ),
+                                context=json.dumps({
+                                    "ticker": ticker,
+                                    "side": side,
+                                    "count": final_count,
+                                    "eff_price": eff_price,
+                                    "limit_price": final_price,
+                                    "trade_dollars": trade_dollars,
+                                    "failures": validation.failures,
+                                }),
+                            ),
+                            "Failed to record validation_failed audit row",
                         )
                         return
                 else:
