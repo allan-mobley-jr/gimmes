@@ -50,6 +50,8 @@ gimmes order TICKER --prob P --price XX --taker --rest-on-miss --yes --agent clo
 
 If the dispatch has no `Approved price` line, omit `--price` (the order uses the live price) but still pass `--rest-on-miss`. NEVER invent a price the dispatch didn't give you.
 
+The order command is the binding risk check: with an approval-price cap it auto-sizes at the worst-case fill price — the HIGHER of the live effective price and the cap (#766) — so its contract count may be smaller than the validate/size preview showed — that is expected sizing discipline, not a failure. (A cap below the live price changes nothing: sizing stays at the live price.) The exception is a count of ZERO: `Sized to zero contracts` exits 1 — that IS an order failure (no positive edge at the worst-case price); follow the Order Failure Protocol and never retry this cycle.
+
 **Closes** are unchanged — taker only, never rest-on-miss (a missed close must fail loudly so Caddie Master can escalate, #659):
 
 ```bash
@@ -66,7 +68,7 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
 
 1. **Validate**: `gimmes validate TICKER --prob P --size-up` — MUST pass all checks. The `--size-up` flag allows the duplicate position check to pass. A `Reopen churn gate (#661)` rejection from the subsequent order applies here too: FINAL for this cycle, log the skip, NEVER pass `--force-reopen`.
 2. **Size**: `gimmes size TICKER --prob P`
-3. **Order**: `gimmes order TICKER --prob P --size-up --yes --agent closer`
+3. **Order**: `gimmes order TICKER --prob P --size-up --yes --agent closer` (hourly tickers: additionally pass `--price XX --taker --rest-on-miss` per the Hourly Tickers section — SIZE UPs get the approval-price cap exactly like opens)
 4. **Log success**: The order command logs the trade atomically.
 5. **Log rejection** (if steps 1-2 failed): use the `--rationale-file` heredoc pattern (see "Writing rationale prose" above):
    ```bash
