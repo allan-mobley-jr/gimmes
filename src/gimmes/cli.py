@@ -899,6 +899,7 @@ def order(
 
         import json
         import logging
+        import os
         import sqlite3
         import traceback
 
@@ -908,7 +909,16 @@ def order(
         from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
         from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
         from gimmes.risk.validator import validate_trade
-        from gimmes.store.queries import get_daily_pnl, get_deployed_cost_basis, insert_error
+        from gimmes.store.queries import (
+            _cycle_from_env,
+            _session_id_from_env,
+            get_daily_pnl,
+            get_deployed_cost_basis,
+            has_terminal_order_attempt,
+            insert_activity,
+            insert_error,
+            order_terminal_marker,
+        )
         from gimmes.strategy.fee_cache import get_multipliers
         from gimmes.strategy.fees import fee_for_order
         from gimmes.strategy.kelly import apply_base_rate_floor, position_size
@@ -924,6 +934,166 @@ def order(
                     await insert_error(db, entry)
                 except Exception:
                     logger.error(fail_msg, exc_info=True)
+
+            # #768: in-cycle gates. Both are inert outside the autonomous
+            # loop (GIMMES_CYCLE unset/malformed -> 0) so manual operator
+            # orders are untouched. Neither --force nor --force-reopen
+            # bypasses either gate.
+            gate_cycle = _cycle_from_env()
+            is_buy = action.lower() == "buy"
+            if gate_cycle == 0 and os.environ.get("GIMMES_SESSION_ID"):
+                # A loop session without a resolvable cycle number means
+                # the env propagation broke — the #768 gates are silently
+                # inert in exactly the context they exist for.
+                console.print(
+                    "[yellow]Warning: GIMMES_SESSION_ID is set but"
+                    " GIMMES_CYCLE resolved to 0 — the #768 order gates"
+                    " are inactive for this invocation.[/yellow]"
+                )
+            if gate_cycle > 0 and agent != "closer":
+                console.print(
+                    f"[red]Order agent gate (#768): in-cycle order"
+                    f" placement is restricted to the Closer"
+                    f" (--agent closer); got {rich_escape(repr(agent))}."
+                    f" A Closer order failure is final for this"
+                    f" cycle.[/red]"
+                )
+                await _audit_row(
+                    ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.RISK_BREACH,
+                        error_code="order_agent_denied",
+                        component="cli.order",
+                        agent=agent,
+                        cycle=gate_cycle,
+                        message=(
+                            f"In-cycle order for {ticker} denied:"
+                            f" agent {agent!r} is not the Closer (#768)"
+                        ),
+                        context=json.dumps(
+                            {
+                                "ticker": ticker,
+                                "side": side,
+                                "action": action,
+                                "cycle": gate_cycle,
+                            }
+                        ),
+                    ),
+                    "Failed to record order_agent_denied audit row",
+                )
+                raise typer.Exit(1)
+            if gate_cycle > 0 and is_buy:
+                try:
+                    terminal = await has_terminal_order_attempt(
+                        db, ticker, gate_cycle
+                    )
+                except Exception:
+                    # Fail open (#661 pattern): a DB blip must not halt
+                    # all cycle trading, but the miss is made visible.
+                    logger.error(
+                        "Terminal order-attempt lookup failed for %s",
+                        ticker,
+                        exc_info=True,
+                    )
+                    terminal = False
+                    console.print(
+                        f"[yellow]Warning: terminal-attempt lookup"
+                        f" failed for {rich_escape(ticker)} — the #768"
+                        f" gate failed open for this order.[/yellow]"
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.DATA_INTEGRITY,
+                            error_code="order_terminal_lookup_failed",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Terminal-attempt lookup failed for"
+                                f" {ticker} — gate failed open (#768)"
+                            ),
+                            context=json.dumps(
+                                {"ticker": ticker, "cycle": gate_cycle}
+                            ),
+                        ),
+                        "Failed to record order_terminal_lookup_failed audit row",
+                    )
+                if terminal:
+                    console.print(
+                        f"[red]Order terminal gate (#768): a failed order"
+                        f" attempt for {rich_escape(ticker)} was already"
+                        f" recorded in cycle {gate_cycle} — the failure"
+                        f" is final for this cycle for every agent; do"
+                        f" not retry.[/red]"
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.RISK_BREACH,
+                            error_code="order_terminal_retry_blocked",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Blocked retry of terminal order attempt"
+                                f" for {ticker} in cycle {gate_cycle} (#768)"
+                            ),
+                            context=json.dumps(
+                                {"ticker": ticker, "cycle": gate_cycle}
+                            ),
+                        ),
+                        "Failed to record order_terminal_retry_blocked audit row",
+                    )
+                    raise typer.Exit(1)
+
+            async def _mark_terminal(context: dict) -> None:
+                """Best-effort terminal marker on a failed BUY (#768).
+
+                Never masks the original failure — a marker write error
+                degrades to a log line.
+                """
+                if not (is_buy and gate_cycle > 0):
+                    return
+                try:
+                    await insert_activity(
+                        db,
+                        cycle=gate_cycle,
+                        agent=agent,
+                        phase="guard",
+                        message=order_terminal_marker(ticker),
+                        details=json.dumps(context),
+                        session_id=_session_id_from_env(),
+                    )
+                except Exception:
+                    # A lost marker disarms the gate — same consequence
+                    # as a failed lookup, so it gets the same durable
+                    # audit trail (review-found).
+                    logger.error(
+                        "Failed to write terminal order-attempt marker"
+                        " for %s",
+                        ticker,
+                        exc_info=True,
+                    )
+                    await _audit_row(
+                        ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.DATA_INTEGRITY,
+                            error_code="order_terminal_marker_failed",
+                            component="cli.order",
+                            agent=agent,
+                            cycle=gate_cycle,
+                            message=(
+                                f"Terminal-attempt marker write failed"
+                                f" for {ticker} — same-cycle retries are"
+                                f" NOT blocked (#768)"
+                            ),
+                            context=json.dumps(
+                                {"ticker": ticker, "cycle": gate_cycle}
+                            ),
+                        ),
+                        "Failed to record order_terminal_marker_failed audit row",
+                    )
 
             market = await get_market(client, ticker)
             raw_price = market.midpoint or market.last_price
@@ -1355,6 +1525,10 @@ def order(
                     f"[red bold]Order FAILED"
                     f" ({exc.response.status_code}): {detail}[/red bold]"
                 )
+                await _mark_terminal({
+                    "error_code": "http_status_error",
+                    "status_code": exc.response.status_code,
+                })
                 raise typer.Exit(1)
             except httpx.TimeoutException as exc:
                 logger.debug("Order placement timed out", exc_info=True)
@@ -1380,6 +1554,9 @@ def order(
                         " by Kalshi before the timeout.[/red]"
                     )
                 console.print(_RECONCILE_HINT)
+                # Terminal is safer here: retrying after an ambiguous
+                # timeout risks a double fill.
+                await _mark_terminal({"error_code": "timeout"})
                 raise typer.Exit(1)
             except (sqlite3.Error, ValueError, RuntimeError) as exc:
                 logger.debug("Order placement failed", exc_info=True)
@@ -1403,6 +1580,7 @@ def order(
                 except Exception:
                     logger.error("Failed to log error to DB", exc_info=True)
                 console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
+                await _mark_terminal({"error_code": error_code})
                 raise typer.Exit(1)
 
             # #762: record displayed depth for every BUY — including
@@ -1498,6 +1676,10 @@ def order(
                     f"[red bold]Order NOT placed:"
                     f" {rich_escape(reason)}[/red bold]"
                 )
+                await _mark_terminal({
+                    "error_code": "order_canceled",
+                    "reason": reason,
+                })
                 raise typer.Exit(1)
             console.print(
                 f"[green]{label}Order placed:[/green] {result.order_id}"
@@ -3265,6 +3447,82 @@ def log_trade(
                 )
             row_id = await insert_trade(db, trade)
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
+            # #768: an order_failed/order_canceled skip arms the CLI's
+            # terminal-attempt gate for this ticker for the rest of the
+            # cycle. This is the ONLY trace a permission-classifier
+            # denial leaves (the order command never ran), so the
+            # marker is machine-written here, post-insert. Best-effort:
+            # log-trade is the logger of last resort and must never
+            # exit nonzero because of the marker.
+            if action == "skip" and reason in ("order_failed", "order_canceled"):
+                from gimmes.store.queries import (
+                    _cycle_from_env,
+                    _session_id_from_env,
+                    insert_activity,
+                    order_terminal_marker,
+                )
+                marker_cycle = _cycle_from_env()
+                if marker_cycle > 0:
+                    try:
+                        import json
+
+                        await insert_activity(
+                            db,
+                            cycle=marker_cycle,
+                            agent=agent,
+                            phase="guard",
+                            message=order_terminal_marker(ticker),
+                            details=json.dumps(
+                                {"reason": reason, "source": "log-trade"}
+                            ),
+                            session_id=_session_id_from_env(),
+                        )
+                    except Exception:
+                        # The skip row landed (same connection, two
+                        # statements ago), so the DB is up — a marker
+                        # failure here is marker-specific and the gate
+                        # is disarmed. Leave a durable trace for
+                        # Groundskeeper (review-found).
+                        logging.getLogger(__name__).error(
+                            "Failed to write terminal order-attempt"
+                            " marker for %s (#768)",
+                            ticker,
+                            exc_info=True,
+                        )
+                        try:
+                            from gimmes.models.error import (
+                                ErrorCategory,
+                                ErrorLogEntry,
+                                ErrorSeverity,
+                            )
+                            from gimmes.store.queries import insert_error
+
+                            await insert_error(db, ErrorLogEntry(
+                                severity=ErrorSeverity.WARNING,
+                                category=ErrorCategory.DATA_INTEGRITY,
+                                error_code="order_terminal_marker_failed",
+                                component="cli.log-trade",
+                                agent=agent,
+                                cycle=marker_cycle,
+                                message=(
+                                    f"Terminal-attempt marker write"
+                                    f" failed for {ticker} — same-cycle"
+                                    f" retries are NOT blocked (#768)"
+                                ),
+                                context=json.dumps(
+                                    {"ticker": ticker,
+                                     "cycle": marker_cycle,
+                                     "reason": reason},
+                                ),
+                            ))
+                        except Exception:
+                            logging.getLogger(__name__).error(
+                                "Failed to record"
+                                " order_terminal_marker_failed audit"
+                                " row for %s (#768)",
+                                ticker,
+                                exc_info=True,
+                            )
             if action == "skip" and not reason:
                 # #710: entry-type skip with no structured cause — the
                 # #657 skip analytics and #707 EV audit can't classify

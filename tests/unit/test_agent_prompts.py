@@ -3075,3 +3075,68 @@ def test_clamp_kill_classification_markers_pinned() -> None:
     assert "Closer executed N trades".startswith(
         CLOSER_CONCLUDED_MARKER_PREFIX,
     )
+
+
+# ---------------------------------------------------------------------------
+# #768: order placement is Closer-only; failures are terminal
+# ---------------------------------------------------------------------------
+
+
+def test_caddie_master_never_places_orders(caddie_master_text: str) -> None:
+    """The c2212 breach: CM placed the order itself after the Closer's
+    attempt was classifier-denied. The rule and its anti-rationalization
+    sentence must stay pinned."""
+    assert "NEVER run `gimmes order`" in caddie_master_text
+    assert "EXCLUSIVELY the Closer's job (#768)" in caddie_master_text
+    assert "FINAL for that candidate this cycle" in caddie_master_text
+    assert "Closer executed 0 trades" in caddie_master_text
+    assert (
+        "I'll save the trade by placing it myself" in caddie_master_text
+    )
+    assert "is FORBIDDEN" in caddie_master_text
+
+
+def test_caddie_master_closer_outcomes_final(caddie_master_text: str) -> None:
+    assert "Closer outcomes are final (#768)" in caddie_master_text
+    assert (
+        "never re-dispatch the Closer for the same candidate in the"
+        " same cycle after a failure" in caddie_master_text
+    )
+
+
+def test_caddie_master_dispatch_templates_carry_agent_closer(
+    caddie_master_text: str,
+) -> None:
+    """Both order literals in the CM prompt must carry --agent closer —
+    a copy-pasted command without it now trips the #768 identity gate."""
+    assert (
+        "`gimmes order TICKER --prob P --yes --agent closer`"
+        in caddie_master_text
+    )
+    assert (
+        "`gimmes order TICKER --prob P --size-up --yes --agent closer`"
+        in caddie_master_text
+    )
+
+
+def test_closer_permission_denial_is_order_failure() -> None:
+    closer_text = _CLOSER.read_text()
+    assert "permission-denied `gimmes order`" in closer_text
+    assert "counts as an order failure" in closer_text
+    assert "arms a CLI gate (#768)" in closer_text
+
+
+def test_every_order_literal_carries_agent_closer() -> None:
+    """#768 identity gate: any in-cycle `gimmes order` command whose
+    template omits --agent closer would trip the gate at runtime. Pin
+    every order template in both execution prompts (prose mentions of
+    the bare command are exempt — only TICKER templates get copied)."""
+    for path in (_CLOSER, CADDIE_MASTER):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if "gimmes order TICKER" not in line:
+                continue
+            assert "--agent closer" in line, (
+                f"{path.name}:{i} has a `gimmes order` template without"
+                f" --agent closer — it would trip the #768 identity"
+                f" gate in-cycle: {line.strip()!r}"
+            )

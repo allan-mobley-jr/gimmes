@@ -13,6 +13,15 @@ from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_cycle_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#768: the in-cycle order gates key on GIMMES_CYCLE. A pytest run
+    from an in-cycle shell (the loop exports it) would mass-fail every
+    order test that doesn't pass --agent closer — isolate the suite."""
+    monkeypatch.delenv("GIMMES_CYCLE", raising=False)
+    monkeypatch.delenv("GIMMES_SESSION_ID", raising=False)
+
+
 @pytest.fixture
 def config() -> GimmesConfig:
     """Default test config (driving range, side=yes pinned for test stability)."""
