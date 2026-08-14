@@ -263,6 +263,48 @@ def _print_ambiguous_ticker(prefix: str, matches: list[str]) -> None:
     )
 
 
+async def _recover_unknown_ticker(
+    client, resolved: str,
+) -> tuple[str, list[str]]:
+    """Best-effort 404 recovery for `market-info` (#778): derive the
+    event ticker from a strike ticker and list the event's open
+    markets, longest-common-prefix first so the intended correction
+    survives any display cap. Returns ("", []) when not applicable or
+    on ANY failure — the caller degrades to the plain
+    http_status_error path; the recovery must never mask the original
+    404. The derived event ticker is returned alongside so the caller
+    prints exactly what was queried.
+    """
+    import logging
+    import os.path
+
+    if "-T" not in resolved:
+        # Range shape (-B7737), bare garbage ("00"), hyphenless typos.
+        return "", []
+    # rsplit, not split: the LAST '-T' is the strike separator, which
+    # keeps negative thresholds (KXCPI-26JUN-T-0.2 -> KXCPI-26JUN)
+    # and mid-event '-T' shapes correct.
+    event_ticker = resolved.rsplit("-T", 1)[0]
+    if not event_ticker:
+        return "", []
+    try:
+        from gimmes.kalshi.markets import list_markets
+
+        markets, _ = await list_markets(
+            client, event_ticker=event_ticker, limit=200,
+        )
+    except Exception:
+        logging.getLogger("gimmes.cli").debug(
+            "ticker recovery failed for %s", resolved, exc_info=True,
+        )
+        return "", []
+    tickers = [m.ticker for m in markets]
+    tickers.sort(
+        key=lambda t: (-len(os.path.commonprefix([t, resolved])), t),
+    )
+    return event_ticker, tickers
+
+
 def _run(coro):  # type: ignore[no-untyped-def]
     """Run an async coroutine from sync CLI context with error handling."""
     import logging
@@ -3494,6 +3536,78 @@ def market_info(
                 orderbook = await get_orderbook(client, resolved)
             except httpx.HTTPStatusError as exc:
                 detail = _api_error_detail(exc)
+                # #778: a 404 on a strike-shaped ticker is usually an
+                # agent transcription error (cycle 2232: the .99 strike
+                # suffix dropped, then five guessed format variants =
+                # eight ERROR rows in a minute). If the EVENT exists,
+                # hand back its real tickers and log a distinct
+                # WARNING code — the API is provably healthy, and
+                # Groundskeeper's (error_code, component) dedup must
+                # not conflate agent typos with real API failures.
+                suggestions: list[str] = []
+                event_ticker = ""
+                failing_url = str(
+                    getattr(exc.request, "url", "") or ""
+                )
+                if (
+                    exc.response.status_code == 404
+                    and "orderbook" not in failing_url
+                ):
+                    # The orderbook guard matters (review-found): a
+                    # market that 404s its ORDERBOOK after get_market
+                    # succeeded is a real API partial failure — calling
+                    # it an unknown ticker would both hide it from
+                    # ERROR escalation and tell the agent to retry a
+                    # DIFFERENT strike.
+                    event_ticker, suggestions = (
+                        await _recover_unknown_ticker(client, resolved)
+                    )
+                if suggestions:
+                    shown = suggestions[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT]
+                    async with Database(config.db_path) as db:
+                        await _log_cli_error(db, ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.CONFIG_ERROR,
+                            error_code="ticker_not_found",
+                            component="cli.market-info",
+                            message=(
+                                f"Unknown ticker '{resolved}' (404) —"
+                                f" event '{event_ticker}' exists with"
+                                f" {len(suggestions)} open markets"
+                            ),
+                            context=json.dumps({
+                                "ticker": ticker,
+                                "resolved": resolved,
+                                "event_ticker": event_ticker,
+                                "suggestions": shown,
+                                "suggestions_total": len(suggestions),
+                                "status_code": 404,
+                            }),
+                        ))
+                    console.print(
+                        f"[red bold]Market lookup FAILED (404):"
+                        f" unknown ticker"
+                        f" '{rich_escape(resolved)}'[/red bold]"
+                    )
+                    console.print(
+                        f"The event {rich_escape(event_ticker)} EXISTS."
+                        f" Its open markets are:"
+                    )
+                    for t in shown:
+                        console.print(f"  {rich_escape(t)}")
+                    if len(suggestions) > len(shown):
+                        console.print(
+                            f"  [dim]... and"
+                            f" {len(suggestions) - len(shown)}"
+                            f" more[/dim]"
+                        )
+                    console.print(
+                        "[yellow]Copy tickers EXACTLY from"
+                        " scan/candidates output — strikes keep their"
+                        " decimals. NEVER guess format variants. One"
+                        " corrected retry max (#778).[/yellow]"
+                    )
+                    raise typer.Exit(1)
                 async with Database(config.db_path) as db:
                     await _log_cli_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.ERROR,

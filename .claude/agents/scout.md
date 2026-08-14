@@ -79,6 +79,8 @@ If a `log-trade` skip command fails, note the failure in the Scout output and co
 
 ## Output Format
 
+Tickers in your report MUST be transcribed verbatim from `gimmes scan` output — strike decimals included (`-T63399.99`, never `-T63399`). Downstream agents copy your tickers exactly; a dropped suffix here becomes their 404 (#778).
+
 MUST produce a structured shortlist in this exact format. When multiple candidates share the same Event (shown in the scan results), group them together so Caddie can research the underlying event once:
 
 ```

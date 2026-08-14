@@ -306,6 +306,8 @@ For all other skips (PASS on research grounds, NEEDS MORE RESEARCH after re-scor
 
 If a `log-trade` skip command fails, note the failure in your output and continue. Do not retry failed log commands.
 
+**Ticker discipline (#778):** copy tickers EXACTLY as printed in your assignment/scan/candidates output — strike decimals included (`-T63399.99`, never `-T63399`). If `market-info` prints "The event ... EXISTS" with a market list, take exactly ONE printed suggestion matching your assigned strike and retry ONCE; if that retry fails or no suggestion matches your assignment, fall through to the failure rule below. NEVER manufacture date-format or strike-format variants — eight guessed variants in cycle 2232 produced eight error escalations and filed #778.
+
 If `market-info` fails for a candidate, log the candidate with `--price 0 --prob 0` and log the skip with the failure in the rationale.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)
@@ -330,6 +332,7 @@ Substitute actual values: number of candidates researched and number with recomm
 
 - NEVER place orders — that's the Closer's job
 - NEVER modify code
+- NEVER guess ticker format variants — copy tickers verbatim; one corrected retry max on "unknown ticker" output (#778)
 - MUST produce a GimmeScore for every candidate — NEVER recommend PROCEED/PASS without a numeric score
 - MUST be explicit about uncertainty in probability estimates
 - MUST flag any settlement concerns prominently
