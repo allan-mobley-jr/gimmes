@@ -469,14 +469,9 @@ class TestMarketInfo:
         # the literal input. Preserves first-time-lookup behavior.
         get_market = AsyncMock(return_value=_stub_market("KXBRANDNEW-26MAY-T1.0"))
         get_orderbook = AsyncMock(return_value=_stub_orderbook())
-        # #778: pin the empty-recovery branch deterministically — an
-        # unpatched list_markets against the mocked client degrades
-        # through the recovery helper's except by accident.
         with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
              patch("gimmes.kalshi.markets.get_market", get_market), \
              patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
-             patch("gimmes.kalshi.markets.list_markets",
-                   AsyncMock(return_value=([], None))), \
              patch("gimmes.kalshi.client.KalshiClient"):
             result = runner.invoke(app, ["market-info", "KXBRANDNEW-26MAY-T1.0"])
         assert result.exit_code == 0, result.output
@@ -783,14 +778,9 @@ class TestErrorLogging:
             side_effect=httpx.ConnectError("connection refused"),
         )
         get_orderbook = AsyncMock(return_value=_stub_orderbook())
-        # #778: pin the empty-recovery branch deterministically — an
-        # unpatched list_markets against the mocked client degrades
-        # through the recovery helper's except by accident.
         with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
              patch("gimmes.kalshi.markets.get_market", get_market), \
              patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
-             patch("gimmes.kalshi.markets.list_markets",
-                   AsyncMock(return_value=([], None))), \
              patch("gimmes.kalshi.client.KalshiClient"):
             result = runner.invoke(app, ["market-info", "KXBRANDNEW-26MAY-T1.0"])
         assert result.exit_code == 1, result.output
