@@ -3189,3 +3189,30 @@ def test_closer_cap_sizing_note_pinned() -> None:
     assert "not a failure" in closer_text
     assert "Sized to zero contracts" in closer_text
     assert "that IS an order failure" in closer_text
+
+
+def test_caddie_ticker_discipline_rule(caddie_text: str) -> None:
+    """#778: eight guessed ticker variants in one minute — the
+    discipline rule and its adjacency to the failure rule must hold."""
+    assert "Ticker discipline (#778)" in caddie_text
+    assert "strike decimals included" in caddie_text
+    assert "retry ONCE" in caddie_text
+    assert (
+        "NEVER manufacture date-format or strike-format variants"
+        in caddie_text
+    )
+    # Adjacent to the market-info failure rule so the fallthrough
+    # reads as one flow
+    start = caddie_text.index("Ticker discipline (#778)")
+    assert (
+        "If `market-info` fails for a candidate"
+        in caddie_text[start:start + 900]
+    )
+    assert "NEVER guess ticker format variants" in caddie_text
+    # The quoted trigger matches the console's actual casing
+    assert 'on "unknown ticker" output (#778)' in caddie_text
+
+
+def test_scout_verbatim_ticker_rule(scout_text: str) -> None:
+    assert "transcribed verbatim from `gimmes scan` output" in scout_text
+    assert "a dropped suffix here becomes their 404 (#778)" in scout_text

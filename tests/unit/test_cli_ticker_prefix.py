@@ -616,7 +616,8 @@ def _read_error_log(db_path: Path) -> list[dict]:
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT severity, category, error_code, component, message"
+            "SELECT severity, category, error_code, component, message,"
+            " context"
             " FROM error_log ORDER BY id DESC",
         ).fetchall()
     finally:
@@ -654,9 +655,14 @@ class TestErrorLogging:
             ),
         )
         get_orderbook = AsyncMock(return_value=_stub_orderbook())
+        # #778: pin the empty-recovery branch deterministically — an
+        # unpatched list_markets against the mocked client degrades
+        # through the recovery helper's except by accident.
         with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
              patch("gimmes.kalshi.markets.get_market", get_market), \
              patch("gimmes.kalshi.markets.get_orderbook", get_orderbook), \
+             patch("gimmes.kalshi.markets.list_markets",
+                   AsyncMock(return_value=([], None))), \
              patch("gimmes.kalshi.client.KalshiClient"):
             result = runner.invoke(app, ["market-info", "KXBRANDNEW-26MAY-T1.0"])
         assert result.exit_code == 1, result.output
@@ -785,3 +791,187 @@ class TestErrorLogging:
             and e["component"] == "cli.market-info"
             for e in errors
         ), errors
+
+
+class TestMarketInfo404Recovery:
+    """#778: a 404 on a strike-shaped ticker triggers event-listing
+    recovery — real tickers printed, distinct WARNING error code —
+    while genuine unknowns keep the ERROR http_status_error path."""
+
+    @staticmethod
+    def _mk(ticker):
+        m = MagicMock()
+        m.ticker = ticker
+        return m
+
+    def _run(self, seeded_db, ticker, *, list_markets=None,
+             list_markets_effect=None, status=404):
+        response = MagicMock(status_code=status, text="err")
+        get_market = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "err", request=MagicMock(), response=response,
+            ),
+        )
+        lm = AsyncMock(
+            return_value=(list_markets or [], None),
+            side_effect=list_markets_effect,
+        )
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market", get_market), \
+             patch("gimmes.kalshi.markets.get_orderbook",
+                   AsyncMock(return_value=_stub_orderbook())), \
+             patch("gimmes.kalshi.markets.list_markets", lm), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(app, ["market-info", ticker])
+        return result, lm
+
+    def test_404_with_event_recovery_suggests_real_tickers(
+        self, seeded_db: Path,
+    ) -> None:
+        result, _ = self._run(
+            seeded_db, "KXBTCD-26AUG1313-T63399",
+            list_markets=[
+                self._mk("KXBTCD-26AUG1313-T63899.99"),
+                self._mk("KXBTCD-26AUG1313-T63399.99"),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "The event KXBTCD-26AUG1313 EXISTS" in result.output
+        assert "KXBTCD-26AUG1313-T63399.99" in result.output
+        assert "NEVER guess format variants" in result.output
+        errors = _read_error_log(seeded_db)
+        row = [e for e in errors if e["error_code"] == "ticker_not_found"]
+        assert len(row) == 1
+        assert row[0]["severity"] == "warning"
+        assert row[0]["category"] == "config_error"
+        import json
+
+        ctx = json.loads(row[0]["context"])
+        assert ctx["event_ticker"] == "KXBTCD-26AUG1313"
+        assert ctx["suggestions_total"] == 2
+        # Longest-common-prefix first: the intended correction leads
+        assert ctx["suggestions"][0] == "KXBTCD-26AUG1313-T63399.99"
+        assert not any(
+            e["error_code"] == "http_status_error"
+            and "KXBTCD" in (e["context"] or "")
+            for e in errors
+        )
+
+    def test_404_recovery_empty_falls_back_to_error(
+        self, seeded_db: Path,
+    ) -> None:
+        result, _ = self._run(seeded_db, "KXBTCD-26AUG1313-T63399")
+        assert result.exit_code == 1
+        assert "EXISTS" not in result.output
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+        assert not any(
+            e["error_code"] == "ticker_not_found" for e in errors
+        )
+
+    def test_404_recovery_failure_degrades(self, seeded_db: Path) -> None:
+        result, _ = self._run(
+            seeded_db, "KXBTCD-26AUG1313-T63399",
+            list_markets_effect=RuntimeError("api down"),
+        )
+        assert result.exit_code == 1
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+
+    def test_404_without_dash_t_skips_recovery(
+        self, seeded_db: Path,
+    ) -> None:
+        result, lm = self._run(seeded_db, "KXINX-26AUG14H1600-B7737")
+        assert result.exit_code == 1
+        lm.assert_not_awaited()
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+
+    def test_non_404_skips_recovery(self, seeded_db: Path) -> None:
+        result, lm = self._run(
+            seeded_db, "KXBTCD-26AUG1313-T63399", status=500,
+        )
+        assert result.exit_code == 1
+        lm.assert_not_awaited()
+
+    def test_suggestions_capped_and_prefix_sorted(
+        self, seeded_db: Path,
+    ) -> None:
+        markets = [
+            self._mk(f"KXBTCD-26AUG1313-T{60000 + i * 100}.99")
+            for i in range(24)
+        ] + [self._mk("KXBTCD-26AUG1313-T63399.99")]
+        result, _ = self._run(
+            seeded_db, "KXBTCD-26AUG1313-T63399",
+            list_markets=markets,
+        )
+        assert result.exit_code == 1
+        assert "... and 5 more" in result.output
+        # The correction shares the longest prefix — it must lead the
+        # list and survive the cap.
+        lines = [ln.strip() for ln in result.output.splitlines()]
+        first = next(
+            ln for ln in lines if ln.startswith("KXBTCD-26AUG1313-T")
+        )
+        assert first == "KXBTCD-26AUG1313-T63399.99"
+        # The stored context is capped too — unbounded ladders must
+        # not bloat error_log rows (review-found)
+        import json
+
+        ctx = json.loads(_read_error_log(seeded_db)[0]["context"])
+        assert len(ctx["suggestions"]) == 20
+        assert ctx["suggestions_total"] == 25
+
+    def test_negative_threshold_event_derivation(
+        self, seeded_db: Path,
+    ) -> None:
+        """rsplit on the LAST '-T' keeps negative strikes correct —
+        KXCPI-26JUN-T-0.2 derives event KXCPI-26JUN (review-found
+        pin: a regex or split() refactor would silently break this)."""
+        result, _ = self._run(
+            seeded_db, "KXCPI-26JUN-T-0.2",
+            list_markets=[self._mk("KXCPI-26JUN-T-0.1")],
+        )
+        assert "The event KXCPI-26JUN EXISTS" in result.output
+
+    def test_orderbook_404_not_misclassified(
+        self, seeded_db: Path,
+    ) -> None:
+        """A 404 whose failing request is the ORDERBOOK endpoint is a
+        real API partial failure, never an unknown ticker
+        (review-found)."""
+        request = MagicMock()
+        request.url = "https://api.example.com/markets/X/orderbook"
+        response = MagicMock(status_code=404, text="not found")
+        lm = AsyncMock(return_value=([self._mk("X-T1.99")], None))
+        with patch("gimmes.cli.load_config", return_value=_config(seeded_db)), \
+             patch("gimmes.kalshi.markets.get_market",
+                   AsyncMock(
+                       return_value=_stub_market(
+                           "KXBTCD-26AUG1313-T63399.99",
+                       ),
+                   )), \
+             patch(
+                 "gimmes.kalshi.markets.get_orderbook",
+                 AsyncMock(side_effect=httpx.HTTPStatusError(
+                     "404", request=request, response=response,
+                 )),
+             ), \
+             patch("gimmes.kalshi.markets.list_markets", lm), \
+             patch("gimmes.kalshi.client.KalshiClient"):
+            result = runner.invoke(
+                app, ["market-info", "KXBTCD-26AUG1313-T63399.99"],
+            )
+        assert result.exit_code == 1
+        lm.assert_not_awaited()
+        assert "EXISTS" not in result.output
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
