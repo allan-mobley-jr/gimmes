@@ -193,6 +193,24 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     return content
 
 
+_PROB_RANGE_MSG = (
+    "--prob must be a decimal fraction in [0, 1] (endpoints allowed),"
+    " e.g. 0.85, not 85 (#645)"
+)
+
+
+def _prob_option_callback(value: float | None) -> float | None:
+    """#645: reject percent-form probabilities at parse time — the
+    Closer once passed --prob 85 and Kelly silently sized 0 contracts.
+    The chained-comparison form is load-bearing: it rejects NaN/inf,
+    which `value > 1 or value < 0` would let through."""
+    if value is None:
+        return value
+    if not (0.0 <= value <= 1.0):
+        raise typer.BadParameter(_PROB_RANGE_MSG)
+    return value
+
+
 def _resolve_prose_arg(
     inline: str,
     file_path: Path | None,
@@ -882,6 +900,7 @@ def size(
     ticker: str = typer.Argument(..., help="Market ticker"),
     probability: float = typer.Option(
         ..., "--prob", "-p", help="True probability for configured side",
+        callback=_prob_option_callback,
     ),
 ) -> None:
     """Calculate position size for a market."""
@@ -961,7 +980,10 @@ def size(
 @app.command(rich_help_panel="Trading")
 def validate(
     ticker: str = typer.Argument(..., help="Market ticker"),
-    probability: float = typer.Option(..., "--prob", "-p", help="Estimated true probability"),
+    probability: float = typer.Option(
+        ..., "--prob", "-p", help="Estimated true probability",
+        callback=_prob_option_callback,
+    ),
     dollars: float = typer.Option(0, "--dollars", "-d", help="Trade size in dollars (0=auto-size)"),
     size_up: bool = typer.Option(False, "--size-up", help="Allow adding to existing position"),
 ) -> None:
@@ -1101,6 +1123,7 @@ def order(
     probability: float | None = typer.Option(
         None, "--prob", "-p",
         help="True probability for configured side (buy only: sizing/edge)",
+        callback=_prob_option_callback,
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation (for autonomous mode)",
@@ -4056,7 +4079,9 @@ def log_trade(
     side: str = typer.Option("", "--side", "-s"),
     count: int = typer.Option(0, "--count", "-c"),
     price_val: float = typer.Option(0, "--price"),
-    prob: float | None = typer.Option(None, "--prob", "-p"),
+    prob: float | None = typer.Option(
+        None, "--prob", "-p", callback=_prob_option_callback,
+    ),
     score_val: float = typer.Option(0, "--score"),
     rationale: str = typer.Option("", "--rationale", "-r"),
     rationale_file: Path | None = typer.Option(
@@ -4326,7 +4351,10 @@ def log_candidate(
     ticker: str = typer.Argument(..., help="Market ticker"),
     title: str = typer.Option("", "--title", "-t", help="Event title"),
     price_val: float = typer.Option(0, "--price", help="Market price"),
-    prob: float = typer.Option(0, "--prob", "-p", help="Model probability estimate"),
+    prob: float = typer.Option(
+        0, "--prob", "-p", help="Model probability estimate",
+        callback=_prob_option_callback,
+    ),
     score_val: float = typer.Option(0, "--score", help="GimmeScore (0-100)"),
     memo: str = typer.Option("", "--memo", "-m", help="Research memo summary"),
     memo_file: Path | None = typer.Option(

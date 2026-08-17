@@ -3259,3 +3259,14 @@ def test_groundskeeper_past_close_escalation(groundskeeper_text: str) -> None:
     assert "settle_failed" in groundskeeper_text
     assert "determined_no_result" in groundskeeper_text
     assert "awaiting_determination" in groundskeeper_text
+
+
+def test_closer_prob_decimal_format_rule() -> None:
+    closer_text = _CLOSER.read_text()
+    assert "Probability format (#645)" in closer_text
+    assert "NEVER `--prob 85`" in closer_text
+
+
+def test_caddie_log_candidate_prob_decimal_rule(caddie_text: str) -> None:
+    assert "Probability format (#645)" in caddie_text
+    assert "percent-form values like `--prob 85` are rejected" in caddie_text
