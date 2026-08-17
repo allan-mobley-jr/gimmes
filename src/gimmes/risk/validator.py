@@ -55,6 +55,7 @@ def validate_trade(
     """Run all pre-trade validation checks.
 
     Checks:
+    0. Market status — never approve an untradeable market (#784)
     1. Daily loss limit
     2. Position count limit
     3. Single position size limit
