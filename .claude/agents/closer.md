@@ -15,6 +15,8 @@ You are the Closer — the execution agent in the GIMMES trading pipeline. You t
 
 ## Your Mission
 
+**`--side SIDE` (#708):** SIDE is the side the decision is about — your `trading_side` when config is `yes`/`no`; under `both`, the side the candidate was scanned/evaluated on (the Side column in scan output, the side your `--prob` is expressed against). The CLI rejects log-trade without a concrete side under both-mode.
+
 **Probability format (#645):** `--prob` is a decimal fraction in [0, 1] — 85% is `--prob 0.85`, NEVER `--prob 85`. Percent-form values are rejected by the CLI; the #645 incident passed the percent form and Kelly silently sized 0 contracts.
 
 For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`, Caddie recommends PROCEED), execute this EXACT sequence. NEVER skip or reorder steps:
@@ -30,7 +32,7 @@ For each approved candidate (GimmeScore >= configured `strategy.gimme_threshold`
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    [which check failed and why]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason validation_failed --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason validation_failed --side SIDE --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
    If the command fails, note the failure in your output and continue. Do not retry.
@@ -78,7 +80,7 @@ When Caddie Master dispatches you for a SIZE UP (adding to an existing position)
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    SIZE UP rejected: [which check failed]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason validation_failed --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason validation_failed --side SIDE --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 
@@ -94,7 +96,7 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Close skipped: no open position found
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason no_position --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason no_position --side SIDE --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 2. **Cancel resting orders**: If any resting orders exist for TICKER, cancel them first with `gimmes cancel ORDER_ID --yes`.
@@ -106,7 +108,7 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Close order failed: [error from CLI output]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason close_failed --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason close_failed --side SIDE --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
    If the command fails, note the failure in your output and continue. Do not retry.
@@ -139,7 +141,7 @@ If the order command fails (non-zero exit code or error output), MUST:
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Order failed: [error from CLI output]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason order_failed --rationale-file "$RATIONALE_FILE" --agent closer
+   gimmes log-trade TICKER --action skip --reason order_failed --side SIDE --rationale-file "$RATIONALE_FILE" --agent closer
    rm -f "$RATIONALE_FILE"
    ```
 2. If the log-trade command itself fails, note the failure in your output and continue. Do not retry failed log commands.

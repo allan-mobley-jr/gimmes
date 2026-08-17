@@ -620,3 +620,71 @@ def test_lookup_error_degrades_with_own_cause_logged(
     s = _skip_row(db_path)
     assert s["model_probability"] == 0.0
     assert s["price"] == 0.0
+
+
+class TestDualSideGate:
+    """#708: log-trade under strategy.side='both' needs a concrete
+    --side — 'both' used to feed the yes/no Literal and crash with a
+    pydantic traceback, silently starving the skip table."""
+
+    def test_both_mode_no_side_rejects_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _bare_db(db_path)
+        _patch_config(monkeypatch, db_path, side="both")
+        result = runner.invoke(app, [
+            "log-trade", TICKER, "--action", "skip",
+            "--reason", "cooldown",
+        ])
+        assert result.exit_code != 0
+        out = " ".join(result.output.split())
+        assert "#708" in out
+        assert "ValidationError" not in result.output
+        assert "Traceback" not in result.output
+        assert _trade_rows(db_path) == []
+
+    @pytest.mark.parametrize("chosen", ["yes", "no"])
+    def test_both_mode_explicit_side_lands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        chosen: str,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _bare_db(db_path)
+        _patch_config(monkeypatch, db_path, side="both")
+        result = runner.invoke(app, [
+            "log-trade", TICKER, "--action", "skip",
+            "--reason", "cooldown", "--side", chosen,
+        ])
+        assert result.exit_code == 0, result.output
+        rows = _trade_rows(db_path)
+        assert len(rows) == 1
+        assert rows[0]["side"] == chosen
+
+    def test_explicit_side_both_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _bare_db(db_path)
+        _patch_config(monkeypatch, db_path, side="no")
+        result = runner.invoke(app, [
+            "log-trade", TICKER, "--action", "skip",
+            "--reason", "cooldown", "--side", "both",
+        ])
+        assert result.exit_code != 0
+        assert "#708" in " ".join(result.output.split())
+
+    @pytest.mark.parametrize("action", ["open", "close"])
+    def test_both_mode_other_actions_gated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        action: str,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _bare_db(db_path)
+        _patch_config(monkeypatch, db_path, side="both")
+        result = runner.invoke(app, [
+            "log-trade", TICKER, "--action", action,
+            "--count", "10", "--price", "0.5",
+        ])
+        assert result.exit_code != 0
+        assert "#708" in " ".join(result.output.split())

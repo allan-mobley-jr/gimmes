@@ -3270,3 +3270,22 @@ def test_closer_prob_decimal_format_rule() -> None:
 def test_caddie_log_candidate_prob_decimal_rule(caddie_text: str) -> None:
     assert "Probability format (#645)" in caddie_text
     assert "percent-form values like `--prob 85` are rejected" in caddie_text
+
+
+@pytest.mark.parametrize("agent_file", [
+    "caddie.md", "scout.md", "caddie-master.md", "closer.md",
+])
+def test_log_trade_templates_carry_side(agent_file: str) -> None:
+    """#708: every log-trade command template passes --side — an
+    omitted side under strategy.side='both' fed 'both' into the
+    yes/no Literal and silently starved the skip table."""
+    text = (AGENTS_DIR / agent_file).read_text()
+    joined = text.replace("\\\n", " ")
+    for line in joined.splitlines():
+        if "gimmes log-trade" not in line or "`gimmes log-trade`" in line:
+            continue
+        if "Batched skip-logging" in line:
+            continue  # prose describing the batching rule, not a template
+        assert "--side" in line, (agent_file, line.strip())
+    # The shared SIDE-definition sentence is pinned per file
+    assert "`--side SIDE` (#708):" in text
