@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from gimmes.models.market import Market
+
 import click
 import typer
 from rich.console import Console
@@ -305,6 +307,11 @@ async def _recover_unknown_ticker(
                 status="settled", limit=200,
             )
             state = "settled" if markets else ""
+        if not markets:
+            # Both lookups empty: the documented not-applicable shape
+            # — a partially-filled tuple would mislead future callers
+            # into thinking the event was validated (Copilot review).
+            return "", [], ""
     except Exception:
         logging.getLogger("gimmes.cli").debug(
             "ticker recovery failed for %s", resolved, exc_info=True,
@@ -401,7 +408,7 @@ async def _mark_positions_to_market(
     broker,   # PaperBroker
     client,   # KalshiClient
     *,
-    known_markets: dict | None = None,
+    known_markets: dict[str, Market] | None = None,
 ) -> list:
     """Mark all paper positions to market and return refreshed list.
 
@@ -421,7 +428,7 @@ async def _mark_positions_to_market(
 
     positions = await broker.get_positions()
 
-    markets: dict = dict(known_markets or {})
+    markets: dict[str, Market] = dict(known_markets or {})
     for pos in positions:
         try:
             if pos.ticker not in markets:
@@ -463,8 +470,9 @@ async def _mark_positions_to_market(
                 continue
             await broker.mark_to_market(
                 pos.ticker,
-                resolved_market.midpoint or resolved_market.last_price,
-                close_time=getattr(resolved_market, "close_time", None),
+                # Market.midpoint already falls back to last_price
+                resolved_market.midpoint,
+                close_time=resolved_market.close_time,
             )
         except Exception as exc:
             console.print(
