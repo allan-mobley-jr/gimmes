@@ -3250,3 +3250,12 @@ def test_closer_market_status_gate_final() -> None:
     assert "Market status gate (#784)" in closer_text
     assert "settlement supersedes the close" in closer_text
     assert "report it, log the skip, never retry" in closer_text
+
+
+def test_groundskeeper_past_close_escalation(groundskeeper_text: str) -> None:
+    """#783: actionable past-close reasons escalate immediately; lag
+    rows ride the pattern rules."""
+    assert "position_past_close" in groundskeeper_text
+    assert "settle_failed" in groundskeeper_text
+    assert "determined_no_result" in groundskeeper_text
+    assert "awaiting_determination" in groundskeeper_text

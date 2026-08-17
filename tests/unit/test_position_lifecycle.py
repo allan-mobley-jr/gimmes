@@ -58,7 +58,8 @@ def _config(db_path: Path) -> MagicMock:
 def _read_errors(db_path: Path) -> list[dict]:
     async def _q(db):
         cursor = await db.conn.execute(
-            "SELECT error_code, category, component, message, context"
+            "SELECT severity, error_code, category, component,"
+            " message, context"
             " FROM error_log"
         )
         return [dict(r) for r in await cursor.fetchall()]
@@ -545,3 +546,282 @@ class TestKnownMarketsSettle:
             ))
         broker.settle.assert_not_awaited()
         broker.mark_to_market.assert_awaited_once()
+
+
+class TestPastClosePositions:
+    """#783: open positions past market close without settlement get a
+    console note + change-detected WARNING row. Reason separates
+    'Kalshi is slow' (awaiting_determination) from actionable states."""
+
+    @staticmethod
+    def _market(status, *, close_minutes_ago=None, result=""):
+        from datetime import UTC, datetime, timedelta
+
+        m = MagicMock()
+        m.status = status
+        m.result = result
+        m.midpoint = 0.5
+        m.last_price = 0.5
+        m.close_time = (
+            datetime.now(UTC) - timedelta(minutes=close_minutes_ago)
+            if close_minutes_ago is not None else None
+        )
+        return m
+
+    def _pos(self):
+        return Position(
+            ticker=TICKER, side="no", count=100, avg_price=0.5,
+            market_price=0.5, cost_basis=50.0, unrealized_pnl=0.0,
+        )
+
+    def _run_mark(self, db_path, market, *, threshold=30,
+                  settle_effect=None):
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(
+            side_effect=[[self._pos()], []],
+        )
+        if settle_effect is not None:
+            broker.settle = AsyncMock(side_effect=settle_effect)
+
+        async def _go():
+            db = Database(db_path)
+            await db.connect()
+            try:
+                with patch(
+                    "gimmes.kalshi.markets.get_market",
+                    AsyncMock(return_value=market),
+                ):
+                    await _mark_positions_to_market(
+                        broker, AsyncMock(), db=db,
+                        past_close_minutes=threshold,
+                    )
+            finally:
+                await db.close()
+
+        asyncio.run(_go())
+        return broker
+
+    def _rows(self, db_path):
+        return [
+            e for e in _read_errors(db_path)
+            if e["error_code"] == "position_past_close"
+        ]
+
+    def test_past_close_flags_console_and_row(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=120),
+        )
+        rows = self._rows(db_path)
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "warning"
+        ctx = json.loads(rows[0]["context"])
+        assert ctx[TICKER]["reason"] == "awaiting_determination"
+        # Canonical serialization pin (dedup depends on it)
+        assert rows[0]["context"] == json.dumps(ctx, sort_keys=True)
+
+    def test_threshold_boundary(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=29),
+        )
+        assert self._rows(db_path) == []
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=31),
+        )
+        assert len(self._rows(db_path)) == 1
+
+    def test_change_detected_across_two_runs(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        market = self._market(
+            MarketStatus.CLOSED, close_minutes_ago=50,
+        )
+        self._run_mark(db_path, market)
+        # Mutant pin: minutes_past must be EXCLUDED from the dedup
+        # payload — advance the clock within the same bucket and
+        # assert no re-log.
+        market.close_time -= timedelta(minutes=5)
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 1
+
+    def test_state_change_relogs(self, tmp_path) -> None:
+        """Mutant pin: change-detection must RE-log on a changed
+        state, not suppress whenever any prior row exists."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=50),
+        )
+        self._run_mark(
+            db_path,
+            self._market(
+                MarketStatus.DETERMINED, close_minutes_ago=50,
+                result="",
+            ),
+        )
+        assert len(self._rows(db_path)) == 2
+
+    def test_stuck_position_relogs_at_bucket_doubling(
+        self, tmp_path,
+    ) -> None:
+        """#783 review: a position stuck for hours re-logs when the
+        minutes-past bucket doubles (1x -> 2x threshold), so the
+        Groundskeeper 3+/24h pattern rule is reachable."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=40),
+        )
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=70),
+        )
+        assert len(self._rows(db_path)) == 2
+
+    def test_zero_threshold_suppresses_settle_failed_too(
+        self, tmp_path,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(
+                MarketStatus.DETERMINED, close_minutes_ago=5,
+                result="yes",
+            ),
+            threshold=0,
+            settle_effect=RuntimeError("locked"),
+        )
+        assert self._rows(db_path) == []
+
+    def test_settled_market_never_flags(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        broker = self._run_mark(
+            db_path,
+            self._market(
+                MarketStatus.DETERMINED, close_minutes_ago=120,
+                result="yes",
+            ),
+        )
+        broker.settle.assert_awaited_once()
+        assert self._rows(db_path) == []
+
+    def test_settle_failure_flags_actionable(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(
+                MarketStatus.DETERMINED, close_minutes_ago=5,
+                result="yes",
+            ),
+            settle_effect=RuntimeError("locked"),
+        )
+        rows = self._rows(db_path)
+        assert len(rows) == 1
+        ctx = json.loads(rows[0]["context"])
+        assert ctx[TICKER]["reason"] == "settle_failed"
+
+    def test_close_time_none_skipped(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path, self._market(MarketStatus.ACTIVE),
+        )
+        assert self._rows(db_path) == []
+
+    def test_naive_close_time_coerced(self, tmp_path) -> None:
+        from datetime import datetime, timedelta
+
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        market = self._market(MarketStatus.CLOSED)
+        # UTC-derived naive (review-found: local-naive is tz-dependent)
+        from datetime import UTC
+
+        market.close_time = (
+            datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=2)
+        )
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 1
+
+    def test_zero_threshold_disables(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=999),
+            threshold=0,
+        )
+        assert self._rows(db_path) == []
+
+    def test_determined_without_result_reason(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(
+                MarketStatus.DETERMINED, close_minutes_ago=120,
+                result="",
+            ),
+        )
+        rows = self._rows(db_path)
+        assert len(rows) == 1
+        ctx = json.loads(rows[0]["context"])
+        assert ctx[TICKER]["reason"] == "determined_no_result"
+
+    def test_resolved_row_rearms(self, tmp_path) -> None:
+        """Copilot review: resolving the last row while the condition
+        persists must re-arm the alert, not suppress it."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        market = self._market(MarketStatus.CLOSED, close_minutes_ago=50)
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 1
+
+        async def _resolve(db):
+            await db.conn.execute(
+                "UPDATE error_log SET resolved = 1"
+                " WHERE error_code = 'position_past_close'"
+            )
+            await db.conn.commit()
+
+        _db_run(db_path, _resolve)
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 2
+
+    def test_component_passthrough(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=50),
+        )
+        assert self._rows(db_path)[0]["component"] == "cli.mark"
+
+        from gimmes.cli import _note_past_close_positions
+
+        async def _direct(db):
+            await _note_past_close_positions(
+                db,
+                {"KXOTHER-26AUG-T1": {
+                    "reason": "awaiting_determination",
+                    "status": "closed", "bucket": 1,
+                }},
+                component="cli.positions",
+            )
+
+        _db_run(db_path, _direct)
+        rows = self._rows(db_path)
+        assert rows[-1]["component"] == "cli.positions"

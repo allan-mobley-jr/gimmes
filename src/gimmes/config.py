@@ -710,6 +710,25 @@ class RiskConfig(BaseModel):
             "max_val": 0.95,
         },
     )
+    position_past_close_minutes: int = Field(
+        default=30, ge=0, le=1440,
+        json_schema_extra={
+            "display_name": "Past-Close Alert",
+            "description": (
+                "Flag an open position whose market closed more than this\n"
+                "many minutes ago without settling (#783). Distinguishes\n"
+                "'Kalshi settlement confirmation is slow' from 'the sweep\n"
+                "is broken' — a WARNING row is written once per state\n"
+                "change, not per cycle.\n"
+                "\n"
+                "  • 30 (default): hourly BTC (~1 min lag) stays quiet;\n"
+                "    the 2026-08-14 INX 2-hour lag would have flagged\n"
+                "  • 0: disable the check entirely"
+            ),
+            "min_val": 0,
+            "max_val": 1440,
+        },
+    )
     max_event_exposure_pct: float = Field(
         default=0.15, gt=0.0, le=1.0,
         json_schema_extra={

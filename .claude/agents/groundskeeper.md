@@ -39,6 +39,7 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 - Any error with `critical` severity
 - Any error with `risk_breach` category — EXCEPT `churn_roundtrip` WARNING rows (#661): those are audit-trail records for the Pro agent's churn analysis, written on every sub-hour close including correct stop-loss closes — do NOT file issues for them. `reopen_gate_overridden` rows DO escalate (a forced bypass always warrants review).
 - `auth_failure` errors that have been unresolved for 2+ cycles
+- `position_past_close` rows whose context carries reason `settle_failed` or `determined_no_result` (#783) — a published result that is not realizing is a broken sweep, not settlement lag; `awaiting_determination` rows follow the pattern rules below (Kalshi lag is normal, but re-logs at growing buckets mean the lag keeps doubling)
 
 **Pattern escalation (file issue if threshold met):**
 - Same `error_code` appears 3+ times in the last 24 hours
