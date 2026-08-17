@@ -409,6 +409,8 @@ async def _mark_positions_to_market(
     client,   # KalshiClient
     *,
     known_markets: dict[str, Market] | None = None,
+    db=None,   # Database | None — enables the #783 past-close alert
+    past_close_minutes: int = 30,
 ) -> list:
     """Mark all paper positions to market and return refreshed list.
 
@@ -429,6 +431,7 @@ async def _mark_positions_to_market(
     positions = await broker.get_positions()
 
     markets: dict[str, Market] = dict(known_markets or {})
+    past_close: dict[str, dict] = {}
     for pos in positions:
         try:
             if pos.ticker not in markets:
@@ -459,15 +462,17 @@ async def _mark_positions_to_market(
                         f" {resolved_market.status.value}[/dim]"
                     )
                 except Exception as exc:
-                    # An accurate diagnosis, not the mark warning: a
-                    # lock-contended settle silently retried-and-
-                    # failed every run would hide behind "could not
-                    # mark" (review-found).
-                    console.print(
-                        f"[yellow]Warning: could not settle"
-                        f" {pos.ticker}: {exc}[/yellow]"
+                    # An accurate diagnosis, not the mark warning
+                    # (review-found), and the actionable "sweep
+                    # broken" #783 case.
+                    _record_settle_failed(
+                        past_close, pos.ticker,
+                        resolved_market.status, exc,
                     )
                 continue
+            _collect_past_close(
+                past_close, pos, resolved_market, past_close_minutes,
+            )
             await broker.mark_to_market(
                 pos.ticker,
                 # Market.midpoint already falls back to last_price
@@ -480,7 +485,149 @@ async def _mark_positions_to_market(
                 f" to market: {exc}[/yellow]"
             )
 
+    if past_close and isinstance(past_close_minutes, int) and past_close_minutes > 0:
+        await _note_past_close_positions(db, past_close)
+
     return await broker.get_positions()
+
+
+def _record_settle_failed(
+    past_close: dict, ticker: str, status, exc: Exception,
+) -> None:
+    """#783: identical warning + entry shape from BOTH sweep and
+    positions command — the change-detection dedup compares serialized
+    payloads, so divergence between the two commands would thrash it.
+    """
+    console.print(
+        f"[yellow]Warning: could not settle {ticker}: {exc}[/yellow]"
+    )
+    past_close[ticker] = {
+        "reason": "settle_failed",
+        "status": str(status),
+    }
+
+
+def _collect_past_close(
+    past_close: dict, pos, market, threshold_minutes: int,
+) -> None:
+    """#783: record an open position whose market is past close_time
+    but unsettled. Reason distinguishes 'Kalshi is slow' (closed,
+    awaiting determination — the 2026-08-14 INX shape) from
+    actionable states. Threshold 0 disables; strict greater-than."""
+    from datetime import UTC, datetime, timedelta
+
+    from gimmes.models.market import MarketStatus
+
+    if not isinstance(threshold_minutes, int) or threshold_minutes <= 0:
+        # Includes MagicMock configs in CLI tests — observability must
+        # never break the marking sweep.
+        return
+    ct = market.close_time or getattr(pos, "close_time", None)
+    if isinstance(ct, str):
+        try:
+            ct = datetime.fromisoformat(ct)
+        except ValueError:
+            return
+    if not isinstance(ct, datetime):
+        # None, or a test double — the alert is observability and
+        # must never break the marking sweep.
+        return
+    if ct.tzinfo is None:
+        ct = ct.replace(tzinfo=UTC)
+    past = datetime.now(UTC) - ct
+    if past <= timedelta(minutes=threshold_minutes):
+        return
+    status = market.status
+    if status == MarketStatus.CLOSED:
+        reason = "awaiting_determination"
+    elif status in (MarketStatus.DETERMINED, MarketStatus.FINALIZED):
+        reason = "determined_no_result"
+    else:
+        reason = "active_past_close"
+    minutes_past = int(past.total_seconds() // 60)
+    past_close[pos.ticker] = {
+        "reason": reason,
+        "status": str(status),
+        "minutes_past": minutes_past,
+        # #783 review: the dedup payload excludes raw minutes (grows
+        # every cycle) but includes this doubling bucket, so a STUCK
+        # position re-logs at ~1x/2x/4x/8x threshold — reaching
+        # Groundskeeper's 3+/24h pattern rule within hours instead of
+        # writing one row that ages out silently.
+        "bucket": max(1, minutes_past // threshold_minutes).bit_length(),
+    }
+
+
+async def _note_past_close_positions(db, entries: dict) -> None:
+    """#783: console note every run; durable WARNING row only on state
+    change (#767 pattern — minutes_past is EXCLUDED from the dedup
+    payload since it grows every cycle, but the doubling bucket is
+    included so stuck positions re-log). Self-guarding: observability
+    must never break the sweep it rides on.
+    """
+    import json as _json
+    import logging
+
+    from gimmes.models.error import (
+        ErrorCategory,
+        ErrorLogEntry,
+        ErrorSeverity,
+    )
+
+    try:
+        details = []
+        for ticker, e in sorted(entries.items()):
+            mins = (
+                f", {e['minutes_past']}min past"
+                if "minutes_past" in e else ""
+            )
+            details.append(
+                f"{ticker} ({e['reason']}, status {e['status']}{mins})"
+            )
+            console.print(
+                f"[dim]Past close (#783): {ticker}{mins},"
+                f" status {e['status']} — {e['reason']}[/dim]"
+            )
+        if db is None:
+            return
+        payload = _json.dumps(
+            {
+                t: {
+                    "reason": e["reason"],
+                    "status": e["status"],
+                    "bucket": e.get("bucket", 0),
+                }
+                for t, e in entries.items()
+            },
+            sort_keys=True,
+        )
+        cursor = await db.conn.execute(
+            "SELECT context FROM error_log"
+            " WHERE error_code = 'position_past_close'"
+            " ORDER BY id DESC LIMIT 1"
+        )
+        last = await cursor.fetchone()
+        if last and last["context"] == payload:
+            return
+        await _log_cli_error(db, ErrorLogEntry(
+            severity=ErrorSeverity.WARNING,
+            category=ErrorCategory.DATA_INTEGRITY,
+            error_code="position_past_close",
+            component="cli.mark",
+            message=(
+                "Open positions past market close without settlement: "
+                + "; ".join(details)
+                + " — awaiting_determination means Kalshi settlement"
+                " lag (normal for index markets); investigate"
+                " settle_failed / determined_no_result or steadily"
+                " growing lag"
+            ),
+            context=payload,
+        ))
+    except Exception:
+        logging.getLogger("gimmes.cli").warning(
+            "past-close alert failed", exc_info=True,
+        )
 
 
 @asynccontextmanager
@@ -833,6 +980,10 @@ def validate(
             if broker:
                 positions = await _mark_positions_to_market(
                     broker, client, known_markets={ticker: market},
+                    db=db,
+                    past_close_minutes=(
+                        config.risk.position_past_close_minutes
+                    ),
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -1320,6 +1471,10 @@ def order(
             if broker:
                 positions = await _mark_positions_to_market(
                     broker, client, known_markets={ticker: market},
+                    db=db,
+                    past_close_minutes=(
+                        config.risk.position_past_close_minutes
+                    ),
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -2746,6 +2901,7 @@ def positions() -> None:
 
         async with trading_context(config) as (client, broker, db):
             stale: set[str] = set()
+            past_close: dict[str, dict] = {}
             suspect: set[str] = set()
             if broker:
                 pos_list = await broker.get_positions()
@@ -2790,7 +2946,21 @@ def positions() -> None:
                             in (MarketStatus.DETERMINED, MarketStatus.FINALIZED)
                             and market.result in ("yes", "no")
                         ):
-                            await broker.settle(pos.ticker, market.result)
+                            try:
+                                await broker.settle(
+                                    pos.ticker, market.result,
+                                )
+                            except Exception as exc:
+                                _record_settle_failed(
+                                    past_close, pos.ticker,
+                                    market.status, exc,
+                                )
+                        else:
+                            # #783: unsettled past-close positions
+                            _collect_past_close(
+                                past_close, pos, market,
+                                config.risk.position_past_close_minutes,
+                            )
                     except Exception as exc:
                         # #674: the position keeps its LAST mark — the
                         # Stop column must say STALE, not render a
@@ -2799,6 +2969,13 @@ def positions() -> None:
                         console.print(
                             f"[yellow]Warning: could not update {pos.ticker}: {exc}[/yellow]"
                         )
+                _pc_threshold = config.risk.position_past_close_minutes
+                if (
+                    past_close
+                    and isinstance(_pc_threshold, int)
+                    and _pc_threshold > 0
+                ):
+                    await _note_past_close_positions(db, past_close)
                 # Re-fetch after mark-to-market
                 pos_list = await broker.get_positions()
             else:
@@ -2856,7 +3033,12 @@ def risk_check() -> None:
                 # count, deployed capital, or unrealized P&L. Balance
                 # is read AFTER so the settlement credit and the
                 # position list come from the same snapshot.
-                pos = await _mark_positions_to_market(broker, client)
+                pos = await _mark_positions_to_market(
+                    broker, client, db=db,
+                    past_close_minutes=(
+                        config.risk.position_past_close_minutes
+                    ),
+                )
                 balance = await broker.get_balance()
             else:
                 from gimmes.kalshi.portfolio import get_all_positions, get_balance
