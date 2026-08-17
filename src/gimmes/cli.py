@@ -558,7 +558,9 @@ def _collect_past_close(
     }
 
 
-async def _note_past_close_positions(db, entries: dict) -> None:
+async def _note_past_close_positions(
+    db, entries: dict, *, component: str = "cli.mark",
+) -> None:
     """#783: console note every run; durable WARNING row only on state
     change (#767 pattern — minutes_past is EXCLUDED from the dedup
     payload since it grows every cycle, but the doubling bucket is
@@ -601,9 +603,13 @@ async def _note_past_close_positions(db, entries: dict) -> None:
             },
             sort_keys=True,
         )
+        # Unresolved rows only (Copilot review): resolving the last
+        # row while the condition persists must RE-ARM the alert, not
+        # suppress it.
         cursor = await db.conn.execute(
             "SELECT context FROM error_log"
             " WHERE error_code = 'position_past_close'"
+            " AND resolved = 0"
             " ORDER BY id DESC LIMIT 1"
         )
         last = await cursor.fetchone()
@@ -613,7 +619,7 @@ async def _note_past_close_positions(db, entries: dict) -> None:
             severity=ErrorSeverity.WARNING,
             category=ErrorCategory.DATA_INTEGRITY,
             error_code="position_past_close",
-            component="cli.mark",
+            component=component,
             message=(
                 "Open positions past market close without settlement: "
                 + "; ".join(details)
@@ -2975,7 +2981,9 @@ def positions() -> None:
                     and isinstance(_pc_threshold, int)
                     and _pc_threshold > 0
                 ):
-                    await _note_past_close_positions(db, past_close)
+                    await _note_past_close_positions(
+                        db, past_close, component="cli.positions",
+                    )
                 # Re-fetch after mark-to-market
                 pos_list = await broker.get_positions()
             else:

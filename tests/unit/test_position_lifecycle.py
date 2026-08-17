@@ -780,3 +780,48 @@ class TestPastClosePositions:
         assert len(rows) == 1
         ctx = json.loads(rows[0]["context"])
         assert ctx[TICKER]["reason"] == "determined_no_result"
+
+    def test_resolved_row_rearms(self, tmp_path) -> None:
+        """Copilot review: resolving the last row while the condition
+        persists must re-arm the alert, not suppress it."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        market = self._market(MarketStatus.CLOSED, close_minutes_ago=50)
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 1
+
+        async def _resolve(db):
+            await db.conn.execute(
+                "UPDATE error_log SET resolved = 1"
+                " WHERE error_code = 'position_past_close'"
+            )
+            await db.conn.commit()
+
+        _db_run(db_path, _resolve)
+        self._run_mark(db_path, market)
+        assert len(self._rows(db_path)) == 2
+
+    def test_component_passthrough(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, lambda db: asyncio.sleep(0))
+        self._run_mark(
+            db_path,
+            self._market(MarketStatus.CLOSED, close_minutes_ago=50),
+        )
+        assert self._rows(db_path)[0]["component"] == "cli.mark"
+
+        from gimmes.cli import _note_past_close_positions
+
+        async def _direct(db):
+            await _note_past_close_positions(
+                db,
+                {"KXOTHER-26AUG-T1": {
+                    "reason": "awaiting_determination",
+                    "status": "closed", "bucket": 1,
+                }},
+                component="cli.positions",
+            )
+
+        _db_run(db_path, _direct)
+        rows = self._rows(db_path)
+        assert rows[-1]["component"] == "cli.positions"
