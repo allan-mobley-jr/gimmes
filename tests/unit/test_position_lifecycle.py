@@ -487,3 +487,61 @@ class TestOpenPositionMissingTradeLog:
         assert "No open trade row recorded" in result.output
         assert "POSITION CLOSED/SETTLED" not in result.output
         assert _read_errors(db_path) == []
+
+
+class TestKnownMarketsSettle:
+    """#781 triage regression pin: a caller-supplied market for a held
+    ticker gets the settle check — the old known_prices form skipped
+    it, so ordering a ticker you already hold could size against a
+    just-resolved position."""
+
+    def test_known_market_settled_settles_not_marks(self) -> None:
+        market = MagicMock()
+        market.status = MarketStatus.DETERMINED
+        market.result = "yes"
+        market.midpoint = 0.5
+        market.last_price = 0.5
+        market.close_time = None
+        pos = Position(
+            ticker=TICKER, side="no", count=100, avg_price=0.5,
+            market_price=0.5, cost_basis=50.0, unrealized_pnl=0.0,
+        )
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(side_effect=[[pos], []])
+        client = AsyncMock()
+        get_market = AsyncMock(
+            side_effect=AssertionError("must not fetch a known market"),
+        )
+        with patch("gimmes.kalshi.markets.get_market", get_market):
+            asyncio.run(_mark_positions_to_market(
+                broker, client, known_markets={TICKER: market},
+            ))
+        broker.settle.assert_awaited_once_with(TICKER, "yes")
+        broker.mark_to_market.assert_not_awaited()
+        get_market.assert_not_awaited()
+
+    def test_known_market_determined_without_result_marks(self) -> None:
+        """Fail-open pin (review-found): DETERMINED with an empty
+        result must mark, not settle — a future 'settle on empty
+        result' change has to be deliberate."""
+        market = MagicMock()
+        market.status = MarketStatus.DETERMINED
+        market.result = ""
+        market.midpoint = 0.5
+        market.last_price = 0.5
+        market.close_time = None
+        pos = Position(
+            ticker=TICKER, side="no", count=100, avg_price=0.5,
+            market_price=0.5, cost_basis=50.0, unrealized_pnl=0.0,
+        )
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(side_effect=[[pos], []])
+        with patch(
+            "gimmes.kalshi.markets.get_market",
+            AsyncMock(side_effect=AssertionError("no fetch")),
+        ):
+            asyncio.run(_mark_positions_to_market(
+                broker, AsyncMock(), known_markets={TICKER: market},
+            ))
+        broker.settle.assert_not_awaited()
+        broker.mark_to_market.assert_awaited_once()

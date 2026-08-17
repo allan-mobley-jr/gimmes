@@ -3194,7 +3194,7 @@ def test_closer_cap_sizing_note_pinned() -> None:
 def test_caddie_ticker_discipline_rule(caddie_text: str) -> None:
     """#778: eight guessed ticker variants in one minute — the
     discipline rule and its adjacency to the failure rule must hold."""
-    assert "Ticker discipline (#778)" in caddie_text
+    assert "Ticker discipline (#778/#782)" in caddie_text
     assert "strike decimals included" in caddie_text
     assert "retry ONCE" in caddie_text
     assert (
@@ -3203,10 +3203,10 @@ def test_caddie_ticker_discipline_rule(caddie_text: str) -> None:
     )
     # Adjacent to the market-info failure rule so the fallthrough
     # reads as one flow
-    start = caddie_text.index("Ticker discipline (#778)")
+    start = caddie_text.index("Ticker discipline (#778/#782)")
     assert (
         "If `market-info` fails for a candidate"
-        in caddie_text[start:start + 900]
+        in caddie_text[start:start + 1600]
     )
     assert "NEVER guess ticker format variants" in caddie_text
     # The quoted trigger matches the console's actual casing
@@ -3216,3 +3216,28 @@ def test_caddie_ticker_discipline_rule(caddie_text: str) -> None:
 def test_scout_verbatim_ticker_rule(scout_text: str) -> None:
     assert "transcribed verbatim from `gimmes scan` output" in scout_text
     assert "a dropped suffix here becomes their 404 (#778)" in scout_text
+
+
+def test_caddie_no_settled_ladder_probing(caddie_text: str) -> None:
+    """#782: the c2259 bisection — fabricated midpoint strikes against
+    a settled ladder to triangulate BTC's close."""
+    assert "NEVER probe a settled ladder" in caddie_text
+    assert "cycle 2259" in caddie_text
+    assert (
+        "NEVER run `market-info` on tickers outside your"
+        " assignment/shortlist" in caddie_text
+    )
+    assert 'the event "is ALREADY SETTLED"' in caddie_text
+    # The Shadow spot lookup names web sources and bans ladder prices
+    assert "web sources ONLY" in caddie_text
+    assert "NEVER Kalshi ladder prices, open or settled, #782" in caddie_text
+
+
+def test_monitor_log_outcome_is_not_settlement(monitor_text: str) -> None:
+    """#781: log-outcome stamps the resolution; it does not settle."""
+    assert (
+        "does NOT settle or remove the position" in monitor_text
+    )
+    assert (
+        "until the settlement sweep's close row exists" in monitor_text
+    )
