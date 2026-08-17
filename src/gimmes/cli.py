@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from gimmes.models.market import Market
+
 import click
 import typer
 from rich.console import Console
@@ -265,44 +267,61 @@ def _print_ambiguous_ticker(prefix: str, matches: list[str]) -> None:
 
 async def _recover_unknown_ticker(
     client, resolved: str,
-) -> tuple[str, list[str]]:
-    """Best-effort 404 recovery for `market-info` (#778): derive the
-    event ticker from a strike ticker and list the event's open
+) -> tuple[str, list[str], str]:
+    """Best-effort 404 recovery for `market-info` (#778/#782): derive
+    the event ticker from a strike ticker and list the event's open
     markets, longest-common-prefix first so the intended correction
-    survives any display cap. Returns ("", []) when not applicable or
+    survives any display cap. When the event has no OPEN markets, a
+    second-chance settled lookup (#782) distinguishes "you are
+    researching an hour that already settled" from a genuinely
+    unknown event. Returns (event_ticker, tickers, state) with state
+    in {"open", "settled", ""}; ("", [], "") when not applicable or
     on ANY failure — the caller degrades to the plain
     http_status_error path; the recovery must never mask the original
-    404. The derived event ticker is returned alongside so the caller
-    prints exactly what was queried.
+    404.
     """
     import logging
     import os.path
 
     if "-T" not in resolved:
         # Range shape (-B7737), bare garbage ("00"), hyphenless typos.
-        return "", []
+        return "", [], ""
     # rsplit, not split: the LAST '-T' is the strike separator, which
     # keeps negative thresholds (KXCPI-26JUN-T-0.2 -> KXCPI-26JUN)
     # and mid-event '-T' shapes correct.
     event_ticker = resolved.rsplit("-T", 1)[0]
     if not event_ticker:
-        return "", []
+        return "", [], ""
     try:
         from gimmes.kalshi.markets import list_markets
 
         markets, _ = await list_markets(
             client, event_ticker=event_ticker, limit=200,
         )
+        state = "open"
+        if not markets:
+            # #782: the c2259 shape — probing a SETTLED ladder. The
+            # "settled" filter is the backtest's proven-valid value.
+            markets, _ = await list_markets(
+                client, event_ticker=event_ticker,
+                status="settled", limit=200,
+            )
+            state = "settled" if markets else ""
+        if not markets:
+            # Both lookups empty: the documented not-applicable shape
+            # — a partially-filled tuple would mislead future callers
+            # into thinking the event was validated (Copilot review).
+            return "", [], ""
     except Exception:
         logging.getLogger("gimmes.cli").debug(
             "ticker recovery failed for %s", resolved, exc_info=True,
         )
-        return "", []
+        return "", [], ""
     tickers = [m.ticker for m in markets]
     tickers.sort(
         key=lambda t: (-len(os.path.commonprefix([t, resolved])), t),
     )
-    return event_ticker, tickers
+    return event_ticker, tickers, state
 
 
 def _run(coro):  # type: ignore[no-untyped-def]
@@ -389,7 +408,7 @@ async def _mark_positions_to_market(
     broker,   # PaperBroker
     client,   # KalshiClient
     *,
-    known_prices: dict[str, float] | None = None,
+    known_markets: dict[str, Market] | None = None,
 ) -> list:
     """Mark all paper positions to market and return refreshed list.
 
@@ -398,20 +417,24 @@ async def _mark_positions_to_market(
     every other consumer (risk-check, the order/validate position
     load) kept counting a resolved position's cost basis and stale
     unrealized P&L until the next `gimmes positions` run.
+
+    #781 triage: callers pass full Market objects (known_markets),
+    not bare prices — a caller-supplied price used to skip the settle
+    check entirely, so ordering a ticker you already hold could size
+    against a just-resolved position.
     """
     from gimmes.kalshi.markets import get_market
     from gimmes.models.market import MarketStatus
 
     positions = await broker.get_positions()
-    prices = dict(known_prices or {})
 
-    markets: dict = {}
+    markets: dict[str, Market] = dict(known_markets or {})
     for pos in positions:
         try:
-            if pos.ticker not in prices:
-                market = await get_market(client, pos.ticker)
-                prices[pos.ticker] = market.midpoint or market.last_price
-                markets[pos.ticker] = market
+            if pos.ticker not in markets:
+                markets[pos.ticker] = await get_market(
+                    client, pos.ticker,
+                )
             resolved_market = markets.get(pos.ticker)
             if (
                 resolved_market is not None
@@ -447,8 +470,9 @@ async def _mark_positions_to_market(
                 continue
             await broker.mark_to_market(
                 pos.ticker,
-                prices[pos.ticker],
-                close_time=getattr(markets.get(pos.ticker), "close_time", None),
+                # Market.midpoint already falls back to last_price
+                resolved_market.midpoint,
+                close_time=resolved_market.close_time,
             )
         except Exception as exc:
             console.print(
@@ -808,7 +832,7 @@ def validate(
 
             if broker:
                 positions = await _mark_positions_to_market(
-                    broker, client, known_prices={ticker: raw_price},
+                    broker, client, known_markets={ticker: market},
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -1295,7 +1319,7 @@ def order(
             # Get positions for validation
             if broker:
                 positions = await _mark_positions_to_market(
-                    broker, client, known_prices={ticker: raw_price},
+                    broker, client, known_markets={ticker: market},
                 )
             else:
                 from gimmes.kalshi.portfolio import get_all_positions
@@ -3546,6 +3570,7 @@ def market_info(
                 # not conflate agent typos with real API failures.
                 suggestions: list[str] = []
                 event_ticker = ""
+                event_state = ""
                 failing_url = str(
                     getattr(exc.request, "url", "") or ""
                 )
@@ -3559,9 +3584,56 @@ def market_info(
                     # it an unknown ticker would both hide it from
                     # ERROR escalation and tell the agent to retry a
                     # DIFFERENT strike.
-                    event_ticker, suggestions = (
+                    event_ticker, suggestions, event_state = (
                         await _recover_unknown_ticker(client, resolved)
                     )
+                if event_state == "settled":
+                    # #782: the event exists but has ALREADY SETTLED —
+                    # the agent is researching the wrong hour (the
+                    # c2259 bisection probe). Deliberately list ZERO
+                    # settled tickers: printing them would hand a
+                    # ladder-probing agent exactly the data it wanted;
+                    # the corrective action is "go back to your
+                    # shortlist", which needs no ticker.
+                    async with Database(config.db_path) as db:
+                        await _log_cli_error(db, ErrorLogEntry(
+                            severity=ErrorSeverity.WARNING,
+                            category=ErrorCategory.CONFIG_ERROR,
+                            error_code="ticker_not_found",
+                            component="cli.market-info",
+                            message=(
+                                f"Unknown ticker '{resolved}' (404) —"
+                                f" event '{event_ticker}' exists but"
+                                f" is ALREADY SETTLED"
+                                f" ({len(suggestions)} settled"
+                                f" markets)"
+                            ),
+                            context=json.dumps({
+                                "ticker": ticker,
+                                "resolved": resolved,
+                                "event_ticker": event_ticker,
+                                "event_state": "settled",
+                                "suggestions": [],
+                                "suggestions_total": len(suggestions),
+                                "status_code": 404,
+                            }),
+                        ))
+                    console.print(
+                        f"[red bold]Market lookup FAILED (404):"
+                        f" unknown ticker"
+                        f" '{rich_escape(resolved)}'[/red bold]"
+                    )
+                    console.print(
+                        f"The event {rich_escape(event_ticker)} exists"
+                        f" but is ALREADY SETTLED — you are"
+                        f" researching an hour that has settled."
+                    )
+                    console.print(
+                        "[yellow]Only research tickers from your"
+                        " current shortlist. NEVER probe settled"
+                        " ladders (#782).[/yellow]"
+                    )
+                    raise typer.Exit(1)
                 if suggestions:
                     shown = suggestions[:_AMBIGUOUS_MATCH_DISPLAY_LIMIT]
                     async with Database(config.db_path) as db:

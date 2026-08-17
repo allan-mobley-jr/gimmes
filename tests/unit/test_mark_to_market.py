@@ -37,7 +37,10 @@ class TestMarkPositionsToMarket:
         broker.mark_to_market.assert_any_call("A", 0.70, close_time=ANY)
         broker.mark_to_market.assert_any_call("B", 0.70, close_time=ANY)
 
-    async def test_known_prices_skip_api_call(self) -> None:
+    async def test_known_markets_skip_api_call(self) -> None:
+        """#781 triage: callers pass full Market objects so the settle
+        check covers held tickers too — a bare known price used to
+        skip it entirely."""
         broker = AsyncMock()
         broker.get_positions = AsyncMock(return_value=[_pos("A"), _pos("B")])
         broker.mark_to_market = AsyncMock()
@@ -48,10 +51,10 @@ class TestMarkPositionsToMarket:
             from gimmes.cli import _mark_positions_to_market
 
             await _mark_positions_to_market(
-                broker, client, known_prices={"A": 0.65},
+                broker, client, known_markets={"A": _market(0.65)},
             )
 
-        # A uses known price, B fetches from API
+        # A uses the supplied market, B fetches from API
         broker.mark_to_market.assert_any_call("A", 0.65, close_time=ANY)
         broker.mark_to_market.assert_any_call("B", 0.80, close_time=ANY)
         # get_market called only for B

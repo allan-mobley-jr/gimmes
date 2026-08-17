@@ -302,6 +302,8 @@ MUST check every open position's market for settlement status. For each resolved
 gimmes log-outcome TICKER --outcome yes   # or --outcome no
 ```
 
+`gimmes log-outcome` records the resolution but does NOT settle or remove the position — do not report a position as settled until the settlement sweep's close row exists (#781: a "settled this cycle" claim based on log-outcome alone triggered a false stale-position escalation).
+
 NEVER skip this step — missing outcome data degrades all Pro analyses. If the log-outcome command fails, note the failure prominently in your output so the outcome can be recorded on the next cycle. Do not retry.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)

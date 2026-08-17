@@ -804,7 +804,8 @@ class TestMarketInfo404Recovery:
         m.ticker = ticker
         return m
 
-    def _run(self, seeded_db, ticker, *, list_markets=None,
+    @staticmethod
+    def _run(seeded_db, ticker, *, list_markets=None,
              list_markets_effect=None, status=404):
         response = MagicMock(status_code=status, text="err")
         get_market = AsyncMock(
@@ -975,3 +976,83 @@ class TestMarketInfo404Recovery:
         assert any(
             e["error_code"] == "http_status_error" for e in errors
         )
+
+
+class TestMarketInfo404SettledEvent:
+    """#782: a 404 on a SETTLED event's ticker gets the wrong-hour
+    signal — with ZERO settled tickers listed (a ladder-probing agent
+    must not be handed the data it was fishing for)."""
+
+    def test_settled_event_warns_without_suggestions(
+        self, seeded_db: Path,
+    ) -> None:
+        settled = MagicMock()
+        settled.ticker = "KXBTCD-26AUG1709-T63399.99"
+        result, lm = TestMarketInfo404Recovery._run(
+            seeded_db,
+            "KXBTCD-26AUG1709-T63424.99",
+            list_markets_effect=[([], None), ([settled], None)],
+        )
+        assert result.exit_code == 1
+        assert "ALREADY SETTLED" in result.output
+        assert "NEVER probe settled" in result.output
+        assert "KXBTCD-26AUG1709-T63399.99" not in result.output
+        assert lm.await_count == 2
+        assert lm.await_args_list[1].kwargs["status"] == "settled"
+        errors = _read_error_log(seeded_db)
+        row = [e for e in errors if e["error_code"] == "ticker_not_found"]
+        assert len(row) == 1
+        assert row[0]["severity"] == "warning"
+        import json
+
+        ctx = json.loads(row[0]["context"])
+        assert ctx["event_state"] == "settled"
+        assert ctx["suggestions"] == []
+        # Same key as the open branch — dashboards must not need two
+        # queries for one concept (review-found)
+        assert ctx["suggestions_total"] == 1
+        assert not any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+
+    def test_settled_lookup_failure_degrades(
+        self, seeded_db: Path,
+    ) -> None:
+        result, _ = TestMarketInfo404Recovery._run(
+            seeded_db,
+            "KXBTCD-26AUG1709-T63424.99",
+            list_markets_effect=[([], None), RuntimeError("api down")],
+        )
+        assert result.exit_code == 1
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+
+    def test_both_lookups_empty_falls_back_to_error(
+        self, seeded_db: Path,
+    ) -> None:
+        result, lm = TestMarketInfo404Recovery._run(
+            seeded_db,
+            "KXBTCD-26AUG1709-T63424.99",
+        )
+        assert result.exit_code == 1
+        assert lm.await_count == 2
+        errors = _read_error_log(seeded_db)
+        assert any(
+            e["error_code"] == "http_status_error" for e in errors
+        )
+
+    def test_open_branch_never_makes_second_call(
+        self, seeded_db: Path,
+    ) -> None:
+        mk = MagicMock()
+        mk.ticker = "KXBTCD-26AUG1710-T63499.99"
+        result, lm = TestMarketInfo404Recovery._run(
+            seeded_db,
+            "KXBTCD-26AUG1710-T63499",
+            list_markets=[mk],
+        )
+        assert result.exit_code == 1
+        assert "EXISTS" in result.output
+        assert lm.await_count == 1
