@@ -213,9 +213,7 @@ class TestValidateAlignment:
             return_value=[_resting("KXE-26AUG-T2", remaining=900,
                                    price=0.5)],
         )
-        mock_fees = MagicMock()
-        mock_fees.taker_fee = 0.07
-        mock_fees.maker_fee = 0.03
+        from gimmes.strategy.fees import DEFAULT_FEE_MULTIPLIERS
 
         @asynccontextmanager
         async def _ctx(config):
@@ -228,7 +226,7 @@ class TestValidateAlignment:
              patch("gimmes.kalshi.markets.get_market",
                    AsyncMock(return_value=market)), \
              patch("gimmes.strategy.fee_cache.get_multipliers",
-                   MagicMock(return_value=mock_fees)), \
+                   MagicMock(return_value=DEFAULT_FEE_MULTIPLIERS)), \
              patch("gimmes.store.queries.get_daily_pnl",
                    AsyncMock(return_value=0.0)), \
              patch("gimmes.store.queries.get_deployed_cost_basis",
