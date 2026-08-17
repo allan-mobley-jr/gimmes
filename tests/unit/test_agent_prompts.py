@@ -3241,3 +3241,12 @@ def test_monitor_log_outcome_is_not_settlement(monitor_text: str) -> None:
     assert (
         "until the settlement sweep's close row exists" in monitor_text
     )
+
+
+def test_closer_market_status_gate_final() -> None:
+    """#784: the status-gate rejection is FINAL-class, and a CLOSE on
+    a resolved market defers to settlement."""
+    closer_text = _CLOSER.read_text()
+    assert "Market status gate (#784)" in closer_text
+    assert "settlement supersedes the close" in closer_text
+    assert "report it, log the skip, never retry" in closer_text

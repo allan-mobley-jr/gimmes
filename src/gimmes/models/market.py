@@ -26,6 +26,19 @@ class MarketStatus(StrEnum):
     FINALIZED = "finalized"
 
 
+# #784: markets where an order can execute vs not. Kalshi matches
+# orders only on ACTIVE markets; everything else dies as a raw 4xx
+# (live) or an empty-book cancel (paper) — the status gate makes the
+# refusal explicit and named. SETTLED_STATUSES is the subset where
+# settlement supersedes any close order (mirrors the #782 sweep
+# trigger).
+SETTLED_STATUSES = frozenset({
+    MarketStatus.DETERMINED,
+    MarketStatus.FINALIZED,
+})
+UNTRADEABLE_STATUSES = frozenset(MarketStatus) - {MarketStatus.ACTIVE}
+
+
 class Market(BaseModel):
     """A Kalshi binary contract market."""
 

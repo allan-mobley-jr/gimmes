@@ -128,6 +128,8 @@ A permission-denied `gimmes order` (the command was blocked and never ran) count
 
 An `Hourly shadow gate (#769)` rejection is the same FINAL class: the distance gate refused the entry even though validation passed. Log the `order_failed` skip citing the shadow gate, never retry or resize.
 
+A `Market status gate (#784)` rejection is also FINAL: the market cannot execute orders (resolved, closed, or paused). For a CLOSE on a resolved market, settlement supersedes the close — the settle sweep realizes the position; report it, log the skip, never retry.
+
 If the order command fails (non-zero exit code or error output), MUST:
 1. Log the failure via the `--rationale-file` heredoc pattern — captured CLI output may contain `$` or backticks (#589):
    ```bash

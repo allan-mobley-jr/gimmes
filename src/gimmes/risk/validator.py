@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from gimmes.config import GimmesConfig
-from gimmes.models.market import Market
+from gimmes.models.market import UNTRADEABLE_STATUSES, Market
 from gimmes.risk.limits import (
     check_bankroll,
     check_daily_loss,
@@ -67,6 +67,17 @@ def validate_trade(
     """
     checks: list[str] = []
     failures: list[str] = []
+
+    # 0. Market status (#784): validation must never APPROVE a market
+    # orders cannot execute on. Membership formulation keeps string
+    # stubs working and unknown statuses failing open.
+    if market.status in UNTRADEABLE_STATUSES:
+        failures.append(
+            f"Market not active (status {market.status}) — orders"
+            f" cannot execute (#784)"
+        )
+    else:
+        checks.append(f"Market status OK ({market.status})")
 
     # 1. Daily loss limit
     loss_check = check_daily_loss(daily_pnl, bankroll, config)

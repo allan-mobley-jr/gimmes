@@ -1335,8 +1335,71 @@ def order(
                 )
                 await sync_positions(db, positions)
 
+            # #784: markets only match orders while ACTIVE. Sits AFTER
+            # the settle sweep above (a just-resolved held position
+            # settles in this same invocation) and before sizing.
+            # Membership formulation is load-bearing: StrEnum keeps
+            # string stubs working and unknown statuses failing OPEN.
+            from gimmes.models.market import (
+                SETTLED_STATUSES,
+                UNTRADEABLE_STATUSES,
+            )
+
             order_action = OrderAction(action.lower())
             is_buy = order_action == OrderAction.BUY
+            if market.status in UNTRADEABLE_STATUSES:
+                if market.status in SETTLED_STATUSES and is_buy:
+                    detail = (
+                        "the market has RESOLVED — entries are"
+                        " impossible; do not retry"
+                    )
+                elif market.status in SETTLED_STATUSES:
+                    detail = (
+                        "settlement supersedes this close — the settle"
+                        " sweep realizes the position once the result"
+                        " publishes (#782); do not retry"
+                    )
+                else:
+                    detail = (
+                        f"status {market.status}, not active — orders"
+                        f" cannot execute"
+                    )
+                console.print(
+                    f"[red]Market status gate (#784):"
+                    f" {rich_escape(ticker)} — {detail}.[/red]"
+                )
+                await _audit_row(
+                    ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.ORDER_FAILURE,
+                        error_code="market_not_active",
+                        component="cli.order",
+                        agent=agent,
+                        cycle=gate_cycle,
+                        message=(
+                            f"Order refused for {ticker}: market"
+                            f" status {market.status} (#784)"
+                        ),
+                        context=json.dumps({
+                            "ticker": ticker,
+                            "side": side,
+                            "action": action,
+                            "status": str(market.status),
+                            "cycle": gate_cycle,
+                        }),
+                    ),
+                    "Failed to record market_not_active audit row",
+                )
+                # Status cannot revert within a cycle for the settled/
+                # closed cases, and the live path already armed
+                # terminal via http_status_error here — _mark_terminal
+                # self-guards to in-cycle BUYs, so a paused market's
+                # close can retry next dispatch.
+                await _mark_terminal({
+                    "error_code": "market_not_active",
+                    "status": str(market.status),
+                })
+                raise typer.Exit(1)
             is_taker = taker or config.orders.preferred_order_type != "maker"
 
             bankroll = config.bankroll
