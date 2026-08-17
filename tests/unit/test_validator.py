@@ -606,3 +606,34 @@ class TestHourlyPriceBand:
         )
         assert not any("band" in c.lower() for c in result.checks)
         assert not any("band" in f.lower() for f in result.failures)
+
+
+class TestMarketStatusCheck:
+    """#784 check 0: validation never APPROVEs an untradeable market."""
+
+    @staticmethod
+    def _cfg() -> GimmesConfig:
+        return GimmesConfig(
+            mode=Mode.DRIVING_RANGE,
+            strategy=StrategyConfig(side="yes", min_true_probability=0.9),
+        )
+
+    def _validate_status(self, status):
+        m = _make_market()
+        m.status = status
+        return validate_trade(
+            m, 50.0, 0.95, 1000.0, 0.0, 0, [], self._cfg(),
+        )
+
+    def test_determined_fails(self) -> None:
+        result = self._validate_status(MarketStatus.DETERMINED)
+        assert not result.approved
+        assert any("not active" in f for f in result.failures)
+
+    def test_closed_fails(self) -> None:
+        result = self._validate_status(MarketStatus.CLOSED)
+        assert not result.approved
+
+    def test_active_passes_with_check_line(self) -> None:
+        result = self._validate_status(MarketStatus.ACTIVE)
+        assert any("Market status OK" in c for c in result.checks)
