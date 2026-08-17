@@ -152,11 +152,11 @@ If the order command fails (non-zero exit code or error output), MUST:
 
 When ANY safety check fails, MUST:
 1. Log the skip with the specific failure reason
-2. **If the rejection was due to bankroll limit** (validate output contains "Bankroll exceeded"): mark the candidate as cap-blocked:
+2. **If the rejection was a capacity cap** (validate/order output contains "Bankroll exceeded", "Event exposure", or "Series exposure" — #640): mark the candidate as cap-blocked:
    ```bash
    gimmes mark-cap-blocked TICKER
    ```
-   If the command fails, note the failure in your output and continue.
+   If the command fails, note the failure in your output and continue. For event/series caps, quote the remaining capacity in the skip rationale — read it with `gimmes risk-check --event EVENT_TICKER` (or `--series`). Entries are NEVER shrunk to fit the cap: the backtest skips at the cap, so a rung that does not fit at full auto-size is skipped whole (#640).
 3. If the log-trade command fails, note the failure in your output and continue. Do not retry failed log commands.
 4. Report the rejection in the Execution Report with the specific failed check(s)
 5. NEVER override or retry — a failed check is final for this cycle

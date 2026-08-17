@@ -422,6 +422,34 @@ def _mode_banner(config: GimmesConfig) -> None:
         )
 
 
+async def _exposure_basis(positions, broker) -> list:
+    """#640/#743: the exposure basis the risk checks see — open
+    positions PLUS resting BUY orders as pseudo-positions at their
+    reserved limit price. Shared by the order and validate paths so
+    validate can never APPROVE what order then REJECTS (the #640
+    accounting-alignment gap). broker None (live mode) returns
+    positions unchanged."""
+    basis = list(positions)
+    if broker:
+        from gimmes.models.portfolio import Position as _RestPos
+
+        for o in await broker.list_orders(status="resting"):
+            if o.action.value != "buy":
+                continue
+            r_price = (
+                o.yes_price if o.side.value == "yes" else o.no_price
+            )
+            basis.append(_RestPos(
+                ticker=o.ticker,
+                side=o.side.value,
+                count=o.remaining_count,
+                avg_price=r_price,
+                cost_basis=o.remaining_count * r_price,
+                market_price=r_price,
+            ))
+    return basis
+
+
 async def _mark_positions_to_market(
     broker,   # PaperBroker
     client,   # KalshiClient
@@ -1079,8 +1107,16 @@ def validate(
             from gimmes.risk.limits import compute_exposure_for_group
 
             existing_tickers = [p.ticker for p in positions]
-            event_exp = compute_exposure_for_group(positions, market.event_ticker)
-            series_exp = compute_exposure_for_group(positions, market.series_ticker)
+            # #640: same basis as the order path (positions + resting
+            # BUY reservations) — validate must never APPROVE what
+            # order then REJECTS.
+            exposure_basis = await _exposure_basis(positions, broker)
+            event_exp = compute_exposure_for_group(
+                exposure_basis, market.event_ticker,
+            )
+            series_exp = compute_exposure_for_group(
+                exposure_basis, market.series_ticker,
+            )
             result = validate_trade(
                 market, trade_dollars, true_prob, bankroll,
                 total_daily_pnl, len(positions), existing_tickers, config,
@@ -1878,25 +1914,9 @@ def order(
                 # concentration exactly like an open position — without
                 # this, successive resting rungs on one hourly event
                 # could collectively breach the caps when they fill.
-                exposure_basis = list(positions)
-                if broker:
-                    from gimmes.models.portfolio import Position as _RestPos
-
-                    for o in await broker.list_orders(status="resting"):
-                        if o.action.value != "buy":
-                            continue
-                        r_price = (
-                            o.yes_price if o.side.value == "yes"
-                            else o.no_price
-                        )
-                        exposure_basis.append(_RestPos(
-                            ticker=o.ticker,
-                            side=o.side.value,
-                            count=o.remaining_count,
-                            avg_price=r_price,
-                            cost_basis=o.remaining_count * r_price,
-                            market_price=r_price,
-                        ))
+                exposure_basis = await _exposure_basis(
+                    positions, broker,
+                )
 
                 evt_exp = compute_exposure_for_group(
                     exposure_basis, market.event_ticker,
@@ -3044,7 +3064,20 @@ def positions() -> None:
 
 
 @app.command(name="risk-check", rich_help_panel="Portfolio")
-def risk_check() -> None:
+def risk_check(
+    event: str = typer.Option(
+        "", "--event",
+        help=(
+            "Report exposure, cap, and REMAINING capacity for this"
+            " event ticker (positions + resting reservations — the"
+            " validator's own view, #640)"
+        ),
+    ),
+    series: str = typer.Option(
+        "", "--series",
+        help="Same as --event for a series ticker (#640)",
+    ),
+) -> None:
     """Check risk limits and daily P&L."""
     config = load_config()
 
@@ -3083,6 +3116,50 @@ def risk_check() -> None:
                     client, db, pos,
                 )
                 await sync_positions(db, pos)
+
+            # #640: per-group capacity report — the validator's OWN
+            # exposure view (positions + resting reservations), so the
+            # CM can check remaining capacity BEFORE approving instead
+            # of discovering the cap at the Closer's validate.
+            if event or series:
+                from gimmes.risk.limits import (
+                    compute_exposure_for_group,
+                )
+
+                capacity_basis = await _exposure_basis(pos, broker)
+            for group, cap_pct, label in (
+                (event, config.risk.max_event_exposure_pct, "Event"),
+                (series, config.risk.max_series_exposure_pct, "Series"),
+            ):
+                if not group:
+                    continue
+                exposure = compute_exposure_for_group(
+                    capacity_basis, group,
+                )
+                cap_dollars = cap_pct * config.bankroll
+                remaining = cap_dollars - exposure
+                console.print(
+                    f"[bold]{label} capacity:"
+                    f" {rich_escape(group)}[/bold]"
+                )
+                console.print(
+                    f"  Exposure (positions + resting):"
+                    f" ${exposure:.2f}"
+                )
+                console.print(
+                    f"  Cap ({cap_pct:.0%} of"
+                    f" ${config.bankroll:.2f}): ${cap_dollars:.2f}"
+                )
+                if remaining > 0:
+                    console.print(
+                        f"  [green]Remaining capacity:"
+                        f" ${remaining:.2f}[/green]"
+                    )
+                else:
+                    console.print(
+                        f"  [red]✗ No remaining capacity"
+                        f" (${remaining:.2f})[/red]"
+                    )
 
             try:
                 daily_pnl = await get_daily_pnl(db)
