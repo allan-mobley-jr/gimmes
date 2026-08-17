@@ -194,7 +194,7 @@ def _read_prose_file(path: Path, option_name: str) -> str:
 
 
 _PROB_RANGE_MSG = (
-    "--prob must be a decimal fraction between 0 and 1,"
+    "--prob must be a decimal fraction in [0, 1] (endpoints allowed),"
     " e.g. 0.85, not 85 (#645)"
 )
 
