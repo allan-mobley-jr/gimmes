@@ -326,12 +326,14 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
 
 1. **No prior research** (no records found, or expired per above) → send to Caddie
 2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip via the `--rationale-file` heredoc pattern (#589):
+**`--side SIDE` (#708):** SIDE is the side the decision is about — your `trading_side` when config is `yes`/`no`; under `both`, the side the candidate was scanned/evaluated on (the Side column in scan output, the side your `--prob` is expressed against). The CLI rejects log-trade without a concrete side under both-mode.
+
    ```bash
    RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Cooldown: prior score SCORE (below cutoff), skipping re-research
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason cooldown \
+   gimmes log-trade TICKER --action skip --reason cooldown --side SIDE \
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```
@@ -342,7 +344,7 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Already traded: open position held, prior score SCORE
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason already_traded \
+   gimmes log-trade TICKER --action skip --reason already_traded --side SIDE \
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```
@@ -363,7 +365,7 @@ Dispatch the **Caddie** agent to research the candidates that passed the cooldow
 gimmes config get strategy.max_candidates_per_cycle
 ```
 
-If more candidates passed cooldown than the cap, keep the top `max_candidates_per_cycle` by Scout quick score and log each candidate over the cap as a skip with `--reason deferred_capacity` (rationale: "over per-cycle candidate cap (#746) — eligible next cycle"). Research and review time are ~2.5 + ~4 minutes PER candidate; an unbounded intake is how cycles die at the timeout with zero Closer dispatches. If the config read fails, use 5.
+If more candidates passed cooldown than the cap, keep the top `max_candidates_per_cycle` by Scout quick score and log each candidate over the cap as a skip with `--reason deferred_capacity --side SIDE` (rationale: "over per-cycle candidate cap (#746) — eligible next cycle"). Research and review time are ~2.5 + ~4 minutes PER candidate; an unbounded intake is how cycles die at the timeout with zero Closer dispatches. If the config read fails, use 5.
 
 **Priority rule:** Process cap-blocked candidates before new candidates when dispatching to Caddie (cap-blocked candidates count toward the per-cycle cap).
 
@@ -382,7 +384,7 @@ RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
 cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
 Caddie failed to research after retry
 GIMMES_EOF
-gimmes log-trade TICKER --action skip --reason research_failed \
+gimmes log-trade TICKER --action skip --reason research_failed --side SIDE \
   --rationale-file "$RATIONALE_FILE" --agent caddie-master
 rm -f "$RATIONALE_FILE"
 ```
@@ -493,7 +495,7 @@ For each PROCEED candidate:
      --body-file "$BODY_FILE"
    rm -f "$BODY_FILE"
    ```
-   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with `--reason infra_failed` and rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate — this is a tooling casualty, not a review verdict, and `infra_failed` keeps it out of the review-reject audits.
+   If the position-note command fails, do not proceed with this candidate. Log a skip using `log-trade` with `--reason infra_failed --side SIDE` and rationale "Decision note failed to write" (via `--rationale-file`) and move to the next candidate — this is a tooling casualty, not a review verdict, and `infra_failed` keeps it out of the review-reject audits.
 
 6. **Log rejected candidates as skips** so the decision is auditable (use the `--rationale-file` heredoc pattern, #589):
    ```bash
@@ -501,7 +503,7 @@ For each PROCEED candidate:
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
    Caddie Master review: REJECT — [brief reason]
    GIMMES_EOF
-   gimmes log-trade TICKER --action skip --reason review_reject \
+   gimmes log-trade TICKER --action skip --reason review_reject --side SIDE \
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```

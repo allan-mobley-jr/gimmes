@@ -4115,6 +4115,19 @@ def log_trade(
     rationale_val = _resolve_prose_arg(
         rationale, rationale_file, "--rationale", "--rationale-file",
     )
+    # #708: under strategy.side='both', an omitted --side used to feed
+    # "both" into TradeDecision's yes/no Literal — an unhandled
+    # pydantic traceback that silently starved the skip table in
+    # dual-side mode. Gate BEFORE the DB opens (same precedent as the
+    # order path's #678 gate); also rejects garbage explicit values.
+    resolved_side = side if side else config.strategy.side
+    if resolved_side not in ("yes", "no"):
+        raise typer.BadParameter(
+            f"log-trade needs a concrete side: got {resolved_side!r}"
+            f" (config strategy.side is {config.strategy.side!r}) —"
+            f" pass --side yes or --side no (#708)",
+            param_hint="--side",
+        )
 
     async def _log() -> None:
         import logging
@@ -4129,7 +4142,6 @@ def log_trade(
         )
         from gimmes.strategy.scanner import tradeable_edge
 
-        resolved_side = side if side else config.strategy.side
         trade = TradeDecision(
             ticker=ticker,
             action=TradeDecision.Action(action),

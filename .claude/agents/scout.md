@@ -52,12 +52,14 @@ The CLI already applies the hourly gates (no action needed from you): hourly tic
 
 **MUST log every skipped candidate** — every candidate evaluated but not shortlisted MUST get a skip log entry. Zero exceptions. Candidates with a quick score below the configured `gimme_threshold` (from step 0) MUST be logged as skips. Use the `--rationale-file` heredoc pattern so prose containing dollar amounts or `$VAR` references stays intact (#589):
 
+**`--side SIDE` (#708):** SIDE is the side the decision is about — your `trading_side` when config is `yes`/`no`; under `both`, the side the candidate was scanned/evaluated on (the Side column in scan output, the side your `--prob` is expressed against). The CLI rejects log-trade without a concrete side under both-mode.
+
 ```bash
 RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
 cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
 reason for skipping
 GIMMES_EOF
-gimmes log-trade TICKER --action skip \
+gimmes log-trade TICKER --action skip --side SIDE \
   --price 0.XX --prob 0.XX --score NN \
   --rationale-file "$RATIONALE_FILE" --agent scout
 rm -f "$RATIONALE_FILE"
@@ -66,7 +68,7 @@ rm -f "$RATIONALE_FILE"
 **Liquidity skips MUST carry `--reason liquidity`** (#710). When the skip is because the order book is empty or one-sided — Best YES Bid = None, no resting offers, zero depth on the tradeable side — add `--reason liquidity` to the command:
 
 ```bash
-gimmes log-trade TICKER --action skip --reason liquidity \
+gimmes log-trade TICKER --action skip --reason liquidity --side SIDE \
   --price 0.XX --prob 0.XX --score NN \
   --rationale-file "$RATIONALE_FILE" --agent scout
 ```

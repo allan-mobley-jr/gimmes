@@ -283,12 +283,14 @@ If a `log-candidate` command fails, note the failure in your output and continue
 
 Additionally, for each candidate that receives PASS or that remains at NEEDS MORE RESEARCH after re-scoring, MUST log the skip. Use `--rationale-file` for the same reason:
 
+**`--side SIDE` (#708):** SIDE is the side the decision is about — your `trading_side` when config is `yes`/`no`; under `both`, the side the candidate was scanned/evaluated on (the Side column in scan output, the side your `--prob` is expressed against). The CLI rejects log-trade without a concrete side under both-mode.
+
 ```bash
 RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
 cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
 Caddie: [reason]
 GIMMES_EOF
-gimmes log-trade TICKER --action skip \
+gimmes log-trade TICKER --action skip --side SIDE \
   --price 0.XX --prob 0.XX --score NN \
   --rationale-file "$RATIONALE_FILE" --agent caddie
 rm -f "$RATIONALE_FILE"
@@ -297,7 +299,7 @@ rm -f "$RATIONALE_FILE"
 **Liquidity skips MUST carry `--reason liquidity`** (#710). When the skip is because the order book is empty or one-sided — `market-info` shows YES Bid $0.00 / YES Ask $0.00, or the tradeable side has no resting orders — add `--reason liquidity` to the command:
 
 ```bash
-gimmes log-trade TICKER --action skip --reason liquidity \
+gimmes log-trade TICKER --action skip --reason liquidity --side SIDE \
   --price 0.XX --prob 0.XX --score NN \
   --rationale-file "$RATIONALE_FILE" --agent caddie
 ```
