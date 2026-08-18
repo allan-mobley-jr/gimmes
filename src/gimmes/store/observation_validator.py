@@ -356,6 +356,27 @@ def _parse_claim(clause: str) -> tuple[str, float] | None:
     return (direction, threshold)
 
 
+# #646: a ticker whose final segment is a threshold strike
+# (-T<number>, signs and decimals included) is exactly the shape the
+# semantics guard exists for — a parse miss there is a coverage gap,
+# not a non-threshold market.
+_THRESHOLD_TICKER_RE = re.compile(r"-T-?\d+(?:\.\d+)?$")
+
+
+def threshold_parse_inconclusive(
+    ticker: str, rules_primary: str | None,
+) -> bool:
+    """#646: True when the semantics guard is silently blind — the
+    ticker looks threshold-style but a NON-EMPTY settlement snapshot
+    failed to parse. Empty snapshots are the #647 backfill's job, and
+    a parse SUCCESS means the guard is active; both return False."""
+    if not rules_primary:
+        return False
+    if not _THRESHOLD_TICKER_RE.search(ticker):
+        return False
+    return parse_rules_threshold(rules_primary) is None
+
+
 _SEMANTICS_LINE_RE = re.compile(r"(?im)^Semantics:\s*(?P<rest>.+)$")
 _YES_CLAUSE_RE = re.compile(r"YES\s+wins\s+(?:when|if)\s+(?P<c>.*?)(?:;|$)", re.I)
 _NO_CLAUSE_RE = re.compile(r"NO\s+wins\s+(?:when|if)\s+(?P<c>.*)$", re.I)

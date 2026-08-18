@@ -671,3 +671,75 @@ def test_forged_anchor_rejected_end_to_end(
     ])
     assert result.exit_code == 1
     assert "not yours to refresh" in result.output
+
+
+def test_inconclusive_parse_writes_info_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#646: a threshold-style ticker with an unparseable snapshot
+    writes the semantics_parse_inconclusive INFO row (with the rules
+    text) and the note still lands — telemetry, never a reject."""
+    import sqlite3 as _sqlite3
+
+    ticker = "KXCPI-26JUN-T0.2"
+    db_path = tmp_path / "test.db"
+    _seed_decision(db_path, ticker, CM_DECISION_SILENT_ON_SOURCES)
+    _seed_position_with_rules(
+        db_path, ticker,
+        "Settles per the committee's published judgment.",
+    )
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", ticker,
+        "--cycle", "1701",
+        "--agent", "monitor",
+        "--type", "observation",
+        "--body", _obs_with_semantics("Price: steady."),
+    ])
+    assert result.exit_code == 0, result.output
+
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    rows = conn.execute(
+        "SELECT severity, context FROM error_log"
+        " WHERE error_code = 'semantics_parse_inconclusive'"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "info"
+    assert "committee" in rows[0]["context"]
+
+
+def test_conclusive_parse_writes_no_info_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "test.db"
+    ticker = "KXCPI-26JUN-T-0.1"
+    _seed_decision(db_path, ticker, CM_DECISION_SILENT_ON_SOURCES)
+    _seed_position_with_rules(db_path, ticker, INCIDENT_RULES)
+    _patch_config(monkeypatch, db_path)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", ticker,
+        "--cycle", "1701",
+        "--agent", "monitor",
+        "--type", "observation",
+        "--body", _obs_with_semantics(
+            "Semantics: YES wins when CPI MoM > -0.1;"
+            " NO wins when CPI MoM <= -0.1"
+        ),
+    ])
+    assert result.exit_code == 0, result.output
+
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT 1 FROM error_log"
+        " WHERE error_code = 'semantics_parse_inconclusive'"
+    ).fetchall()
+    conn.close()
+    assert rows == []
