@@ -111,7 +111,7 @@ class TestResolvedOutcome:
         rows = await get_trades(db, ticker="OUTCOME-TEST")
         assert rows[0]["resolved_outcome"] == "yes"
 
-    async def test_update_outcome_idempotent(self, db: Database) -> None:
+    async def test_update_outcome_corrects_conflicts(self, db: Database) -> None:
         from gimmes.models.trade import TradeDecision
 
         trade = TradeDecision(
@@ -129,12 +129,17 @@ class TestResolvedOutcome:
         await insert_trade(db, trade)
 
         await update_trade_outcome(db, "IDEM-TEST", "yes")
-        # Second call should not update (already set)
+        # #760: a later AUTHORITATIVE outcome CORRECTS a wrong earlier
+        # one (the old IS NULL clause left premature stamps
+        # permanently un-fixable — the KXPCECORE split-brain).
         updated = await update_trade_outcome(db, "IDEM-TEST", "no")
-        assert updated == 0
+        assert updated == 1
 
         rows = await get_trades(db, ticker="IDEM-TEST")
-        assert rows[0]["resolved_outcome"] == "yes"  # unchanged
+        assert rows[0]["resolved_outcome"] == "no"  # corrected
+
+        # Idempotent when already correct
+        assert await update_trade_outcome(db, "IDEM-TEST", "no") == 0
 
     async def test_update_outcome_no_match(self, db: Database) -> None:
         updated = await update_trade_outcome(db, "NONEXISTENT", "yes")

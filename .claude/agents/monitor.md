@@ -304,6 +304,8 @@ gimmes log-outcome TICKER --outcome yes   # or --outcome no
 
 `gimmes log-outcome` records the resolution but does NOT settle or remove the position — do not report a position as settled until the settlement sweep's close row exists (#781: a "settled this cycle" claim based on log-outcome alone triggered a false stale-position escalation).
 
+**"Settled" is a FIELD TEST, never an inference (#760):** a market is settled ONLY when `market-info` shows Status `determined`/`finalized` OR a non-empty Result row. NEVER conclude settlement from a data release, month arithmetic, or the thesis being confirmed — #760 stamped a JUNE PCE print onto the JULY market while it was still active, corrupting 138 rows. If `log-outcome` refuses with `outcome_market_not_settled`, the refusal is correct and final — report it, do not retry, and do not use `--override` (that flag is only for delisted/unfetchable markets and requires a reason).
+
 NEVER skip this step — missing outcome data degrades all Pro analyses. If the log-outcome command fails, note the failure prominently in your output so the outcome can be recorded on the next cycle. Do not retry.
 
 ## Activity Logging (REQUIRED — you are not done until this runs)

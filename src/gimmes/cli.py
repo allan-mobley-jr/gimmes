@@ -4096,6 +4096,11 @@ def market_info(
                 ("Event", market.event_ticker),
                 ("Subtitle", verbatim(market.subtitle)),
                 ("Status", market.status.value),
+                # #760: the settlement FIELD TEST — agents verify
+                # Status/Result, never infer settlement from
+                # news/releases. (Settlement value is not mapped by
+                # parse_market, so no row for it.)
+                ("Result", verbatim(market.result)),
                 ("YES Bid", f"${market.yes_bid:.2f}"),
                 ("YES Ask", f"${market.yes_ask:.2f}"),
                 ("Last Price", f"${market.last_price:.2f}"),
@@ -4780,6 +4785,14 @@ def backfill_settlements(
 def log_outcome(
     ticker: str = typer.Argument(..., help="Market ticker"),
     outcome: str = typer.Option(..., "--outcome", "-o", help="Resolution outcome (yes/no)"),
+    override: str = typer.Option(
+        "", "--override",
+        help=(
+            "Record despite a market-fetch FAILURE (delisted or"
+            " unfetchable). Requires a reason; logged as WARNING."
+            " Never bypasses a live not-settled answer (#760)."
+        ),
+    ),
 ) -> None:
     """Record a market's resolution outcome for trades on that ticker."""
     if outcome not in ("yes", "no"):
@@ -4789,9 +4802,102 @@ def log_outcome(
     config = load_config()
 
     async def _log() -> None:
-        from gimmes.store.database import Database
-        from gimmes.store.queries import update_trade_outcome
+        import json as _json
 
+        import httpx
+
+        from gimmes.kalshi.client import KalshiClient
+        from gimmes.models.error import (
+            ErrorCategory,
+            ErrorLogEntry,
+            ErrorSeverity,
+        )
+        from gimmes.models.market import SETTLED_STATUSES
+        from gimmes.store.database import Database
+        from gimmes.store.queries import (
+            _cycle_from_env,
+            update_trade_outcome,
+        )
+
+        # #760: log-outcome was the last unguarded write path — the
+        # Monitor stamped a JUNE data release onto a JULY market that
+        # was still ACTIVE (close a month out), corrupting 138 rows.
+        # Settlement is a FIELD TEST, never an inference: permit only
+        # when the live market is determined/finalized or carries a
+        # published result.
+        market = None
+        fetch_error: str | None = None
+        try:
+            from gimmes.kalshi.markets import get_market
+
+            async with KalshiClient(config) as client:
+                market = await get_market(client, ticker)
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            fetch_error = str(exc)
+
+        if market is not None:
+            settled = (
+                market.status in SETTLED_STATUSES
+                or bool(market.result)
+            )
+            if not settled:
+                async with Database(config.db_path) as db:
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="outcome_market_not_settled",
+                        component="cli.log-outcome",
+                        cycle=_cycle_from_env(),
+                        message=(
+                            f"Refused log-outcome for {ticker}:"
+                            f" market status {market.status}, no"
+                            f" published result (#760)"
+                        ),
+                        context=_json.dumps({
+                            "ticker": ticker,
+                            "outcome": outcome,
+                            "status": str(market.status),
+                            "result": market.result,
+                            "close_time": str(market.close_time),
+                        }),
+                    ))
+                console.print(
+                    f"[red]Refused (#760): {rich_escape(ticker)} is"
+                    f" NOT settled per the live API — status"
+                    f" {market.status}, closes"
+                    f" {market.close_time}. Do not infer settlement"
+                    f" from data-release dates. This refusal is"
+                    f" final — do not retry or override.[/red]"
+                )
+                raise typer.Exit(1)
+        else:
+            if not override:
+                console.print(
+                    f"[red]Market fetch failed for"
+                    f" {rich_escape(ticker)}:"
+                    f" {rich_escape(fetch_error or 'unknown')}."
+                    f" For a delisted/unfetchable market, re-run"
+                    f" with --override \"<reason>\" (#760).[/red]"
+                )
+                raise typer.Exit(1)
+            async with Database(config.db_path) as db:
+                await _log_cli_error(db, ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="outcome_override_used",
+                    component="cli.log-outcome",
+                    cycle=_cycle_from_env(),
+                    message=(
+                        f"log-outcome override for {ticker}:"
+                        f" {override} (#760)"
+                    ),
+                    context=_json.dumps({
+                        "ticker": ticker,
+                        "outcome": outcome,
+                        "reason": override,
+                        "fetch_error": fetch_error,
+                    }),
+                ))
         async with Database(config.db_path) as db:
             updated = await update_trade_outcome(db, ticker, outcome)
 

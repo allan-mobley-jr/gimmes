@@ -131,19 +131,18 @@ async def get_trades(
 async def update_trade_outcome(db: Database, ticker: str, outcome: str) -> int:
     """Set resolved_outcome for all trades matching a ticker.
 
-    Args:
-        ticker: Market ticker.
-        outcome: Resolution result ('yes' or 'no').
+    #760: delegates to the conflict-correcting fill_resolved_outcome —
+    a later AUTHORITATIVE outcome now corrects a wrong earlier one
+    instead of silently updating 0 rows (the old IS NULL clause left
+    KXPCECORE-26JUL-T0.3 split-brained: 138 premature rows that a
+    correct post-settlement log-outcome could never fix).
 
     Returns:
-        Number of rows updated.
+        Number of rows updated (NULL-fills plus corrections).
     """
-    cursor = await db.conn.execute(
-        "UPDATE trades SET resolved_outcome = ? WHERE ticker = ? AND resolved_outcome IS NULL",
-        (outcome, ticker),
-    )
+    updated = await fill_resolved_outcome(db, ticker, outcome)
     await db.conn.commit()
-    return cursor.rowcount
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +500,7 @@ async def count_opened_closed(
 
 async def fill_resolved_outcome(
     db: Database, ticker: str, outcome: str
-) -> None:
+) -> int:
     """Set `resolved_outcome` on a ticker's trade rows — filling NULLs
     AND overwriting conflicting values.
 
@@ -513,12 +512,13 @@ async def fill_resolved_outcome(
 
     Commit-less — the caller manages the transaction.
     """
-    await db.conn.execute(
+    cursor = await db.conn.execute(
         "UPDATE trades SET resolved_outcome = ?"
         " WHERE ticker = ?"
         " AND (resolved_outcome IS NULL OR resolved_outcome != ?)",
         (outcome, ticker, outcome),
     )
+    return cursor.rowcount
 
 
 async def log_settlement_close(
