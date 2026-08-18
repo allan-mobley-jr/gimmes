@@ -639,6 +639,18 @@ def validate_playbook_footer(
     errors: list[str] = []
     warnings: list[str] = []
     if not ticker_in_economic_category(ticker):
+        # #648 item 2: monitor.md's Footer-omission rule says
+        # non-playbook tickers OMIT the footer entirely — a footer
+        # here means the agent misclassified the ticker (or copied a
+        # template), which pollutes the audit trail. Warn, never
+        # block: the note itself is fine.
+        if _FOOTER_HEADER_RE.search(observation_body or ""):
+            warnings.append(
+                f"Playbook footer present on NON-playbook ticker"
+                f" {ticker} (#648) — monitor.md's Footer-omission"
+                f" rule says equity-index and other non-economic"
+                f" tickers omit the footer entirely; drop it."
+            )
         return (errors, warnings)
 
     footer = parse_playbook_footer(observation_body)
