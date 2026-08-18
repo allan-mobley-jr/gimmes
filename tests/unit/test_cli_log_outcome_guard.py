@@ -126,6 +126,35 @@ class TestLogOutcomeGuard:
         assert result.exit_code == 0, result.output
         assert _outcomes(db_path) == ["no"]
 
+    def test_result_conflict_refused_with_error_row(
+        self, tmp_path,
+    ) -> None:
+        """A published result that contradicts --outcome wins: with
+        overwrite semantics a wrong --outcome would clobber a
+        correct row."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        result = self._run(
+            db_path,
+            market=_market(MarketStatus.FINALIZED, result="yes"),
+        )
+        assert result.exit_code == 1, result.output
+        assert "contradicts" in result.output
+        assert _outcomes(db_path) == [None]
+        rows = _rows(db_path, "outcome_conflicts_with_result")
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "error"
+
+    def test_matching_result_writes(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        result = self._run(
+            db_path,
+            market=_market(MarketStatus.FINALIZED, result="no"),
+        )
+        assert result.exit_code == 0, result.output
+        assert _outcomes(db_path) == ["no"]
+
     def test_closed_without_result_refused(self, tmp_path) -> None:
         db_path = tmp_path / "gimmes.db"
         _db_run(db_path, _seed)

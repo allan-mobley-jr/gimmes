@@ -4870,6 +4870,41 @@ def log_outcome(
                     f" final — do not retry or override.[/red]"
                 )
                 raise typer.Exit(1)
+
+            # A published yes/no result outranks the caller: with
+            # overwrite semantics a wrong --outcome would clobber a
+            # correct row, so a disagreement is refused outright.
+            published = (market.result or "").strip().lower()
+            if published in ("yes", "no") and published != outcome:
+                async with Database(config.db_path) as db:
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="outcome_conflicts_with_result",
+                        component="cli.log-outcome",
+                        cycle=_cycle_from_env(),
+                        message=(
+                            f"Refused log-outcome for {ticker}:"
+                            f" requested '{outcome}' but the live"
+                            f" API published result"
+                            f" '{published}' (#760)"
+                        ),
+                        context=_json.dumps({
+                            "ticker": ticker,
+                            "outcome": outcome,
+                            "result": market.result,
+                            "status": str(market.status),
+                        }),
+                    ))
+                console.print(
+                    f"[red]Refused (#760): the live API publishes"
+                    f" result '{rich_escape(published)}' for"
+                    f" {rich_escape(ticker)}, which contradicts"
+                    f" --outcome {rich_escape(outcome)}. The"
+                    f" published result wins; this refusal is"
+                    f" final.[/red]"
+                )
+                raise typer.Exit(1)
         else:
             if not override:
                 console.print(
