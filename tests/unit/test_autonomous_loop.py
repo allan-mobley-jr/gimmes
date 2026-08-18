@@ -135,6 +135,13 @@ class TestAutonomousLoop:
                 "gimmes.cli._check_remote_staleness",
                 return_value=None,
             ),
+            # #788: _apply_failure_backoff sleeps 30*2^(n-1)s (cap
+            # 240) for REAL between failures — this file alone was
+            # 961s of every ~976s frozen gate, and the default-five
+            # breaker test slept 450s, indistinguishable from a
+            # hang. No-op at the fixture level; tests that need
+            # sleep behavior override with their own inner patch.
+            patch("gimmes.cli._resilient_sleep"),
         ):
             yield
 
@@ -988,7 +995,12 @@ class TestAutonomousLoop:
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("os.killpg") as mock_killpg,
-            patch("time.sleep", side_effect=KeyboardInterrupt),
+            # #788: the autouse fixture no-ops _resilient_sleep, so
+            # the interrupt must come from the sleep seam itself.
+            patch(
+                "gimmes.cli._resilient_sleep",
+                side_effect=KeyboardInterrupt,
+            ),
             patch("gimmes.clubhouse.server.start_background", return_value=None),
         ):
             _autonomous_loop("driving_range", pause_seconds=60)
