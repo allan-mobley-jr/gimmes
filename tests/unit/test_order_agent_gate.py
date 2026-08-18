@@ -467,6 +467,112 @@ class TestLogTradeTerminalMarker:
         assert len(_db_run(db_path, _rows)) == 1
 
 
+class TestClassifierBlockSkip:
+    """#636: a classifier_block skip is the only trace a permission
+    denial leaves — log-trade machine-writes BOTH the error row
+    (Groundskeeper's feed) and the #768 terminal marker."""
+
+    @staticmethod
+    async def _noop(db):
+        pass
+
+    def _log_skip(self, monkeypatch, tmp_path, *, cycle="42"):
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        if cycle is None:
+            monkeypatch.delenv("GIMMES_CYCLE", raising=False)
+        else:
+            monkeypatch.setenv("GIMMES_CYCLE", cycle)
+        result = runner.invoke(app, [
+            "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+            "--reason", "classifier_block", "--agent", "closer",
+        ])
+        return result, db_path
+
+    def _errors(self, db_path: Path) -> list[dict]:
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT severity, category, error_code, cycle, context"
+                " FROM error_log WHERE error_code ="
+                " 'safety_classifier_block'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        return _db_run(db_path, _q)
+
+    def _markers(self, db_path: Path) -> list[dict]:
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT cycle, message FROM activity_log"
+                " WHERE message LIKE 'Order attempt terminal:%'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        return _db_run(db_path, _q)
+
+    def test_writes_error_row_and_marker(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        result, db_path = self._log_skip(monkeypatch, tmp_path)
+        assert result.exit_code == 0, result.output
+        errors = self._errors(db_path)
+        assert len(errors) == 1
+        assert errors[0]["severity"] == "warning"
+        assert errors[0]["category"] == "agent_failure"
+        assert errors[0]["cycle"] == 42
+        assert "KXTEST-26AUG-T1" in errors[0]["context"]
+        markers = self._markers(db_path)
+        assert len(markers) == 1
+        assert markers[0]["cycle"] == 42
+
+    def test_error_row_written_even_without_cycle(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """The error trail must survive manual/off-cycle use; only
+        the marker (a cycle-scoped gate) requires GIMMES_CYCLE."""
+        result, db_path = self._log_skip(
+            monkeypatch, tmp_path, cycle=None,
+        )
+        assert result.exit_code == 0, result.output
+        assert len(self._errors(db_path)) == 1
+        assert self._markers(db_path) == []
+
+    def test_error_write_failure_still_logs_skip(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """Logger of last resort: the skip row lands and the command
+        exits 0 even if the error write fails."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        monkeypatch.setenv("GIMMES_CYCLE", "42")
+        monkeypatch.setattr(
+            cli_module, "_log_cli_error",
+            AsyncMock(side_effect=sqlite3.OperationalError("locked")),
+        )
+        result = runner.invoke(app, [
+            "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+            "--reason", "classifier_block", "--agent", "closer",
+        ])
+        assert result.exit_code == 0, result.output
+
+        async def _rows(db):
+            cursor = await db.conn.execute(
+                "SELECT ticker FROM trades WHERE action = 'skip'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        assert len(_db_run(db_path, _rows)) == 1
+
+    def test_non_entry_semantics(self) -> None:
+        """classifier_block joins the non-entry set — a proceed that
+        died to tooling must not enter the missed-entry FNR (#636)."""
+        from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
+
+        assert "classifier_block" in NON_ENTRY_SKIP_REASONS
+
+
 class TestHasTerminalOrderAttempt:
     """Round-trip on a real DB, including the 24h restart bound."""
 

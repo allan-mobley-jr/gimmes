@@ -4149,6 +4149,11 @@ _SKIP_REASONS = frozenset({
     "cooldown", "research_failed", "review_reject", "validation_failed",
     "order_failed", "close_failed", "no_position", "price_moved",
     "liquidity", "infra_failed", "already_traded", "order_canceled",
+    # #636: a permission/safety-classifier denial of a gimmes command.
+    # Distinct from order_failed (the CLI ran and errored) — the
+    # blocked command never ran, so this skip is the ONLY trace, and
+    # log-trade auto-writes the error_log row Groundskeeper needs.
+    "classifier_block",
     # #746: shed by the candidate cap / deadline protocol — not a
     # verdict on the candidate; it stays eligible next cycle.
     "deferred_capacity",
@@ -4363,14 +4368,51 @@ def log_trade(
                 )
             row_id = await insert_trade(db, trade)
             console.print(f"[green]Logged trade #{row_id}: {action} {ticker}[/green]")
-            # #768: an order_failed/order_canceled skip arms the CLI's
-            # terminal-attempt gate for this ticker for the rest of the
-            # cycle. This is the ONLY trace a permission-classifier
-            # denial leaves (the order command never ran), so the
-            # marker is machine-written here, post-insert. Best-effort:
+            # #768: an order_failed/order_canceled/classifier_block
+            # skip arms the CLI's terminal-attempt gate for this
+            # ticker for the rest of the cycle. The marker is
+            # machine-written here, post-insert. Best-effort:
             # log-trade is the logger of last resort and must never
             # exit nonzero because of the marker.
-            if action == "skip" and reason in ("order_failed", "order_canceled"):
+            # #636: a classifier block leaves no other error trail —
+            # machine-write the error row so Groundskeeper can track
+            # and escalate recurrences. Best-effort, same doctrine as
+            # the #768 marker below.
+            if action == "skip" and reason == "classifier_block":
+                from gimmes.models.error import (
+                    ErrorCategory,
+                    ErrorLogEntry,
+                    ErrorSeverity,
+                )
+                from gimmes.store.queries import _cycle_from_env
+                try:
+                    import json as _json
+
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.WARNING,
+                        category=ErrorCategory.AGENT_FAILURE,
+                        error_code="safety_classifier_block",
+                        component="cli.log-trade",
+                        agent=agent,
+                        cycle=_cycle_from_env(),
+                        message=(
+                            f"Classifier/permission block: {agent}"
+                            f" denied on {ticker} (#636)"
+                        ),
+                        context=_json.dumps({
+                            "ticker": ticker,
+                            "agent": agent,
+                            "side": resolved_side,
+                        }),
+                    ))
+                except sqlite3.Error:
+                    logging.getLogger(__name__).error(
+                        "classifier_block error row failed for %s (#636)",
+                        ticker, exc_info=True,
+                    )
+            if action == "skip" and reason in (
+                "order_failed", "order_canceled", "classifier_block",
+            ):
                 from gimmes.store.queries import (
                     _cycle_from_env,
                     _session_id_from_env,
