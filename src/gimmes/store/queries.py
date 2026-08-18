@@ -792,7 +792,8 @@ async def get_tickers_missing_rules(db: Database) -> list[str]:
     pass."""
     cursor = await db.conn.execute(
         """SELECT ticker FROM positions
-           WHERE rules_primary IS NULL OR rules_primary = ''
+           WHERE (rules_primary IS NULL OR rules_primary = '')
+             AND count > 0
            ORDER BY ticker"""
     )
     rows = await cursor.fetchall()

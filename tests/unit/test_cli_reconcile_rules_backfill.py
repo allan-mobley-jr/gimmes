@@ -155,3 +155,18 @@ def test_backfill_capped_per_run(monkeypatch, tmp_path) -> None:
     assert fetches.call_count == 10
     filled = [t for t, r in _rules(db_path).items() if r == RULES]
     assert len(filled) == 10
+
+
+def test_zero_count_rows_skipped(monkeypatch, tmp_path) -> None:
+    """A count=0 stub row must not spend the fetch cap (#647
+    review): the snapshot only matters for open positions."""
+    db_path = tmp_path / "g.db"
+    positions = _seed(db_path, ["KX-A"])
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE positions SET count = 0 WHERE ticker = 'KX-A'")
+    conn.commit()
+    conn.close()
+    fetches = _wire(monkeypatch, db_path, positions)
+    result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0, result.output
+    fetches.assert_not_called()
