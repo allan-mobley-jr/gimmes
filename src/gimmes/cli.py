@@ -4405,7 +4405,10 @@ def log_trade(
                             "side": resolved_side,
                         }),
                     ))
-                except sqlite3.Error:
+                except Exception:
+                    # Broad on purpose: entry construction and JSON
+                    # serialization sit inside the try, and the skip
+                    # row must land whatever fails here (#636).
                     logging.getLogger(__name__).error(
                         "classifier_block error row failed for %s (#636)",
                         ticker, exc_info=True,

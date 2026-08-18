@@ -3142,7 +3142,7 @@ def test_caddie_master_dispatch_templates_carry_agent_closer(
     )
 
 
-def test_closer_permission_denial_is_order_failure() -> None:
+def test_closer_permission_denial_is_classifier_block() -> None:
     closer_text = _CLOSER.read_text()
     assert "permission-denied `gimmes order`" in closer_text
     assert "arms the same #768 terminal gate" in closer_text
