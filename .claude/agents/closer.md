@@ -128,7 +128,7 @@ No validate or size step is needed — the order command validates that the posi
 
 ## Order Failure Protocol
 
-A permission-denied `gimmes order` (the command was blocked and never ran) counts as an order failure: log the `order_failed` skip exactly as below. That skip arms a CLI gate (#768) making the failure terminal for every session this cycle — CLI-enforced for BUY retries; SELL/CLOSE retries are not CLI-blocked (the close_failed backstop governs those) but remain forbidden by this protocol.
+A permission-denied `gimmes order` (the command was blocked by the permission/safety classifier and never ran) is logged with `--reason classifier_block`, NOT `order_failed` (#636) — the CLI auto-writes the `safety_classifier_block` error row Groundskeeper tracks, and the skip arms the same #768 terminal gate. `order_failed` means the command RAN and errored. Both classes are terminal for every session this cycle — CLI-enforced for BUY retries; SELL/CLOSE retries are not CLI-blocked (the close_failed backstop governs those) but remain forbidden by this protocol.
 
 An `Hourly shadow gate (#769)` rejection is the same FINAL class: the distance gate refused the entry even though validation passed. Log the `order_failed` skip citing the shadow gate, never retry or resize.
 

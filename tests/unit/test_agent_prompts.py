@@ -3142,11 +3142,11 @@ def test_caddie_master_dispatch_templates_carry_agent_closer(
     )
 
 
-def test_closer_permission_denial_is_order_failure() -> None:
+def test_closer_permission_denial_is_classifier_block() -> None:
     closer_text = _CLOSER.read_text()
     assert "permission-denied `gimmes order`" in closer_text
-    assert "counts as an order failure" in closer_text
-    assert "arms a CLI gate (#768)" in closer_text
+    assert "arms the same #768 terminal gate" in closer_text
+    assert "Both classes are terminal for every session" in closer_text
     # BUY-only CLI scoping + the protocol prohibition that backstops
     # the unenforced SELL/CLOSE side — dropping either re-broadens or
     # weakens the claim (Copilot review on #770).
@@ -3357,3 +3357,16 @@ def test_caddie_entry_price_derivation(caddie_text: str) -> None:
     ) in caddie_text
     assert "MUST name the side and show the derivation" in caddie_text
     assert "**`--price` stays in YES terms.**" in caddie_text
+
+
+def test_closer_classifier_block_reason() -> None:
+    """#636: a permission-classifier denial logs classifier_block
+    (auto-writes the Groundskeeper error row), never order_failed —
+    order_failed means the command RAN and errored."""
+    closer_text = _CLOSER.read_text()
+    assert "`--reason classifier_block`" in closer_text
+    assert "NOT `order_failed` (#636)" in closer_text
+    assert "auto-writes the `safety_classifier_block` error row" in (
+        closer_text
+    )
+    assert "`order_failed` means the command RAN and errored" in closer_text

@@ -214,6 +214,10 @@ NON_ENTRY_SKIP_REASONS = frozenset({
     # a missed entry double-counts the SAME candidate against the
     # cycle that actually decides it.
     "deferred_capacity",
+    # #636: a permission-classifier denial is a proceed that died to
+    # tooling (the infra_failed class) — not a candidate verdict, so
+    # it must not enter the missed-entry FNR numerator.
+    "classifier_block",
 })
 
 MIN_TRADES_THRESHOLD = 30
