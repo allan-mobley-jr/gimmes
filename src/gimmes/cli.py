@@ -158,18 +158,23 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     content to write."
     """
     if not path.exists():
-        console.print(f"[red]{option_name}: file not found: {path}[/red]")
+        console.print(
+            f"[red]{option_name}: file not found: {rich_escape(str(path))}[/red]"
+        )
         raise typer.Exit(1)
     if not path.is_file():
         console.print(
-            f"[red]{option_name}: not a regular file: {path}"
+            f"[red]{option_name}: not a regular file: {rich_escape(str(path))}"
             " (FIFOs, sockets, and device files are rejected)[/red]"
         )
         raise typer.Exit(1)
     try:
         size = path.stat().st_size
     except OSError as e:
-        console.print(f"[red]{option_name}: cannot stat {path}: {rich_escape(str(e))}[/red]")
+        console.print(
+            f"[red]{option_name}: cannot stat {rich_escape(str(path))}:"
+            f" {rich_escape(str(e))}[/red]"
+        )
         raise typer.Exit(1) from e
     if size > _MAX_PROSE_BYTES:
         console.print(
@@ -180,10 +185,16 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     try:
         content = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
-        console.print(f"[red]{option_name}: file is not valid UTF-8: {path}[/red]")
+        console.print(
+            f"[red]{option_name}: file is not valid UTF-8:"
+            f" {rich_escape(str(path))}[/red]"
+        )
         raise typer.Exit(1) from e
     except OSError as e:
-        console.print(f"[red]{option_name}: cannot read {path}: {rich_escape(str(e))}[/red]")
+        console.print(
+            f"[red]{option_name}: cannot read {rich_escape(str(path))}:"
+            f" {rich_escape(str(e))}[/red]"
+        )
         raise typer.Exit(1) from e
     if content.endswith("\n"):
         content = content[:-1]
