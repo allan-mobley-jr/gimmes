@@ -455,6 +455,86 @@ def settlement_outcome(side: str, won: bool) -> str:
     return "no" if side == "yes" else "yes"
 
 
+async def get_close_order_ledger(db: Database) -> list[dict]:  # type: ignore[type-arg]
+    """Per-order close ledger for the championship true-up (#698).
+
+    Groups non-settlement ``action='close'`` rows that carry an
+    order_id, restricted to the repair window: tickers that still
+    have a positions row, or rows younger than 7 days. Settled
+    history beyond that is owned by the settlement path.
+    """
+    cursor = await db.conn.execute(
+        """SELECT order_id,
+                  MAX(ticker) AS ticker,
+                  MAX(side) AS side,
+                  MAX(agent) AS agent,
+                  SUM(count) AS ledger_count
+           FROM trades
+           WHERE action = 'close' AND order_id != ''
+             AND agent != 'settlement'
+             AND (
+               ticker IN (SELECT ticker FROM positions)
+               OR datetime(timestamp) >= datetime('now', '-7 days')
+             )
+           GROUP BY order_id
+           ORDER BY MAX(id) DESC"""
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def annul_close_rows(db: Database, order_id: str, marker: str) -> int:
+    """#698 (reusing the #690 shape): annul every close row of a
+    terminal never-filled order — append-only ledger, no DELETE.
+    ``reason='order_canceled'`` keeps the rows out of residual math
+    (count_opened_closed sums open/size_up/close only) and out of
+    the missed-entry FNR (NON_ENTRY_SKIP_REASONS)."""
+    cursor = await db.conn.execute(
+        """UPDATE trades SET action = 'skip',
+           reason = 'order_canceled',
+           rationale = rationale || ?
+           WHERE order_id = ? AND action = 'close'""",
+        (marker, order_id),
+    )
+    await db.conn.commit()
+    return cursor.rowcount
+
+
+async def shrink_newest_close_row(
+    db: Database, order_id: str, excess: int, marker: str,
+) -> bool:
+    """#698: shrink the newest close row of a partially-filled
+    terminal order by the unfilled excess. Returns False when the
+    newest row is smaller than the excess (multi-row overstatement —
+    warned by the caller, left for manual repair)."""
+    cursor = await db.conn.execute(
+        """SELECT id, count FROM trades
+           WHERE order_id = ? AND action = 'close'
+           ORDER BY id DESC LIMIT 1""",
+        (order_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None or int(row["count"]) < excess:
+        return False
+    if int(row["count"]) == excess:
+        await db.conn.execute(
+            """UPDATE trades SET action = 'skip',
+               reason = 'order_canceled',
+               rationale = rationale || ?
+               WHERE id = ?""",
+            (marker, row["id"]),
+        )
+    else:
+        await db.conn.execute(
+            """UPDATE trades SET count = count - ?,
+               rationale = rationale || ?
+               WHERE id = ?""",
+            (excess, marker, row["id"]),
+        )
+    await db.conn.commit()
+    return True
+
+
 async def has_settlement_close(
     db: Database, ticker: str, side: str
 ) -> bool:

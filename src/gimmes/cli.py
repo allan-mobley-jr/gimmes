@@ -3664,7 +3664,208 @@ async def _sweep_resting_paper_orders(broker, client, db, *, config, quiet: bool
     return filled
 
 
+_REPAIR_MAX_ORDERS = 20
+_REPAIR_MAX_PAGES = 3
+
+
+async def _repair_championship_close_rows(client, db) -> None:  # type: ignore[no-untyped-def]
+    """#698: converge each order's close ledger to Kalshi fill truth.
+
+    Championship resting sells drift from the ledger in both
+    directions: a canceled/never-filled order leaves rows for an exit
+    that never traded (annul/shrink, #690 semantics), and fills that
+    land AFTER placement are never logged (#744 logs only the
+    placement-time fill) — append the delta at the fill-weighted
+    price. Runs BEFORE settlement consumption so the #663 residual
+    math sees the trued-up ledger; a ticker/side that already has a
+    settlement close is never touched (double-count guard). Reruns
+    converge to a no-op: the target is ledger sum == fills sum per
+    order_id.
+    """
+    import json as _json
+    import logging
+
+    from gimmes.kalshi.orders import list_fills, list_orders
+    from gimmes.models.error import (
+        ErrorCategory,
+        ErrorLogEntry,
+        ErrorSeverity,
+    )
+    from gimmes.models.order import OrderAction
+    from gimmes.models.trade import TradeDecision
+    from gimmes.store.queries import (
+        annul_close_rows,
+        get_close_order_ledger,
+        get_entry_analytics,
+        has_settlement_close,
+        insert_trade,
+        shrink_newest_close_row,
+    )
+
+    _log = logging.getLogger(__name__)
+
+    async def _audit(code: str, message: str, context: dict) -> None:  # type: ignore[type-arg]
+        await _log_cli_error(db, ErrorLogEntry(
+            severity=ErrorSeverity.WARNING,
+            category=ErrorCategory.DATA_INTEGRITY,
+            error_code=code,
+            component="cli.reconcile",
+            message=message,
+            context=_json.dumps(context),
+        ))
+
+    ledger = {r["order_id"]: r for r in await get_close_order_ledger(db)}
+
+    # Currently-resting sells: append candidates for post-placement
+    # fills, and the never-annul guard — a live order may still fill.
+    resting: set[str] = set()
+    appends: dict = {}
+    cursor = None
+    for _ in range(_REPAIR_MAX_PAGES):
+        orders, cursor = await list_orders(
+            client, status="resting", cursor=cursor,
+        )
+        for o in orders:
+            resting.add(o.order_id)
+            if o.action is OrderAction.SELL and o.order_id not in ledger:
+                appends[o.order_id] = {
+                    "order_id": o.order_id, "ticker": o.ticker,
+                    "side": o.side.value, "agent": "reconcile",
+                    "ledger_count": 0,
+                }
+        if not cursor:
+            break
+    # A truncated resting read means `oid in resting` is not a safe
+    # never-annul guard — shrink/annul is disabled for the run.
+    resting_complete = not cursor  # "" and None both mean last page
+
+    # Append-only candidates first (new work by construction), then
+    # ledger orders newest-first — converged veterans must not
+    # starve them out of the fills-call cap.
+    candidates = {**appends, **ledger}
+    if not candidates:
+        return
+    if len(candidates) > _REPAIR_MAX_ORDERS:
+        _log.warning(
+            "#698 repair: %d candidate orders, capping at %d",
+            len(candidates), _REPAIR_MAX_ORDERS,
+        )
+        candidates = dict(list(candidates.items())[:_REPAIR_MAX_ORDERS])
+
+    for oid, row in candidates.items():
+        fills = []
+        f_cursor = None
+        for _ in range(2):
+            page, f_cursor = await list_fills(
+                client, order_id=oid, cursor=f_cursor,
+            )
+            fills.extend(page)
+            if not f_cursor:
+                break
+        filled = sum(f.count for f in fills)
+        ledger_count = int(row["ledger_count"])
+        if filled == ledger_count:
+            continue
+        ticker, side = row["ticker"], row["side"]
+        if f_cursor:
+            # Truncated fills read: `filled` is a floor, not a total.
+            # Repairing on it would shrink genuine close history.
+            await _audit(
+                "close_repair_manual",
+                f"#698: fills for {oid} on {ticker} exceed the page"
+                f" cap — read {filled} of an unknown total; left"
+                f" untouched",
+                {"order_id": oid, "ticker": ticker,
+                 "ledger": ledger_count, "filled_floor": filled},
+            )
+            continue
+        if await has_settlement_close(db, ticker, side):
+            await _audit(
+                "close_repair_settlement_owns",
+                f"#698: {ticker} ledger/fill mismatch on {oid}"
+                f" (ledger {ledger_count}, filled {filled}) but"
+                f" settlement already closed the position — left"
+                f" untouched",
+                {"order_id": oid, "ticker": ticker,
+                 "ledger": ledger_count, "filled": filled},
+            )
+            continue
+
+        if ledger_count > filled:
+            if not resting_complete:
+                continue  # cannot prove the order is not still live
+            if oid in resting:
+                continue  # still live — may yet fill
+            marker = (
+                f" [#698 repair: order {oid} terminal with"
+                f" {filled} filled of {ledger_count} logged]"
+            )
+            if filled == 0:
+                repaired = bool(await annul_close_rows(db, oid, marker))
+            else:
+                repaired = await shrink_newest_close_row(
+                    db, oid, ledger_count - filled, marker,
+                )
+            if not repaired:
+                await _audit(
+                    "close_repair_manual",
+                    f"#698: could not auto-repair {oid} on"
+                    f" {ticker} (multi-row overstatement:"
+                    f" ledger {ledger_count}, filled {filled})",
+                    {"order_id": oid, "ticker": ticker,
+                     "ledger": ledger_count, "filled": filled},
+                )
+                continue
+        else:
+            delta = filled - ledger_count
+            # Attribute the delta to the newest fills (the unlogged
+            # ones), weighting the exit price accordingly.
+            remaining, cost = delta, 0.0
+            for f in sorted(
+                fills, key=lambda f: str(f.created_time or ""),
+                reverse=True,
+            ):
+                take = min(remaining, f.count)
+                price_f = f.no_price if side == "no" else f.yes_price
+                cost += take * price_f
+                remaining -= take
+                if remaining <= 0:
+                    break
+            price = round(cost / delta, 4) if delta else 0.0
+            trade = TradeDecision(
+                ticker=ticker,
+                action=TradeDecision.Action.CLOSE,
+                side=side,
+                count=delta,
+                price=price,
+                model_probability=0.0,
+                rationale=(
+                    f"resting-sell fill true-up on reconcile (#698):"
+                    f" {delta} filled after placement"
+                ),
+                agent=row["agent"] or "reconcile",
+                order_id=oid,
+            )
+            entry = await get_entry_analytics(db, ticker, side)
+            if entry:
+                trade.model_probability = entry["model_probability"]
+                trade.edge = entry["edge"]
+                trade.kelly_fraction = entry["kelly_fraction"]
+                trade.gimme_score = entry["gimme_score"]
+            await insert_trade(db, trade)
+
+        await _audit(
+            "close_row_repaired",
+            f"#698: trued up {ticker} order {oid} — ledger"
+            f" {ledger_count} -> filled {filled}",
+            {"order_id": oid, "ticker": ticker,
+             "ledger": ledger_count, "filled": filled},
+        )
+
+
+
 @app.command(rich_help_panel="Portfolio")
+
 def reconcile() -> None:
     """Sync local position data with the authoritative source.
 
@@ -3707,6 +3908,18 @@ def reconcile() -> None:
             # <= 0 and skips). Any settlements-API failure degrades
             # to today's drift behavior — reconcile is never blocked.
             if not broker:
+                # #698: true up per-order close rows from fill truth
+                # BEFORE settlements consume residuals. Best-effort —
+                # reconcile is never blocked (same contract as #663).
+                try:
+                    await _repair_championship_close_rows(client, db)
+                except Exception:
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).error(
+                        "#698 close-row repair failed; continuing"
+                        " reconcile", exc_info=True,
+                    )
                 await _consume_settlements_before_sync(
                     client, db, fresh, old_tickers=old_tickers,
                 )
