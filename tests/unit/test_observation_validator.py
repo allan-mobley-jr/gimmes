@@ -535,3 +535,38 @@ class TestThresholdParseInconclusive:
         for t in ("KXCPI-26JUN-T-0.1", "KXU3-26JUN-T4.3",
                   "KXPAYROLLS-26MAY-T80000"):
             assert threshold_parse_inconclusive(t, "opaque wording")
+
+
+class TestFooterOnNonPlaybookTicker:
+    """#648 item 2: a footer on a non-playbook ticker violates the
+    Footer-omission rule — warn, never block."""
+
+    def test_footer_on_equity_ticker_warns(self) -> None:
+        from gimmes.store.observation_validator import (
+            PLAYBOOK_SOURCES,
+            validate_playbook_footer,
+        )
+
+        body = "Delta: none.\n\nPlaybook sources checked this cycle (#615):\n" + "\n".join(
+            f"- {s}: no result this cycle" for s in PLAYBOOK_SOURCES
+        )
+        errors, warnings = validate_playbook_footer(
+            ticker="KXINX-26APR-T5000",
+            observation_body=body,
+            prior_observation_body=None,
+        )
+        assert errors == []
+        assert len(warnings) == 1
+        assert "NON-playbook ticker" in warnings[0]
+
+    def test_no_footer_on_equity_ticker_silent(self) -> None:
+        from gimmes.store.observation_validator import (
+            validate_playbook_footer,
+        )
+
+        errors, warnings = validate_playbook_footer(
+            ticker="KXINX-26APR-T5000",
+            observation_body="Delta: none.",
+            prior_observation_body=None,
+        )
+        assert (errors, warnings) == ([], [])
