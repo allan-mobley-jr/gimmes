@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.26] - 2026-08-18
+
+The backlog burn-down, part three: the remaining CRITICAL, the June trio, both #784-review follow-ups, and the full enhancement tail — twelve issues closed, leaving only the four strategy items that need operator decisions. **Restart not required after `gimmes update`** — every changed path is a per-invocation CLI command or agent prompt; the loop process is untouched. **Migration v20 runs on the first CLI invocation**: it NULLs the 138 premature `resolved_outcome` rows on the still-ACTIVE KXPCECORE-26JUL-T0.3 (guarded to skip if settlement already closed the ticker). Behavior notes: (1) `gimmes log-outcome` now verifies settlement against the live API — an ACTIVE market refuses with an error row and no flag overrides it; a published result that contradicts `--outcome` (including `void`) also refuses; `--override REASON` exists only for fetch failures on delisted markets. (2) A permission-classifier denial is logged with `--reason classifier_block`, which auto-writes the error row Groundskeeper tracks. (3) Championship reconcile now trues up per-order close rows against Kalshi fill truth and backfills missing settlement-rules snapshots. (4) The frozen test gate dropped from ~16 minutes to ~16 seconds (#788) — the failure-backoff sleeps were 96% of suite wall time.
+
+### Fixed
+
+- **#760 (CRITICAL)**: `log-outcome` was the last unguarded outcome-write path — the Monitor stamped a June data release onto the still-ACTIVE July KXPCECORE market, corrupting 138 rows with no error trail. Now guarded by a live-API field test (status/result), with conflict refusal, overwrite-style repair semantics for settlement's corrector, migration v20 repairing the incident rows, a `Result` row in `market-info`, and the field-test rule pinned in monitor.md.
+- **#633**: `position-context` rendered CM decisions newest-first (inverting the bottom-is-newest convention the notes panel teaches) with bodies truncated at 120 chars — Monitor cited a stale c1527 HOLD as governing over c1538, and truncation amputated the Expiry/Re-evaluate fields. Decisions now render oldest-first with the newest labeled `>>> GOVERNING DECISION <<<` in full via the timestamped note header.
+- **#634**: Monitor reported DOL initial claims 240K vs the confirmed 215K, caught downstream instead of at reporting. Playbook §5: released official figures require two-source or official-agency confirmation with the reference period recorded; disagreement without agency confirmation reports UNVERIFIED. A verified release says nothing about settlement STATUS (#760).
+- **#637**: Caddie used the YES ask as the NO entry price on KXU3-26JUN-T4.3 (−5pp edge became a spurious +29pp PROCEED). caddie.md now derives entry prices explicitly (NO entry = 1 − YES bid, never the YES ask) with a complement self-check anchored on the YES bid, and `--price` stays in YES terms.
+- **#650**: the remaining Rich-markup escape sites from the #644 batch — API error details, order/market-info/validation failure prints, generic exception prints, candidates/Pro/wizard/report cells, and all five prose-arg path errors.
+- **#787**: one enum-drift market status aborted the entire scan. Unknown statuses (including JSON null and unhashable garbage) now degrade to an UNKNOWN sentinel that fails closed everywhere (untradeable, unsettled) with a once-per-string warning.
+- **#788**: `test_autonomous_loop.py` slept real failure-backoff seconds — 961s of every 976s frozen gate, with the default-breaker test alone sleeping 450s (the reported "hang"). The backoff sleep is now no-opped at the fixture level; the gate runs in ~16s.
+- **#698**: championship resting sells drifted from the ledger in both directions (#744 logs only placement-time fills). Reconcile now converges each order's close rows to Kalshi fill truth: annul/shrink for canceled/never-filled orders, append at the fill-weighted price for post-placement fills, with settlement/still-resting/truncated-read guards and full audit rows.
+
+### Added
+
+- **#636**: `classifier_block` skip reason — a permission-classifier denial (the command never ran) auto-writes the `safety_classifier_block` error row so Groundskeeper tracks recurrences, arms the #768 terminal gate, and stays out of the missed-entry FNR.
+- **#647**: reconcile backfills empty `positions.rules_primary` snapshots (resting fills, pre-v17 rows, sync-recreated rows) so the semantics guard stops silently passing them — both modes, capped 10/run, best-effort.
+- **#646**: `semantics_parse_inconclusive` INFO telemetry when a threshold-style ticker's non-empty settlement snapshot fails to parse — the comparator library grows from observed misses before any warn→reject tightening.
+- **#648**: a playbook footer on a NON-playbook ticker now warns (Footer-omission rule was unvalidated). The two escalation items stay warns per their own evidence gate: a 300-observation journal scan found zero occurrences of either.
+
+### Closed without code
+
+- **#616**: superseded by the runtime validator family (#614/#615/#643/#649) — the proposed scenario (CM cites Barclays; observation drops it or writes the c1407 stale template) is already CLI-rejected at write time and pinned end-to-end in tests.
+
 ## [0.8.25] - 2026-08-17
 
 The backlog burn-down, part two: five issues closed in one day's pipeline, spanning a June-era silent-failure family and two fresh follow-ups. **Restart not required after `gimmes update`** — all changed paths (order/validate/risk-check/log-trade commands, agent prompts) load fresh in agent subprocesses; the loop process is untouched. Behavior notes: (1) orders on non-ACTIVE markets now refuse explicitly with a classified error instead of dying as incidental cancels/4xxs; (2) positions past market close without settlement produce a change-detected WARNING that re-logs at doubling intervals; (3) percent-form `--prob` values are rejected at parse time; (4) `log-trade` requires a concrete `--side` under dual-side config; (5) `gimmes risk-check --event/--series` reports remaining capacity, and `gimmes validate` now sees resting reservations (it could previously APPROVE what order then REJECTED).
