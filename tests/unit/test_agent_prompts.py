@@ -3289,3 +3289,18 @@ def test_log_trade_templates_carry_side(agent_file: str) -> None:
         assert "--side" in line, (agent_file, line.strip())
     # The shared SIDE-definition sentence is pinned per file
     assert "`--side SIDE` (#708):" in text
+
+
+def test_closer_cap_blocked_covers_event_series(caddie_master_text: str) -> None:
+    """#640: the mark-cap-blocked trigger covers event/series caps and
+    the never-shrink doctrine matches the backtest's skip-at-cap."""
+    closer_text = _CLOSER.read_text()
+    assert '"Event exposure", or "Series exposure"' in closer_text
+    assert "gimmes risk-check --event EVENT_TICKER" in closer_text
+    assert "NEVER shrunk to fit the cap" in closer_text
+    assert "the backtest skips at the cap" in closer_text
+    # CM side: capacity check is mechanical, same doctrine
+    assert (
+        "gimmes risk-check --event EVENT_TICKER" in caddie_master_text
+    )
+    assert "NEVER shrunk to fit" in caddie_master_text
