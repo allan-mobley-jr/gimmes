@@ -4871,11 +4871,12 @@ def log_outcome(
                 )
                 raise typer.Exit(1)
 
-            # A published yes/no result outranks the caller: with
-            # overwrite semantics a wrong --outcome would clobber a
-            # correct row, so a disagreement is refused outright.
+            # A published result outranks the caller: with overwrite
+            # semantics a wrong --outcome would clobber a correct
+            # row. Any disagreement is refused — including non-yes/no
+            # results like "void", which no --outcome can represent.
             published = (market.result or "").strip().lower()
-            if published in ("yes", "no") and published != outcome:
+            if published and published != outcome:
                 async with Database(config.db_path) as db:
                     await _log_cli_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.ERROR,

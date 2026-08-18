@@ -145,6 +145,29 @@ class TestLogOutcomeGuard:
         assert len(rows) == 1
         assert rows[0]["severity"] == "error"
 
+    def test_void_result_refused(self, tmp_path) -> None:
+        """A voided market resolves neither yes nor no — no
+        --outcome value is stampable onto it."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        result = self._run(
+            db_path,
+            market=_market(MarketStatus.FINALIZED, result="void"),
+        )
+        assert result.exit_code == 1, result.output
+        assert _outcomes(db_path) == [None]
+        assert len(_rows(db_path, "outcome_conflicts_with_result")) == 1
+
+    def test_uppercase_matching_result_writes(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        result = self._run(
+            db_path,
+            market=_market(MarketStatus.FINALIZED, result="NO"),
+        )
+        assert result.exit_code == 0, result.output
+        assert _outcomes(db_path) == ["no"]
+
     def test_matching_result_writes(self, tmp_path) -> None:
         db_path = tmp_path / "gimmes.db"
         _db_run(db_path, _seed)
