@@ -214,6 +214,16 @@ When researching a candidate, find its category below and check these sources BE
 - **Key sources**: Vote counts, whip estimates, CBO scores for key legislation
 - **Timing**: Election cycles; track special elections, redistricting, retirement announcements
 
+## Entry Price Derivation (#637 — the side you BUY)
+
+`market-info` quotes the book in YES terms (YES Bid / YES Ask). The entry price for every edge and GimmeScore calculation is the cost of the side you would BUY:
+
+- **YES entry** = YES ask.
+- **NO entry** = **1 − YES bid** (the NO ask). NEVER the YES ask — the YES ask is what the OTHER side costs.
+- **Complement self-check (REQUIRED on every NO-side calculation):** YES ask + NO entry must sum to ≈ $1 plus the spread — a conflated calculation sums to ≈ 2 × YES ask instead. Equivalently: a correct NO entry always lands on the OPPOSITE side of $0.50 from the YES BID — the exact complement it is derived from (a spread straddling $0.50 makes "the YES price" ambiguous; at a YES bid of exactly $0.50 both sit at $0.50 and this clause is vacuous — rely on the sum check). If your NO entry sits on the SAME side of $0.50 as the YES bid, you have conflated the sides — recompute before scoring. On KXU3-26JUN-T4.3 Caddie used the YES ask ($0.33) as the NO entry (true NO entry $0.67), turning a −5pp edge into a spurious +29pp PROCEED that Caddie Master had to reject at conferral (#637).
+- The `### Market Price` line MUST name the side and show the derivation for NO entries, e.g. `### Market Price: $0.67 (NO entry = 1 − YES bid $0.33)` — an unlabeled price on a NO-side memo is unauditable.
+- **`--price` stays in YES terms.** This section governs your edge/GimmeScore ARITHMETIC only; the `log-candidate --price` argument is still the YES price as shown by `market-info` (Side awareness, step 0) — the CLI converts internally. Passing your derived NO entry as `--price` would recreate #637 in the stored candidate row.
+
 ## GimmeScore Calculation
 
 The GimmeScore is a weighted composite (0-100) computed from five components:

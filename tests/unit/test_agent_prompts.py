@@ -3341,3 +3341,19 @@ def test_monitor_released_figure_verification(monitor_text: str) -> None:
     assert "report the figure as `UNVERIFIED` with both values" in block
     assert "The official agency release RESOLVES such a conflict" in block
     assert "A verified release says NOTHING about settlement STATUS" in block
+
+
+def test_caddie_entry_price_derivation(caddie_text: str) -> None:
+    """#637: NO entry is 1 − YES bid, never the YES ask; the
+    complement self-check catches side conflation before scoring."""
+    assert "## Entry Price Derivation (#637" in caddie_text
+    assert "**NO entry** = **1 − YES bid** (the NO ask)" in caddie_text
+    assert "NEVER the YES ask" in caddie_text
+    assert "Complement self-check (REQUIRED on every NO-side" in caddie_text
+    assert "you have conflated the sides" in caddie_text
+    assert (
+        "a correct NO entry always lands on the OPPOSITE side of $0.50"
+        " from the YES BID"
+    ) in caddie_text
+    assert "MUST name the side and show the derivation" in caddie_text
+    assert "**`--price` stays in YES terms.**" in caddie_text
