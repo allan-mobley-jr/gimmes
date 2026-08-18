@@ -3121,12 +3121,12 @@ def risk_check(
             # exposure view (positions + resting reservations), so the
             # CM can check remaining capacity BEFORE approving instead
             # of discovering the cap at the Closer's validate.
-            if event or series:
-                from gimmes.risk.limits import (
-                    compute_exposure_for_group,
-                )
+            from gimmes.risk.limits import compute_exposure_for_group
 
-                capacity_basis = await _exposure_basis(pos, broker)
+            capacity_basis = (
+                await _exposure_basis(pos, broker)
+                if (event or series) else []
+            )
             for group, cap_pct, label in (
                 (event, config.risk.max_event_exposure_pct, "Event"),
                 (series, config.risk.max_series_exposure_pct, "Series"),

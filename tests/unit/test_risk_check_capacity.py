@@ -67,6 +67,11 @@ class TestRiskCheckCapacity:
         cfg.risk.max_event_exposure_pct = 0.10
         cfg.risk.max_series_exposure_pct = 0.30
         cfg.risk.position_past_close_minutes = 30
+        cfg.risk.daily_loss_limit_pct = 0.10
+        cfg.risk.max_open_positions = 50
+        cfg.risk.monitor_price_trigger_pp = 5
+        cfg.risk.position_stop_loss_pct = 0.15
+        cfg.risk.position_take_profit_pct = 0.80
         cfg.bankroll = 5000.0
         broker = AsyncMock()
         broker.get_balance = AsyncMock(return_value=5000.0)
@@ -94,13 +99,9 @@ class TestRiskCheckCapacity:
                    AsyncMock(return_value=300.0)):
             return runner.invoke(app, ["risk-check", *extra])
 
-    # NOTE: the MagicMock config crashes risk-check's DOWNSTREAM
-    # formatting after the capacity block prints — the capacity
-    # feature is what's under test, so assertions target the output,
-    # not the exit code.
-
     def test_event_capacity_reports_remaining(self) -> None:
         result = self._run("--event", "KXE-26AUG")
+        assert result.exit_code == 0, result.output
         out = " ".join(result.output.split())
         # 300 position + 100 resting = 400 exposure; cap 500 → 100 left
         assert "Event capacity: KXE-26AUG" in out
@@ -131,6 +132,11 @@ class TestRiskCheckCapacity:
         cfg.risk.max_event_exposure_pct = 0.05
         cfg.risk.max_series_exposure_pct = 0.30
         cfg.risk.position_past_close_minutes = 30
+        cfg.risk.daily_loss_limit_pct = 0.10
+        cfg.risk.max_open_positions = 50
+        cfg.risk.monitor_price_trigger_pp = 5
+        cfg.risk.position_stop_loss_pct = 0.15
+        cfg.risk.position_take_profit_pct = 0.80
         cfg.bankroll = 5000.0
         broker = AsyncMock()
         broker.get_balance = AsyncMock(return_value=5000.0)
