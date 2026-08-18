@@ -644,7 +644,7 @@ def validate_playbook_footer(
         # here means the agent misclassified the ticker (or copied a
         # template), which pollutes the audit trail. Warn, never
         # block: the note itself is fine.
-        if parse_playbook_footer(observation_body) is not None:
+        if _FOOTER_HEADER_RE.search(observation_body or ""):
             warnings.append(
                 f"Playbook footer present on NON-playbook ticker"
                 f" {ticker} (#648) — monitor.md's Footer-omission"
