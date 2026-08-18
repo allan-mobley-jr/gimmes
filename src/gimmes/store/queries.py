@@ -474,7 +474,7 @@ async def get_close_order_ledger(db: Database) -> list[dict]:  # type: ignore[ty
              AND agent != 'settlement'
              AND (
                ticker IN (SELECT ticker FROM positions)
-               OR timestamp >= datetime('now', '-7 days')
+               OR datetime(timestamp) >= datetime('now', '-7 days')
              )
            GROUP BY order_id
            ORDER BY MAX(id) DESC"""

@@ -98,9 +98,12 @@ def _seed(
 
 def _wire(
     monkeypatch: pytest.MonkeyPatch, db_path: Path, *,
-    resting: list[Order] = [], fills: list[Fill] = [],
+    resting: list[Order] | None = None,
+    fills: list[Fill] | None = None,
     fills_error: bool = False, fills_cursor: str | None = None,
 ) -> None:
+    resting = resting or []
+    fills = fills or []
     cfg = MagicMock()
     cfg.db_path = db_path
     cfg.is_championship = True
