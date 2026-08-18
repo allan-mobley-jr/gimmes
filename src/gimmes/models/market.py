@@ -24,6 +24,13 @@ class MarketStatus(StrEnum):
     DISPUTED = "disputed"
     AMENDED = "amended"
     FINALIZED = "finalized"
+    # #787: parse-time sentinel for API status strings this enum
+    # doesn't know yet. Never sent by Kalshi — assigned by
+    # parse_market so one drifted market degrades instead of
+    # aborting the whole scan. UNTRADEABLE_STATUSES (set difference
+    # below) absorbs it automatically, so it fails closed at the
+    # #784 order gate and stays outside SETTLED_STATUSES.
+    UNKNOWN = "unknown"
 
 
 # #784: markets where an order can execute vs not. Kalshi matches
