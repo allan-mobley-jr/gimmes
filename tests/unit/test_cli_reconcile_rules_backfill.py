@@ -162,6 +162,9 @@ def test_zero_count_rows_skipped(monkeypatch, tmp_path) -> None:
     review): the snapshot only matters for open positions."""
     db_path = tmp_path / "g.db"
     positions = _seed(db_path, ["KX-A"])
+    # The broker must ALSO report count=0 — sync_positions runs
+    # before the backfill and would otherwise restore the count.
+    positions = [p.model_copy(update={"count": 0}) for p in positions]
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE positions SET count = 0 WHERE ticker = 'KX-A'")
     conn.commit()
