@@ -394,14 +394,20 @@ async def run_migrations(db: Database) -> int:
     # genuinely settles keeps the authoritative outcome; fresh/other
     # DBs no-op.
     if current < 20:
-        await db.conn.execute(
-            "UPDATE trades SET resolved_outcome = NULL"
+        # The v16 presence-check precedent: fixture/legacy DBs whose
+        # trades table predates the resolved_outcome column must
+        # no-op (they cannot contain the corruption).
+        cursor = await db.conn.execute("PRAGMA table_info(trades)")
+        trade_cols = {row[1] for row in await cursor.fetchall()}
+        if "resolved_outcome" in trade_cols:
+            await db.conn.execute(
+                "UPDATE trades SET resolved_outcome = NULL"
             " WHERE ticker = 'KXPCECORE-26JUL-T0.3'"
             " AND resolved_outcome = 'no'"
-            " AND NOT EXISTS (SELECT 1 FROM trades s"
-            "   WHERE s.ticker = trades.ticker"
-            "   AND s.agent = 'settlement' AND s.action = 'close')"
-        )
+                " AND NOT EXISTS (SELECT 1 FROM trades s"
+                "   WHERE s.ticker = trades.ticker"
+                "   AND s.agent = 'settlement' AND s.action = 'close')"
+            )
         await db.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (20,)
         )
