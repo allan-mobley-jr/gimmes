@@ -481,3 +481,57 @@ class TestSyncWith643Rules:
             rules_primary=rules,
         )
         assert errors == [] and warnings == []
+
+
+class TestThresholdParseInconclusive:
+    """#646: coverage telemetry for the semantics guard's silent
+    blind spot — threshold-style ticker, non-empty snapshot, parse
+    miss."""
+
+    def test_unparseable_rules_on_threshold_ticker(self) -> None:
+        from gimmes.store.observation_validator import (
+            threshold_parse_inconclusive,
+        )
+
+        assert threshold_parse_inconclusive(
+            "KXCPI-26APR-T0.5", "Settles per the committee's judgment.",
+        )
+
+    def test_parseable_rules_are_conclusive(self) -> None:
+        from gimmes.store.observation_validator import (
+            parse_rules_threshold,
+            threshold_parse_inconclusive,
+        )
+
+        rules = "Resolves YES if the value is above 0.5 percent."
+        assert parse_rules_threshold(rules) is not None
+        assert not threshold_parse_inconclusive(
+            "KXCPI-26APR-T0.5", rules,
+        )
+
+    def test_empty_snapshot_is_not_inconclusive(self) -> None:
+        """Empty snapshots are the #647 backfill's job."""
+        from gimmes.store.observation_validator import (
+            threshold_parse_inconclusive,
+        )
+
+        assert not threshold_parse_inconclusive("KXCPI-26APR-T0.5", "")
+        assert not threshold_parse_inconclusive("KXCPI-26APR-T0.5", None)
+
+    def test_non_threshold_ticker_ignored(self) -> None:
+        from gimmes.store.observation_validator import (
+            threshold_parse_inconclusive,
+        )
+
+        assert not threshold_parse_inconclusive(
+            "KXINX-26APR", "Settles per the committee's judgment.",
+        )
+
+    def test_negative_and_decimal_strikes_match(self) -> None:
+        from gimmes.store.observation_validator import (
+            threshold_parse_inconclusive,
+        )
+
+        for t in ("KXCPI-26JUN-T-0.1", "KXU3-26JUN-T4.3",
+                  "KXPAYROLLS-26MAY-T80000"):
+            assert threshold_parse_inconclusive(t, "opaque wording")

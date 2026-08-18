@@ -5602,6 +5602,41 @@ def position_note(
                 rules_primary = await get_position_rules_snapshot(
                     db, resolved_ticker,
                 )
+                # #646: the guard deliberately goes silent on an
+                # inconclusive parse — never reject on parser
+                # uncertainty — but a threshold-style ticker with an
+                # unparseable snapshot is zero enforcement AND zero
+                # visibility. Log the rules text so the comparator
+                # library grows from observed misses.
+                import json as _json
+
+                from gimmes.models.error import (
+                    ErrorCategory,
+                    ErrorLogEntry,
+                    ErrorSeverity,
+                )
+                from gimmes.store.observation_validator import (
+                    threshold_parse_inconclusive,
+                )
+                if threshold_parse_inconclusive(
+                    resolved_ticker, rules_primary,
+                ):
+                    await _log_cli_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.INFO,
+                        category=ErrorCategory.DATA_INTEGRITY,
+                        error_code="semantics_parse_inconclusive",
+                        component="cli.position-note",
+                        message=(
+                            f"Threshold-style ticker"
+                            f" {resolved_ticker}: settlement rules"
+                            f" did not parse — semantics guard"
+                            f" inactive (#646)"
+                        ),
+                        context=_json.dumps({
+                            "ticker": resolved_ticker,
+                            "rules_primary": (rules_primary or "")[:500],
+                        }),
+                    ))
                 ok, errors, warnings = validate_observation(
                     ticker=resolved_ticker,
                     observation_body=body_val,
