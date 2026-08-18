@@ -14,14 +14,20 @@ logger = logging.getLogger(__name__)
 _warned_statuses: set[str] = set()
 
 
-def _parse_status(raw: str) -> MarketStatus:
-    """Map an API status string to the enum; drift degrades to
-    UNKNOWN (untradeable, unsettled) instead of aborting the scan."""
+def _parse_status(raw: object) -> MarketStatus:
+    """Map an API status value to the enum; drift degrades to
+    UNKNOWN (untradeable, unsettled) instead of aborting the scan.
+
+    Accepts object, not str: an explicit JSON null arrives as None,
+    and enum lookup raises ValueError for ANY non-member value
+    (None, int, list included — verified empirically, #787 review).
+    """
     try:
         return MarketStatus(raw)
     except ValueError:
-        if raw not in _warned_statuses:
-            _warned_statuses.add(raw)
+        key = repr(raw)
+        if key not in _warned_statuses:
+            _warned_statuses.add(key)
             logger.warning(
                 "Unknown Kalshi market status %r — treating as"
                 " UNKNOWN (untradeable); enum drift, see #787", raw,

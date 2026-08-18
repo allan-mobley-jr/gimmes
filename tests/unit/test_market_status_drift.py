@@ -23,6 +23,17 @@ def test_unknown_status_parses_to_sentinel() -> None:
     assert m.status is MarketStatus.UNKNOWN
 
 
+def test_null_and_nonstring_status_degrade() -> None:
+    """#787 review: an explicit JSON null (data.get returns None) and
+    any non-string garbage take the same ValueError path — enum
+    lookup raises ValueError for every non-member value."""
+    assert parse_market({"ticker": "T", "status": None}).status is (
+        MarketStatus.UNKNOWN
+    )
+    assert _parse_status(42) is MarketStatus.UNKNOWN
+    assert _parse_status(["active"]) is MarketStatus.UNKNOWN
+
+
 def test_known_statuses_still_parse() -> None:
     for member in MarketStatus:
         if member is MarketStatus.UNKNOWN:
@@ -36,7 +47,7 @@ def test_unknown_fails_closed_everywhere() -> None:
 
 
 def test_warns_once_per_status_string(caplog) -> None:
-    _warned_statuses.discard("halted")
+    _warned_statuses.discard(repr("halted"))
     with caplog.at_level(logging.WARNING, logger="gimmes.kalshi.markets"):
         _parse_status("halted")
         _parse_status("halted")
