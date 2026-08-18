@@ -256,9 +256,11 @@ class TestMigrationV20:
 def test_market_info_renders_result_row(tmp_path) -> None:
     """#760: the Result row is the checkable half of the field test."""
     m = MagicMock()
+    m.ticker = "KX-26AUG-T1"
     m.status.value = "finalized"
     m.status = MarketStatus.FINALIZED
     m.result = "yes"
+    m.spread = 0.2
     m.midpoint = 0.5
     m.last_price = 0.5
     m.yes_bid = 0.4
@@ -272,16 +274,27 @@ def test_market_info_renders_result_row(tmp_path) -> None:
     m.rules_primary = "Resolves YES if X."
     m.series_ticker = "KX"
     m.event_ticker = "KX-26AUG"
+    from io import StringIO
+
+    from rich.console import Console
+
     from gimmes.models.market import Orderbook
 
+    buf = StringIO()
     with patch("gimmes.cli.load_config",
                return_value=_config(tmp_path / "gimmes.db")), \
          patch("gimmes.kalshi.markets.get_market",
                AsyncMock(return_value=m)), \
          patch("gimmes.kalshi.markets.get_orderbook",
                AsyncMock(return_value=Orderbook(ticker="KX-26AUG-T1"))), \
-         patch("gimmes.kalshi.client.KalshiClient"):
+         patch("gimmes.kalshi.client.KalshiClient"), \
+         patch("gimmes.cli.console", Console(file=buf, width=200)), \
+         patch(
+             "gimmes.reporting.formatter.console",
+             Console(file=buf, width=200),
+         ):
         result = runner.invoke(app, ["market-info", "KX-26AUG-T1"])
-    out = " ".join(result.output.split())
+    out = " ".join(buf.getvalue().split())
+    assert result.exit_code == 0, buf.getvalue()
     assert "Result" in out
     assert "yes" in out
