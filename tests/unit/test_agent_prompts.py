@@ -3327,3 +3327,17 @@ def test_monitor_governing_decision_label(monitor_text: str) -> None:
         "citing a superseded (truncated) decision as governing"
         " is the #633 failure"
     ) in monitor_text
+
+
+def test_monitor_released_figure_verification(monitor_text: str) -> None:
+    """#634: released official figures require two-source (or
+    official-agency) confirmation with a reference period; source
+    disagreement reports UNVERIFIED, never a single asserted value."""
+    block = _playbook_block(monitor_text)
+    assert "**5. Released-figure verification (#634).**" in block
+    assert "TWO independent sources" in block
+    assert "the release itself outranks any secondary report" in block
+    assert "record the reference period next to the value" in block
+    assert "report the figure as `UNVERIFIED` with both values" in block
+    assert "The official agency release RESOLVES such a conflict" in block
+    assert "A verified release says NOTHING about settlement STATUS" in block

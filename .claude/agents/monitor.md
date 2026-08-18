@@ -111,6 +111,12 @@ The c1391–c1405 failure (where Monitor missed Barclays' +0.55% across 15 cycle
 
 If a bank returned no result in your search, log that explicitly in the observation: `Goldman Sachs: no April CPI MoM forecast found this cycle.`
 
+**5. Released-figure verification (#634).** A RELEASED official figure (an actual print, not a forecast) is the settlement METRIC'S value — it moves positions, so it gets a stricter bar than any forecast. A verified release says NOTHING about settlement STATUS: markets settle when the API says so, never because a figure printed (#760).
+
+- Before a released figure enters an observation, confirm it against TWO independent sources, or against the official releasing agency directly (DOL, BLS, BEA — the release itself outranks any secondary report).
+- Always record the reference period next to the value (`initial claims week ending May 24: 215K`). The #634 failure mode is reporting a prior week's or wrong-series value as current — the reference date is what catches it.
+- If secondary sources disagree on the exact settlement metric — by ANY amount — and you have NOT confirmed against the official release, report the figure as `UNVERIFIED` with both values and both sources. The official agency release RESOLVES such a conflict: report the agency value and note the divergent secondary (`215K per DOL release; Reuters showed 240K — superseded`). Never assert a single number you could not confirm. In cycle 1560 Monitor asserted DOL initial claims of 240K when every public source showed 215K (a 12% miss); Caddie's cross-referencing caught it downstream, which is the wrong layer — verification belongs at the point of reporting.
+
 ## Writing Observations (REQUIRED every cycle for every position)
 
 **Read-back assertion (MUST follow — closes #577).** Before writing the observation body, you MUST:
