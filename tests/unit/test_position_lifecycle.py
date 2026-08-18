@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -488,6 +489,99 @@ class TestOpenPositionMissingTradeLog:
         assert "No open trade row recorded" in result.output
         assert "POSITION CLOSED/SETTLED" not in result.output
         assert _read_errors(db_path) == []
+
+
+class TestDecisionsPanel:
+    """#633: decisions render oldest-first like the notes panel, the
+    newest is labeled GOVERNING and prints in full — truncation was
+    amputating the Expiry / Re-evaluate fields, and newest-first
+    ordering had Monitor citing a stale HOLD as governing."""
+
+    def _seed_decisions(self, db_path, bodies_by_cycle):
+        async def _seed(db):
+            await db.conn.execute(
+                "INSERT INTO positions"
+                " (ticker, side, count, avg_price, cost_basis)"
+                " VALUES (?, 'no', 100, 0.5, 50.0)",
+                (TICKER,),
+            )
+            for cycle, body in bodies_by_cycle:
+                await db.conn.execute(
+                    "INSERT INTO position_notes"
+                    " (ticker, cycle, agent, note_type, body)"
+                    " VALUES (?, ?, 'caddie-master', 'decision', ?)",
+                    (TICKER, cycle, body),
+                )
+            await db.conn.commit()
+
+        _db_run(db_path, _seed)
+
+    def _run(self, db_path):
+        with patch("gimmes.cli.load_config",
+                   return_value=_config(db_path)):
+            return runner.invoke(app, ["position-context", TICKER])
+
+    def test_oldest_first_with_governing_last(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._seed_decisions(db_path, [
+            (1527, "HOLD stale-one"),
+            (1530, "HOLD middle-one"),
+            (1538, "HOLD governing-one"),
+        ])
+        result = self._run(db_path)
+        assert result.exit_code == 0, result.output
+        # Decision notes also appear in the mixed POSITION NOTES
+        # panel — scope every assertion to the decisions section.
+        out = result.output[result.output.index("final entry GOVERNS"):]
+        i27 = out.index("cycle=1527")
+        i30 = out.index("cycle=1530")
+        i38 = out.index("cycle=1538")
+        assert i27 < i30 < i38
+        assert out.count("GOVERNING DECISION") == 1
+        assert i30 < out.index("GOVERNING DECISION") < i38
+
+    def test_governing_full_older_truncated(self, tmp_path) -> None:
+        stale_tail = "stale-tail-marker"
+        old_body = "\n".join(
+            ["HOLD old rationale line"] * 8 + [stale_tail],
+        )
+        gov_body = "\n".join(
+            ["HOLD current rationale line"] * 8
+            + ["Expiry: cycle 1548", "Re-evaluate if: gap closes"],
+        )
+        db_path = tmp_path / "gimmes.db"
+        self._seed_decisions(db_path, [
+            (1527, old_body), (1538, gov_body),
+        ])
+        result = self._run(db_path)
+        assert result.exit_code == 0, result.output
+        out = result.output[result.output.index("final entry GOVERNS"):]
+        assert "Expiry: cycle 1548" in out
+        assert "Re-evaluate if: gap closes" in out
+        assert stale_tail not in out
+        assert "[truncated" in out
+
+    def test_single_short_decision_untruncated(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._seed_decisions(db_path, [(1538, "HOLD brief")])
+        result = self._run(db_path)
+        assert result.exit_code == 0, result.output
+        assert "GOVERNING DECISION" in result.output
+        assert "HOLD brief" in result.output
+        assert "[truncated" not in result.output
+        assert "HOLD brief..." not in result.output
+
+    def test_decision_headers_carry_timestamps(self, tmp_path) -> None:
+        db_path = tmp_path / "gimmes.db"
+        self._seed_decisions(db_path, [(1538, "HOLD brief")])
+        result = self._run(db_path)
+        assert result.exit_code == 0, result.output
+        out = result.output[result.output.index("final entry GOVERNS"):]
+        assert re.search(
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+            r" \| cycle=1538 \| caddie-master \| decision",
+            out,
+        ), out
 
 
 class TestKnownMarketsSettle:
