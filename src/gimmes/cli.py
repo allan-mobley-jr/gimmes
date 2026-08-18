@@ -158,18 +158,23 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     content to write."
     """
     if not path.exists():
-        console.print(f"[red]{option_name}: file not found: {path}[/red]")
+        console.print(
+            f"[red]{option_name}: file not found: {rich_escape(str(path))}[/red]"
+        )
         raise typer.Exit(1)
     if not path.is_file():
         console.print(
-            f"[red]{option_name}: not a regular file: {path}"
+            f"[red]{option_name}: not a regular file: {rich_escape(str(path))}"
             " (FIFOs, sockets, and device files are rejected)[/red]"
         )
         raise typer.Exit(1)
     try:
         size = path.stat().st_size
     except OSError as e:
-        console.print(f"[red]{option_name}: cannot stat {path}: {e}[/red]")
+        console.print(
+            f"[red]{option_name}: cannot stat {rich_escape(str(path))}:"
+            f" {rich_escape(str(e))}[/red]"
+        )
         raise typer.Exit(1) from e
     if size > _MAX_PROSE_BYTES:
         console.print(
@@ -180,10 +185,16 @@ def _read_prose_file(path: Path, option_name: str) -> str:
     try:
         content = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
-        console.print(f"[red]{option_name}: file is not valid UTF-8: {path}[/red]")
+        console.print(
+            f"[red]{option_name}: file is not valid UTF-8:"
+            f" {rich_escape(str(path))}[/red]"
+        )
         raise typer.Exit(1) from e
     except OSError as e:
-        console.print(f"[red]{option_name}: cannot read {path}: {e}[/red]")
+        console.print(
+            f"[red]{option_name}: cannot read {rich_escape(str(path))}:"
+            f" {rich_escape(str(e))}[/red]"
+        )
         raise typer.Exit(1) from e
     if content.endswith("\n"):
         content = content[:-1]
@@ -365,7 +376,7 @@ def _run(coro):  # type: ignore[no-untyped-def]
                 )
                 raise typer.Exit(1)
         detail = _api_error_detail(e)
-        console.print(f"[red]API error ({e.response.status_code}): {detail}[/red]")
+        console.print(f"[red]API error ({e.response.status_code}): {rich_escape(detail)}[/red]")
         raise typer.Exit(1)
     except httpx.TimeoutException:
         logger.debug("Timeout error", exc_info=True)
@@ -404,7 +415,7 @@ def _run(coro):  # type: ignore[no-untyped-def]
         raise
     except (ConnectionError, ValueError, RuntimeError) as e:
         logger.debug("CLI error", exc_info=True)
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {rich_escape(str(e))}[/red]")
         raise typer.Exit(1)
 
 
@@ -1073,7 +1084,8 @@ def validate(
                 daily_pnl = await get_daily_pnl(db)
             except Exception as exc:
                 console.print(
-                    f"[red bold]VALIDATION FAILED: Could not query daily P&L — {exc}[/red bold]"
+                    f"[red bold]VALIDATION FAILED: Could not query"
+                    f" daily P&L — {rich_escape(str(exc))}[/red bold]"
                 )
                 console.print(
                     "[red]Refusing to validate with unknown P&L "
@@ -1087,7 +1099,8 @@ def validate(
             except Exception as exc:
                 console.print(
                     f"[red bold]VALIDATION FAILED: Could not query"
-                    f" deployed cost basis — {exc}[/red bold]"
+                    f" deployed cost basis —"
+                    f" {rich_escape(str(exc))}[/red bold]"
                 )
                 console.print(
                     "[red]Refusing to validate with unknown deployed"
@@ -2094,7 +2107,8 @@ def order(
                     logger.error("Failed to log error to DB", exc_info=True)
                 console.print(
                     f"[red bold]Order FAILED"
-                    f" ({exc.response.status_code}): {detail}[/red bold]"
+                    f" ({exc.response.status_code}):"
+                    f" {rich_escape(detail)}[/red bold]"
                 )
                 await _mark_terminal({
                     "error_code": "http_status_error",
@@ -2150,7 +2164,7 @@ def order(
                     ))
                 except Exception:
                     logger.error("Failed to log error to DB", exc_info=True)
-                console.print(f"[red bold]Order FAILED: {exc}[/red bold]")
+                console.print(f"[red bold]Order FAILED: {rich_escape(str(exc))}[/red bold]")
                 await _mark_terminal({"error_code": error_code})
                 raise typer.Exit(1)
 
@@ -2722,7 +2736,7 @@ def candidates(
                         flags.append("[dim]STALE[/dim]")
             newest_seen.add(row_ticker)
             status = " ".join(flags)
-            rec = str(c.get("recommendation", ""))
+            rec = rich_escape(str(c.get("recommendation", "")))  # #650
             table.add_row(
                 str(c.get("ticker", "")),
                 f"{c.get('gimme_score', 0):.0f}",
@@ -4051,7 +4065,8 @@ def market_info(
                     ))
                 console.print(
                     f"[red bold]Market lookup FAILED"
-                    f" ({exc.response.status_code}): {detail}[/red bold]"
+                    f" ({exc.response.status_code}):"
+                    f" {rich_escape(detail)}[/red bold]"
                 )
                 raise typer.Exit(1)
             except httpx.RequestError as exc:
@@ -4074,7 +4089,8 @@ def market_info(
                     ))
                 console.print(
                     f"[red bold]Market lookup FAILED:"
-                    f" {type(exc).__name__}: {exc}[/red bold]"
+                    f" {type(exc).__name__}:"
+                    f" {rich_escape(str(exc))}[/red bold]"
                 )
                 raise typer.Exit(1)
             settlement = scan_settlement_rules(market.rules_primary)
@@ -5464,7 +5480,7 @@ def audit_cycles(
     try:
         parsed_date = _date.fromisoformat(target_date)
     except ValueError as exc:
-        console.print(f"[red]Invalid --date value: {exc}[/red]")
+        console.print(f"[red]Invalid --date value: {rich_escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     log_dir = GIMMES_HOME / "logs"
@@ -5574,7 +5590,7 @@ def pause_backtest(
         try:
             date_from_d = _date.fromisoformat(date_from)
         except ValueError as exc:
-            console.print(f"[red]Invalid --from value: {exc}[/red]")
+            console.print(f"[red]Invalid --from value: {rich_escape(str(exc))}[/red]")
             raise typer.Exit(1)
 
     if date_to is None:
@@ -5583,7 +5599,7 @@ def pause_backtest(
         try:
             date_to_d = _date.fromisoformat(date_to)
         except ValueError as exc:
-            console.print(f"[red]Invalid --to value: {exc}[/red]")
+            console.print(f"[red]Invalid --to value: {rich_escape(str(exc))}[/red]")
             raise typer.Exit(1)
 
     if date_to_d < date_from_d:
@@ -5973,9 +5989,11 @@ def lesson(
                 )
                 console.print(
                     f"[{color}][{rec.confidence.value.upper()}][/{color}] "
-                    f"{rec.parameter_path}: {rec.current_value} → {rec.recommended_value}"
+                    f"{rich_escape(rec.parameter_path)}:"
+                    f" {rich_escape(str(rec.current_value))} →"
+                    f" {rich_escape(str(rec.recommended_value))}"
                 )
-                console.print(f"  {rec.rationale}\n")
+                console.print(f"  {rich_escape(rec.rationale)}\n")
 
             # Persist recommendations (skip if pending rec already exists for same parameter)
             if not dry_run:
@@ -6010,8 +6028,10 @@ def lesson(
                 for row in past:
                     table.add_row(
                         str(row["id"]),
-                        row["parameter_path"],
-                        f"{row['current_value']} → {row['recommended_value']}",
+                        rich_escape(row["parameter_path"]),  # #650
+                        rich_escape(
+                            f"{row['current_value']} → {row['recommended_value']}"
+                        ),
                         row["confidence"],
                         format_local_timestamp(row["timestamp"], date_only=True),
                     )
@@ -6066,11 +6086,11 @@ def recommendations(
                 table.add_row(
                     str(row["id"]),
                     format_local_timestamp(row["timestamp"], date_only=True),
-                    row["parameter_path"],
-                    row["current_value"],
-                    row["recommended_value"],
+                    rich_escape(row["parameter_path"]),  # #650
+                    rich_escape(str(row["current_value"])),
+                    rich_escape(str(row["recommended_value"])),
                     f"[{conf_color}]{conf}[/{conf_color}]",
-                    row["analysis_type"],
+                    rich_escape(row["analysis_type"]),  # #650
                     f"[{status_color}]{row['status']}[/{status_color}]",
                 )
             console.print(table)
@@ -6112,11 +6132,14 @@ def tune() -> None:
                 conf_color = {"high": "red", "medium": "yellow", "low": "dim"}.get(conf, "white")
                 console.print(
                     f"\n[{conf_color}][{conf.upper()}][/{conf_color}] "
-                    f"[cyan]{row['parameter_path']}[/cyan]: "
-                    f"{row['current_value']} → [bold]{row['recommended_value']}[/bold]"
+                    f"[cyan]{rich_escape(row['parameter_path'])}[/cyan]: "
+                    f"{rich_escape(str(row['current_value']))} →"
+                    f" [bold]{rich_escape(str(row['recommended_value']))}[/bold]"
                 )
-                console.print(f"  {row['rationale']}")
-                console.print(f"  [dim]Analysis: {row['analysis_type']}[/dim]")
+                console.print(f"  {rich_escape(row['rationale'])}")
+                console.print(
+                    f"  [dim]Analysis: {rich_escape(row['analysis_type'])}[/dim]"
+                )
 
                 answer = typer.prompt("  Apply? [y/n/q]", default="n").strip().lower()
                 if answer == "q":
@@ -6410,7 +6433,7 @@ def config_set(
     try:
         setting, parsed = validate_config_value(key, value)
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {rich_escape(str(e))}[/red]")
         raise typer.Exit(1) from None
 
     overrides = _load_config_from_db(db_path)
@@ -6493,7 +6516,7 @@ def config_get(
         try:
             setting = resolve_setting(key)
         except ValueError as e:
-            console.print(f"[red]Error: {e}[/red]")
+            console.print(f"[red]Error: {rich_escape(str(e))}[/red]")
             raise typer.Exit(1) from None
 
         current = _get_current_value(overrides, key, setting.default)
@@ -6535,7 +6558,7 @@ def _resolve_list_field(key: str) -> tuple[Path, list]:
     try:
         setting = resolve_setting(key)
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]Error: {rich_escape(str(e))}[/red]")
         raise typer.Exit(1) from None
 
     if setting.type != "list":
@@ -6762,7 +6785,7 @@ def _set_mode(target: str) -> None:
     try:
         _update_env_var("GIMMES_MODE", target)
     except OSError as e:
-        console.print(f"[red]Error: Could not write to {ENV_FILE}: {e}[/red]")
+        console.print(f"[red]Error: Could not write to {ENV_FILE}: {rich_escape(str(e))}[/red]")
         raise typer.Exit(1)
 
     # Reload .env so load_config() in this process sees the change

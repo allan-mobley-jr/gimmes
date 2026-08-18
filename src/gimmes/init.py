@@ -14,6 +14,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from rich.console import Console
+from rich.markup import escape as rich_escape
 
 from gimmes.config import DEFAULT_SERIES, GIMMES_HOME, config_keys_in_db, save_config_value
 
@@ -157,7 +158,7 @@ def _install_private_key(source: Path, password: bytes) -> Path | None:
     try:
         encrypted = _encrypt_private_key(content, password)
     except Exception as e:
-        console.print(f"[red]Failed to encrypt private key:[/red] {e}")
+        console.print(f"[red]Failed to encrypt private key:[/red] {rich_escape(str(e))}")
         return None
 
     KEYS_DIR.mkdir(exist_ok=True)
@@ -358,7 +359,7 @@ async def _verify_connection() -> bool:
         console.print("[green bold]Connection verified — credentials are working.[/green bold]")
         return True
     except Exception as e:
-        console.print(f"[red]Connection failed:[/red] {e}")
+        console.print(f"[red]Connection failed:[/red] {rich_escape(str(e))}")
         console.print("Check your API key and private key, then try [bold]gimmes mode[/bold].")
         return False
 

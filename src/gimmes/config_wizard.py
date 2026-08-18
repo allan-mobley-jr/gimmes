@@ -12,6 +12,7 @@ import typer
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -261,7 +262,7 @@ def _prompt_setting(
     else:
         label = f"[bold]{setting.name}[/bold]"
     console.print(f"\n  {label}")
-    console.print(f"  Current value: [cyan]{display}[/cyan]")
+    console.print(f"  Current value: [cyan]{rich_escape(display)}[/cyan]")
 
     # Show description indented
     for line in setting.description.split("\n"):
@@ -282,7 +283,7 @@ def _prompt_setting(
         try:
             return _parse_input(raw, setting)
         except ValueError as e:
-            console.print(f"  [red]Invalid: {e}. Try again.[/red]")
+            console.print(f"  [red]Invalid: {rich_escape(str(e))}. Try again.[/red]")
 
 
 def _get_current_value(overrides: dict, dotted_key: str, default: object) -> object:
@@ -431,7 +432,7 @@ def run_config_wizard(
             if value_changed:
                 changed = True
                 display = _format_current(new_value, setting)
-                console.print(f"  [green]Updated to: {display}[/green]")
+                console.print(f"  [green]Updated to: {rich_escape(display)}[/green]")
 
     # Validate scoring weights if any were touched
     scoring_touched = section_filter is None or section_filter == "scoring"
