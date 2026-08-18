@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time
 
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -212,7 +213,7 @@ def format_backtest_report(result: BacktestResult, console: Console) -> None:
         console.print(
             f"[yellow]Warning: pagination limit reached for "
             f"{len(result.truncated_chunks)} chunk(s): "
-            f"{', '.join(result.truncated_chunks)}. "
+            f"{rich_escape(', '.join(result.truncated_chunks))}. "
             f"Results may be incomplete.[/yellow]"
         )
     console.print()

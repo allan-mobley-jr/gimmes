@@ -180,3 +180,57 @@ def test_validate_failure_messages_brackets(tmp_path: Path) -> None:
     assert "determine]" in result.output
     # F6 (#644): the checks line and header ticker are escaped too.
     assert "[margin" in result.output
+
+
+def test_recommendations_table_brackets(tmp_path: Path) -> None:
+    """#650: Pro recommendation cells (parameter_path, values) are
+    DB text — bracket fragments must survive the table render."""
+    row = {
+        "id": 1, "timestamp": "2026-08-17 12:00:00",
+        "parameter_path": "p[exp]",
+        "current_value": "[auto]", "recommended_value": "[manual]",
+        "confidence": "high", "analysis_type": "win_rate",
+        "status": "pending",
+    }
+    with patch("gimmes.store.database.Database", MagicMock()), \
+         patch(
+             "gimmes.store.queries.get_recommendations",
+             AsyncMock(return_value=[row]),
+         ), patch("gimmes.cli.load_config", return_value=_config(tmp_path)):
+        result = runner.invoke(app, ["recommendations"])
+    assert "[exp]" in result.output, result.output
+    assert "[auto]" in result.output, result.output
+    assert "[manual]" in result.output, result.output
+    assert "\\[exp]" not in result.output
+
+
+def test_candidates_recommendation_cell_brackets(tmp_path: Path) -> None:
+    """#650: the candidates `recommendation` DB cell renders escaped."""
+    row = {
+        "ticker": "KXCPI-26APR-T0.5", "gimme_score": 70.0,
+        "market_price": 0.5, "model_probability": 0.6, "edge": 0.1,
+        "cap_blocked": 0, "recommendation": "proceed [shadow]",
+        "scanned_at": "2026-07-01 12:00:00",
+    }
+    with patch("gimmes.store.database.Database", MagicMock()), \
+         patch(
+             "gimmes.store.queries.get_candidate_for_ticker",
+             AsyncMock(return_value=[row]),
+         ), patch("gimmes.cli.load_config", return_value=_config(tmp_path)):
+        result = runner.invoke(
+            app, ["candidates", "--ticker", "KXCPI-26APR-T0.5"],
+        )
+    assert "[shadow]" in result.output, result.output
+    assert "\\[shadow]" not in result.output
+
+
+def test_config_set_error_brackets(tmp_path: Path) -> None:
+    """#650: ValueError text from config validation prints escaped."""
+    with patch(
+        "gimmes.config_wizard.validate_config_value",
+        side_effect=ValueError("unknown key [scanner.bogus]"),
+    ), patch("gimmes.cli.load_config", return_value=_config(tmp_path)):
+        result = runner.invoke(app, ["config", "set", "x", "1"])
+    assert result.exit_code == 1
+    assert "[scanner.bogus]" in result.output, result.output
+    assert "\\[scanner.bogus]" not in result.output
