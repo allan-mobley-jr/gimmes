@@ -3664,6 +3664,57 @@ async def _sweep_resting_paper_orders(broker, client, db, *, config, quiet: bool
     return filled
 
 
+_RULES_BACKFILL_MAX = 10
+
+
+async def _backfill_rules_snapshots(client, db) -> None:  # type: ignore[no-untyped-def]
+    """#647: backfill positions.rules_primary where empty.
+
+    The snapshot is written on the BUY path, which misses resting
+    orders that fill later, pre-v17 positions, and rows recreated by
+    the sync DELETE — the semantics guard silently passes all of
+    them. Reconcile has a live client in both modes; best-effort,
+    capped per run.
+    """
+    import logging
+
+    from gimmes.kalshi.markets import get_market
+    from gimmes.store.queries import (
+        get_tickers_missing_rules,
+        set_position_rules_snapshot,
+    )
+
+    _log = logging.getLogger(__name__)
+    tickers = await get_tickers_missing_rules(db)
+    if not tickers:
+        return
+    if len(tickers) > _RULES_BACKFILL_MAX:
+        _log.warning(
+            "#647 rules backfill: %d positions missing snapshots,"
+            " capping at %d this run",
+            len(tickers), _RULES_BACKFILL_MAX,
+        )
+    filled = 0
+    for ticker in tickers[:_RULES_BACKFILL_MAX]:
+        try:
+            market = await get_market(client, ticker)
+        except Exception:
+            _log.warning(
+                "#647 rules backfill: market fetch failed for %s",
+                ticker, exc_info=True,
+            )
+            continue
+        if market.rules_primary and await set_position_rules_snapshot(
+            db, ticker=ticker, rules_primary=market.rules_primary,
+        ):
+            filled += 1
+    if filled:
+        console.print(
+            f"[dim]Backfilled settlement-rules snapshots for"
+            f" {filled} position(s) (#647)[/dim]"
+        )
+
+
 _REPAIR_MAX_ORDERS = 20
 _REPAIR_MAX_PAGES = 3
 
@@ -3925,6 +3976,17 @@ def reconcile() -> None:
                 )
 
             await sync_positions(db, fresh)
+
+            # #647: best-effort — reconcile is never blocked.
+            try:
+                await _backfill_rules_snapshots(client, db)
+            except Exception:
+                import logging as _logging
+
+                _logging.getLogger(__name__).error(
+                    "#647 rules backfill failed; continuing"
+                    " reconcile", exc_info=True,
+                )
 
             fresh_tickers = {p.ticker: p for p in fresh}
 

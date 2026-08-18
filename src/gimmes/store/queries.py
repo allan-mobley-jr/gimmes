@@ -785,6 +785,21 @@ async def _check_position_staleness(db: Database, table: str) -> None:
             )
 
 
+async def get_tickers_missing_rules(db: Database) -> list[str]:
+    """Open positions with no settlement-language snapshot (#647):
+    resting fills, pre-v17 rows, and sync DELETE/re-add all leave
+    rules_primary empty, degrading the semantics guard to silent
+    pass."""
+    cursor = await db.conn.execute(
+        """SELECT ticker FROM positions
+           WHERE (rules_primary IS NULL OR rules_primary = '')
+             AND count > 0
+           ORDER BY ticker"""
+    )
+    rows = await cursor.fetchall()
+    return [r["ticker"] for r in rows]
+
+
 async def get_positions(db: Database) -> list[Position]:
     """Get all stored positions.
 
