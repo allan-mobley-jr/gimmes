@@ -2,8 +2,31 @@
 
 from __future__ import annotations
 
+import logging
+
 from gimmes.kalshi.client import KalshiClient
 from gimmes.models.market import Market, MarketStatus, Orderbook, OrderbookLevel
+
+logger = logging.getLogger(__name__)
+
+# #787: warn once per unseen status string per process — a drifted
+# status appears on every market of its class in every scan page.
+_warned_statuses: set[str] = set()
+
+
+def _parse_status(raw: str) -> MarketStatus:
+    """Map an API status string to the enum; drift degrades to
+    UNKNOWN (untradeable, unsettled) instead of aborting the scan."""
+    try:
+        return MarketStatus(raw)
+    except ValueError:
+        if raw not in _warned_statuses:
+            _warned_statuses.add(raw)
+            logger.warning(
+                "Unknown Kalshi market status %r — treating as"
+                " UNKNOWN (untradeable); enum drift, see #787", raw,
+            )
+        return MarketStatus.UNKNOWN
 
 
 def _dollars_field(data: dict, key: str) -> float:  # type: ignore[type-arg]
@@ -32,7 +55,7 @@ def parse_market(data: dict) -> Market:  # type: ignore[type-arg]
         series_ticker=data.get("series_ticker", ""),
         title=data.get("title", ""),
         subtitle=data.get("subtitle") or "",  # explicit null → "" (#641, same class as #574)
-        status=MarketStatus(data.get("status", "active")),
+        status=_parse_status(data.get("status", "active")),
         yes_bid=_dollars_field(data, "yes_bid"),
         yes_ask=_dollars_field(data, "yes_ask"),
         no_bid=_dollars_field(data, "no_bid"),
