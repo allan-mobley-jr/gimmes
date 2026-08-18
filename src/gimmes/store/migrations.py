@@ -7,7 +7,7 @@ from gimmes.store.database import Database
 # The version a fully-migrated DB reports (#680): read-only consumers
 # (the clubhouse) compare against this at startup. Drift-guarded by
 # test_latest_schema_version_constant_matches_migrations.
-LATEST_SCHEMA_VERSION = 19
+LATEST_SCHEMA_VERSION = 20
 
 # Migrations are applied sequentially. Each is a tuple of (version, sql).
 MIGRATIONS: list[tuple[int, str]] = [
@@ -385,5 +385,33 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 19
+
+    # Version 20 (#760): NULL the premature Monitor-stamped outcomes on
+    # KXPCECORE-26JUL-T0.3 — a JUNE data release was logged against the
+    # JULY market while it was still ACTIVE (closes 2026-08-26). The
+    # honest state until settlement is NULL. The NOT EXISTS settlement-
+    # close guard is load-bearing: a DB migrating AFTER the market
+    # genuinely settles keeps the authoritative outcome; fresh/other
+    # DBs no-op.
+    if current < 20:
+        # The v16 presence-check precedent: fixture/legacy DBs whose
+        # trades table predates the resolved_outcome column must
+        # no-op (they cannot contain the corruption).
+        cursor = await db.conn.execute("PRAGMA table_info(trades)")
+        trade_cols = {row[1] for row in await cursor.fetchall()}
+        if "resolved_outcome" in trade_cols:
+            await db.conn.execute(
+                "UPDATE trades SET resolved_outcome = NULL"
+            " WHERE ticker = 'KXPCECORE-26JUL-T0.3'"
+            " AND resolved_outcome = 'no'"
+                " AND NOT EXISTS (SELECT 1 FROM trades s"
+                "   WHERE s.ticker = trades.ticker"
+                "   AND s.agent = 'settlement' AND s.action = 'close')"
+            )
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (20,)
+        )
+        await db.conn.commit()
+        current = 20
 
     return current

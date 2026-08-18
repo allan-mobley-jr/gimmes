@@ -408,6 +408,7 @@ def _stub_market(ticker: str) -> MagicMock:
     m.title = f"Market {ticker}"
     m.status = MagicMock()
     m.status.value = "active"
+    m.result = ""  # #760: the Result row renders this via verbatim()
     m.yes_bid = 0.50
     m.yes_ask = 0.55
     m.last_price = 0.52

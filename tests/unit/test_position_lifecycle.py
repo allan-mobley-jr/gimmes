@@ -249,7 +249,7 @@ class TestMigrationV19:
             # Rewind the version stamp so the v19 block re-runs against
             # the newly-seeded row.
             await db.conn.execute(
-                "DELETE FROM schema_version WHERE version = 19"
+                "DELETE FROM schema_version WHERE version >= 19"
             )
             await db.conn.commit()
             await run_migrations(db)

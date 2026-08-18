@@ -3304,3 +3304,14 @@ def test_closer_cap_blocked_covers_event_series(caddie_master_text: str) -> None
         "gimmes risk-check --event EVENT_TICKER" in caddie_master_text
     )
     assert "NEVER shrunk to fit" in caddie_master_text
+
+
+def test_monitor_log_outcome_field_test(monitor_text: str) -> None:
+    """#760: settlement is a field test, never an inference."""
+    assert '"Settled" is a FIELD TEST, never an inference (#760)' in (
+        monitor_text
+    )
+    assert "`determined`/`finalized` OR a non-empty Result" in monitor_text
+    assert "NEVER conclude settlement from a data release" in monitor_text
+    assert "outcome_market_not_settled" in monitor_text
+    assert "do not use `--override`" in monitor_text
