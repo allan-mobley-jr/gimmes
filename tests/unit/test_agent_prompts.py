@@ -3353,6 +3353,7 @@ def test_caddie_entry_price_derivation(caddie_text: str) -> None:
     assert "you have conflated the sides" in caddie_text
     assert (
         "a correct NO entry always lands on the OPPOSITE side of $0.50"
+        " from the YES BID"
     ) in caddie_text
     assert "MUST name the side and show the derivation" in caddie_text
     assert "**`--price` stays in YES terms.**" in caddie_text
