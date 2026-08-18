@@ -3340,3 +3340,4 @@ def test_monitor_released_figure_verification(monitor_text: str) -> None:
     assert "record the reference period next to the value" in block
     assert "report the figure as `UNVERIFIED` with both values" in block
     assert "The official agency release RESOLVES such a conflict" in block
+    assert "A verified release says NOTHING about settlement STATUS" in block
