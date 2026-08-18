@@ -115,7 +115,7 @@ If a bank returned no result in your search, log that explicitly in the observat
 
 **Read-back assertion (MUST follow — closes #577).** Before writing the observation body, you MUST:
 
-1. Re-read the most recent CM `decision`-type note in the `position-context` output for this position.
+1. Re-read the most recent CM `decision`-type note in the `position-context` output for this position — the entry labeled `>>> GOVERNING DECISION` at the BOTTOM of the CADDIE MASTER DECISIONS section (decisions render oldest-first; only the governing entry's body prints in full — #633).
 
 2. Identify every named bank or aggregator source in that decision body that overlaps with the playbook's named-bank or aggregator lists (see `## Fundamental-Economic-Trigger Source Playbook`).
 
@@ -255,7 +255,7 @@ rm -f "$BODY_FILE"
 Do NOT write: "I recommend closing this position." Do NOT write: "This position should be held." Write what you observed and why you are flagging it. Caddie Master decides what to do.
 
 **Flag deduplication rules (MUST follow all):**
-- Look at the **most recent** decision note (type=decision) for this position from Caddie Master. Older decisions are superseded.
+- Look at the **most recent** decision note (type=decision) for this position from Caddie Master — the entry labeled `GOVERNING DECISION` at the bottom of the CADDIE MASTER DECISIONS section. Older decisions are superseded; citing a superseded (truncated) decision as governing is the #633 failure.
 - Do NOT re-flag a trigger condition that the most recent decision already addressed, UNLESS your delta observation identifies something genuinely new that was not present when that decision was made.
 - If the most recent HOLD decision includes a "Re-evaluate if" condition, only re-flag if that specific condition has been met.
 - **Exception (#659):** a position with ANY `StopGate:` banner below the `gimmes positions` table (`MANDATORY-CLOSE`, `DATA-ERROR`, `STALE`, or `BASIS-SUSPECT`) MUST be re-flagged regardless of any prior HOLD's re-evaluation condition — the hard loss backstop outranks flag deduplication.

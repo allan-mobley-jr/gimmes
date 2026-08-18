@@ -3315,3 +3315,15 @@ def test_monitor_log_outcome_field_test(monitor_text: str) -> None:
     assert "NEVER conclude settlement from a data release" in monitor_text
     assert "outcome_market_not_settled" in monitor_text
     assert "do not use `--override`" in monitor_text
+
+
+def test_monitor_governing_decision_label(monitor_text: str) -> None:
+    """#633: both governing-note rules point at the GOVERNING
+    DECISION label so Monitor anchors on the rendered marker, not on
+    list position."""
+    assert monitor_text.count("GOVERNING DECISION") >= 2
+    assert "decisions render oldest-first" in monitor_text
+    assert (
+        "citing a superseded (truncated) decision as governing"
+        " is the #633 failure"
+    ) in monitor_text

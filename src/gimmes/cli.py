@@ -5123,10 +5123,29 @@ def position_context(
             console.print("[dim]No notes yet.[/dim]")
 
         if decisions:
-            console.print("\n[bold yellow]--- CADDIE MASTER DECISIONS ---[/bold yellow]")
-            for n in decisions:
-                console.print(f"[#{n['id']}] cycle={n['cycle']} —")
-                console.print(n["body"][:120] + "...", markup=False)
+            # #633: decisions must render oldest-first like the notes
+            # section — the old newest-first order inverted the
+            # "bottom = most recent" convention agents learn from the
+            # notes panel, and Monitor repeatedly cited a stale HOLD
+            # as governing. The governing (newest) decision prints in
+            # FULL: truncation was amputating the trailing Expiry /
+            # Re-evaluate fields Monitor is required to read.
+            console.print(
+                "\n[bold yellow]--- CADDIE MASTER DECISIONS"
+                " (oldest first — final entry GOVERNS) ---[/bold yellow]"
+            )
+            for n in reversed(decisions[1:]):
+                console.print()
+                body = n["body"]
+                if len(body) > 120:
+                    body = body[:120] + " ... [truncated — superseded]"
+                _print_note({**n, "body": body})
+            console.print()
+            console.print(
+                "[bold yellow]>>> GOVERNING DECISION (most"
+                " recent — full body) <<<[/bold yellow]"
+            )
+            _print_note(decisions[0])
 
     _run(_ctx())
 
