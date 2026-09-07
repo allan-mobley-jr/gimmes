@@ -5,11 +5,14 @@ market, corrupting 138 rows with no error trail."""
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 from gimmes.cli import app
@@ -20,6 +23,10 @@ from gimmes.store.queries import insert_trade
 
 runner = CliRunner()
 TICKER = "KXPCECORE-26JUL-T0.3"
+# #815: the guard classifies refusals by close_time — a past close is
+# settlement lag, a future close is a premature (Monitor) call.
+_PAST = "2020-01-01T00:00:00+00:00"
+_FUTURE = (datetime.now(UTC) + timedelta(days=30)).isoformat()
 
 
 def _db_run(db_path: Path, fn):
@@ -48,19 +55,24 @@ def _config(db_path):
     return cfg
 
 
-def _market(status, result=""):
+def _market(status, result="", close_time=_PAST):
     m = MagicMock()
     m.status = status
     m.result = result
-    m.close_time = "2026-08-26T12:25:00+00:00"
+    m.close_time = close_time
     return m
+
+
+def _flat(text: str) -> str:
+    """Rich wraps console output at 80 cols — compare on one line."""
+    return " ".join(text.split())
 
 
 def _rows(db_path, code):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT severity, error_code, context FROM error_log"
+        "SELECT severity, error_code, message, context FROM error_log"
         " WHERE error_code = ?", (code,),
     ).fetchall()
     conn.close()
@@ -79,7 +91,7 @@ def _outcomes(db_path):
 
 class TestLogOutcomeGuard:
     def _run(self, db_path, *, market=None, fetch_effect=None,
-             extra=()):
+             extra=(), outcome="no"):
         get_market = AsyncMock(
             return_value=market, side_effect=fetch_effect,
         )
@@ -88,23 +100,98 @@ class TestLogOutcomeGuard:
              patch("gimmes.kalshi.markets.get_market", get_market), \
              patch("gimmes.kalshi.client.KalshiClient"):
             return runner.invoke(app, [
-                "log-outcome", TICKER, "--outcome", "no", *extra,
+                "log-outcome", TICKER, "--outcome", outcome, *extra,
             ])
 
-    def test_active_market_refused_with_error_row(
-        self, tmp_path,
-    ) -> None:
-        db_path = tmp_path / "gimmes.db"
-        _db_run(db_path, _seed)
-        result = self._run(
-            db_path, market=_market(MarketStatus.ACTIVE),
-        )
+    def _refused(self, db_path, market):
+        """Shared shape of every not-settled refusal (#815): exit 1,
+        the #760 message plus the protocol note, outcome untouched,
+        and exactly one INFO trace row."""
+        result = self._run(db_path, market=market)
         assert result.exit_code == 1, result.output
         assert "Refused (#760)" in result.output
+        assert "Monitor protocol error (#815)" in _flat(result.output)
         assert _outcomes(db_path) == [None]
         rows = _rows(db_path, "outcome_market_not_settled")
         assert len(rows) == 1
-        assert rows[0]["severity"] == "error"
+        assert rows[0]["severity"] == "info"
+        assert rows[0]["message"].startswith("Monitor protocol error (#815)")
+        return rows[0]
+
+    def test_active_market_refused_with_info_row(self, tmp_path) -> None:
+        """#815: a refusal is the guard working — INFO, never ERROR, so
+        Groundskeeper's generic info-suppress rule absorbs it."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        row = self._refused(
+            db_path, _market(MarketStatus.ACTIVE, close_time=_PAST),
+        )
+        assert "(future)" not in row["message"]
+        assert json.loads(row["context"])["premature"] is False
+
+    def test_future_close_flagged_premature(self, tmp_path) -> None:
+        """A close_time still ahead is recorded as premature in the
+        trace (aware datetime — the real Market.close_time type)."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        aware_future = datetime.now(UTC) + timedelta(days=30)
+        row = self._refused(
+            db_path, _market(MarketStatus.ACTIVE, close_time=aware_future),
+        )
+        assert "(future)" in row["message"]
+        assert json.loads(row["context"])["premature"] is True
+
+    def test_unknown_status_refused_as_info(self, tmp_path) -> None:
+        """#787 UNKNOWN status is not settled and rides the same path."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        row = self._refused(
+            db_path, _market(MarketStatus.UNKNOWN, close_time=_FUTURE),
+        )
+        assert json.loads(row["context"])["premature"] is True
+
+    def test_close_time_none_not_premature(self, tmp_path) -> None:
+        """Unknown close_time still traces; premature stays False."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        row = self._refused(
+            db_path, _market(MarketStatus.ACTIVE, close_time=None),
+        )
+        assert json.loads(row["context"])["premature"] is False
+
+    def test_every_attempt_traced(self, tmp_path) -> None:
+        """No dedupe: each premature call is its own protocol breach."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        market = _market(MarketStatus.CLOSED, close_time=_PAST)
+        for _ in range(2):
+            result = self._run(db_path, market=market)
+            assert result.exit_code == 1, result.output
+        assert _outcomes(db_path) == [None]
+        rows = _rows(db_path, "outcome_market_not_settled")
+        assert [r["severity"] for r in rows] == ["info", "info"]
+        # Canonical serialization pin for operators grepping context.
+        assert rows[0]["context"] == json.dumps(
+            json.loads(rows[0]["context"]), sort_keys=True,
+        )
+
+    def test_error_log_failure_still_refuses(self, tmp_path) -> None:
+        """Observability is best-effort: a broken error_log store must
+        not eclipse the refusal or let the outcome through."""
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, _seed)
+        with patch(
+            "gimmes.store.database.Database",
+            side_effect=RuntimeError("database is locked"),
+        ):
+            result = self._run(
+                db_path, market=_market(MarketStatus.CLOSED, close_time=_PAST),
+            )
+        assert result.exit_code == 1, result.output
+        assert "Refused (#760)" in result.output
+        assert "Database error" not in result.output
+        assert _outcomes(db_path) == [None]
+        assert _rows(db_path, "outcome_market_not_settled") == []
 
     def test_finalized_market_writes(self, tmp_path) -> None:
         db_path = tmp_path / "gimmes.db"
@@ -246,6 +333,28 @@ class TestLogOutcomeGuard:
         assert result.exit_code == 0, result.output
         assert _outcomes(db_path) == ["no"]
         assert "1 trade(s)" in result.output
+
+
+@pytest.mark.parametrize(
+    ("value", "expect"),
+    [
+        (None, None),
+        ("not-a-date", None),
+        ("", None),
+        (MagicMock(), None),
+        (12345, None),
+        ("2020-01-01T00:00:00+00:00", datetime(2020, 1, 1, tzinfo=UTC)),
+        ("2020-01-01T00:00:00Z", datetime(2020, 1, 1, tzinfo=UTC)),
+        (datetime(2020, 1, 1), datetime(2020, 1, 1, tzinfo=UTC)),
+        (datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_close_time_utc_normalization(value, expect) -> None:
+    """#815: every close_time shape the guard can meet normalizes to
+    aware UTC or None — never raises."""
+    from gimmes.cli import _close_time_utc
+
+    assert _close_time_utc(value) == expect
 
 
 class TestMigrationV20:

@@ -46,7 +46,7 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 - Same `category` appears 5+ times in the last 24 hours
 
 **Suppress (MUST NOT escalate):**
-- `debug` or `info` severity errors
+- `debug` or `info` severity errors (e.g. `outcome_market_not_settled` — the #760 guard refusing a premature Monitor call is the fix working, not a fault; #815)
 - Transient rate limiting (HTTP 429 / `KALSHI_429`) unless 3+ occurrences in 1 hour
 
 (GitHub-issue dedup is a separate concern — handled by Step 2.5 below, NOT this suppress list. Step 2's suppress list is only for severity/category-based filters.)
@@ -92,7 +92,7 @@ Branch on the selected match:
 - **Match with `state: CLOSED` AND `closedAt` older than 24h BUT within last 30 days** → file a new issue (Step 3) whose body cites the prior closed issue: "Pattern previously resolved in #N closed at CLOSED_AT — recurrence after 24h cooldown."
 - **Match with `state: CLOSED` AND `closedAt` older than 30 days** → treat as no match; do NOT cite (the prior issue is too stale to be operationally relevant). Proceed to Step 3 with no citation.
 
-The tuple `(error_code, component)` is the dedup key. NEVER dedup on `error_code` alone (over-suppresses unrelated components) or `category` alone (too broad).
+The tuple `(error_code, component)` is the dedup key. NEVER dedup on `error_code` alone (over-suppresses unrelated components) or `category` alone (too broad). Copy both values VERBATIM from the `gimmes errors` row — never rename or paraphrase them (#816 filed `outcome_market_not_settled`/`cli.log-outcome` as `outcome_mismatch`/`reconcile`, defeating this dedup).
 
 If the `gh issue list` query fails, note the failure in your output and proceed to Step 3 (fail-open — better to file a possible duplicate than miss a recurring pattern silently). Operators relying on this dedup should monitor `gh auth status` and GitHub API rate limits; sustained fail-open will recreate the #600 pattern.
 

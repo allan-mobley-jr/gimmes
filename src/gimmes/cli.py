@@ -564,6 +564,24 @@ def _record_settle_failed(
     }
 
 
+def _close_time_utc(value: object) -> datetime | None:
+    """Normalize a market close_time (aware/naive datetime, ISO string,
+    None, or a test double) to an aware-UTC datetime, else None
+    (#815). Kalshi publishes UTC; naive values are treated as UTC."""
+    from datetime import UTC, datetime
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
 def _collect_past_close(
     past_close: dict, pos, market, threshold_minutes: int,
 ) -> None:
@@ -579,18 +597,13 @@ def _collect_past_close(
         # Includes MagicMock configs in CLI tests — observability must
         # never break the marking sweep.
         return
-    ct = market.close_time or getattr(pos, "close_time", None)
-    if isinstance(ct, str):
-        try:
-            ct = datetime.fromisoformat(ct)
-        except ValueError:
-            return
-    if not isinstance(ct, datetime):
-        # None, or a test double — the alert is observability and
-        # must never break the marking sweep.
+    ct = _close_time_utc(
+        market.close_time or getattr(pos, "close_time", None),
+    )
+    if ct is None:
+        # Unparseable, None, or a test double — the alert is
+        # observability and must never break the marking sweep.
         return
-    if ct.tzinfo is None:
-        ct = ct.replace(tzinfo=UTC)
     past = datetime.now(UTC) - ct
     if past <= timedelta(minutes=threshold_minutes):
         return
@@ -5139,6 +5152,8 @@ def log_outcome(
 
     async def _log() -> None:
         import json as _json
+        import logging
+        from datetime import UTC, datetime
 
         import httpx
 
@@ -5177,33 +5192,56 @@ def log_outcome(
                 or bool(market.result)
             )
             if not settled:
-                async with Database(config.db_path) as db:
-                    await _log_cli_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.ERROR,
-                        category=ErrorCategory.DATA_INTEGRITY,
-                        error_code="outcome_market_not_settled",
-                        component="cli.log-outcome",
-                        cycle=_cycle_from_env(),
-                        message=(
-                            f"Refused log-outcome for {ticker}:"
-                            f" market status {market.status}, no"
-                            f" published result (#760)"
-                        ),
-                        context=_json.dumps({
-                            "ticker": ticker,
-                            "outcome": outcome,
-                            "status": str(market.status),
-                            "result": market.result,
-                            "close_time": str(market.close_time),
-                        }),
-                    ))
+                # #815: a refusal IS the guard working — by
+                # construction the caller skipped the market-info
+                # field test, so this is a Monitor protocol error, not
+                # a system fault. INFO (Groundskeeper-suppressed), one
+                # row per attempt so the breach stays traceable; a
+                # stuck closed market is position_past_close's job
+                # (#783). Best-effort: the console refusal below is
+                # unconditional.
+                ct = _close_time_utc(market.close_time)
+                premature = ct is not None and ct > datetime.now(UTC)
+                try:
+                    async with Database(config.db_path) as db:
+                        await _log_cli_error(db, ErrorLogEntry(
+                            severity=ErrorSeverity.INFO,
+                            category=ErrorCategory.DATA_INTEGRITY,
+                            error_code="outcome_market_not_settled",
+                            component="cli.log-outcome",
+                            cycle=_cycle_from_env(),
+                            message=(
+                                f"Monitor protocol error (#815):"
+                                f" log-outcome for {ticker} before"
+                                f" settlement — status {market.status},"
+                                f" closes {market.close_time}"
+                                f"{' (future)' if premature else ''},"
+                                f" no published result (#760)"
+                            ),
+                            context=_json.dumps({
+                                "ticker": ticker,
+                                "outcome": outcome,
+                                "status": str(market.status),
+                                "result": market.result,
+                                "close_time": str(market.close_time),
+                                "premature": premature,
+                            }, sort_keys=True),
+                        ))
+                except Exception:
+                    logging.getLogger("gimmes.cli").warning(
+                        "log-outcome could not record refusal for %s",
+                        ticker, exc_info=True,
+                    )
                 console.print(
                     f"[red]Refused (#760): {rich_escape(ticker)} is"
                     f" NOT settled per the live API — status"
                     f" {market.status}, closes"
                     f" {market.close_time}. Do not infer settlement"
                     f" from data-release dates. This refusal is"
-                    f" final — do not retry or override.[/red]"
+                    f" final — do not retry or override. Calling"
+                    f" log-outcome before the market-info field test"
+                    f" passes is a Monitor protocol error (#815);"
+                    f" quote Status/Result first.[/red]"
                 )
                 raise typer.Exit(1)
 

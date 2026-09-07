@@ -301,8 +301,9 @@ Produce this format after completing all analysis:
 
 MUST check every open position's market for settlement status. For each resolved market:
 
-1. Run `gimmes market-info TICKER` to check if the market has settled
-2. If settled, MUST log the outcome immediately:
+1. Run `gimmes market-info TICKER`. Quote the `Status`, `Result`, and `Close Time` rows verbatim in your report (one line per position under Resolved Markets, e.g. `KX... — Status closed, Result —, Close Time 2026-09-05 ... → not settled`).
+2. Apply the field test (below) to the quoted line. If `Close Time` is in the future the market cannot be settled — skip `log-outcome` (#815). Otherwise report "not settled" and move on unless the test passes.
+3. If (and only if) the field test passes, MUST log the outcome immediately:
 
 ```bash
 gimmes log-outcome TICKER --outcome yes   # or --outcome no
@@ -310,7 +311,7 @@ gimmes log-outcome TICKER --outcome yes   # or --outcome no
 
 `gimmes log-outcome` records the resolution but does NOT settle or remove the position — do not report a position as settled until the settlement sweep's close row exists (#781: a "settled this cycle" claim based on log-outcome alone triggered a false stale-position escalation).
 
-**"Settled" is a FIELD TEST, never an inference (#760):** a market is settled ONLY when `market-info` shows Status `determined`/`finalized` OR a non-empty Result row. NEVER conclude settlement from a data release, month arithmetic, or the thesis being confirmed — #760 stamped a JUNE PCE print onto the JULY market while it was still active, corrupting 138 rows. If `log-outcome` refuses with `outcome_market_not_settled`, the refusal is correct and final — report it, do not retry, and do not use `--override` (that flag is only for delisted/unfetchable markets and requires a reason).
+**"Settled" is a FIELD TEST, never an inference (#760):** a market is settled ONLY when `market-info` shows Status `determined`/`finalized` OR a non-empty Result row. NEVER conclude settlement from a data release, month arithmetic, or the thesis being confirmed — #760 stamped a JUNE PCE print onto the JULY market while it was still active, corrupting 138 rows. If `log-outcome` refuses with `outcome_market_not_settled`, the refusal is correct and final — report it, do not retry, and do not use `--override` (that flag is only for delisted/unfetchable markets and requires a reason). A refusal is a Monitor protocol error recorded against the Monitor (#815), not a system fault — report it as "Monitor error: premature log-outcome on TICKER".
 
 NEVER skip this step — missing outcome data degrades all Pro analyses. If the log-outcome command fails, note the failure prominently in your output so the outcome can be recorded on the next cycle. Do not retry.
 
