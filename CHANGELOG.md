@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.27] - 2026-09-07
+
+One fix, closing four duplicate Groundskeeper issues. **Restart not required after `gimmes update`** — every changed path is a per-invocation CLI command (`log-outcome`, and the past-close sweep in `validate`/`order`/`risk-check`/`positions`) or an agent prompt; the loop process is untouched. No migration. Behavior note: a `log-outcome` refusal on an unsettled market is now logged at INFO instead of ERROR — `error_code` (`outcome_market_not_settled`) and category (`data_integrity`) unchanged — one row per attempt, with `premature: true` in context when the market's close time is still ahead. The refusal itself (exit 1, no outcome written) is unchanged.
+
+### Fixed
+
+- **#815** (also #816, #808, #809; #810 is the closed-market settlement-lag variant and stays open): the #760 settlement guard was working correctly — refusing the Monitor's premature `log-outcome` calls on still-active markets, some closing a month out — but logged every refusal as `ERROR`/`data_integrity`. Groundskeeper's "3+ same `error_code` in 24h" rule is severity-agnostic above `info`, so a guard doing its job produced five issues, one of them (#816) under an invented `outcome_mismatch` code. By construction a refusal means the caller skipped the market-info field test — a Monitor protocol error, not a system fault — so it now logs at INFO, which Groundskeeper's existing suppress rule absorbs. The error_log write is best-effort: a broken store can no longer replace the `Refused (#760)` message with a generic database error. A closed market genuinely stuck awaiting a result remains `position_past_close`'s signal (#783).
+
+### Changed
+
+- `_close_time_utc` extracted as the single close-time normalizer (aware/naive datetime, ISO string, or None → aware UTC or None); `_collect_past_close` (#783) now uses it instead of an inline copy.
+- monitor.md: the Resolution Outcome Backfill step now requires quoting the `Status`, `Result`, and `Close Time` rows verbatim and applying the field test *before* calling `log-outcome`; a future `Close Time` skips the call outright; a refusal is reported as "Monitor error: premature log-outcome on TICKER", never as a system failure.
+- groundskeeper.md: `outcome_market_not_settled` is named under the info-suppress rule, and the Step 2.5 dedup query must copy `error_code`/`component` VERBATIM from the `gimmes errors` row (Groundskeeper renamed both when filing #816, which is what defeated dedup).
+
 ## [0.8.26] - 2026-08-18
 
 The backlog burn-down, part three: the remaining CRITICAL, the June trio, both #784-review follow-ups, and the full enhancement tail — twelve issues closed, leaving only the four strategy items that need operator decisions. **Restart not required after `gimmes update`** — every changed path is a per-invocation CLI command or agent prompt; the loop process is untouched. **Migration v20 runs on the first CLI invocation**: it NULLs the 138 premature `resolved_outcome` rows on the still-ACTIVE KXPCECORE-26JUL-T0.3 (guarded to skip if settlement already closed the ticker). Behavior notes: (1) `gimmes log-outcome` now verifies settlement against the live API — an ACTIVE market refuses with an error row and no flag overrides it; a published result that contradicts `--outcome` (including `void`) also refuses; `--override REASON` exists only for fetch failures on delisted markets. (2) A permission-classifier denial is logged with `--reason classifier_block`, which auto-writes the error row Groundskeeper tracks. (3) Championship reconcile now trues up per-order close rows against Kalshi fill truth and backfills missing settlement-rules snapshots. (4) The frozen test gate dropped from ~16 minutes to ~16 seconds (#788) — the failure-backoff sleeps were 96% of suite wall time.
