@@ -3261,6 +3261,21 @@ def test_groundskeeper_past_close_escalation(groundskeeper_text: str) -> None:
     assert "awaiting_determination" in groundskeeper_text
 
 
+def test_groundskeeper_not_settled_is_info_suppressed(
+    groundskeeper_text: str,
+) -> None:
+    """#815: the #760 guard's refusals ride the generic info-suppress
+    rule — five duplicate issues were filed for a guard doing its job,
+    one of them under an invented error_code (#816)."""
+    assert "`debug` or `info` severity errors" in groundskeeper_text
+    assert "`outcome_market_not_settled`" in groundskeeper_text
+    assert "is the fix working, not a fault; #815" in groundskeeper_text
+    assert "Copy both values VERBATIM from the `gimmes errors` row" in (
+        groundskeeper_text
+    )
+    assert "`outcome_mismatch`/`reconcile`" in groundskeeper_text
+
+
 def test_closer_prob_decimal_format_rule() -> None:
     closer_text = _CLOSER.read_text()
     assert "Probability format (#645)" in closer_text
@@ -3315,6 +3330,30 @@ def test_monitor_log_outcome_field_test(monitor_text: str) -> None:
     assert "NEVER conclude settlement from a data release" in monitor_text
     assert "outcome_market_not_settled" in monitor_text
     assert "do not use `--override`" in monitor_text
+
+
+def test_monitor_log_outcome_quotes_field_test_first(
+    monitor_text: str,
+) -> None:
+    """#815: Monitor must quote Status/Result/Close Time and apply the
+    field test BEFORE calling log-outcome; a refusal is its own error."""
+    assert (
+        "Quote the `Status`, `Result`, and `Close Time` rows verbatim"
+        in monitor_text
+    )
+    assert (
+        "If `Close Time` is in the future the market cannot be settled"
+        in monitor_text
+    )
+    assert "If (and only if) the field test passes" in monitor_text
+    assert "Monitor protocol error recorded against the Monitor (#815)" in (
+        monitor_text
+    )
+    assert 'report it as "Monitor error: premature log-outcome on TICKER"' in (
+        monitor_text
+    )
+    # The field-test definition stays single-sourced in the #760 rule.
+    assert monitor_text.count("`determined`/`finalized` OR a non-empty Result") == 1
 
 
 def test_monitor_governing_decision_label(monitor_text: str) -> None:
