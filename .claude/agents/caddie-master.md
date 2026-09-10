@@ -78,8 +78,9 @@ If the command fails, note the failure in your output and continue. Do not retry
 
 ```bash
 gimmes config get strategy.gimme_threshold
+gimmes config get strategy.min_true_probability
 ```
-Store this as the `gimme_threshold` for this cycle. If this command fails, STOP and report the failure — do not proceed without a confirmed threshold.
+Store these as the `gimme_threshold` and `min_true_probability` for this cycle (use the value on the key's own line, not the `Default:` line). If the `gimme_threshold` read fails, STOP and report the failure — do not proceed without a confirmed threshold. If the `min_true_probability` read fails, note it and continue: it gates only the Step 4a probability-floor cooldown check (#824), which then does not apply — never a trade.
 
 ### Step 1: Reconcile & State Check
 
@@ -315,14 +316,14 @@ Before dispatching the Caddie, check each Scout candidate for recent prior resea
 For each candidate ticker from the Scout's shortlist, run:
 
 ```bash
-gimmes candidates --ticker TICKER --limit 1
+gimmes candidates --ticker TICKER --limit 2
 ```
 
-Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5, and `cooldown_cutoff` = max(0, gimme_threshold - 15)):
+Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5, and `cooldown_cutoff` = max(0, gimme_threshold - 15)). "Prior" always means the NEWEST row; the second row exists only for the #824 corroboration check in rule 5:
 
 **Time-based expiry (check first):** If the prior research `Scanned` timestamp is more than 48 hours ago, treat the candidate as having no prior research — send to Caddie for fresh evaluation regardless of score. The macro environment may have changed significantly since the original assessment.
 
-**STALE-CLOSE expiry (check first, before any score-based rule — #678 ordering):** Prior research flagged STALE-CLOSE (a `STALE-CLOSE:` banner below the table from the `--limit 1` command above — the banner fires only when the NEWEST research row is stale, so fresh post-close research clears this check; older rows' dim `STALE` Status flags are history, not triggers) → treat as NO valid prior research regardless of score: the research predates the ticker's most recent close, and the close happened on information that research cannot contain (#661). Send to the Caddie for fresh research before the ticker may proceed.
+**STALE-CLOSE expiry (check first, before any score-based rule — #678 ordering):** Prior research flagged STALE-CLOSE (a `STALE-CLOSE:` banner below the table from the command above — the banner fires only when the NEWEST research row is stale, so fresh post-close research clears this check; older rows' dim `STALE` Status flags are history, not triggers) → treat as NO valid prior research regardless of score: the research predates the ticker's most recent close, and the close happened on information that research cannot contain (#661). Send to the Caddie for fresh research before the ticker may proceed.
 
 1. **No prior research** (no records found, or expired per above) → send to Caddie
 2. **Prior score < cooldown_cutoff** (clear PASS) → skip re-research, log the skip via the `--rationale-file` heredoc pattern (#589):
@@ -348,7 +349,19 @@ Evaluate the output using these rules (where `gimme_threshold` is from Step 0.5,
      --rationale-file "$RATIONALE_FILE" --agent caddie-master
    rm -f "$RATIONALE_FILE"
    ```
-5. **Prior score >= gimme_threshold, no open position** → check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
+5. **Prior score >= gimme_threshold, no open position** → apply the probability-floor check first, then the cap-blocked routing:
+   - **Probability-floor PASS (#824):** if the newest row's `Rec` is `pass` (any casing) AND its `Prob` is strictly below `min_true_probability` from Step 0.5 (`Prob` renders as a percentage — `40.0%` against a floor of `0.60` is below) AND `Prob` is not `0.0%` (a `$0.00 / 0.0%` row is the market-info-failure bookkeeping row caddie.md mandates — it carries no verdict) AND the second row ALSO meets all three tests above (a corroborated PASS — one wrong read must never lock a ticker for 48h; with only one such row, fall through to **Otherwise**), then the PASS stands: these are the Caddie's own log-candidate rows, so a `Score` above `gimme_threshold` does not unmake it (KXCPI-26AUG-T0.3 was re-researched 33 times to the same PASS). Re-research ONLY if the current price differs from the newest row's `Price` by more than 5 cents, as in criterion 3. Otherwise skip and log it:
+     ```bash
+     RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+     cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+     Cooldown: prior Caddie PASS on probability floor (P=PROB < FLOOR, corroborated), price $CURRENT vs prior $PRIOR within 5 cents — skipping re-research (#824)
+     GIMMES_EOF
+     gimmes log-trade TICKER --action skip --reason cooldown --side SIDE \
+       --rationale-file "$RATIONALE_FILE" --agent caddie-master
+     rm -f "$RATIONALE_FILE"
+     ```
+     Substitute PROB and FLOOR with the newest row's `Prob` and the Step 0.5 floor, CURRENT and PRIOR with the two prices. Key on `Prob` ONLY — never on `Edge` (a derived column, clamped to `+0.0%` at a price bound, #658). Exempt: hourly cycles and `scanner.hourly_series` tickers (their floor is `strategy.hourly_min_true_probability`), and cycles where Step 0.5 could not read `min_true_probability`.
+   - **Otherwise** check the Status column for "CAP BLOCKED". If cap-blocked, prioritize: send to Caddie first with context that this is a cap-blocked re-evaluation. If not cap-blocked (rejected for other reasons), send to Caddie with context that prior research exists.
 
 **If all candidates were skipped by cooldown** (zero candidates to send to Caddie), MUST log the skip and skip directly to Step 6. NEVER run Steps 4b-5.
 

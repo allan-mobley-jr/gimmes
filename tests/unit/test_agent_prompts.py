@@ -3252,6 +3252,50 @@ def test_closer_market_status_gate_final() -> None:
     assert "report it, log the skip, never retry" in closer_text
 
 
+def test_caddie_master_prob_floor_pass_cooldown(
+    caddie_master_text: str,
+) -> None:
+    """#824: a Caddie PASS on the min_true_probability hard gate is a
+    durable verdict, not a score — rule 5's score-only intake
+    re-dispatched KXCPI-26AUG-T0.3 33 times to the identical PASS.
+    The check keys on Rec/Prob, carves out the --prob 0 bookkeeping
+    row, re-arms on the criterion-3 price move, and sits AFTER the
+    expiry checks so a stale PASS is still re-researched."""
+    assert "gimmes config get strategy.min_true_probability" in (
+        caddie_master_text
+    )
+    assert "Probability-floor PASS (#824)" in caddie_master_text
+    assert "Cooldown: prior Caddie PASS on probability floor" in (
+        caddie_master_text
+    )
+    assert "`Prob` is not `0.0%`" in caddie_master_text
+    assert "Key on `Prob` ONLY — never on `Edge`" in caddie_master_text
+    assert "Exempt: hourly cycles and `scanner.hourly_series` tickers" in (
+        caddie_master_text
+    )
+    # Soft-fail: a missing floor read degrades to the old behavior.
+    assert "If the `min_true_probability` read fails, note it and continue" in (
+        caddie_master_text
+    )
+    assert "gimmes candidates --ticker TICKER --limit 2" in caddie_master_text
+    stale = caddie_master_text.index("Prior research flagged STALE-CLOSE")
+    rule5 = caddie_master_text.index(
+        "5. **Prior score >= gimme_threshold, no open position**"
+    )
+    floor = caddie_master_text.index("Probability-floor PASS (#824)")
+    cap = caddie_master_text.index(
+        'check the Status column for "CAP BLOCKED"'
+    )
+    exit_ = caddie_master_text.index("If all candidates were skipped by cooldown")
+    assert stale < rule5 < floor < cap < exit_
+    # Trigger, corroboration and re-arm live INSIDE the clause (criterion 3
+    # also says "more than 5 cents", so scope the check).
+    clause = caddie_master_text[floor:cap]
+    assert "`Rec` is `pass`" in clause
+    assert "corroborated PASS" in clause
+    assert "more than 5 cents" in clause
+
+
 def test_groundskeeper_past_close_escalation(groundskeeper_text: str) -> None:
     """#783: actionable past-close reasons escalate immediately; lag
     rows ride the pattern rules."""
