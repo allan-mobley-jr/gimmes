@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.28] - 2026-09-10
+
+One fix to the Caddie Master's research cooldown. **Restart not required after `gimmes update`** — the only changed path is an agent prompt, which the loop reads fresh each cycle; no code, no migration (the loop's `CODE STALE` banner after update is a warning only). Behavior note: a ticker the Caddie has twice PASSed on the `strategy.min_true_probability` floor is no longer re-researched every cycle while its price sits within 5 cents of the last look; it re-arms on a >5-cent move, the 48h expiry, or a close. Expect fewer Caddie sessions per day (Sep 9 ran eight, most of them re-confirming one CPI market) and cycles that stop shedding Scorecard/Groundskeeper to deep research.
+
+### Fixed
+
+- **#824**: Step 4a's cooldown keyed only on the prior row's `Score`, and every `candidates` row is the Caddie's own log-candidate record — so a ticker the Caddie scored above `gimme_threshold` but PASSed on the probability floor fell into rule 5 (score at or above threshold → re-research) and was re-dispatched every cycle. KXCPI-26AUG-T0.3 was researched 33 times since Jul 29, 11 of them in three days, to the identical verdict at ~$2 a pass; cycle 2457 spent its budget on it and shed Scorecard and Groundskeeper. Rule 5 now checks the verdict first: newest row `Rec` = `pass` with `Prob` strictly below the floor (a `0.0%` bookkeeping row carries no verdict and doesn't count), and the second-newest row agreeing (one wrong read must never lock a ticker for 48h — the history holds a hallucinated PASS) → cooldown skip unless the price moved more than 5 cents. The floor test keys on `Prob` only, never the derived `Edge` (#658); hourly cycles and `scanner.hourly_series` tickers are exempt. Step 0.5 now also reads `strategy.min_true_probability` (soft-fail: a failed read disables the check, never a trade). Simulated against the research history since Aug 1: 65 of 345 research rows suppressed, zero trades lost.
+
 ## [0.8.27] - 2026-09-07
 
 One fix, closing four duplicate Groundskeeper issues. **Restart not required after `gimmes update`** — every changed path is a per-invocation CLI command (`log-outcome`, and the past-close sweep in `validate`/`order`/`risk-check`/`positions`) or an agent prompt; the loop process is untouched. No migration. Behavior note: a `log-outcome` refusal on an unsettled market is now logged at INFO instead of ERROR — `error_code` (`outcome_market_not_settled`) and category (`data_integrity`) unchanged — one row per attempt, with `premature: true` in context when the market's close time is still ahead. The refusal itself (exit 1, no outcome written) is unchanged.
