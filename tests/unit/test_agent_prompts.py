@@ -2954,16 +2954,28 @@ def test_pro_scheduled_by_staleness_not_a_cycle_slot(
     """#829: the `% 10` slot forfeited 12 of 13 slots in two weeks. Pin
     the cadence read, the anchor query, the missing-anchor fail-safe,
     the complete-row-only rule, and the do-not-restore warning."""
+    import re
+
     from gimmes.config import StrategyConfig
 
     block = _step7_block(caddie_master_text)
     assert "$GIMMES_CYCLE % 10 == 0` slot is RETIRED" in block
-    # The explanation alone is a weak pin: verified by mutation that
-    # re-adding the old condition line while keeping the sentence slips
-    # past it. Pin the absence of the condition itself.
-    assert "MUST run only when `$GIMMES_CYCLE % 10 == 0`" not in block, (
-        "the modulo condition is the #829 bug — the retirement note"
-        " must not coexist with a restored slot"
+    # Pin the STRUCTURE, not a sentence. Mutation testing showed that
+    # both the retirement prose and a phrase-specific `not in` let a
+    # REWORDED modulo gate back in as an extra numbered clause, so
+    # slice the condition list and assert no modulo appears in it.
+    conditions = block.split("Run Step 7 when ALL THREE hold", 1)[1]
+    conditions = conditions.split(
+        "The anchor is the `--phase complete` row ONLY", 1,
+    )[0]
+    assert "% 10" not in conditions, (
+        "the modulo slot is the #829 bug — no restored or reworded"
+        " cycle-slot gate may live in Step 7's conditions"
+    )
+    numbered = re.findall(r"^\d+\. \*\*", conditions, re.MULTILINE)
+    assert len(numbered) == 3, (
+        f"Step 7 must have exactly 3 numbered conditions, found"
+        f" {len(numbered)} — a fourth is how a slot gate sneaks back"
     )
     default = StrategyConfig().pro_analysis_interval_hours
     for needle in (

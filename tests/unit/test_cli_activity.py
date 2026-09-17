@@ -136,6 +136,27 @@ def test_limit_returns_newest_first(tmp_path) -> None:
     assert "Pro run 1" not in result.output
 
 
+def test_query_filters_each_combination(tmp_path) -> None:
+    """Query-level coverage of all four filter branches — the CLI only
+    exercises two of them, and phase-only had no test at all."""
+    from gimmes.store.queries import get_recent_activity
+
+    db_path = tmp_path / "gimmes.db"
+    _db_run(db_path, _seed)
+
+    async def _check(db) -> None:
+        assert len(await get_recent_activity(db)) == 3
+        assert len(await get_recent_activity(db, agent="pro")) == 2
+        phase_only = await get_recent_activity(db, phase="complete")
+        assert len(phase_only) == 2
+        assert {r["agent"] for r in phase_only} == {"pro", "monitor"}
+        both = await get_recent_activity(db, agent="pro", phase="complete")
+        assert len(both) == 1
+        assert both[0]["message"] == "Pro: 4 analyses run"
+
+    _db_run(db_path, _check)
+
+
 @pytest.mark.parametrize("extra", [(), ("--agent", "pro")])
 def test_unfiltered_and_agent_only_both_work(tmp_path, extra) -> None:
     """The filters are optional and compose — an operator debugging a
