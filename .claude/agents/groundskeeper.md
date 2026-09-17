@@ -150,6 +150,20 @@ gimmes resolve-error ERROR_ID --issue-url "https://github.com/..."
 
 Report the issue URL in your output. If the command fails, note the failure in your output and continue. Do not retry.
 
+### Step 5: Silent-Agent Check (#829)
+
+The error log only shows agents that FAILED loudly. An agent that simply stops being dispatched writes nothing at all, which is how the Pro went two weeks without a single completed run while every error-log sweep came back clean. Check the one agent whose schedule is staleness-driven:
+
+```bash
+gimmes config get strategy.pro_analysis_interval_hours
+gimmes activity --agent pro --phase complete --limit 1
+date -u '+%F %T'
+```
+
+Escalate (file an issue, same Step 2.5 dedup pre-flight) when the gap between the anchor row's `Time (UTC)` and now exceeds **2×** the configured cadence, or when the command prints `No activity found` and the book has ≥20 closed trades (`Close Events` in `gimmes report`). Use error_code `pro_dispatch_stale` and component `caddie-master.step7` so the dedup key is stable. Compare against `date -u`, NEVER local time. A gap under 2× is normal — the cadence is a floor, not a promise, and a single shed cycle is expected.
+
+This is the only check here that is NOT driven by an error-log row. Do not skip it because `gimmes errors` came back empty: an empty error log is exactly the condition under which a silent agent hides.
+
 ## Output Format
 
 ```
@@ -166,6 +180,7 @@ Report the issue URL in your output. If the command fails, note the failure in y
 ### Status
 Total unresolved: N → M (after escalation)
 Issues filed: K
+Pro last completed: [YYYY-MM-DD HH:MM UTC, Nh ago — or "never"] (cadence Nh)
 ```
 
 ## Activity Logging (REQUIRED — you are not done until this runs)

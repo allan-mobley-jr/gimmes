@@ -629,3 +629,21 @@ class TestMonitorPlaybookSweepCadence:
 
         with pytest.raises(ValidationError):
             RiskConfig(monitor_playbook_sweep_hours=49)
+
+    def test_pro_analysis_interval_hours_bounds(self) -> None:
+        """#829: the Pro cadence knob replaces the `% 10` slot. 0 is the
+        every-eligible-cycle escape hatch; the 72h cap stops a
+        misconfiguration from re-creating the two-week silence."""
+        from pydantic import ValidationError
+
+        from gimmes.config import StrategyConfig
+
+        config = GimmesConfig(mode=Mode.DRIVING_RANGE)
+        assert config.strategy.pro_analysis_interval_hours == 24
+        assert StrategyConfig(
+            pro_analysis_interval_hours=0,
+        ).pro_analysis_interval_hours == 0
+        with pytest.raises(ValidationError):
+            StrategyConfig(pro_analysis_interval_hours=73)
+        with pytest.raises(ValidationError):
+            StrategyConfig(pro_analysis_interval_hours=-1)

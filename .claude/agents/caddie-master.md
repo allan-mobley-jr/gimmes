@@ -45,7 +45,7 @@ All full-cycle rules apply verbatim in hourly cycles EXCEPT these overrides:
 
 The loop kills this cycle's process at `$GIMMES_CYCLE_DEADLINE` (UTC, e.g. `2026-07-20T21:45:00Z`). A kill mid-review records nothing — the next cycle re-pays the entire preamble and re-reviews the same candidates, which is how three consecutive cycles died on 2026-07-20 without one Closer dispatch. Your job is to make sure the clock runs out on OPTIONAL work, never on unrecorded decisions.
 
-**At every step boundary** (before starting each of Steps 2, 3, 4, 4c, and 5, in whatever order your cycle type executes them), check the remaining time:
+**At every step boundary** (before starting each of Steps 2, 3, 4, 4c, 5, and 7, in whatever order your cycle type executes them), check the remaining time:
 
 ```bash
 date -u +%Y-%m-%dT%H:%M:%SZ   # compare against $GIMMES_CYCLE_DEADLINE
@@ -58,9 +58,10 @@ Each row below keys on the step you are ABOUT TO START — apply the row whose s
 | < 30 min | Step 2 (full cycles) | Dispatch Monitor in **time-boxed mode** (see Step 2b) — deferred playbook sweep; general search, price checks, StopGate, and flag triggers still run. The #659 backstop and 2c flag review always run in full. **Hourly cycles: this row does not apply** — Step 2 runs after the trade path there (#732), and the window clamp truncating post-trade surveillance is that design working, not a shed. |
 | < 20 min | Step 4 | Do NOT dispatch Caddie for new research. Candidates without research are logged as `deferred_capacity` skips — they stay eligible next cycle. Proceed to 4c for any candidates that ALREADY have fresh research. |
 | < 12 min | Step 4c | Review only as many candidates as fit at ~4 min each, highest GimmeScore first; log the rest as `deferred_capacity` skips. NEVER start a review you cannot finish: an APPROVE without a decision note is a lost trade, a half-written note is a corrupt audit trail. |
+| < 5 min | Step 7 (Pro) | Skip Pro and write Step 7's skip marker — but ONLY below this line. Pro's measured runtime is 0.5-4 minutes, so shedding it with more time than that on the clock is a false economy: #829 lost two of its thirteen slots that way, once at 13 minutes remaining. A shed Pro is NOT forfeited — it stays overdue and the next eligible cycle picks it up. |
 | < 5 min | anywhere | Stop opening new work. Finish the in-flight decision note, dispatch Closer for already-approved candidates ONLY if the note is written (the crash-recovery anchor rule is unchanged), then jump to Step 8 and log completion with a `[DEADLINE-SHED]` marker listing what was skipped. |
 
-**Never shed, in any time budget:** Step 0/8 logging, Step 1 risk gates, the 2a crash-recovery check, the #659 stop-loss backstop, writing the decision note BEFORE any Closer dispatch, `deferred_capacity` skip logs for anything you shed (an unlogged shed is invisible to the next cycle and to the audit trail), and the #749 hourly 4c activity markers (seconds each; deadline-pressured cycles are exactly the ones the instrumentation must capture).
+**Never shed, in any time budget:** Step 0/8 logging, Step 1 risk gates, the 2a crash-recovery check, the #659 stop-loss backstop, writing the decision note BEFORE any Closer dispatch, `deferred_capacity` skip logs for anything you shed (an unlogged shed is invisible to the next cycle and to the audit trail), the Step 7 Pro-skip marker (#829 — it is the only record that an overdue Pro was shed), and the #749 hourly 4c activity markers (seconds each; deadline-pressured cycles are exactly the ones the instrumentation must capture).
 
 If `$GIMMES_CYCLE_DEADLINE` is missing from the environment, assume 45 minutes from your start and apply the same protocol.
 
@@ -559,9 +560,33 @@ Launch the Groundskeeper agent (`groundskeeper.md`) to:
 3. File GitHub issues for escalation-worthy errors
 4. Mark escalated errors as resolved
 
-### Step 7: The Pro (conditional, every 10th cycle)
+### Step 7: The Pro (conditional, staleness cadence)
 
-**Condition:** MUST run only when `$GIMMES_CYCLE % 10 == 0` AND at least 20 completed trades exist. MUST NOT run if either condition is false.
+**Condition (#829).** Run Step 7 when ALL THREE hold; MUST NOT run it if any is false:
+
+1. **Cycle type.** `$GIMMES_CYCLE_TYPE` is `full` or `monitor` (treat unset as `full`). NEVER in `hourly` cycles — the hourly lane's override 1 says so, and the window clamp makes any non-entry work there a forfeit risk.
+2. **Overdue.** Read the cadence and the anchor:
+
+   ```bash
+   gimmes config get strategy.pro_analysis_interval_hours
+   gimmes activity --agent pro --phase complete --limit 1
+   date -u '+%F %T'
+   ```
+
+   (hours; default 24; `0` = every eligible cycle). Pro is OVERDUE when ANY of: (a) hours since the anchor row's `Time (UTC)` >= the cadence; (b) the command prints `No activity found` — Pro has never completed, or this history predates #829; a missing anchor means RUN, never skip; (c) the cadence is `0`. **The anchor timestamp is UTC** (SQLite `datetime('now')`) — compare it against `date -u`, NEVER your local clock; a local-time comparison skews the cadence by the timezone offset (#731's trap, same shape).
+3. **Data.** At least 20 completed trades exist — read the **`Close Events`** row of `gimmes report`'s P&L Summary (that is the closed-trade count; `Total Trades` counts opens too, and using it would dispatch Pro early). Pro re-checks its own hard minimums and logs a completion row on its insufficient-data exit, so this gate only avoids a dispatch that would immediately return.
+
+The anchor is the `--phase complete` row ONLY. A Pro that logged `start` and died with its cycle has NOT run; it stays overdue and the next eligible cycle re-dispatches it.
+
+The `$GIMMES_CYCLE % 10 == 0` slot is RETIRED, not relaxed (#829). The cycle counter increments for EVERY cycle including monitor and hourly, so ~1 in 10 of ALL cycles was a slot while only two lanes could honor one — 13 slots between 2026-09-01 and 2026-09-16 produced a single completed run, and a fixed slot forfeits every miss. A staleness cadence self-heals: a shed, an hourly slot, and a dead run all just leave the anchor stale. NEVER restore a modulo schedule here.
+
+When Pro is OVERDUE and clause 1 passes but you still do not dispatch it — a deadline shed, or the 20-trade gate — log why once, into the same table the anchor lives in:
+
+```bash
+gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent caddie-master --phase info --message "Step 7 (Pro) skipped — <reason>"
+```
+
+NEVER write that marker as `--agent pro --phase complete`: that forges the anchor and buries the next full cadence of silence. A not-yet-due cycle is the normal case and needs no marker.
 
 If conditions are met, dispatch the **Pro** agent for strategy analysis.
 

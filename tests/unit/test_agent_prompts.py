@@ -2935,6 +2935,173 @@ def test_sweep_cadence_cap_matches_config(monitor_text: str) -> None:
     assert "48 hours" in monitor_text
 
 
+def _step7_block(caddie_master_text: str) -> str:
+    import re
+
+    match = re.search(
+        r"^### Step 7: The Pro.*?(?=\n### )",
+        caddie_master_text, re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, (
+        "Caddie Master MUST have a `### Step 7: The Pro` section (#829)."
+    )
+    return match.group(0)
+
+
+def test_pro_scheduled_by_staleness_not_a_cycle_slot(
+    caddie_master_text: str,
+) -> None:
+    """#829: the `% 10` slot forfeited 12 of 13 slots in two weeks. Pin
+    the cadence read, the anchor query, the missing-anchor fail-safe,
+    the complete-row-only rule, and the do-not-restore warning."""
+    import re
+
+    from gimmes.config import StrategyConfig
+
+    block = _step7_block(caddie_master_text)
+    assert "$GIMMES_CYCLE % 10 == 0` slot is RETIRED" in block
+    # Pin the STRUCTURE, not a sentence. Mutation testing showed that
+    # both the retirement prose and a phrase-specific `not in` let a
+    # REWORDED modulo gate back in as an extra numbered clause, so
+    # slice the condition list and assert no modulo appears in it.
+    conditions = block.split("Run Step 7 when ALL THREE hold", 1)[1]
+    conditions = conditions.split(
+        "The anchor is the `--phase complete` row ONLY", 1,
+    )[0]
+    assert "% 10" not in conditions, (
+        "the modulo slot is the #829 bug — no restored or reworded"
+        " cycle-slot gate may live in Step 7's conditions"
+    )
+    numbered = re.findall(r"^\d+\. \*\*", conditions, re.MULTILINE)
+    assert len(numbered) == 3, (
+        f"Step 7 must have exactly 3 numbered conditions, found"
+        f" {len(numbered)} — a fourth is how a slot gate sneaks back"
+    )
+    default = StrategyConfig().pro_analysis_interval_hours
+    for needle in (
+        "gimmes config get strategy.pro_analysis_interval_hours",
+        f"default {default}",
+        "gimmes activity --agent pro --phase complete --limit 1",
+        "every eligible cycle",
+        "No activity found",
+        "means RUN, never skip",
+        "anchor timestamp is UTC",
+        "date -u",
+        "`--phase complete` row ONLY",
+        "NEVER restore a modulo schedule",
+        "forges the anchor",
+    ):
+        assert needle in block, f"Step 7 must contain {needle!r} (#829)"
+
+
+def test_pro_runs_in_monitor_cycles(caddie_master_text: str) -> None:
+    """#829 cross-file: monitor-only cycles owned 6 of the 13 forfeited
+    slots and Pro needs nothing from the trade path. The loop's monitor
+    prompt and Step 7's cycle-type gate must agree — and the hourly
+    lane's own prohibition must stay intact (#724)."""
+    import re
+
+    from gimmes.cli import MONITOR_CYCLE_PROMPT
+
+    m = re.search(
+        r"Only run Steps ([^.]+(?:\.\d+[^.]*)*)\.", MONITOR_CYCLE_PROMPT,
+    )
+    assert m is not None
+    tokens = [
+        t.strip() for t in m.group(1).replace("and ", "").split(",")
+        if t.strip()
+    ]
+    assert "7" in tokens, (
+        "the monitor lane must run Step 7 — it owned 6 of the 13"
+        " forfeited slots in #829"
+    )
+    # Scorecard is still skipped; Pro is no longer in the skip list.
+    skip_clause = MONITOR_CYCLE_PROMPT.split("Skip ", 1)[1].split(".", 1)[0]
+    assert "Scorecard" in skip_clause
+    assert "Pro" not in skip_clause
+    block = _step7_block(caddie_master_text)
+    assert "`full` or `monitor`" in block
+    assert "NEVER in `hourly` cycles" in block
+    assert (
+        "NEVER run Step 6 (Scorecard) or Step 7 (Pro)"
+        in _hourly_lane_block(caddie_master_text)
+    )
+
+
+def test_pro_deadline_row_is_recoverable_not_never_shed(
+    caddie_master_text: str,
+) -> None:
+    """#829: Step 7 joins the boundary-check list and gets a shed row
+    whose floor matches measured runtime (a 13-min 'insufficient wind'
+    skip was a false economy). It stays OFF the never-shed list: under
+    the staleness cadence a shed Pro is recoverable by construction."""
+    assert (
+        "before starting each of Steps 2, 3, 4, 4c, 5, and 7,"
+        in caddie_master_text
+    )
+    assert "| < 5 min | Step 7 (Pro) |" in caddie_master_text
+    assert "measured runtime is 0.5-4 minutes" in caddie_master_text
+    assert (
+        "stays overdue and the next eligible cycle picks it up"
+        in caddie_master_text
+    )
+    never_shed = caddie_master_text.split(
+        "**Never shed, in any time budget:**", 1,
+    )[1].split("\n", 1)[0]
+    # The RUN is sheddable (it is recoverable); the MARKER is not — it is
+    # the only record that an overdue Pro was skipped.
+    assert "Step 7 Pro-skip marker" in never_shed
+    assert "dispatch the **Pro**" not in never_shed, (
+        "Pro's run is optional analysis — promoting the dispatch to"
+        " never-shed would put a 4-minute report above #746's"
+        " deadline discipline"
+    )
+
+
+def test_pro_bailout_does_not_forge_the_staleness_anchor() -> None:
+    """#829: pro.md's <20-trades exit did no analysis, so it must not
+    stamp the `complete` row Caddie Master dates the next run from."""
+    pro_text = (AGENTS_DIR / "pro.md").read_text()
+    bailout = pro_text.split("If total closed trades < 20, MUST:", 1)[1]
+    bailout = bailout.split("###", 1)[0]
+    assert "--phase info" in bailout
+    assert "--phase complete" not in bailout
+    assert "NEVER `complete` (#829)" in bailout
+
+
+def test_pro_completion_row_is_retried_once() -> None:
+    """#829: the completion row IS the schedule. A silently failed write
+    leaves Pro overdue forever, re-dispatching it every eligible cycle
+    (~10x/day) at a material share of the daily API budget."""
+    pro_text = (AGENTS_DIR / "pro.md").read_text()
+    step5 = pro_text.split("### Step 5: Log Completion", 1)[1]
+    assert "This row is the schedule, not a log line (#829)" in step5
+    assert "retry it ONCE" in step5
+    assert "still OVERDUE" in step5
+
+
+def test_groundskeeper_checks_for_a_silent_pro(
+    groundskeeper_text: str,
+) -> None:
+    """#829: the error log only shows agents that failed loudly. An
+    agent that stops being dispatched writes nothing, which is how the
+    Pro went silent for two weeks under clean error sweeps."""
+    assert "### Step 5: Silent-Agent Check (#829)" in groundskeeper_text
+    assert (
+        "gimmes activity --agent pro --phase complete --limit 1"
+        in groundskeeper_text
+    )
+    assert "pro_dispatch_stale" in groundskeeper_text
+    assert "caddie-master.step7" in groundskeeper_text
+    assert "exceeds **2×** the configured cadence" in groundskeeper_text
+    assert "date -u" in groundskeeper_text
+    # The whole point: an empty error log is when a silent agent hides.
+    assert (
+        "Do not skip it because `gimmes errors` came back empty"
+        in groundskeeper_text
+    )
+
+
 def test_cycle_deadline_protocol() -> None:
     """#746: deadline protocol, candidate cap, review reuse, and the
     time-boxed Monitor contract — all four load-bearing strings must
