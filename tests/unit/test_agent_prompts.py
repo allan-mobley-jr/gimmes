@@ -3442,6 +3442,174 @@ def test_caddie_entry_price_derivation(caddie_text: str) -> None:
     assert "**`--price` stays in YES terms.**" in caddie_text
 
 
+def test_caddie_driver_observation_rule(caddie_text: str) -> None:
+    """#828: a thesis leaning on a causal mechanism must observe that
+    mechanism's driver with an as-of date, label spot vs forecast, and
+    fall back to a widened sigma (not a parallel gate) when it cannot."""
+    import re
+
+    block = re.search(
+        r"^## Confidence Signals.*?(?=\n## )",
+        caddie_text, re.DOTALL | re.MULTILINE,
+    )
+    assert block is not None, "caddie.md lost the Confidence Signals section"
+    text = block.group(0)
+    assert "**Driver observation (REQUIRED — #828" in text
+    assert (
+        "`Driver: <what moves the metric> = <current value>"
+        " (<source>, as-of <YYYY-MM-DD>)`"
+    ) in text
+    assert "Driver: UNVERIFIED | reason=" in text
+    # The artifact is unconditional — "no mechanism" still leaves a record.
+    assert "**The line is unconditional.**" in text
+    assert "`Drivers: none — <why no mechanism is load-bearing>`" in text
+    assert "The as-of date is mandatory" in text
+    # Spot-vs-forecast is a labelling convention, not just an example.
+    assert "Write `spot` next to a current level" in text
+    assert (
+        "an EIA STEO annual average of `~$91/barrel` is a 2026 projection,"
+        " NOT today's Brent"
+    ) in text
+    # The remedy that actually bites is the center move, not sigma.
+    assert "Adopt the consensus or unconditional center outright" in text
+    assert "at least 2× historical" in text
+    assert "never crosses it" in text
+    assert "**Band/range contracts invert this:**" in text
+    # The floor is a backstop, not a safety net, and no new gate.
+    assert "min_true_probability" in text
+    assert "Do NOT invent a separate gate" in text
+    assert "NEVER assert a driver value you did not read from a source" in text
+    assert "KXCPI-26SEP-T0.5" in text
+
+
+def test_caddie_consensus_cross_file_pointer(
+    caddie_text: str, monitor_text: str,
+) -> None:
+    """#828: the consensus rule points Caddie at Monitor's named-bank
+    playbook — a renamed section would leave a dangling pointer."""
+    assert (
+        "`.claude/agents/monitor.md` § `Fundamental-Economic-Trigger"
+        " Source Playbook`"
+    ) in caddie_text
+    assert "## Fundamental-Economic-Trigger Source Playbook" in monitor_text
+
+
+def test_caddie_sanity_check_mode_requires_driver_line(
+    caddie_text: str,
+) -> None:
+    """#828: the fast lane adjusts inputs off real-world quantities
+    (gas prices) too — the largest mechanism-driven loss in the book was
+    a gimme-category ticker, outside the deep-research sections."""
+    import re
+
+    block = re.search(
+        r"^## Sanity-Check Mode.*?(?=\n## )",
+        caddie_text, re.DOTALL | re.MULTILINE,
+    )
+    assert block is not None, "caddie.md lost the Sanity-Check Mode section"
+    text = block.group(0)
+    assert "it does NOT license an unobserved driver" in text
+    assert "MUST carry a `Driver:` line" in text
+
+
+def test_caddie_consensus_reconciliation_rule(caddie_text: str) -> None:
+    """#828: web forecasts must be cited and reconciled against the
+    center estimate, without reversing #535 — the arithmetic still owns
+    the threshold probability."""
+    import re
+
+    block = re.search(
+        r"^## Deep Research Framework.*?(?=\n## )",
+        caddie_text, re.DOTALL | re.MULTILINE,
+    )
+    assert block is not None, "caddie.md lost the Deep Research Framework"
+    text = block.group(0)
+    assert "**Consensus reconciliation (REQUIRED — #828):**" in text
+    assert "MUST CITE and MUST RECONCILE" in text
+    assert "widen σ to span both centers" in text
+    assert "NEVER carry an unreconciled gap into the score" in text
+    # #535 non-reversal: this tightens the input check, it does not
+    # let a forecast set the threshold probability.
+    assert (
+        "does NOT let a consensus forecast set the threshold probability"
+        " directly"
+    ) in text
+    # The tightening must stay under the rule it tightens, inside the
+    # same section (index against the block, not the whole file).
+    assert text.index("Threshold-arithmetic primacy") < (
+        text.index("Consensus reconciliation")
+    )
+
+
+def test_caddie_cpi_playbook_names_energy_sources(caddie_text: str) -> None:
+    """#828: energy is the dominant CPI MoM swing factor and had no
+    named source — the entry that lost money never fetched one."""
+    import re
+
+    block = re.search(
+        r"^### Inflation & CPI.*?(?=\n### )",
+        caddie_text, re.DOTALL | re.MULTILINE,
+    )
+    assert block is not None, "caddie.md lost the Inflation & CPI playbook"
+    text = block.group(0)
+    assert "**Energy (dominant MoM swing factor)**" in text
+    assert "EIA Weekly Retail Gasoline Prices" in text
+    assert "Brent/WTI spot" in text
+    assert "#828" in text
+
+
+def test_caddie_828_vocabulary_does_not_depress_settlement_clarity(
+    caddie_text: str,
+) -> None:
+    """#828 behavioral cross-file: scorer's settlement-clarity component
+    is depressed by six memo keywords, so the vocabulary this rule
+    prescribes must not collide with them. Driven through full_score
+    (the analysis/backtest scoring path) because the keyword list is a
+    function-local and cannot be imported — this way the guard tracks
+    the list automatically if it ever changes."""
+    import re
+
+    from gimmes.config import GimmesConfig, Mode, StrategyConfig
+    from gimmes.models.gimme import GimmeCandidate
+    from gimmes.strategy.scorer import full_score
+
+    driver = re.search(
+        r"\*\*Driver observation \(REQUIRED — #828.*?(?=\n## )",
+        caddie_text, re.DOTALL,
+    )
+    consensus = re.search(
+        r"- \*\*Consensus reconciliation \(REQUIRED — #828\):\*\*.*?(?=\n\n)",
+        caddie_text, re.DOTALL,
+    )
+    energy = re.search(
+        r"- \*\*Energy \(dominant MoM swing factor\)\*\*.*?(?=\n- )",
+        caddie_text, re.DOTALL,
+    )
+    # Layout contracts: the two consensus bullets must stay adjacent with
+    # no blank line between them, and the Energy bullet must be followed
+    # by another `- ` bullet. A reflow that breaks either shrinks the
+    # span silently, so fail loudly here instead.
+    assert driver is not None
+    assert consensus is not None
+    assert energy is not None
+    assert "Reconciliation outcomes" in consensus.group(0)
+    memo = "\n".join(
+        (driver.group(0), consensus.group(0), energy.group(0)),
+    )
+
+    config = GimmesConfig(
+        mode=Mode.DRIVING_RANGE, strategy=StrategyConfig(side="no"),
+    )
+    candidate = GimmeCandidate(
+        ticker="KXCPI-26SEP-T0.5", market_price=0.41,
+        model_probability=0.75, edge=0.16, research_memo=memo,
+    )
+    score = full_score(candidate, None, config)
+    assert score.settlement_clarity_score == 80.0, (
+        "#828 prompt vocabulary trips scorer.py's settlement red-flag scan"
+    )
+
+
 def test_closer_classifier_block_reason() -> None:
     """#636: a permission-classifier denial logs classifier_block
     (auto-writes the Groundskeeper error row), never order_failed —

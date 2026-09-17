@@ -58,6 +58,8 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 
 **Three checks (30 seconds, not 5 minutes):**
 
+Sanity-check mode skips deep probability estimation, but it does NOT license an unobserved driver: whenever a check below adjusts an input off a real-world quantity (gas prices, oil, a rate level), that adjustment MUST carry a `Driver:` line with a current value and an as-of date, exactly as the Confidence Signals driver rule requires for deep research (#828).
+
 1. **Extraordinary event check**: Is there a one-time event that could break the structural edge?
    - Government shutdown affecting data collection or release
    - Methodology change to the underlying statistic
@@ -146,6 +148,8 @@ For candidates NOT in gimme categories, investigate all of these:
 - A consensus point forecast of "3.6% YoY" does NOT mean P(YoY > 3.6%) ≈ 50%. Point estimates reflect the distribution's center; threshold probability depends on the distribution's width. For CPI MoM, historical σ ≈ 0.15pp — a point estimate 0.2pp above a threshold implies P(exceed) is high, not a coin flip.
 - Quarterly/annualized rates (e.g., Cleveland Fed CPI nowcast "5.5% annualized") MUST be converted to the contract's units (YoY or MoM) before comparison. Do not compare annualized quarterly rates to YoY thresholds.
 - When arithmetic and web forecasts disagree, show BOTH in the research memo and explain the discrepancy. Do not silently discard the arithmetic result.
+- **Consensus reconciliation (REQUIRED — #828):** for any deep-research candidate keyed to a scheduled data release, "web forecasts MUST be used to validate the MoM/input estimate" above means MUST CITE and MUST RECONCILE, not "may consult". Before scoring, search for the published economist consensus for THIS release (FactSet/Morningstar survey, the Cleveland Fed nowcast, or the named banks enumerated in `.claude/agents/monitor.md` § `Fundamental-Economic-Trigger Source Playbook`) and state in the memo: your center, the consensus center, the gap, and WHY they differ. A bottom-up center assembled from components with no consensus line beside it is incomplete research, not independent research. When no consensus exists for this release, say so explicitly — that sentence IS the reconciliation.
+- **Reconciliation outcomes (#828):** a gap inside one-third of your σ (for CPI MoM with σ ≈ 0.15pp, ~5bp) needs only the citation. A wider gap MUST be resolved in the memo, before scoring, one of three ways: (1) name the specific component where you depart from the street AND cite the Driver observation backing it (see Confidence Signals) — a departure with no observed driver behind it is not a reason; (2) keep your center but widen σ to span both centers, then re-derive the threshold probability from the widened distribution; or (3) adopt the consensus center. NEVER carry an unreconciled gap into the score. This tightens how the INPUT estimate is validated — it does NOT let a consensus forecast set the threshold probability directly; the arithmetic still owns that number, exactly as the primacy rule above requires. On 2026-09-14 the KXCPI-26SEP-T0.5 memo carried a 0.22% bottom-up center against a published 0.38% consensus it never cited; the same agent cited that consensus 48 hours later and P(NO) fell 87% → 75%, score 93 → 82 (#828).
 
 ## Confidence Signals (Deep Research Only)
 
@@ -158,6 +162,19 @@ Identify independent signals and rate their strength (0-1). "Independent" means 
 
 MUST gather at least 2 signals from different categories. MUST cite at least one source URL per signal.
 
+**Driver observation (REQUIRED — #828; deep research only — hourly-series candidates use the Shadow line instead).** When a probability estimate leans on a named causal mechanism — a seasonal reversal, a base effect, a scheduled policy change — the mechanism's DRIVER is what must be observed, not the mechanism's reputation. A signal that merely asserts the mechanism ("gasoline typically retreats after Labor Day", news/analysis, strength 0.5) is NOT an observation of the driver and NEVER carries the estimate on its own.
+
+- **The line is unconditional.** EVERY deep-research memo carries a driver line. One line per load-bearing mechanism: `Driver: <what moves the metric> = <current value> (<source>, as-of <YYYY-MM-DD>)` — e.g. `Driver: US retail gasoline = $4.32/gal (EIA weekly, as-of 2026-09-14)`. When the estimate is pure component arithmetic with no mechanism carrying it, write `Drivers: none — <why no mechanism is load-bearing>` and say what would change that. The as-of date is mandatory: a value carrying no as-of date is not a current observation and does not satisfy this rule.
+- **Label spot vs forecast.** A projection, a horizon estimate, or a period AVERAGE is not a current price: an EIA STEO annual average of `~$91/barrel` is a 2026 projection, NOT today's Brent. Write `spot` next to a current level and `forecast (<horizon>)` next to a projection, every time.
+- **When the driver cannot be observed**, write `Driver: UNVERIFIED | reason=<brief cause>`, drop the mechanism from the thesis rather than assuming it, and re-derive in this order:
+  1. **Adopt the consensus or unconditional center outright** — the center you would hold with the mechanism deleted. Do not keep your own center and merely nudge it; the center move is the only step that changes the answer materially. This supersedes the Reconciliation outcomes options above.
+  2. Widen σ to **at least 2× historical** (CPI MoM: 0.15pp → 0.30pp or wider) and re-derive the threshold probability from the new center and the new σ. Widening alone rarely bites: on a one-sided threshold it pulls the probability toward 0.50 asymptotically and **never crosses it** — on the #828 ticker it would have taken roughly 7× historical σ to reach 0.60.
+  3. Report both numbers in the memo — `P(side) with mechanism X.XX / without X.XX`, where `with mechanism` is the estimate you held before step 1 and `without` is the step-2 result. Log the `without` figure to `--prob`; Caddie Master reviews the gap at 4c.
+
+  Do NOT invent a separate gate: the configured `min_true_probability` floor still applies, but treat it as a backstop, not a safety net — it is operator-tunable and may sit well below the level at which an unverified thesis deserves a PASS. **Band/range contracts invert this:** where the traded side wins OUTSIDE a band, widening σ RAISES that probability — tighten toward the band center and PASS rather than widen.
+- NEVER assert a driver value you did not read from a source (invisible dataset poison — the same rule as the hourly Shadow line).
+- KXCPI-26SEP-T0.5 NO (#828) is the worked failure: the entry thesis was post-Labor-Day gasoline relief, and no gasoline or crude price was ever fetched. Brent was already above $107/bbl and US retail gasoline at a seven-week high on the entry date; the position closed −$44.63 two days later on a Monitor sweep that found the driver by simply looking.
+
 ## Domain Playbooks
 
 When researching a candidate, find its category below and check these sources BEFORE running generic web searches.
@@ -166,6 +183,7 @@ When researching a candidate, find its category below and check these sources BE
 - **Primary**: BLS CPI release (bls.gov/cpi), BEA PCE price index
 - **Nowcast**: Cleveland Fed Inflation Nowcast, NY Fed inflation expectations
 - **Cross-check**: TIPS breakeven rates, University of Michigan inflation expectations
+- **Energy (dominant MoM swing factor)**: EIA Weekly Retail Gasoline Prices (eia.gov/petroleum/gasdiesel), EIA Weekly Petroleum Status Report, AAA national average (gasprices.aaa.com), front-month Brent/WTI spot — MUST be checked for EVERY candidate in this category, in either direction, and cited as a `Driver:` line. "My estimate does not lean on energy" is not an exemption: energy is what decides whether that is true. Gasoline alone moved August 2026 headline MoM by roughly +0.13pp; an EIA STEO annual average is a forecast, not a substitute for any of these (#828)
 - **Timing**: CPI mid-month (10th-14th) 8:30 AM ET; PCE ~30 days after month end
 - **Settlement**: CPI uses seasonally adjusted figures; core excludes food & energy
 
@@ -265,6 +283,7 @@ MUST produce this exact format for each candidate:
 
 ### Research Memo
 [Structured analysis with sources cited]
+[Deep research: the `Driver:` / `Drivers: none` line(s) required by Confidence Signals (#828)]
 
 ### Recommendation
 [PROCEED / PASS / NEEDS MORE RESEARCH]
