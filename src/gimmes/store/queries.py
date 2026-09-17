@@ -1156,11 +1156,29 @@ async def insert_activity(
     return cursor.lastrowid or 0
 
 
-async def get_recent_activity(db: Database, limit: int = 50) -> list[dict]:
-    """Get recent activity log entries, newest first."""
-    cursor = await db.conn.execute(
-        "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)
-    )
+async def get_recent_activity(
+    db: Database,
+    limit: int = 50,
+    *,
+    agent: str | None = None,
+    phase: str | None = None,
+) -> list[dict]:
+    """Get recent activity log entries, newest first, with optional filters.
+
+    #829: the (agent, phase) filter is Caddie Master's Step 7 staleness
+    anchor — the newest `pro`/`complete` row dates the last Pro run.
+    """
+    query = "SELECT * FROM activity_log WHERE 1=1"
+    params: list[object] = []
+    if agent:
+        query += " AND agent = ?"
+        params.append(agent)
+    if phase:
+        query += " AND phase = ?"
+        params.append(phase)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    cursor = await db.conn.execute(query, params)
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 

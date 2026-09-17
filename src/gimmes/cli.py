@@ -110,10 +110,15 @@ HOURLY_CYCLE_PROMPT_TEMPLATE = (
     " of: {series}). Skip Scorecard and Pro."
 )
 
+# Step 7 rides the monitor lane (#829): most cycles outside a trade
+# window are monitor-only, so the retired "% 10" slot forfeited 6 of its
+# 13 slots here; Pro reads only the DB and needs nothing from the trade
+# path. Its own Step 7 condition still gates it on staleness.
 MONITOR_CYCLE_PROMPT = (
     "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
-    " 6.5, and 8. Skip Scout, Caddie, Closer, Scorecard,"
-    " and Pro."
+    " 6.5, 7, and 8. Skip Scout, Caddie, Closer, and Scorecard."
+    " Step 7 (Pro) runs only when its own Step 7 condition is met"
+    " (#829)."
 )
 
 
@@ -6265,6 +6270,63 @@ def errors(
                 console.print(table)
 
     _run(_errors())
+
+
+@app.command(rich_help_panel="Diagnostics")
+def activity(
+    agent: str | None = typer.Option(
+        None, "--agent", "-a", help="Filter by agent name",
+    ),
+    phase: str | None = typer.Option(
+        None, "--phase", help="Filter by phase (start/complete/info/error)",
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-n", help="Number of entries to show",
+    ),
+) -> None:
+    """View the agent activity log with optional filters."""
+    config = load_config()
+
+    async def _activity() -> None:
+        from rich.table import Table
+
+        from gimmes.store.database import Database
+        from gimmes.store.queries import get_recent_activity
+
+        async with Database(config.db_path) as db:
+            rows = await get_recent_activity(
+                db, limit=limit, agent=agent, phase=phase,
+            )
+            if not rows:
+                console.print("[dim]No activity found[/dim]")
+                return
+
+            table = Table(title="Activity Log")
+            table.add_column("ID", justify="right")
+            # UTC verbatim, NOT format_local_timestamp (#829): this
+            # column is Caddie Master's Step 7 staleness anchor and is
+            # compared against `date -u`. Rendering local time would
+            # skew the cadence by the UTC offset — the #731 trap.
+            table.add_column("Time (UTC)")
+            table.add_column("Cycle", justify="right")
+            table.add_column("Agent")
+            table.add_column("Phase")
+            table.add_column("Message", max_width=60)
+
+            for row in rows:
+                table.add_row(
+                    str(row["id"]),
+                    str(row["timestamp"]),
+                    str(row["cycle"]),
+                    rich_escape(str(row["agent"])),
+                    rich_escape(str(row["phase"])),
+                    # #644: logged agent text is bracket-prone — a stray
+                    # closing tag would crash the render. Truncate first.
+                    rich_escape(str(row["message"])[:60]),
+                )
+            console.print(table)
+
+    _run(_activity())
 
 
 @app.command(name="resolve-error", hidden=True)

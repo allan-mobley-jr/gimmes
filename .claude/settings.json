@@ -10,6 +10,8 @@
       "Bash(gimmes candidates *)",
       "Bash(gimmes trades)",
       "Bash(gimmes trades *)",
+      "Bash(gimmes activity)",
+      "Bash(gimmes activity *)",
       "Bash(gimmes errors)",
       "Bash(gimmes errors *)",
       "Bash(gimmes report)",

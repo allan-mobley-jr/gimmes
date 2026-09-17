@@ -235,6 +235,27 @@ class StrategyConfig(BaseModel):
             ),
         },
     )
+    pro_analysis_interval_hours: int = Field(
+        default=24,
+        ge=0,
+        le=72,
+        json_schema_extra={
+            "display_name": "Pro Analysis Cadence",
+            "description": (
+                "How often (hours) Caddie Master dispatches the Pro for\n"
+                "strategy analysis (#829). Measured from the Pro's last\n"
+                "`complete` row in the activity log — a run that died\n"
+                "mid-analysis does not reset the clock, and a cycle that\n"
+                "shed the Pro on its deadline simply stays overdue.\n"
+                "\n"
+                "  • 24 (default): At most one Pro analysis per day\n"
+                "  • 0: Every eligible cycle (escape hatch — expensive)\n"
+                "  • 72 (max): Hard cap — a longer silence is the #829 bug"
+            ),
+            "min_val": 0,
+            "max_val": 72,
+        },
+    )
     side: Literal["yes", "no", "both"] = Field(
         default="no",
         json_schema_extra={

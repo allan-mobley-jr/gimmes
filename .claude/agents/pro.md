@@ -44,7 +44,8 @@ MUST use these definitions. NEVER upgrade confidence based on subjective judgmen
 - Missed opportunity audit: >= 10 logged skips with outcomes
 
 If total closed trades < 20, MUST:
-1. Log: `gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase complete --message "Pro: insufficient data (N closed trades < 20 minimum)"`
+1. Log: `gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase info --message "Pro: insufficient data (N closed trades < 20 minimum)"`
+   **`--phase info`, NEVER `complete` (#829):** the `complete` row is Caddie Master's staleness anchor, and a bail-out did no analysis — stamping it would reset the cadence for a full interval on work that never happened.
    If the command fails, note the failure in your output and continue. Do not retry.
 2. Report "Insufficient data for analysis"
 3. Exit — NEVER speculate with small samples.
@@ -129,6 +130,8 @@ If `gh issue create` fails, note the failure in your output and continue. Do not
 ```bash
 gimmes log-activity --cycle $GIMMES_CYCLE --session-id $GIMMES_SESSION_ID --agent pro --phase complete --message "Pro: N analyses run, M recommendations filed, K issues created"
 ```
+
+**This row is the schedule, not a log line (#829).** Caddie Master dates your next dispatch from it, so if the command fails, retry it ONCE. If the retry also fails, say so prominently in your output: until a `complete` row lands you are still OVERDUE, and every eligible cycle will re-dispatch you — roughly ten runs a day instead of one, which is a material share of the daily API budget and can trip the cap.
 
 If the command fails, note the failure in your output and continue. Do not retry.
 
