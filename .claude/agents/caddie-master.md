@@ -574,7 +574,7 @@ Launch the Groundskeeper agent (`groundskeeper.md`) to:
    ```
 
    (hours; default 24; `0` = every eligible cycle). Pro is OVERDUE when ANY of: (a) hours since the anchor row's `Time (UTC)` >= the cadence; (b) the command prints `No activity found` — Pro has never completed, or this history predates #829; a missing anchor means RUN, never skip; (c) the cadence is `0`. **The anchor timestamp is UTC** (SQLite `datetime('now')`) — compare it against `date -u`, NEVER your local clock; a local-time comparison skews the cadence by the timezone offset (#731's trap, same shape).
-3. **Data.** At least 20 completed trades exist — read the **`Close Events`** row of `gimmes report`'s P&L Summary (that is the closed-trade count; `Total Trades` counts opens too, and using it would dispatch Pro early). Pro re-checks its own hard minimums and logs a completion row on its insufficient-data exit, so this gate only avoids a dispatch that would immediately return.
+3. **Data.** At least 20 completed trades exist — read the **`Close Events`** row of `gimmes report`'s P&L Summary (that is the closed-trade count; `Total Trades` counts opens too, and using it would dispatch Pro early). Pro re-checks its own hard minimums, but its insufficient-data exit logs `--phase info`, NOT `complete` (#829) — a bail-out does not reset the cadence. So a dispatch below 20 would burn a session and leave Pro still overdue on the next cycle; this gate is what prevents that loop.
 
 The anchor is the `--phase complete` row ONLY. A Pro that logged `start` and died with its cycle has NOT run; it stays overdue and the next eligible cycle re-dispatches it.
 
