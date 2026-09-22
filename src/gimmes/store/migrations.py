@@ -7,7 +7,7 @@ from gimmes.store.database import Database
 # The version a fully-migrated DB reports (#680): read-only consumers
 # (the clubhouse) compare against this at startup. Drift-guarded by
 # test_latest_schema_version_constant_matches_migrations.
-LATEST_SCHEMA_VERSION = 20
+LATEST_SCHEMA_VERSION = 21
 
 # Migrations are applied sequentially. Each is a tuple of (version, sql).
 MIGRATIONS: list[tuple[int, str]] = [
@@ -119,6 +119,15 @@ _V17_COLUMNS: list[str] = [
 # cooldown, ...) instead of grepping prose rationales.
 _V18_COLUMNS: list[str] = [
     "ALTER TABLE trades ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+]
+
+# Version 21 (#834): the fee a fill actually paid, so the scorecard sums
+# what the venue charged instead of recomputing every fee at the maker
+# rate. Nullable: legacy rows and rows that never traded at a venue
+# (settlement, reconcile drift) stay NULL and fall back to a maker-rate
+# recompute — no backfill.
+_V21_COLUMNS: list[str] = [
+    "ALTER TABLE trades ADD COLUMN fee REAL",
 ]
 
 
@@ -413,5 +422,13 @@ async def run_migrations(db: Database) -> int:
         )
         await db.conn.commit()
         current = 20
+
+    if current < 21:
+        await _run_alter_columns(db, _V21_COLUMNS)
+        await db.conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (21,)
+        )
+        await db.conn.commit()
+        current = 21
 
     return current

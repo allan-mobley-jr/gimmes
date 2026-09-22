@@ -67,10 +67,29 @@ class Order(BaseModel):
     # #690: why a canceled order canceled (paper broker sets it; the
     # real Kalshi path leaves it empty). Agents need a nameable cause.
     reason: str = ""
+    # #834: what the contracts that filled at placement actually cost —
+    # the fill-weighted average price (side-relative like yes_price /
+    # no_price) and the fees charged. None when nothing filled or the
+    # venue's response carried no fill data. Unbounded on purpose: the
+    # producers range-guard, and a constraint here could only raise
+    # AFTER the paper transaction committed the fills.
+    avg_fill_price: float | None = None
+    fill_fees: float | None = None
 
     @property
     def is_open(self) -> bool:
         return self.status == "resting"
+
+    @property
+    def fill_price(self) -> float:
+        """The price the ledger books for this order's fills (#834).
+
+        The reported VWAP when the venue gave one; otherwise the
+        side-relative limit, which is exact for a maker fill.
+        """
+        if self.avg_fill_price is not None:
+            return self.avg_fill_price
+        return self.yes_price if self.side == OrderSide.YES else self.no_price
 
 
 class Fill(BaseModel):

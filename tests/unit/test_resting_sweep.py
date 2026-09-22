@@ -126,6 +126,14 @@ class TestSweep:
         assert rows[0]["count"] == 10
         assert rows[0]["agent"] == "sweep"
         assert rows[0]["order_id"] == order.order_id
+        # #834: the sweep row carries this sweep's maker fee at the limit.
+        from gimmes.strategy.fees import fee_for_order
+
+        assert forder.avg_fill_price == pytest.approx(forder.no_price)
+        assert rows[0]["price"] == pytest.approx(forder.fill_price)
+        assert rows[0]["fee"] == pytest.approx(
+            fee_for_order(10, forder.fill_price)
+        )
 
         # Position mirrored into the main positions table by the sync
         cursor = await db.conn.execute(

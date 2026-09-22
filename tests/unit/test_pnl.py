@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from gimmes.reporting.pnl import calculate_pnl
+from gimmes.strategy.fees import fee_for_order
 
 
 class TestCalculatePnl:
@@ -323,8 +324,6 @@ class TestReconcileRepricing:
             close_agent="reconcile", close_price=0.705,
             outcome_on_open="no",  # repriced to 1.0
         ))
-        from gimmes.strategy.fees import fee_for_order
-
         assert summary.total_fees == pytest.approx(
             fee_for_order(100, 0.63),
         )
@@ -347,3 +346,106 @@ class TestOpenTradesField:
             + summary.scratch_trades
         )
         assert summary.total_trades == closed + summary.open_trades
+
+
+class TestStoredFeeAccounting:
+    """#834: fees are the `fee` each row stored (what the venue charged);
+    rows without one (legacy, settlement, drift) fall back to a maker-rate
+    recompute. Open-leg fees accrue per row and drain pro rata on close."""
+
+    @staticmethod
+    def _row(action: str, price: float, count: int, ts: str,
+             **extra: object) -> dict:  # type: ignore[type-arg]
+        return {
+            "action": action, "ticker": "KX1", "side": "no",
+            "price": price, "count": count, "timestamp": ts, **extra,
+        }
+
+    def test_stored_fees_are_summed_not_recomputed(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 10, "1", fee=0.17),   # taker walk
+            self._row("close", 0.60, 10, "2", fee=0.17),
+        ])
+        assert summary.total_fees == pytest.approx(0.34)
+        assert summary.total_fees > (
+            fee_for_order(10, 0.40) + fee_for_order(10, 0.60)
+        )
+
+    def test_rows_without_fee_recompute_at_maker_rate(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 10, "1"),
+            self._row("close", 0.60, 10, "2"),
+        ])
+        assert summary.total_fees == pytest.approx(
+            fee_for_order(10, 0.40) + fee_for_order(10, 0.60)
+        )
+
+    def test_null_fee_recomputes_and_zero_fee_is_zero(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 10, "1", fee=None),
+            self._row("close", 0.60, 10, "2", fee=0.0),
+        ])
+        assert summary.total_fees == pytest.approx(fee_for_order(10, 0.40))
+
+    def test_mixed_opens_each_carry_their_own_fee(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 100, "1", fee=0.42),
+            self._row("size_up", 0.60, 100, "2", fee=1.68),
+            self._row("close", 0.70, 200, "3", fee=0.74),
+        ])
+        assert summary.total_fees == pytest.approx(0.42 + 1.68 + 0.74)
+
+    def test_partial_closes_prorate_the_open_fee_pool(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.50, 100, "1", fee=1.75),
+            self._row("close", 0.60, 40, "2", fee=0.17),
+            self._row("close", 0.60, 60, "3", fee=0.26),
+        ])
+        assert summary.total_fees == pytest.approx(1.75 + 0.17 + 0.26)
+
+    def test_partial_close_leaves_unmatched_open_fee_in_pool(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.50, 100, "1", fee=1.75),
+            self._row("close", 0.60, 40, "2", fee=0.17),
+        ])
+        assert summary.total_fees == pytest.approx(1.75 * 40 / 100 + 0.17)
+        assert summary.open_trades == 1
+
+    def test_reopen_after_flat_starts_with_clean_pool(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.50, 100, "1", fee=1.75),
+            self._row("close", 0.60, 100, "2", fee=1.68),
+            self._row("open", 0.30, 50, "3", fee=0.19),
+            self._row("close", 0.35, 50, "4", fee=0.20),
+        ])
+        assert summary.total_fees == pytest.approx(1.75 + 1.68 + 0.19 + 0.20)
+
+    def test_partial_orphan_close_drains_full_pool(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 50, "1", fee=0.84),
+            self._row("close", 0.60, 80, "2", fee=0.34),  # 30 orphan
+        ])
+        assert summary.total_fees == pytest.approx(0.84 + 0.34)
+
+    def test_full_orphan_close_charges_only_close_leg(self) -> None:
+        summary = calculate_pnl([
+            self._row("close", 0.60, 50, "1", fee=1.26),
+        ])
+        assert summary.total_fees == pytest.approx(1.26)
+
+    def test_settlement_close_pays_no_fee(self) -> None:
+        summary = calculate_pnl([
+            self._row("open", 0.40, 100, "1", fee=1.68),
+            self._row("close", 1.0, 100, "2",
+                      agent="settlement", resolved_outcome="no"),
+        ])
+        assert summary.total_fees == pytest.approx(1.68)
+
+    def test_repriced_drift_close_pays_no_fee(self) -> None:
+        # #653: a reconcile drift close with a known outcome is repriced
+        # to 1.0/0.0 before the fee fallback runs, so no close fee.
+        summary = calculate_pnl([
+            self._row("open", 0.40, 100, "1", fee=1.68, resolved_outcome="no"),
+            self._row("close", 0.55, 100, "2", agent="reconcile"),
+        ])
+        assert summary.total_fees == pytest.approx(1.68)
