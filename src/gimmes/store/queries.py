@@ -40,6 +40,7 @@ class TradeRecord(TypedDict, total=False):
     order_id: str
     timestamp: str
     resolved_outcome: str | None
+    fee: float | None
 
 # ---------------------------------------------------------------------------
 # Trade decisions
@@ -52,8 +53,8 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
         """INSERT INTO trades
            (ticker, action, side, count, price, model_probability,
             gimme_score, edge, kelly_fraction, rationale, thesis, reason,
-            agent, order_id, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            agent, order_id, timestamp, fee)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             trade.ticker,
             trade.action.value,
@@ -70,6 +71,7 @@ async def _insert_trade_row(db: Database, trade: TradeDecision) -> int:
             trade.agent,
             trade.order_id,
             trade.timestamp.isoformat(),
+            trade.fee,
         ),
     )
     return cursor.lastrowid or 0
@@ -526,7 +528,7 @@ async def shrink_newest_close_row(
         )
     else:
         await db.conn.execute(
-            """UPDATE trades SET count = count - ?,
+            """UPDATE trades SET count = count - ?, fee = NULL,
                rationale = rationale || ?
                WHERE id = ?""",
             (excess, marker, row["id"]),

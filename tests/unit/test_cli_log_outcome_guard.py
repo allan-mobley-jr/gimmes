@@ -374,7 +374,7 @@ class TestMigrationV20:
                 " WHERE ticker = ?", (TICKER,),
             )
             await db.conn.execute(
-                "DELETE FROM schema_version WHERE version = 20"
+                "DELETE FROM schema_version WHERE version >= 20"
             )
             await db.conn.commit()
             await run_migrations(db)
@@ -405,7 +405,7 @@ class TestMigrationV20:
                 " WHERE ticker = ?", (TICKER,),
             )
             await db.conn.execute(
-                "DELETE FROM schema_version WHERE version = 20"
+                "DELETE FROM schema_version WHERE version >= 20"
             )
             await db.conn.commit()
             await run_migrations(db)
