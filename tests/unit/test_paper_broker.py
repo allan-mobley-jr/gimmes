@@ -1676,3 +1676,137 @@ class TestRestOnMiss:
         assert expired == ["legacy-1"]
         rows = await broker.list_orders(status="canceled")
         assert any(o.order_id == "legacy-1" for o in rows)
+
+
+# ---------------------------------------------------------------------------
+# #834: avg_fill_price on the returned Order
+# ---------------------------------------------------------------------------
+
+
+async def _fills_vwap(broker: PaperBroker, order_id: str, side: OrderSide) -> float:
+    fills = [f for f in await broker.list_fills() if f.order_id == order_id]
+    px = (lambda f: f.yes_price) if side == OrderSide.YES else (lambda f: f.no_price)
+    return sum(f.count * px(f) for f in fills) / sum(f.count for f in fills)
+
+
+async def _fills_fees(broker: PaperBroker, order_id: str) -> float:
+    cursor = await broker._conn.execute(
+        "SELECT SUM(fee) FROM paper_fills WHERE order_id = ?", (order_id,),
+    )
+    row = await cursor.fetchone()
+    return float(row[0])
+
+
+class TestAvgFillPrice:
+    @pytest.mark.asyncio
+    async def test_taker_walk_reports_vwap_across_levels(
+        self, broker: PaperBroker
+    ) -> None:
+        """Taker BUY YES 10 @ 0.50 cap against asks at 0.40 (5) and
+        0.45 (5): the ledger price is the walked VWAP, not the cap, and
+        it matches what the paper fills actually booked."""
+        ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[OrderbookLevel(price=0.30, quantity=200)],
+            no_bids=[
+                OrderbookLevel(price=0.60, quantity=5),  # YES ask 0.40
+                OrderbookLevel(price=0.55, quantity=5),  # YES ask 0.45
+            ],
+        )
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.50,
+            post_only=False,
+        )
+        order = await broker.create_order(params, ob)
+        assert order.remaining_count == 0
+        assert order.avg_fill_price == pytest.approx(0.425)
+        assert order.yes_price == 0.50  # the cap is still the order price
+
+        assert await _fills_vwap(
+            broker, order.order_id, OrderSide.YES,
+        ) == pytest.approx(order.avg_fill_price)
+        # Fees are the per-level ceilings the ledger charged, not one
+        # fee on the VWAP.
+        assert order.fill_fees == pytest.approx(
+            fee_for_order(5, 0.40, is_taker=True)
+            + fee_for_order(5, 0.45, is_taker=True)
+        )
+        assert order.fill_fees == pytest.approx(
+            await _fills_fees(broker, order.order_id)
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_side_taker_walk_reports_no_vwap(
+        self, broker: PaperBroker
+    ) -> None:
+        """BUY NO 10 @ 0.60 cap against YES bids at 0.50 (5) and 0.45 (5),
+        i.e. NO asks 0.50/0.55: the VWAP is NO-relative, like the row."""
+        ob = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[
+                OrderbookLevel(price=0.50, quantity=5),  # NO ask 0.50
+                OrderbookLevel(price=0.45, quantity=5),  # NO ask 0.55
+            ],
+            no_bids=[OrderbookLevel(price=0.30, quantity=200)],
+        )
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.NO,
+            count=10,
+            no_price=0.60,
+            post_only=False,
+        )
+        order = await broker.create_order(params, ob)
+        assert order.remaining_count == 0
+        assert order.avg_fill_price == pytest.approx(0.525)
+        assert await _fills_vwap(
+            broker, order.order_id, OrderSide.NO,
+        ) == pytest.approx(order.avg_fill_price)
+        assert order.fill_fees == pytest.approx(
+            fee_for_order(5, 0.50, is_taker=True)
+            + fee_for_order(5, 0.55, is_taker=True)
+        )
+        assert order.fill_fees == pytest.approx(
+            await _fills_fees(broker, order.order_id)
+        )
+
+    @pytest.mark.asyncio
+    async def test_maker_fill_reports_limit(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.65,
+            post_only=True,
+        )
+        order = await broker.create_order(params, orderbook)
+        assert order.remaining_count == 0
+        assert order.avg_fill_price == pytest.approx(0.65)
+        assert order.fill_fees == pytest.approx(fee_for_order(10, 0.65))
+
+    @pytest.mark.asyncio
+    async def test_unfilled_order_has_no_avg_fill_price(
+        self, broker: PaperBroker, orderbook: Orderbook
+    ) -> None:
+        """A rest-on-miss taker order that misses the touch fills nothing."""
+        params = CreateOrderParams(
+            ticker="TEST-MKT",
+            action=OrderAction.BUY,
+            side=OrderSide.YES,
+            count=10,
+            yes_price=0.60,  # below the 0.70 ask
+            post_only=False,
+            expiration_ts=4_102_444_800,
+        )
+        order = await broker.create_order(params, orderbook)
+        assert order.remaining_count == 10
+        assert order.avg_fill_price is None
+        assert order.fill_fees is None

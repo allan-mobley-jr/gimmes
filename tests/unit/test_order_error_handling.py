@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -262,6 +262,16 @@ def _run_order_cli(
             p.stop()
 
     return result, mock_console, mock_insert_error
+
+
+def _capture_trade():
+    """Capture the TradeDecision handed to sync_positions_with_trade."""
+    captured = {}
+
+    async def _sync(db, positions, trade):
+        captured["trade"] = trade
+
+    return captured, _sync
 
 
 def _printed(mock_console) -> str:
@@ -989,18 +999,9 @@ class TestCloseInheritsEntryAnalytics:
         )
         return _make_mock_broker(get_positions_side_effect=lambda: [pos])
 
-    @staticmethod
-    def _capture():
-        captured = {}
-
-        async def _sync(db, positions, trade):
-            captured["trade"] = trade
-
-        return captured, _sync
-
     def test_close_without_prob_inherits_entry_analytics(self) -> None:
         broker = self._broker_with_position()
-        captured, sync = self._capture()
+        captured, sync = _capture_trade()
         entry_mock = AsyncMock(return_value=dict(_ENTRY))
         with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
             result, mock_console, _ = _run_order_cli(
@@ -1019,7 +1020,7 @@ class TestCloseInheritsEntryAnalytics:
         self,
     ) -> None:
         broker = self._broker_with_position()
-        captured, sync = self._capture()
+        captured, sync = _capture_trade()
         entry_mock = AsyncMock(return_value=dict(_ENTRY))
         with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
             result, mock_console, _ = _run_order_cli(
@@ -1028,16 +1029,18 @@ class TestCloseInheritsEntryAnalytics:
             )
         assert result.exit_code == 0, _printed(mock_console)
         t = captured["trade"]
-        # Close-time prob/edge, no inherited analytics
+        # Close-time prob/edge, no inherited analytics. Edge is
+        # cap-based (#766); the row price is fill-based (#834) — they
+        # coincide here only because the stub order reports no fill.
         assert t.model_probability == 0.55
-        assert t.edge == pytest.approx(0.55 - t.price)
+        assert t.edge == pytest.approx(0.55 - 0.40)
         assert t.gimme_score == 0.0
         assert t.kelly_fraction == 0.0
         entry_mock.assert_not_awaited()
 
     def test_open_path_unchanged_no_entry_fetch(self) -> None:
         broker = _make_mock_broker()
-        captured, sync = self._capture()
+        captured, sync = _capture_trade()
         entry_mock = AsyncMock(return_value=dict(_ENTRY))
         # The buy path fetches a thesis before building the trade —
         # stub those DB lookups (they'd run against the mock DB).
@@ -1066,7 +1069,7 @@ class TestCloseInheritsEntryAnalytics:
         not become 'position sync failed' — the close records with
         zeroed analytics (#656 Copilot review)."""
         broker = self._broker_with_position()
-        captured, sync = self._capture()
+        captured, sync = _capture_trade()
         entry_mock = AsyncMock(side_effect=sqlite3.OperationalError("locked"))
         with patch("gimmes.store.queries.get_entry_analytics", entry_mock):
             result, mock_console, _ = _run_order_cli(
@@ -1594,3 +1597,108 @@ class TestDepthTelemetryOutcomes:
         kwargs = activity.await_args.kwargs
         assert kwargs["cycle"] == 0
         assert kwargs["session_id"] is None
+
+
+class TestFillPriceLedger:
+    """#834: the ledger row books what the fills actually cost — the
+    VWAP and fees from Order (falling back to the limit / no fee when
+    the venue reported none). Sizing and edge keep the cap (#766)."""
+
+    @staticmethod
+    @contextmanager
+    def _open_stubs():
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=dict(_ENTRY)),
+        ), patch(
+            "gimmes.store.queries.get_thesis_for_ticker",
+            AsyncMock(return_value=""),
+        ), patch(
+            "gimmes.store.queries.get_open_trade_for_ticker",
+            AsyncMock(return_value=None),
+        ):
+            yield
+
+    def _run(self, order: Order, cli_args: list[str]):
+        broker = _make_mock_broker()
+        broker.create_order = AsyncMock(return_value=order)
+        captured, sync = _capture_trade()
+        with self._open_stubs():
+            result, mock_console, _ = _run_order_cli(
+                broker, config=_maker_config(),
+                sync_side_effect=sync, cli_args=cli_args,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        return captured["trade"]
+
+    def test_taker_fill_below_cap_records_vwap_and_fee(self) -> None:
+        order = Order(
+            order_id="order-vwap", ticker="TEST-TICKER",
+            action=OrderAction.BUY, side=OrderSide.YES,
+            status="executed", yes_price=0.40, count=10,
+            remaining_count=0, avg_fill_price=0.33, fill_fees=0.16,
+        )
+        t = self._run(order, _ORDER_CLI_ARGS + ["--taker"])
+        assert t.action is TradeDecision.Action.OPEN
+        assert t.count == 10
+        assert t.price == pytest.approx(0.33)
+        assert t.fee == pytest.approx(0.16)
+        # Edge stays cap-based: the review approved the cap (#766).
+        assert t.edge == pytest.approx(0.55 - 0.40)
+
+    def test_missing_fill_data_falls_back_to_limit_and_no_fee(self) -> None:
+        t = self._run(_ok_order(), _ORDER_CLI_ARGS)
+        assert t.price == pytest.approx(0.40)
+        assert t.fee is None
+
+    def test_no_side_fallback_is_the_limit_this_command_sent(self) -> None:
+        # The parsed Order carries a (deprecated) side field; a response
+        # that lost it would parse as YES. The fallback must not care.
+        order = Order(
+            order_id="order-no", ticker="TEST-TICKER",
+            action=OrderAction.BUY, side=OrderSide.YES,  # wrong on purpose
+            status="executed", yes_price=0.42, no_price=0.0, count=10,
+        )
+        t = self._run(order, [
+            "order", "TEST-TICKER", "--side", "no", "--count", "10",
+            "--price", "58", "--prob", "0.70", "--yes",
+        ])
+        assert t.side == "no"
+        assert t.price == pytest.approx(0.58)
+
+    def test_championship_fill_without_venue_data_writes_error_row(self) -> None:
+        captured, sync = _capture_trade()
+        mock_create = AsyncMock(return_value=_ok_order())  # no fill data
+        with self._open_stubs():
+            result, mock_console, mock_insert_error = _run_order_cli(
+                None, championship_create_order=mock_create,
+                sync_side_effect=sync,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        codes = [c.args[1].error_code for c in mock_insert_error.await_args_list]
+        assert "fill_data_missing" in codes
+        assert captured["trade"].price == pytest.approx(0.40)
+        assert captured["trade"].fee is None
+
+    def test_paper_fill_without_venue_data_writes_no_error_row(self) -> None:
+        broker = _make_mock_broker()  # _ok_order(): no fill data
+        captured, sync = _capture_trade()
+        with self._open_stubs():
+            result, mock_console, mock_insert_error = _run_order_cli(
+                broker, config=_maker_config(), sync_side_effect=sync,
+            )
+        assert result.exit_code == 0, _printed(mock_console)
+        codes = [c.args[1].error_code for c in mock_insert_error.await_args_list]
+        assert "fill_data_missing" not in codes
+
+    def test_partial_fill_books_vwap_for_filled_count_only(self) -> None:
+        order = Order(
+            order_id="order-partial", ticker="TEST-TICKER",
+            action=OrderAction.BUY, side=OrderSide.YES,
+            status="executed", yes_price=0.40, count=10,
+            remaining_count=4, avg_fill_price=0.38, fill_fees=0.10,
+        )
+        t = self._run(order, _ORDER_CLI_ARGS + ["--taker"])
+        assert t.count == 6  # #743: filled count, not requested
+        assert t.price == pytest.approx(0.38)
+        assert t.fee == pytest.approx(0.10)

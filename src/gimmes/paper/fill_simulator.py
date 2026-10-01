@@ -33,6 +33,13 @@ class FillResult:
     total_notional: float  # Sum of count * price across fills (always positive)
     total_fees: float  # Sum of fees across fills (always positive)
 
+    @property
+    def avg_price(self) -> float | None:
+        """Fill-weighted average price (fee-free); None when nothing filled."""
+        if self.total_filled <= 0:
+            return None
+        return self.total_notional / self.total_filled
+
 
 def simulate_fill(
     params: CreateOrderParams,

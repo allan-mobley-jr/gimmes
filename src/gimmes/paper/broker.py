@@ -336,6 +336,14 @@ class PaperBroker:
             remaining_count=result.remaining_count,
             created_time=now,
             reason=cancel_reason,
+            # #834: the ledger books the VWAP the fills actually paid — a
+            # taker walk lands below the cap; a maker fill IS the limit.
+            avg_fill_price=(
+                round(result.avg_price, 4)
+                if result.avg_price is not None
+                else None
+            ),
+            fill_fees=result.total_fees if result.total_filled > 0 else None,
         )
 
     async def cancel_order(self, order_id: str) -> None:
@@ -599,6 +607,14 @@ class PaperBroker:
                         count=int(row["count"]),
                         remaining_count=new_remaining,
                         created_time=row["created_at"],
+                        # #834: a resting maker fill IS the limit; the
+                        # fees are this sweep's, not the order's total.
+                        avg_fill_price=(
+                            round(result.avg_price, 4)
+                            if result.avg_price is not None
+                            else None
+                        ),
+                        fill_fees=result.total_fees,
                     ),
                     result.total_filled,
                 ))
@@ -952,7 +968,7 @@ class PaperBroker:
                 # New position
                 cost_basis = total_fill_cost + total_fees
                 avg_price = cost_basis / filled if filled > 0 else 0.0
-                fill_price = total_fill_cost / filled if filled > 0 else 0.0
+                fill_price = fill_result.avg_price or 0.0
 
                 await self._conn.execute(
                     """INSERT INTO paper_positions

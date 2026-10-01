@@ -55,6 +55,11 @@ def calculate_pnl(
     gets real P&L). This avoids the prior bug where empty ``open_list``
     defaulted ``open_price`` to 0.0 and inflated P&L by ``close_price * count``.
 
+    Fees (#834) are the ``fee`` each row stored — what the venue actually
+    charged — falling back to a maker-rate recompute for rows without one
+    (legacy rows, settlement and reconcile-drift closes). Open-leg fees
+    accrue per open row and drain pro rata as closes match.
+
     Note: ``get_trades`` returns rows in ``timestamp DESC``; this function
     re-sorts ascending so the caller doesn't have to coordinate ordering.
     """
@@ -78,6 +83,7 @@ def calculate_pnl(
         )
         remaining = 0
         avg_cost = 0.0
+        open_fee_pool = 0.0  # #834: per-row tier, drained pro rata on close
 
         # #653: resolution outcome propagated across the group — the
         # outcome is usually recorded on the OPEN row (Monitor's
@@ -127,6 +133,15 @@ def calculate_pnl(
             ):
                 price = 1.0 if side == group_outcome else 0.0
 
+            # #834: what the venue charged, or a maker-rate recompute
+            # for rows that never stored a fee (legacy, settlement,
+            # reconcile drift — the range guard zeroes 1.0/0.0 marks).
+            stored_fee = e.get("fee")
+            row_fee = (
+                float(stored_fee) if stored_fee is not None
+                else fee_for_order(count, price)
+            )
+
             if action in ("open", "size_up"):
                 if count <= 0:
                     continue
@@ -137,6 +152,7 @@ def calculate_pnl(
                     else 0.0
                 )
                 remaining = total
+                open_fee_pool += row_fee
                 continue
 
             # action == "close"
@@ -158,11 +174,10 @@ def calculate_pnl(
 
             # Fees on matched volume for the open leg, full count for the close
             # leg (operator paid the close transaction in full regardless of
-            # whether the open is on record).
-            open_fee = (
-                fee_for_order(matched, avg_cost) if matched and avg_cost > 0 else 0.0
-            )
-            close_fee = fee_for_order(count, price) if price > 0 else 0.0
+            # whether the open is on record). A settlement close at 1.0/0.0
+            # is fee-free through fee_for_order's price-range guard.
+            open_fee = open_fee_pool * matched / remaining if matched else 0.0
+            close_fee = row_fee
             summary.total_fees += open_fee + close_fee
             summary.gross_pnl += pnl
             summary.total_trades += 1
@@ -177,6 +192,7 @@ def calculate_pnl(
                 summary.scratch_trades += 1
 
             remaining -= matched
+            open_fee_pool -= open_fee
 
         # Still-open residual: count once per (ticker, side) with carry, so
         # the prior open-only test (test_open_only_counted) keeps passing.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 from gimmes.kalshi.orders import _parse_fill, _parse_order, create_order
 from gimmes.models.order import CreateOrderParams, OrderAction, OrderSide
 
@@ -327,3 +329,131 @@ class TestExpirationTs:
         await create_order(mock_client, params)
         body = _get_post_body(mock_client)
         assert "expiration_ts" not in body
+
+
+class TestParseOrderAvgFillPrice:
+    """#834: Kalshi reports fill cost + fill count; their ratio is the
+    VWAP the ledger books. Anything missing or inconsistent → None."""
+
+    _base = {
+        "order_id": "ord-fill",
+        "ticker": "TEST",
+        "action": "buy",
+        "side": "no",
+        "status": "executed",
+        "yes_price_dollars": "0.3000",
+        "no_price_dollars": "0.7000",
+        "initial_count_fp": "10.00",
+        "remaining_count_fp": "0.00",
+    }
+
+    def test_taker_fill_cost_yields_vwap(self) -> None:
+        data = {
+            **self._base,
+            "fill_count_fp": "10.00",
+            "taker_fill_cost_dollars": "4.0000",  # filled at 0.40, cap 0.70
+            "maker_fill_cost_dollars": "0.0000",
+        }
+        assert _parse_order(data).avg_fill_price == pytest.approx(0.40)
+
+    def test_taker_and_maker_legs_combine(self) -> None:
+        data = {
+            **self._base,
+            "fill_count_fp": "10.00",
+            "taker_fill_cost_dollars": "2.4000",  # 6 @ 0.40
+            "maker_fill_cost_dollars": "2.8000",  # 4 @ 0.70
+        }
+        assert _parse_order(data).avg_fill_price == pytest.approx(0.52)
+
+    def test_no_fill_fields_means_none(self) -> None:
+        assert _parse_order(dict(self._base)).avg_fill_price is None
+
+    def test_zero_fill_count_means_none(self) -> None:
+        data = {
+            **self._base,
+            "fill_count_fp": "0.00",
+            "taker_fill_cost_dollars": "0.0000",
+        }
+        assert _parse_order(data).avg_fill_price is None
+
+    def test_out_of_range_ratio_means_none(self) -> None:
+        # A cost that implies > $1/contract is not a price — refuse it
+        # rather than book a fabricated entry.
+        data = {
+            **self._base,
+            "fill_count_fp": "10.00",
+            "taker_fill_cost_dollars": "12.0000",
+        }
+        assert _parse_order(data).avg_fill_price is None
+
+    def test_garbage_fill_fields_mean_none(self) -> None:
+        data = {**self._base, "fill_count_fp": "n/a", "taker_fill_cost_dollars": "x"}
+        assert _parse_order(data).avg_fill_price is None
+
+    def test_fees_sum_taker_and_maker_legs(self) -> None:
+        data = {
+            **self._base,
+            "taker_fees_dollars": "0.2100",
+            "maker_fees_dollars": "0.0400",
+        }
+        assert _parse_order(data).fill_fees == pytest.approx(0.25)
+
+    def test_single_fee_leg_counts_and_no_legs_means_none(self) -> None:
+        data = {**self._base, "taker_fees_dollars": "0.2100"}
+        assert _parse_order(data).fill_fees == pytest.approx(0.21)
+        assert _parse_order(dict(self._base)).fill_fees is None
+
+    def test_unparseable_fee_field_means_none(self) -> None:
+        data = {**self._base, "taker_fees_dollars": "x", "maker_fees_dollars": "0.04"}
+        assert _parse_order(data).fill_fees is None
+
+    def test_filled_without_fill_data_warns(self, caplog) -> None:
+        # count 10, remaining 0 → filled, but no cost/fee fields.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="gimmes.kalshi.orders"):
+            order = _parse_order(dict(self._base))
+        assert order.avg_fill_price is None
+        assert order.fill_price == pytest.approx(0.70)  # NO limit fallback
+        assert any("#834" in r.message for r in caplog.records)
+
+    def test_unfilled_without_fill_data_is_quiet(self, caplog) -> None:
+        import logging
+
+        data = {**self._base, "status": "resting", "remaining_count_fp": "10.00"}
+        with caplog.at_level(logging.WARNING, logger="gimmes.kalshi.orders"):
+            _parse_order(data)
+        assert not caplog.records
+
+    def test_buy_fill_above_limit_is_refused(self) -> None:
+        # A BUY can't fill above its own limit — a cost implying it is a
+        # cost quoted on the other side or in the wrong unit.
+        data = {
+            **self._base,
+            "fill_count_fp": "10.00",
+            "taker_fill_cost_dollars": "7.5000",  # 0.75 > NO limit 0.70
+        }
+        assert _parse_order(data).avg_fill_price is None
+
+    @pytest.mark.parametrize("cost", ["8.5000", "2.0000"])
+    def test_sell_never_derives_a_vwap(self, cost: str, caplog) -> None:
+        # Kalshi doesn't document which side a sell's cost is quoted on;
+        # the buy-NO-equivalent cost of a SELL YES @ 0.80 would be 0.20
+        # and booking it would turn a winning exit into a recorded loss.
+        # Until confirmed live, a sell books its limit — quietly.
+        import logging
+
+        data = {
+            **self._base,
+            "action": "sell",
+            "side": "yes",
+            "yes_price_dollars": "0.8000",
+            "no_price_dollars": "0.2000",
+            "fill_count_fp": "10.00",
+            "taker_fill_cost_dollars": cost,
+        }
+        with caplog.at_level(logging.WARNING, logger="gimmes.kalshi.orders"):
+            order = _parse_order(data)
+        assert order.avg_fill_price is None
+        assert order.fill_price == pytest.approx(0.80)
+        assert not caplog.records

@@ -2293,6 +2293,31 @@ def order(
             # row now — the between-cycle sweep logs each fill as it
             # lands, and an expiry needs no annulment.
             filled_now = max(0, final_count - result.remaining_count)
+            if not broker and filled_now > 0 and (
+                result.avg_fill_price is None or result.fill_fees is None
+            ):
+                # #834: the venue confirmed a fill but reported no usable
+                # cost/fee data, so the ledger books the limit / a maker
+                # recompute — the scorecard drift this issue fixed,
+                # re-emerging. Groundskeeper reads error_log, not stderr.
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="fill_data_missing",
+                    component="cli.order", agent=agent,
+                    message=(
+                        f"{ticker}: {filled_now} filled but the venue"
+                        f" reported vwap={result.avg_fill_price}"
+                        f" fees={result.fill_fees}; ledger booked the"
+                        f" limit / maker recompute (#834)"
+                    ),
+                    context=json.dumps({
+                        "ticker": ticker, "side": side,
+                        "order_id": result.order_id,
+                        "limit_price": final_price,
+                        "filled": filled_now,
+                    }),
+                ), "Failed to log fill-data fallback (#834)")
             if result.status == "resting":
                 console.print(
                     f"[yellow]Resting {result.remaining_count} unfilled"
@@ -2426,12 +2451,22 @@ def order(
                     # #743: the ledger row covers the FILLED count, not
                     # the requested count — a partial fill's abandoned
                     # or resting remainder never traded.
+                    # #834: book what the fills actually cost (VWAP +
+                    # fees), not the cap the order was placed at. The
+                    # fallback is the limit THIS command sent — not
+                    # Order.fill_price, whose side comes from a Kalshi
+                    # response field the venue has deprecated. Sizing
+                    # and edge keep final_price (#766).
                     trade = TradeDecision(
                         ticker=ticker,
                         action=trade_action,
                         side=side,
                         count=filled_now,
-                        price=final_price,
+                        price=(
+                            result.avg_fill_price
+                            if result.avg_fill_price is not None
+                            else final_price
+                        ),
                         model_probability=(
                             entry.get("model_probability", 0.0)
                             if probability is None
@@ -2448,6 +2483,7 @@ def order(
                         thesis=thesis,
                         agent=agent,
                         order_id=result.order_id,
+                        fee=result.fill_fees,
                     )
                     await sync_positions_with_trade(
                         db, positions_for_sync, trade
@@ -3498,7 +3534,6 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
     produced the order); a missing record degrades to zeros with the
     cause named in the rationale, the #656 pattern.
     """
-    from gimmes.models.order import OrderSide
     from gimmes.models.trade import TradeDecision
     from gimmes.store.queries import (
         get_recent_candidates,
@@ -3506,9 +3541,7 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
         sync_positions_with_trade,
     )
 
-    price = (
-        order.yes_price if order.side == OrderSide.YES else order.no_price
-    )
+    price = order.fill_price  # #834: one spelling of the ledger price
     prob = score = edge = 0.0
     thesis = ""
     try:
@@ -3556,6 +3589,7 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
         thesis=thesis,
         agent="sweep",
         order_id=order.order_id,
+        fee=order.fill_fees,
     )
     await sync_positions_with_trade(db, positions, trade)
 

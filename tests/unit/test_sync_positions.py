@@ -93,14 +93,23 @@ class TestSyncPositions:
         assert keep.count == 20
 
 
-def _trade(ticker: str = "KXTEST", price: float = 0.60) -> TradeDecision:
-    return TradeDecision(
-        ticker=ticker, action=TradeDecision.Action.OPEN,
-        side="yes", count=10, price=price,
-    )
+def _trade(
+    ticker: str = "KXTEST", price: float = 0.60, **kwargs: object,
+) -> TradeDecision:
+    return TradeDecision(**({
+        "ticker": ticker, "action": TradeDecision.Action.OPEN,
+        "side": "yes", "count": 10, "price": price,
+    } | kwargs))
 
 
 class TestSyncPositionsWithTrade:
+    async def test_persists_fee(self, db):
+        """#834: the order command's atomic writer carries the fee paid."""
+        trade = _trade("AAPL", fee=0.42)
+        await sync_positions_with_trade(db, [_pos("AAPL")], trade)
+        rows = await get_trades(db, ticker="AAPL")
+        assert rows[0]["fee"] == pytest.approx(0.42)
+
     async def test_syncs_positions_and_inserts_trade(self, db):
         """Both positions and trade should be written."""
         positions = [_pos("AAPL")]

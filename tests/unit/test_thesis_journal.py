@@ -94,6 +94,33 @@ class TestMigrationV8:
 
 
 # ---------------------------------------------------------------------------
+# Migration v21 (#834) — fee column on trades
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV21:
+    async def test_schema_version_is_at_least_21(self, db: Database) -> None:
+        cursor = await db.conn.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        assert row[0] >= 21
+
+    async def test_trades_has_fee_column(self, db: Database) -> None:
+        cursor = await db.conn.execute("PRAGMA table_info(trades)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert "fee" in columns
+
+    async def test_fee_defaults_to_null(self, db: Database) -> None:
+        # Legacy rows and non-venue writers read back None → the
+        # scorecard recomputes at the maker rate for them.
+        await insert_trade(db, _trade())
+        rows = await get_trades(db, ticker="TEST-TICKER")
+        assert rows[0]["fee"] is None
+
+    # The stored-fee round trip through the order command's writer lives
+    # in tests/unit/test_sync_positions.py::test_persists_fee.
+
+
+# ---------------------------------------------------------------------------
 # Migration v9 — position_notes table
 # ---------------------------------------------------------------------------
 

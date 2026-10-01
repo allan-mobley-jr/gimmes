@@ -37,3 +37,10 @@ class TradeDecision(BaseModel):
         default_factory=lambda: datetime.now(UTC)
     )
     order_id: str = ""
+    # #834: the fee actually paid for `count` contracts, so the scorecard
+    # sums what the venue charged instead of recomputing. None on legacy
+    # rows and on rows that never traded at a venue (settlement, reconcile
+    # drift) — those fall back to a maker-rate recompute. Note `price` is
+    # the fill VWAP while `edge` stays measured against the approved cap
+    # (#766), so `model_probability - price` need not equal `edge`.
+    fee: float | None = None
