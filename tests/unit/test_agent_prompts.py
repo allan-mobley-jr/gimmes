@@ -2994,11 +2994,8 @@ def test_pro_scheduled_by_staleness_not_a_cycle_slot(
         assert needle in block, f"Step 7 must contain {needle!r} (#829)"
 
 
-def test_pro_runs_in_monitor_cycles(caddie_master_text: str) -> None:
-    """#829 cross-file: monitor-only cycles owned 6 of the 13 forfeited
-    slots and Pro needs nothing from the trade path. The loop's monitor
-    prompt and Step 7's cycle-type gate must agree — and the hourly
-    lane's own prohibition must stay intact (#724)."""
+def _monitor_steps() -> list[str]:
+    """Step tokens from MONITOR_CYCLE_PROMPT's 'Only run Steps' list."""
     import re
 
     from gimmes.cli import MONITOR_CYCLE_PROMPT
@@ -3007,16 +3004,30 @@ def test_pro_runs_in_monitor_cycles(caddie_master_text: str) -> None:
         r"Only run Steps ([^.]+(?:\.\d+[^.]*)*)\.", MONITOR_CYCLE_PROMPT,
     )
     assert m is not None
-    tokens = [
+    return [
         t.strip() for t in m.group(1).replace("and ", "").split(",")
         if t.strip()
     ]
+
+
+def _monitor_skip_clause() -> str:
+    from gimmes.cli import MONITOR_CYCLE_PROMPT
+
+    return MONITOR_CYCLE_PROMPT.split("Skip ", 1)[1].split(".", 1)[0]
+
+
+def test_pro_runs_in_monitor_cycles(caddie_master_text: str) -> None:
+    """#829 cross-file: monitor-only cycles owned 6 of the 13 forfeited
+    slots and Pro needs nothing from the trade path. The loop's monitor
+    prompt and Step 7's cycle-type gate must agree — and the hourly
+    lane's own prohibition must stay intact (#724)."""
+    tokens = _monitor_steps()
     assert "7" in tokens, (
         "the monitor lane must run Step 7 — it owned 6 of the 13"
         " forfeited slots in #829"
     )
     # Scorecard is still skipped; Pro is no longer in the skip list.
-    skip_clause = MONITOR_CYCLE_PROMPT.split("Skip ", 1)[1].split(".", 1)[0]
+    skip_clause = _monitor_skip_clause()
     assert "Scorecard" in skip_clause
     assert "Pro" not in skip_clause
     block = _step7_block(caddie_master_text)
@@ -3025,6 +3036,108 @@ def test_pro_runs_in_monitor_cycles(caddie_master_text: str) -> None:
     assert (
         "NEVER run Step 6 (Scorecard) or Step 7 (Pro)"
         in _hourly_lane_block(caddie_master_text)
+    )
+
+
+def test_monitor_prompt_authorizes_risk_reducing_closes(
+    caddie_master_text: str,
+) -> None:
+    """#837: the monitor prompt said "Skip ... Closer" while Step 2's
+    CLOSE path dispatches the Closer; the auto-mode classifier read it
+    as the user forbidding the sell and blocked mandated closes for
+    10+ cycles. The prompt must authorize CLOSE sells and defer
+    SIZE UP buys, and caddie-master.md must agree."""
+    import re
+
+    from gimmes.cli import MONITOR_CYCLE_PROMPT
+
+    assert "Closer" not in _monitor_skip_clause()
+    assert re.search(r"(?i)\bskip\b[^.]*\bCloser\b", MONITOR_CYCLE_PROMPT) is None
+    assert re.search(
+        r"(?i)\b(do not|don't|never) (run|dispatch) (the )?Closer\b",
+        MONITOR_CYCLE_PROMPT,
+    ) is None
+    assert "2" in _monitor_steps()
+    for needle in (
+        "authorized to dispatch the Closer",
+        "any CLOSE (sell) of an open position",
+        "Defer every SIZE UP",
+        "never dispatch a buy",
+    ):
+        assert needle in MONITOR_CYCLE_PROMPT, needle
+    assert (
+        "Monitor-only cycles (`GIMMES_CYCLE_TYPE=monitor`, #837)"
+        in caddie_master_text
+    )
+    assert "SIZE UP is a buy and is DEFERRED" in caddie_master_text
+
+
+def test_close_dispatch_spells_out_sell_command(
+    caddie_master_text: str,
+) -> None:
+    """#837: Caddie Master dispatched closes with validate/size/--prob
+    (a BUY shape). Both files must carry the identical sell literal."""
+    literal = (
+        "`gimmes order TICKER --action sell --side SIDE --count COUNT"
+        " --yes --agent closer`"
+    )
+    closer_text = _CLOSER.read_text()
+    assert literal in caddie_master_text
+    assert literal in closer_text
+    assert "A CLOSE is NEVER validate/size/`--prob`" in caddie_master_text
+    assert "A CLOSE is never validate/size/`--prob`" in closer_text
+
+
+def test_size_up_deferred_in_monitor_cycles(caddie_master_text: str) -> None:
+    """#837: the 2d bias rule makes SIZE UP presumptive — every SIZE UP
+    entry point (2a re-dispatch, 2c HOLD, 2d bias) must carry the
+    monitor-only deferral or Caddie Master drifts back into a buy."""
+
+    def section(start: str, end: str) -> str:
+        return caddie_master_text.split(start, 1)[1].split(end, 1)[0]
+
+    s2a = section("#### 2a.", "#### 2b.")
+    s2d = section("#### 2d. SIZE UP", "\n### ")
+    assert (
+        "(full and hourly cycles only — deferred in monitor-only cycles, #837)"
+        in s2a
+    )
+    assert (
+        "Re-evaluate if: SIZE UP deferred from monitor-only cycle (#837)"
+        in caddie_master_text
+    )
+    assert "In monitor-only cycles SIZE UP is deferred outright (#837" in s2d
+
+
+def test_groundskeeper_escalates_repeated_close_failed(
+    groundskeeper_text: str,
+) -> None:
+    """#837: Caddie Master stops re-dispatching after two failed closes,
+    so the generic 3+/24h rule would never fire — Groundskeeper needs a
+    per-ticker 2+ rule in the immediate list."""
+    immediate = groundskeeper_text.split(
+        "**Immediate escalation", 1,
+    )[1].split("**Pattern escalation", 1)[0]
+    assert "`close_failed` rows (#837) appearing 2+ times for the same ticker" in immediate
+
+
+def test_close_dispatch_denial_is_classifier_block(
+    caddie_master_text: str,
+) -> None:
+    """#837: a denied CLOSE dispatch was logged close_failed, which
+    wrote no error row. Denials are classifier_block; close_failed
+    rows now exist and Step 2c's claim about them must say so."""
+    closer_text = _CLOSER.read_text()
+    assert "--action skip --reason classifier_block" in caddie_master_text
+    assert "log `classifier_block`, NOT `close_failed`" in caddie_master_text
+    assert "permission-denied sell" in closer_text
+    assert (
+        "logged with `--reason classifier_block`, NOT `close_failed` (#837)"
+        in closer_text
+    )
+    assert (
+        "auto-writes a `close_failed` error row that Groundskeeper triages"
+        in caddie_master_text
     )
 
 
@@ -3247,7 +3360,7 @@ def test_clamp_kill_classification_markers_pinned() -> None:
     )
 
     cm_text = (AGENTS_DIR / "caddie-master.md").read_text()
-    closer_text = (AGENTS_DIR / "closer.md").read_text()
+    closer_text = _CLOSER.read_text()
 
     # The prompt templates the agents are mandated to log
     prompt_complete = CYCLE_COMPLETE_MARKER_TEMPLATE.format(

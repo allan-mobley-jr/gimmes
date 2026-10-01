@@ -114,11 +114,19 @@ HOURLY_CYCLE_PROMPT_TEMPLATE = (
 # window are monitor-only, so the retired "% 10" slot forfeited 6 of its
 # 13 slots here; Pro reads only the DB and needs nothing from the trade
 # path. Its own Step 7 condition still gates it on staleness.
+# #837: Step 2's CLOSE path dispatches the Closer, so the prompt must
+# not say "Skip Closer" — the auto-mode classifier read that as the
+# user forbidding the sell and blocked mandated closes for 10+ cycles.
+# The monitor lane authorizes risk-reducing closes (its #659 backstop
+# purpose); SIZE UP buys defer to full/hourly cycles.
 MONITOR_CYCLE_PROMPT = (
     "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
-    " 6.5, 7, and 8. Skip Scout, Caddie, Closer, and Scorecard."
-    " Step 7 (Pro) runs only when its own Step 7 condition is met"
-    " (#829)."
+    " 6.5, 7, and 8. Skip Scout, Caddie, and Scorecard: no new"
+    " entries this cycle. Step 2 is authorized to dispatch the Closer"
+    " for any CLOSE (sell) of an open position that Step 2 decides"
+    " (#837). Defer every SIZE UP to the next full or hourly cycle:"
+    " never dispatch a buy in a monitor-only cycle. Step 7 (Pro) runs"
+    " only when its own Step 7 condition is met (#829)."
 )
 
 
@@ -4703,29 +4711,43 @@ def log_trade(
             # exit nonzero because of the marker.
             # #636: a classifier block leaves no other error trail —
             # machine-write the error row so Groundskeeper can track
-            # and escalate recurrences. Best-effort, same doctrine as
-            # the #768 marker below.
-            if action == "skip" and reason == "classifier_block":
-                from gimmes.models.error import (
-                    ErrorCategory,
-                    ErrorLogEntry,
-                    ErrorSeverity,
-                )
+            # and escalate recurrences. #837: a close_failed skip
+            # means a position the loop decided to exit is still open;
+            # it gets a row too. A sell that ran and errored already
+            # has its own `gimmes order` row (cause); this one records
+            # the consequence, and covers pre-order failures that had
+            # no row at all. No dedupe: Groundskeeper counts each
+            # per-cycle skip (2+ per ticker escalates). Best-effort,
+            # same doctrine as the #768 marker below.
+            from gimmes.models.error import ErrorCategory
+
+            skip_error_rows = {
+                "classifier_block": (
+                    ErrorCategory.AGENT_FAILURE, "safety_classifier_block",
+                    f"Classifier/permission block: {agent}"
+                    f" denied on {ticker} (#636)",
+                ),
+                "close_failed": (
+                    ErrorCategory.ORDER_FAILURE, "close_failed",
+                    f"Close failed: {agent} could not close"
+                    f" {ticker} — close did not execute (#837)",
+                ),
+            }
+            if action == "skip" and reason in skip_error_rows:
+                from gimmes.models.error import ErrorLogEntry, ErrorSeverity
                 from gimmes.store.queries import _cycle_from_env
                 try:
                     import json as _json
 
+                    category, error_code, message = skip_error_rows[reason]
                     await _log_cli_error(db, ErrorLogEntry(
                         severity=ErrorSeverity.WARNING,
-                        category=ErrorCategory.AGENT_FAILURE,
-                        error_code="safety_classifier_block",
+                        category=category,
+                        error_code=error_code,
                         component="cli.log-trade",
                         agent=agent,
                         cycle=_cycle_from_env(),
-                        message=(
-                            f"Classifier/permission block: {agent}"
-                            f" denied on {ticker} (#636)"
-                        ),
+                        message=message,
                         context=_json.dumps({
                             "ticker": ticker,
                             "agent": agent,
@@ -4737,8 +4759,8 @@ def log_trade(
                     # serialization sit inside the try, and the skip
                     # row must land whatever fails here (#636).
                     logging.getLogger(__name__).error(
-                        "classifier_block error row failed for %s (#636)",
-                        ticker, exc_info=True,
+                        "%s error row failed for %s (#636/#837)",
+                        reason, ticker, exc_info=True,
                     )
             if action == "skip" and reason in (
                 "order_failed", "order_canceled", "classifier_block",

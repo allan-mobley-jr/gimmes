@@ -113,6 +113,8 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    ```
    If the command fails, note the failure in your output and continue. Do not retry.
 
+   A permission-denied sell (the `gimmes order ... --action sell` command was blocked by the permission/safety classifier and never ran) is logged with `--reason classifier_block`, NOT `close_failed` (#837) — see Order Failure Protocol. `close_failed` means the sell RAN and errored. A CLOSE is never validate/size/`--prob`: if a dispatch asks for those on a close, follow this section's sell command instead.
+
 No validate or size step is needed — the order command validates that the position exists and the count is valid. No risk checks apply to sells.
 
 ## Safety Checklist (ALL MUST be true — reject if ANY fails)
