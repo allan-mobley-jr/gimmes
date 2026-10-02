@@ -62,7 +62,7 @@ The order command is the binding risk check: with an approval-price cap it auto-
 gimmes order TICKER --action sell --side SIDE --count COUNT --taker --yes --agent closer
 ```
 
-**Reading the outcome (#743):** a rest-on-miss order that doesn't fill at placement exits 0 with `status: resting` — that is a SUCCESS, not an order failure: the order is live at the approved limit and the between-cycle sweep fills it if the market comes back, or it expires unfilled before close. Report it as `Status: resting` in the Execution Report. Do NOT log an `order_failed` skip for a resting order, and do NOT cancel it. A canceled/exit-1 order remains a failure per the Order Failure Protocol.
+**Reading the outcome (#743):** a rest-on-miss **open or SIZE UP** (a BUY) that doesn't fill at placement exits 0 with `status: resting` — that is a SUCCESS, not an order failure: the order is live at the approved limit and the between-cycle sweep fills it if the market comes back, or it expires unfilled before close. Report it as `Status: resting` in the Execution Report. Do NOT log an `order_failed` skip for a resting order, and do NOT cancel it. A canceled/exit-1 order remains a failure per the Order Failure Protocol. This NEVER applies to a CLOSE (#840): a sell that rests or only partly fills exits 1 with `Close INCOMPLETE` — the CLI cancels the unfilled remainder and books what filled; log it per CLOSE Execution step 5. If that output says `cancel FAILED`, the remainder may still be a live sell: run `gimmes cancel ORDER_ID --yes` once and quote its result in the `close_failed` rationale.
 
 Justification: crossing the spread as a taker is the primary fill path — the hourly edge was backtested against taker fills and taker fees, and `--price` caps the taker at the price the review approved instead of chasing a moved market. Rest-on-miss converts the miss into a bounded resting limit that dies before settlement (#743) — unlike the unbounded maker rest that #690 rightly called an honest no-fill. This matters MOST on a CLOSE: a stop-loss or mandatory-close (#659) exit that rests never fills, so the "executed" close is a fiction while the position rides to settlement anyway — which is why closes never rest. NEVER add `--taker` or `--rest-on-miss` to non-hourly tickers — their maker preference is unchanged.
 
@@ -101,8 +101,8 @@ When Caddie Master dispatches you to CLOSE a position (sell all held contracts),
    ```
 2. **Cancel resting orders**: If any resting orders exist for TICKER, cancel them first with `gimmes cancel ORDER_ID --yes`.
 3. **Order**: `gimmes order TICKER --action sell --side SIDE --count COUNT --yes --agent closer` — sell the full held count.
-4. **Log success**: The order command logs the close trade and syncs positions atomically.
-5. **Log failure** (if order fails): use the `--rationale-file` heredoc pattern — the `[error from CLI output]` may contain `$` or backticks that would corrupt under inline `--rationale`:
+4. **Log success**: The order command logs the close trade and syncs positions atomically. Exit 0 means the full count sold.
+5. **Log failure** (if the order exits 1 — including `Close INCOMPLETE` (rested or partially filled) and `No SIDE position` / `Cannot sell` rejections, #840): use the `--rationale-file` heredoc pattern — the `[error from CLI output]` may contain `$` or backticks that would corrupt under inline `--rationale`:
    ```bash
    RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
    cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
@@ -188,7 +188,7 @@ For closed positions:
 - Contracts: N
 - Proceeds: $X.XX (- $X.XX fee)
 - Order ID: [id]
-- Status: [filled/resting/failed]
+- Status: [filled/resting/incomplete/failed] (`resting` is for BUYs only — a CLOSE is filled, incomplete, or failed)
 ```
 
 For rejected candidates:
