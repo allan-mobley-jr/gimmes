@@ -8114,6 +8114,143 @@ def _write_cycle_log(log_path: Path, raw: bytes) -> None:
         )
 
 
+def _prune_cycle_logs(logs_dir: Path, keep: int) -> int:
+    """Keep the newest ``keep`` cycle-*.json logs by mtime (#827).
+
+    Cycle numbers pass 999 so names don't sort chronologically; mtime
+    does. ``keep`` 0 disables pruning. Returns the number removed.
+    """
+    if keep <= 0:
+        return 0
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    logs = sorted(logs_dir.glob("cycle-*.json"), key=_mtime, reverse=True)
+    removed = 0
+    failed: list[str] = []
+    for p in logs[keep:]:
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            failed.append(p.name)
+    if failed:
+        import logging
+
+        logging.getLogger("gimmes").warning(
+            "cycle-log prune: %d unlink failure(s) (first: %s) (#827)",
+            len(failed), failed[0],
+        )
+    return removed
+
+
+def _low_disk(paths: list[Path], min_free_gb: float) -> float | None:
+    """Lowest free GB across ``paths``' volumes when below
+    ``min_free_gb`` (#827) — GIMMES_HOME and the DB may differ.
+
+    None when there is headroom, when the check is disabled (0), or
+    when no volume can be queried.
+    """
+    import logging
+    import shutil
+
+    if min_free_gb <= 0:
+        return None
+    free: list[float] = []
+    for path in paths:
+        try:
+            free.append(shutil.disk_usage(path).free / 1024**3)
+        except OSError:
+            logging.getLogger("gimmes").warning(
+                "free-disk check failed for %s (#827)", path, exc_info=True,
+            )
+    if not free:
+        return None
+    lowest = min(free)
+    return lowest if lowest < min_free_gb else None
+
+
+async def _record_low_disk(
+    config: GimmesConfig, free_gb: float, cycle: int,
+) -> bool:
+    """Write the critical low_disk_space row Groundskeeper escalates on
+    its first pass (#827). Returns whether it landed — a full disk can
+    fail the write too, and the loop retries next cycle until it does.
+    Never raises."""
+    import json as _json
+    import logging
+
+    from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
+    from gimmes.store.database import Database
+    from gimmes.store.queries import insert_error
+
+    try:
+        async with Database(config.db_path) as db:
+            await insert_error(db, ErrorLogEntry(
+                severity=ErrorSeverity.CRITICAL,
+                category=ErrorCategory.DATA_INTEGRITY,
+                error_code="low_disk_space",
+                component="cli.autonomous_loop",
+                cycle=cycle,
+                message=(
+                    f"Free disk on the GIMMES_HOME/DB volume is"
+                    f" {free_gb:.2f} GB, below ops.min_free_disk_gb"
+                    f" {config.ops.min_free_disk_gb} — the next launchd"
+                    f" start can die silently (#827)"
+                ),
+                context=_json.dumps({
+                    "free_gb": round(free_gb, 3),
+                    "min_free_gb": config.ops.min_free_disk_gb,
+                }),
+            ))
+    except Exception:
+        logging.getLogger("gimmes").error(
+            "low_disk_space row not recorded — retrying next cycle (#827)",
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+def _housekeeping(
+    logs_dir: Path,
+    volumes: list[Path],
+    config: GimmesConfig,
+    cycle: int,
+    low_disk_logged: bool,
+) -> bool:
+    """Per-iteration loop maintenance (#827): prune cycle logs and
+    record one low_disk_space row per OK→low transition. Returns the
+    updated ``low_disk_logged`` flag. Never raises — at real ENOSPC
+    even the console write can fail, and maintenance must not kill
+    the loop."""
+    import logging
+
+    try:
+        pruned = _prune_cycle_logs(logs_dir, config.ops.cycle_log_keep)
+        if pruned:
+            console.print(f"[dim]Pruned {pruned} old cycle log(s)[/dim]")
+        free_gb = _low_disk(volumes, config.ops.min_free_disk_gb)
+        if free_gb is None:
+            return False
+        if not low_disk_logged:
+            low_disk_logged = asyncio.run(
+                _record_low_disk(config, free_gb, cycle),
+            )
+        console.print(
+            f"[red bold]LOW DISK: {free_gb:.2f} GB free (#827)[/red bold]"
+        )
+    except Exception:
+        logging.getLogger("gimmes").warning(
+            "housekeeping failed (#827)", exc_info=True,
+        )
+    return low_disk_logged
+
+
 def _wrap_stream_json(raw: bytes) -> bytes:
     """Wrap newline-delimited JSON events into a JSON array.
 
@@ -8472,7 +8609,13 @@ def _autonomous_loop(
 
             return _position_window_hit(close_times, config, now)
 
+        low_disk_logged = False  # #827: one row per OK→low transition
         while max_cycles == 0 or cycles_run < max_cycles:
+            low_disk_logged = _housekeeping(
+                logs_dir, [GIMMES_HOME, config.db_path.parent],
+                config, cycle, low_disk_logged,
+            )
+
             # --- Daily budget guardrail (#545) ---
             blocked, reason = budget_tracker.should_block()
             if blocked:

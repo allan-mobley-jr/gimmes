@@ -109,6 +109,9 @@ class TestAutonomousLoop:
         # Preserve GIMMES_MODE so _autonomous_loop's os.environ write doesn't leak
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
         monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # Belt-and-braces: the loop prunes cycle logs (#827) — a refactor
+        # to the module-level import must never point it at the real home.
+        monkeypatch.setattr("gimmes.cli.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.end_session"),
@@ -149,6 +152,98 @@ class TestAutonomousLoop:
         with patch("shutil.which", return_value=None):
             with pytest.raises(ClickExit):
                 _autonomous_loop("driving_range")
+
+    @staticmethod
+    def _run_passthrough(arg):  # type: ignore[no-untyped-def]
+        """asyncio.run stub: a mocked _record_low_disk returns a plain
+        bool; every other coroutine gets the fixture's close stub."""
+        return arg if isinstance(arg, bool) else arg.close()
+
+    def _patch_ops(self, **ops):  # type: ignore[no-untyped-def]
+        from gimmes import cli as gimmes_cli
+        from gimmes.config import OpsConfig
+
+        original_load_config = gimmes_cli.load_config
+
+        def patched_load_config(*args, **kwargs):  # type: ignore[no-untyped-def]
+            cfg = original_load_config(*args, **kwargs)
+            return cfg.model_copy(update={"ops": OpsConfig(**ops)})
+
+        return patch("gimmes.cli.load_config", side_effect=patched_load_config)
+
+    def test_loop_prunes_cycle_logs(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """#827: retention runs at the top of each iteration."""
+        import os
+
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        # Names the loop's own cycle-001 write can't collide with.
+        for i, name in enumerate(("cycle-901.json", "cycle-902.json", "cycle-903.json")):
+            f = logs_dir / name
+            f.write_text("[]")
+            os.utime(f, (1_000 + i, 1_000 + i))
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=_mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            self._patch_ops(cycle_log_keep=1, min_free_disk_gb=0),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+        assert not (logs_dir / "cycle-901.json").exists()
+        assert not (logs_dir / "cycle-902.json").exists()
+        assert (logs_dir / "cycle-903.json").exists()
+
+    @pytest.mark.parametrize(("landed", "calls"), [(True, 1), (False, 3)])
+    def test_loop_low_disk_row_once_unless_write_failed(
+        self, landed: bool, calls: int,
+    ) -> None:
+        """#827: one row per OK→low transition; a row that failed to
+        land (full disk) is retried every cycle until it does."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **k: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._low_disk", return_value=0.5),
+            patch(
+                "gimmes.cli._record_low_disk",
+                new=MagicMock(return_value=landed),
+            ) as mock_record,
+            patch("asyncio.run", side_effect=self._run_passthrough),
+        ):
+            _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
+        assert mock_record.call_count == calls
+
+    def test_loop_low_disk_rearms_after_recovery(self) -> None:
+        """#827: low → OK → low writes a second row."""
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", side_effect=lambda *a, **k: _mock_popen()),
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._low_disk", side_effect=[0.5, None, 0.5]),
+            patch(
+                "gimmes.cli._record_low_disk",
+                new=MagicMock(return_value=True),
+            ) as mock_record,
+            patch("asyncio.run", side_effect=self._run_passthrough),
+        ):
+            _autonomous_loop("driving_range", max_cycles=3, pause_seconds=0)
+        assert mock_record.call_count == 2
+
+    def test_loop_survives_housekeeping_failure(self) -> None:
+        """#827: maintenance is never fatal to the loop."""
+        mock_proc = _mock_popen()
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("gimmes.cli._communicate_interruptible", return_value=b""),
+            patch("gimmes.clubhouse.server.start_background", return_value=None),
+            patch("gimmes.cli._prune_cycle_logs", side_effect=OSError("ENOSPC")),
+        ):
+            _autonomous_loop("driving_range", max_cycles=1, pause_seconds=0)
+        assert mock_popen.called
 
     def test_sets_gimmes_mode_env(self) -> None:
         mock_proc = _mock_popen()
@@ -2160,6 +2255,9 @@ class TestApiErrorLoopIntegration:
         retry/backoff path is deterministic."""
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
         monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # Belt-and-braces: the loop prunes cycle logs (#827) — a refactor
+        # to the module-level import must never point it at the real home.
+        monkeypatch.setattr("gimmes.cli.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.end_session"),
@@ -2473,6 +2571,9 @@ class TestHourlyLadder:
         mask every hourly path (release wins the precedence ladder)."""
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
         monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # Belt-and-braces: the loop prunes cycle logs (#827) — a refactor
+        # to the module-level import must never point it at the real home.
+        monkeypatch.setattr("gimmes.cli.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.end_session"),
@@ -3060,6 +3161,9 @@ class TestCycleDeadlineEnv:
         and truncating the live cycle-001.json every suite run)."""
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
         monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # Belt-and-braces: the loop prunes cycle logs (#827) — a refactor
+        # to the module-level import must never point it at the real home.
+        monkeypatch.setattr("gimmes.cli.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.end_session"),
@@ -3463,6 +3567,9 @@ class TestShutdownHandlerBody:
     def _patch_session_funcs(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GIMMES_MODE", "driving_range")
         monkeypatch.setattr("gimmes.config.GIMMES_HOME", tmp_path)
+        # Belt-and-braces: the loop prunes cycle logs (#827) — a refactor
+        # to the module-level import must never point it at the real home.
+        monkeypatch.setattr("gimmes.cli.GIMMES_HOME", tmp_path)
         with (
             patch("gimmes.store.session.create_session", return_value=1),
             patch("gimmes.store.session.mark_stale_sessions", return_value=0),
@@ -3575,3 +3682,195 @@ class TestShutdownHandlerBody:
         # the except-block's escalation kill.
         assert mock_killpg.call_count >= 2
 
+
+
+# ---------------------------------------------------------------------------
+# Housekeeping helpers (#827)
+# ---------------------------------------------------------------------------
+
+
+class TestPruneCycleLogs:
+    def _seed(self, logs_dir: Path, names_mtimes: list[tuple[str, int]]) -> None:
+        import os
+
+        logs_dir.mkdir(exist_ok=True)
+        for name, mtime in names_mtimes:
+            f = logs_dir / name
+            f.write_text("[]")
+            os.utime(f, (mtime, mtime))
+
+    def test_keeps_newest_by_mtime_not_name(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _prune_cycle_logs
+
+        self._seed(tmp_path, [
+            ("cycle-999.json", 5_000),          # newest despite low name
+            ("cycle-1000.json", 1_000),
+            ("cycle-998.json", 4_000),
+            ("cycle-1001-block-123.json", 3_000),
+            ("cycle-1002.json", 2_000),
+        ])
+        assert _prune_cycle_logs(tmp_path, 3) == 2
+        left = sorted(p.name for p in tmp_path.glob("cycle-*.json"))
+        assert left == [
+            "cycle-1001-block-123.json", "cycle-998.json", "cycle-999.json",
+        ]
+
+    def test_zero_disables(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _prune_cycle_logs
+
+        self._seed(tmp_path, [("cycle-001.json", 1), ("cycle-002.json", 2)])
+        assert _prune_cycle_logs(tmp_path, 0) == 0
+        assert len(list(tmp_path.glob("cycle-*.json"))) == 2
+
+    def test_ignores_non_cycle_files(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _prune_cycle_logs
+
+        self._seed(tmp_path, [
+            ("cycle-001.json", 1), ("cycle-002.json", 2),
+            ("wrapper-2026-09-14.log", 0), ("launchd.err.log", 0),
+        ])
+        assert _prune_cycle_logs(tmp_path, 1) == 1
+        assert (tmp_path / "wrapper-2026-09-14.log").exists()
+        assert (tmp_path / "launchd.err.log").exists()
+
+
+class TestLowDisk:
+    @staticmethod
+    def _usage(free_gb: float):  # type: ignore[no-untyped-def]
+        from collections import namedtuple
+
+        u = namedtuple("u", "total used free")
+        return u(0, 0, int(free_gb * 1024**3))
+
+    def test_below_threshold_returns_free(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", return_value=self._usage(0.5)):
+            assert _low_disk([tmp_path], 1.0) == pytest.approx(0.5)
+
+    def test_above_threshold_returns_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", return_value=self._usage(5.0)):
+            assert _low_disk([tmp_path], 1.0) is None
+
+    def test_disabled_when_zero(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", return_value=self._usage(0.0)):
+            assert _low_disk([tmp_path], 0) is None
+
+    def test_oserror_returns_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", side_effect=OSError("gone")):
+            assert _low_disk([tmp_path], 1.0) is None
+
+    def test_lowest_volume_wins(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", side_effect=[
+            self._usage(50.0), self._usage(0.3),
+        ]):
+            assert _low_disk([tmp_path, tmp_path], 1.0) == pytest.approx(0.3)
+
+    def test_one_failed_volume_still_checks_the_other(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.cli import _low_disk
+
+        with patch("shutil.disk_usage", side_effect=[
+            OSError("gone"), self._usage(0.3),
+        ]):
+            assert _low_disk([tmp_path, tmp_path], 1.0) == pytest.approx(0.3)
+
+
+class TestRecordLowDisk:
+    def test_writes_critical_row(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import asyncio
+
+        from gimmes.cli import _record_low_disk
+        from gimmes.store.database import Database
+
+        cfg = GimmesConfig(db_path=tmp_path / "gimmes.db")
+        assert asyncio.run(_record_low_disk(cfg, 0.42, 7)) is True
+
+        async def _rows():  # type: ignore[no-untyped-def]
+            async with Database(cfg.db_path) as db:
+                cur = await db.conn.execute(
+                    "SELECT severity, category, error_code, component, cycle"
+                    " FROM error_log",
+                )
+                return [dict(r) for r in await cur.fetchall()]
+
+        rows = asyncio.run(_rows())
+        assert rows == [{
+            "severity": "critical", "category": "data_integrity",
+            "error_code": "low_disk_space",
+            "component": "cli.autonomous_loop", "cycle": 7,
+        }]
+
+    def test_db_failure_is_swallowed(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import asyncio
+
+        from gimmes.cli import _record_low_disk
+
+        cfg = GimmesConfig(db_path=tmp_path / "missing-dir" / "x" / "gimmes.db")
+        with patch(
+            "gimmes.store.database.Database.__aenter__",
+            side_effect=OSError("disk full"),
+        ):
+            # must not raise; reports failure so the loop retries
+            assert asyncio.run(_record_low_disk(cfg, 0.1, 1)) is False
+
+
+class TestOpsConfig:
+    """#827: the ops section's defaults, validation, and wiring."""
+
+    def test_defaults(self) -> None:
+        ops = GimmesConfig().ops
+        assert (ops.cycle_log_keep, ops.min_free_disk_gb) == (500, 1.0)
+
+    @pytest.mark.parametrize(
+        "kw", [{"cycle_log_keep": -1}, {"min_free_disk_gb": -0.1}, {"bogus": 1}],
+    )
+    def test_invalid_rejected(self, kw) -> None:  # type: ignore[no-untyped-def]
+        from pydantic import ValidationError
+
+        from gimmes.config import OpsConfig
+
+        with pytest.raises(ValidationError):
+            OpsConfig(**kw)
+
+    def test_listed_in_config_sections(self) -> None:
+        from gimmes.config import CONFIG_SECTIONS, OpsConfig
+
+        assert ("ops", OpsConfig) in CONFIG_SECTIONS
+
+    def test_load_config_wires_ops(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Values saved via `gimmes config set ops.*` must reach the
+        loop — same trap test_load_config_wires_budget_sub_config pins."""
+        import asyncio
+        import sqlite3
+
+        from gimmes.config import load_config
+        from gimmes.store.database import Database
+
+        db_path = tmp_path / "test.db"
+
+        async def _setup() -> None:
+            db = Database(db_path)
+            await db.connect()
+            await db.close()
+
+        asyncio.run(_setup())
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                [("ops.cycle_log_keep", "7"), ("ops.min_free_disk_gb", "2.5")],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        cfg = load_config(db_path=db_path)
+        assert cfg.ops.cycle_log_keep == 7
+        assert cfg.ops.min_free_disk_gb == 2.5

@@ -1239,6 +1239,58 @@ class BudgetConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Operations (autonomous-loop housekeeping)
+# ---------------------------------------------------------------------------
+
+
+class OpsConfig(BaseModel):
+    """Autonomous-loop housekeeping (#827): cycle-log retention and
+    free-disk alerting. Both are read once at loop start."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "section_name": "Operations",
+            "section_description": (
+                "Autonomous-loop housekeeping: cycle-log retention\n"
+                "and disk-headroom alerting (#827)."
+            ),
+            "section_order": 10,
+        },
+    )
+
+    cycle_log_keep: int = Field(
+        default=500,
+        ge=0,
+        json_schema_extra={
+            "display_name": "Cycle logs to keep",
+            "description": (
+                "Newest ~/.gimmes/logs/cycle-*.json files kept; older"
+                " ones are deleted each cycle. 0 = keep all"
+                " (audit-cycles and pause-backtest read this history)."
+                " Count-based: ~50 days at ~10 cycles/day, less if the"
+                " cycle rate rises."
+            ),
+            "min_val": 0,
+        },
+    )
+
+    min_free_disk_gb: float = Field(
+        default=1.0,
+        ge=0.0,
+        json_schema_extra={
+            "display_name": "Minimum free disk (GB)",
+            "description": (
+                "The loop writes a critical low_disk_space error row"
+                " when free space on the GIMMES_HOME volume drops below"
+                " this. 0 = disabled."
+            ),
+            "min_val": 0.0,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main config
 # ---------------------------------------------------------------------------
 
@@ -1265,6 +1317,7 @@ class GimmesConfig(BaseModel):
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    ops: OpsConfig = Field(default_factory=OpsConfig)
 
     # Database
     db_path: Path = Field(default_factory=lambda: GIMMES_HOME / "gimmes.db")
@@ -1359,6 +1412,7 @@ CONFIG_SECTIONS: list[tuple[str, type[BaseModel]]] = [
     ("scoring", ScoringConfig),
     ("model", ModelConfig),
     ("budget", BudgetConfig),
+    ("ops", OpsConfig),
 ]
 
 
@@ -1487,4 +1541,5 @@ def load_config(db_path: Path | None = None) -> GimmesConfig:
         scoring=ScoringConfig(**overrides.get("scoring", {})),
         model=ModelConfig(**overrides.get("model", {})),
         budget=BudgetConfig(**overrides.get("budget", {})),
+        ops=OpsConfig(**overrides.get("ops", {})),
     )
