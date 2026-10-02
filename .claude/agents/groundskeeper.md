@@ -132,6 +132,7 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 - `api_error` → Check Kalshi API status and endpoint changes
 - `auth_failure` → Verify API credentials and private key
 - `data_integrity` → Inspect database for corruption or schema issues
+  - `low_disk_space` (#827) → free disk on the GIMMES_HOME/DB volume is below `ops.min_free_disk_gb`: check `du -sh ~/.gimmes/logs` and the volume's other tenants — the next launchd start can die silently
 - `agent_failure` → Review agent logs for the failing cycle
 - `order_failure` → Check order parameters and market status
   - `close_failed` (#837) → a mandated CLOSE did not execute and the position is still open: check `gimmes positions` (StopGate/STALE banners) and the matching `gimmes order` error row, if any
