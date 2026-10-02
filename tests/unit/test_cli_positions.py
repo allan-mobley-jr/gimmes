@@ -8,6 +8,11 @@ The fix sets ``overflow="fold"`` on every Ticker column so the full
 ticker is preserved (wrapped to the next line when the terminal is
 narrow).
 
+#838 follow-up: fold still split tickers across rows in captured
+(non-TTY) output, and agents copied the first fragment. Agent-facing
+tables now print via ``print_unwrapped`` at natural width when not a
+terminal; fold remains the human-terminal path.
+
 Test strategy: a Rich Table with a single short ticker auto-sizes its
 columns and the bug doesn't trigger — so the regression tests below
 either (a) build multi-row pressure into the table so Rich is forced to
@@ -137,6 +142,134 @@ class TestFormatPositions:
             f"Full output:\n{out}"
         )
         assert ELLIPSIS not in ticker_col
+
+
+PAYROLLS = "KXPAYROLLS-26SEP-T100000"  # #838 incident ticker
+
+
+def _render_non_tty(positions: list[dict], **kw) -> str:  # type: ignore[no-untyped-def]
+    """Render through format_positions on the agents' view: a non-TTY
+    console at Rich's width-80 default."""
+    from unittest.mock import patch
+
+    from gimmes.reporting.formatter import format_positions
+
+    buf = StringIO()
+    with patch(
+        "gimmes.reporting.formatter.console", Console(file=buf, width=80),
+    ):
+        format_positions(positions, **kw)
+    return buf.getvalue()
+
+
+def _losing_pos(ticker: str) -> dict:  # type: ignore[type-arg]
+    """A position at 214% of a 15% stop gate (MANDATORY-CLOSE)."""
+    return {
+        "ticker": ticker, "side": "no", "count": 100,
+        "avg_price": 0.55, "market_price": 0.23,
+        "unrealized_pnl": -32.10, "cost_basis": 100.0,
+    }
+
+
+def _ticker_cells(out: str) -> list[str]:
+    return [
+        line.split("│")[1].strip() for line in out.splitlines()
+        if line.startswith("│") and line.count("│") >= 3
+    ]
+
+
+class TestFormatPositionsNoWrap:
+    """#838: Monitor copied ``KXPAYROLLS-26SEP-T1000`` from a fold-
+    wrapped Ticker cell and ``market-info`` reported it ambiguous."""
+
+    def test_long_ticker_never_wraps_at_80_cols_non_tty(self) -> None:
+        rows = _real_positions_fixture() + [
+            {**_real_positions_fixture()[0], "ticker": PAYROLLS},
+        ]
+        out = _render_non_tty(rows, stop_loss_pct=0.15)
+        cells = _ticker_cells(out)
+        assert PAYROLLS in cells and LONG_TICKER in cells
+        assert "KXPAYROLLS-26SEP-T1000" not in cells
+        assert "" not in cells  # no fold-continuation rows
+        assert ELLIPSIS not in out  # no column (P&L etc.) truncated
+
+    def test_table_that_fits_stays_within_80(self) -> None:
+        out = _render_non_tty([{
+            "ticker": SHORTER_TICKER, "side": "no", "count": 1,
+            "avg_price": 0.5, "market_price": 0.5,
+            "unrealized_pnl": 0.0, "cost_basis": 1.0,
+        }], stop_loss_pct=0.15)
+        assert max(len(line) for line in out.splitlines()) <= 80
+
+    def test_banner_still_printed_below_widened_table(self) -> None:
+        out = _render_non_tty(
+            _real_positions_fixture() + [_losing_pos(PAYROLLS)],
+            stop_loss_pct=0.15,
+        )
+        assert max(len(line) for line in out.splitlines()) > 80
+        assert f"{PAYROLLS} StopGate: 214% MANDATORY-CLOSE" in out
+
+    def test_terminal_keeps_fold(self, narrow_console: StringIO) -> None:
+        """A human TTY keeps #567's fold rather than an over-wide table
+        the terminal would wrap and garble."""
+        from gimmes.reporting.formatter import format_positions
+
+        format_positions(_real_positions_fixture() + [
+            {**_real_positions_fixture()[0], "ticker": PAYROLLS},
+        ], stop_loss_pct=0.15)
+        out = narrow_console.getvalue()
+        assert max(len(line) for line in out.splitlines()) <= 80
+        assert PAYROLLS in _ticker_column_text(out)
+
+
+class TestPrintUnwrapped:
+    """#838: the shared helper the scan, candidates, and trades tables
+    use — Scout and Caddie copy tickers from those outputs too."""
+
+    def test_scan_results_never_fold_non_tty(self) -> None:
+        from unittest.mock import patch
+
+        from gimmes.reporting.formatter import format_scan_results
+
+        buf = StringIO()
+        with patch(
+            "gimmes.reporting.formatter.console",
+            Console(file=buf, width=80),
+        ):
+            format_scan_results([{
+                "ticker": PAYROLLS, "event_ticker": "KXPAYROLLS-26SEP",
+                "title": "Payrolls", "price": 0.55, "volume_24h": 100,
+                "open_interest": 50, "score": 80,
+            }])
+        cells = _ticker_cells(buf.getvalue())
+        assert PAYROLLS in cells
+        assert "KXPAYROLLS-26SEP-T1000" not in cells
+        assert "" not in cells
+
+    def test_explicit_target_console(self) -> None:
+        """CLI call sites pass cli.console, not the formatter's."""
+        from gimmes.reporting.formatter import print_unwrapped
+
+        buf = StringIO()
+        table = Table()
+        for name in ("Ticker", "A", "B", "C", "D", "E", "F", "G", "H"):
+            table.add_column(name, overflow="fold")
+        table.add_row(PAYROLLS, *["2026-10-01 12:00"] * 8)
+        print_unwrapped(table, Console(file=buf, width=80))
+        assert PAYROLLS in _ticker_cells(buf.getvalue())
+
+    def test_cli_tables_use_helper(self) -> None:
+        from gimmes.cli import candidates, trades
+
+        for func in (candidates, trades):
+            assert re.search(
+                r"print_unwrapped\(\s*\w+", inspect.getsource(func),
+            ), func.__name__
+
+    def test_banner_survives_very_long_ticker(self) -> None:
+        long = "KX" + "A" * 58  # 60 chars: banner > 80 cols
+        out = _render_non_tty([_losing_pos(long)], stop_loss_pct=0.15)
+        assert f"{long} StopGate: 214% MANDATORY-CLOSE" in out
 
 
 class TestFormatScanResults:

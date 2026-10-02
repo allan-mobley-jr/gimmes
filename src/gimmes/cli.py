@@ -2632,7 +2632,10 @@ def trades(
     async def _trades() -> None:
         from rich.table import Table
 
-        from gimmes.reporting.formatter import format_local_timestamp
+        from gimmes.reporting.formatter import (
+            format_local_timestamp,
+            print_unwrapped,
+        )
         from gimmes.store.database import Database
         from gimmes.store.queries import get_trades
         from gimmes.store.ticker_resolver import validate_ticker_prefix
@@ -2698,7 +2701,7 @@ def trades(
                 format_local_timestamp(str(t.get("timestamp", ""))),
             )
 
-        console.print(table)
+        print_unwrapped(table, console)  # #838
 
     _run(_trades())
 
@@ -2717,7 +2720,10 @@ def candidates(
     async def _candidates() -> None:
         from rich.table import Table
 
-        from gimmes.reporting.formatter import format_local_timestamp
+        from gimmes.reporting.formatter import (
+            format_local_timestamp,
+            print_unwrapped,
+        )
         from gimmes.store.database import Database
         from gimmes.store.observation_validator import FLIP_WARNING_MARKER, parse_scanned_at
         from gimmes.store.queries import (
@@ -2810,7 +2816,7 @@ def candidates(
                 format_local_timestamp(str(c.get("scanned_at", ""))),
             )
 
-        console.print(table)
+        print_unwrapped(table, console)  # #838
         # One banner per ticker — multiple flagged rows for the same
         # ticker would otherwise repeat identical lines.
         for flip_ticker in flip_tickers:
