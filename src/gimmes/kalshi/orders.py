@@ -150,8 +150,13 @@ async def create_order(client: KalshiClient, params: CreateOrderParams) -> Order
 
 
 async def cancel_order(client: KalshiClient, order_id: str) -> dict:  # type: ignore[type-arg]
-    """Cancel a resting order."""
+    """Cancel a resting order. The response carries the final ``order``."""
     return await client.delete(f"/portfolio/orders/{order_id}")
+
+
+async def get_order(client: KalshiClient, order_id: str) -> dict:  # type: ignore[type-arg]
+    """Fetch one order's current state (raw API dict under ``order``)."""
+    return await client.get(f"/portfolio/orders/{order_id}")
 
 
 async def list_orders(

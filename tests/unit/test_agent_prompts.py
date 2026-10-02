@@ -3901,3 +3901,20 @@ def test_closer_classifier_block_reason() -> None:
         closer_text
     )
     assert "`order_failed` means the command RAN and errored" in closer_text
+
+
+def test_closer_incomplete_close_is_failure() -> None:
+    """#840: a CLOSE that rests or partly fills exits 1 with `Close
+    INCOMPLETE`; the #743 "resting is SUCCESS" rule is scoped to BUYs."""
+    import inspect
+
+    import gimmes.cli as cli_module
+
+    closer_text = _CLOSER.read_text()
+    assert "Close INCOMPLETE" in closer_text
+    assert "Close INCOMPLETE" in inspect.getsource(cli_module)
+    assert "NEVER applies to a CLOSE (#840)" in closer_text
+    assert "rest-on-miss **open or SIZE UP** (a BUY)" in closer_text
+    assert "Exit 0 means the full count sold." in closer_text
+    assert "says `cancel FAILED`" in closer_text
+    assert "Status: [filled/resting/failed]" not in closer_text

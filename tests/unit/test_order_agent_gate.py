@@ -646,6 +646,37 @@ class TestCloseFailedSkip:
         _, db_path = self._log_skip(monkeypatch, tmp_path, cycle=None)
         assert len(self._errors(db_path)) == 1
 
+    @pytest.mark.parametrize("reason", ["close_failed", "classifier_block"])
+    def test_error_row_context_carries_rationale(
+        self, monkeypatch, tmp_path, reason,
+    ) -> None:
+        """#840: the rationale tells a blocked/failed CLOSE from an
+        entry without opening the trades table; capped at 300 chars."""
+        import json
+
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        monkeypatch.setenv("GIMMES_CYCLE", "42")
+        rationale = "Close INCOMPLETE 6 of 10 " + "x" * 400
+        result = runner.invoke(app, [
+            "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+            "--reason", reason, "--side", "no", "--agent", "closer",
+            "--rationale", rationale,
+        ])
+        assert result.exit_code == 0, result.output
+
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT context FROM error_log"
+                " WHERE component = 'cli.log-trade'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        [row] = _db_run(db_path, _q)
+        ctx = json.loads(row["context"])
+        assert ctx["rationale"] == rationale[:300]
+
     @pytest.mark.parametrize("reason", ["order_failed", "order_canceled"])
     def test_other_skip_reasons_write_no_error_row(
         self, monkeypatch, tmp_path, reason,

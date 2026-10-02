@@ -1292,11 +1292,34 @@ def order(
             from gimmes.strategy.scanner import effective_price
 
             async def _audit_row(entry: ErrorLogEntry, fail_msg: str) -> None:
-                """Best-effort audit row — a failed insert degrades to a log."""
+                """Best-effort audit row — a failed insert degrades to a log.
+                #840: stamps the in-cycle number so order rows join the
+                per-cycle close_failed rows (gate_cycle is bound before
+                any call)."""
+                if entry.cycle == 0 and gate_cycle:
+                    entry = entry.model_copy(update={"cycle": gate_cycle})
                 try:
                     await insert_error(db, entry)
                 except Exception:
                     logger.error(fail_msg, exc_info=True)
+
+            async def _reject_close(
+                msg: str, requested: int, held: int | None,
+            ) -> None:
+                """#840: a rejected close fails loudly — a row plus exit
+                1, so the Closer logs close_failed."""
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code="close_rejected",
+                    component="cli.order", agent=agent,
+                    message=f"{msg} (#840)",
+                    context=json.dumps({
+                        "ticker": ticker, "side": side,
+                        "requested": requested, "held": held,
+                    }),
+                ), "Failed to log rejected close (#840)")
+                raise typer.Exit(1)
 
             # #768: in-cycle gates. Both are inert outside the autonomous
             # loop (GIMMES_CYCLE unset/malformed -> 0) so manual operator
@@ -1736,6 +1759,10 @@ def order(
                     if is_buy else " Provide --count N."
                 )
                 console.print(f"[red]No contracts to order (count=0).{hint}[/red]")
+                if not is_buy:
+                    await _reject_close(
+                        f"Close of {ticker} sent with count=0", 0, None,
+                    )
                 return
 
             final_price = cap_price if cap_price is not None else eff_price
@@ -1747,19 +1774,16 @@ def order(
                     p for p in positions
                     if p.ticker == ticker and p.side == side
                 ]
-                if not matching:
-                    console.print(
-                        f"[red]No {side.upper()} position in"
-                        f" {ticker} to sell[/red]"
-                    )
-                    return
-                held = matching[0].count
+                held = matching[0].count if matching else 0
                 if final_count > held:
-                    console.print(
-                        f"[red]Cannot sell {final_count} contracts"
-                        f" — only {held} held[/red]"
+                    msg = (
+                        f"No {side.upper()} position in {ticker} to sell"
+                        if not matching else
+                        f"Cannot sell {final_count} contracts"
+                        f" — only {held} held"
                     )
-                    return
+                    console.print(f"[red]{msg}[/red]")
+                    await _reject_close(msg, final_count, held)
                 # #661: make sub-hour round trips visible. NEVER
                 # blocks a close — every branch degrades to a log.
                 try:
@@ -2117,20 +2141,17 @@ def order(
             except httpx.HTTPStatusError as exc:
                 logger.debug("Order placement failed", exc_info=True)
                 detail = _api_error_detail(exc)
-                try:
-                    await insert_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.ERROR,
-                        category=ErrorCategory.ORDER_FAILURE,
-                        error_code="http_status_error",
-                        component="cli.order", agent=agent,
-                        message=f"Order placement failed ({exc.response.status_code}): {detail}",
-                        stack_trace=traceback.format_exc(),
-                        context=json.dumps({"ticker": ticker, "side": side,
-                                            "count": final_count, "price": final_price,
-                                            "status_code": exc.response.status_code}),
-                    ))
-                except Exception:
-                    logger.error("Failed to log error to DB", exc_info=True)
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.ERROR,
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code="http_status_error",
+                    component="cli.order", agent=agent,
+                    message=f"Order placement failed ({exc.response.status_code}): {detail}",
+                    stack_trace=traceback.format_exc(),
+                    context=json.dumps({"ticker": ticker, "side": side,
+                                        "count": final_count, "price": final_price,
+                                        "status_code": exc.response.status_code}),
+                ), "Failed to log error to DB")
                 console.print(
                     f"[red bold]Order FAILED"
                     f" ({exc.response.status_code}):"
@@ -2143,19 +2164,16 @@ def order(
                 raise typer.Exit(1)
             except httpx.TimeoutException as exc:
                 logger.debug("Order placement timed out", exc_info=True)
-                try:
-                    await insert_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.ERROR,
-                        category=ErrorCategory.ORDER_FAILURE,
-                        error_code="timeout",
-                        component="cli.order", agent=agent,
-                        message=f"Order placement timed out: {exc}",
-                        stack_trace=traceback.format_exc(),
-                        context=json.dumps({"ticker": ticker, "side": side,
-                                            "count": final_count, "price": final_price}),
-                    ))
-                except Exception:
-                    logger.error("Failed to log error to DB", exc_info=True)
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.ERROR,
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code="timeout",
+                    component="cli.order", agent=agent,
+                    message=f"Order placement timed out: {exc}",
+                    stack_trace=traceback.format_exc(),
+                    context=json.dumps({"ticker": ticker, "side": side,
+                                        "count": final_count, "price": final_price}),
+                ), "Failed to log error to DB")
                 console.print(
                     "[red bold]Order FAILED: request timed out[/red bold]"
                 )
@@ -2177,19 +2195,16 @@ def order(
                     error_code = "value_error"
                 else:
                     error_code = "runtime_error"
-                try:
-                    await insert_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.ERROR,
-                        category=ErrorCategory.ORDER_FAILURE,
-                        error_code=error_code,
-                        component="cli.order", agent=agent,
-                        message=f"Order placement failed: {exc}",
-                        stack_trace=traceback.format_exc(),
-                        context=json.dumps({"ticker": ticker, "side": side,
-                                            "count": final_count, "price": final_price}),
-                    ))
-                except Exception:
-                    logger.error("Failed to log error to DB", exc_info=True)
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.ERROR,
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code=error_code,
+                    component="cli.order", agent=agent,
+                    message=f"Order placement failed: {exc}",
+                    stack_trace=traceback.format_exc(),
+                    context=json.dumps({"ticker": ticker, "side": side,
+                                        "count": final_count, "price": final_price}),
+                ), "Failed to log error to DB")
                 console.print(f"[red bold]Order FAILED: {rich_escape(str(exc))}[/red bold]")
                 await _mark_terminal({"error_code": error_code})
                 raise typer.Exit(1)
@@ -2326,7 +2341,84 @@ def order(
                         "filled": filled_now,
                     }),
                 ), "Failed to log fill-data fallback (#834)")
-            if result.status == "resting":
+            # #840: closes never rest (#659). A sell that didn't fully
+            # fill leaves the position open: cancel the live remainder
+            # (nothing books a later sell fill — the resting sweep is
+            # paper-only), book only filled_now below, write a row, and
+            # exit 1 after the sync so the Closer logs close_failed.
+            close_incomplete = not is_buy and (
+                result.status == "resting" or result.remaining_count > 0
+            )
+            remainder, cancel_failed = "abandoned", False
+            if close_incomplete and result.status not in (
+                "executed", "canceled",
+            ):
+                remainder, final, cancel_failed = await _cancel_resting_close(
+                    client, broker, result.order_id,
+                )
+                if final and final.get("fill_count_fp") is not None:
+                    # The venue's final word: book what actually filled,
+                    # including fills that raced the cancel. A malformed
+                    # dict keeps the placement-time numbers — the order
+                    # is live, so the row/sync/exit-1 contract must hold.
+                    from gimmes.kalshi.orders import _parse_order
+
+                    try:
+                        venue_filled = min(final_count, int(round(float(
+                            final["fill_count_fp"],
+                        ))))
+                        post = _parse_order(final)
+                    except (TypeError, ValueError):
+                        logger.error(
+                            "Unparseable final order for close %s (#840)",
+                            result.order_id, exc_info=True,
+                        )
+                    else:
+                        filled_now = venue_filled
+                        close_incomplete = filled_now < final_count
+                        result = result.model_copy(update={
+                            "remaining_count": final_count - filled_now,
+                            "avg_fill_price": post.avg_fill_price,
+                            "fill_fees": post.fill_fees,
+                            # The booking guard keys on these two.
+                            "status": (
+                                "executed" if not close_incomplete
+                                else "resting"
+                            ),
+                        })
+            if close_incomplete:
+                await _audit_row(ErrorLogEntry(
+                    severity=(
+                        ErrorSeverity.ERROR
+                        if cancel_failed
+                        else ErrorSeverity.WARNING
+                    ),
+                    category=ErrorCategory.ORDER_FAILURE,
+                    error_code="close_incomplete",
+                    component="cli.order", agent=agent,
+                    message=(
+                        f"Close incomplete for {ticker}: {filled_now}/"
+                        f"{final_count} {side.upper()} sold,"
+                        f" {result.remaining_count} unfilled (status"
+                        f" {result.status}; remainder {remainder}) (#840)"
+                    ),
+                    context=json.dumps({
+                        "ticker": ticker, "side": side,
+                        "requested": final_count, "filled": filled_now,
+                        "remaining": result.remaining_count,
+                        "status": result.status,
+                        "order_id": result.order_id,
+                        "remainder": remainder,
+                    }),
+                ), "Failed to log incomplete close (#840)")
+                console.print(
+                    f"[red bold]Close INCOMPLETE: {filled_now} of"
+                    f" {final_count} sold, {result.remaining_count} still"
+                    f" held (status: {result.status}; remainder"
+                    f" {rich_escape(remainder)}). The position is NOT"
+                    f" closed.[/red bold]"
+                )
+            elif result.status == "resting":
                 console.print(
                     f"[yellow]Resting {result.remaining_count} unfilled"
                     f" (rest-on-miss #743) — ledger rows land on"
@@ -2403,27 +2495,22 @@ def order(
                                 "recording trade with empty thesis: %s",
                                 ticker, exc, exc_info=True,
                             )
-                            try:
-                                await insert_error(db, ErrorLogEntry(
-                                    severity=ErrorSeverity.WARNING,
-                                    category=ErrorCategory.DATA_INTEGRITY,
-                                    error_code="thesis_fetch_failed",
-                                    component="cli.order", agent=agent,
-                                    message=(
-                                        f"Thesis fetch failed for {ticker}; "
-                                        f"trade recorded with empty thesis: {exc}"
-                                    ),
-                                    stack_trace=traceback.format_exc(),
-                                    context=json.dumps({
-                                        "ticker": ticker, "side": side,
-                                        "count": final_count,
-                                        "price": final_price,
-                                    }),
-                                ))
-                            except Exception:
-                                logger.error(
-                                    "Failed to log error to DB", exc_info=True,
-                                )
+                            await _audit_row(ErrorLogEntry(
+                                severity=ErrorSeverity.WARNING,
+                                category=ErrorCategory.DATA_INTEGRITY,
+                                error_code="thesis_fetch_failed",
+                                component="cli.order", agent=agent,
+                                message=(
+                                    f"Thesis fetch failed for {ticker}; "
+                                    f"trade recorded with empty thesis: {exc}"
+                                ),
+                                stack_trace=traceback.format_exc(),
+                                context=json.dumps({
+                                    "ticker": ticker, "side": side,
+                                    "count": final_count,
+                                    "price": final_price,
+                                }),
+                            ), "Failed to log error to DB")
                             thesis = ""
                     else:
                         trade_action = TradeDecision.Action.CLOSE
@@ -2534,20 +2621,17 @@ def order(
                 logger.warning(
                     "Position sync failed (database): %s", exc, exc_info=True,
                 )
-                try:
-                    await insert_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.WARNING,
-                        category=ErrorCategory.DATA_INTEGRITY,
-                        error_code="position_sync_db_error",
-                        component="cli.order", agent=agent,
-                        message=f"Position sync failed after order {result.order_id}: {exc}",
-                        stack_trace=traceback.format_exc(),
-                        context=json.dumps({"ticker": ticker, "side": side,
-                                            "count": final_count, "price": final_price,
-                                            "order_id": result.order_id}),
-                    ))
-                except Exception:
-                    logger.error("Failed to log error to DB", exc_info=True)
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="position_sync_db_error",
+                    component="cli.order", agent=agent,
+                    message=f"Position sync failed after order {result.order_id}: {exc}",
+                    stack_trace=traceback.format_exc(),
+                    context=json.dumps({"ticker": ticker, "side": side,
+                                        "count": final_count, "price": final_price,
+                                        "order_id": result.order_id}),
+                ), "Failed to log error to DB")
                 console.print(
                     f"[red bold]Warning: Order was placed successfully"
                     f" ({result.order_id}) but position sync"
@@ -2562,28 +2646,78 @@ def order(
                 logger.warning(
                     "Position sync failed: %s", exc, exc_info=True,
                 )
-                try:
-                    await insert_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.WARNING,
-                        category=ErrorCategory.DATA_INTEGRITY,
-                        error_code="position_sync_failed",
-                        component="cli.order", agent=agent,
-                        message=f"Position sync failed after order {result.order_id}: {exc}",
-                        stack_trace=traceback.format_exc(),
-                        context=json.dumps({"ticker": ticker, "side": side,
-                                            "count": final_count, "price": final_price,
-                                            "order_id": result.order_id}),
-                    ))
-                except Exception:
-                    logger.error("Failed to log error to DB", exc_info=True)
+                await _audit_row(ErrorLogEntry(
+                    severity=ErrorSeverity.WARNING,
+                    category=ErrorCategory.DATA_INTEGRITY,
+                    error_code="position_sync_failed",
+                    component="cli.order", agent=agent,
+                    message=f"Position sync failed after order {result.order_id}: {exc}",
+                    stack_trace=traceback.format_exc(),
+                    context=json.dumps({"ticker": ticker, "side": side,
+                                        "count": final_count, "price": final_price,
+                                        "order_id": result.order_id}),
+                ), "Failed to log error to DB")
                 console.print(
                     f"[red bold]Warning: Order was placed successfully"
                     f" ({result.order_id}) but position sync"
                     f" failed: {exc}[/red bold]"
                 )
                 console.print(_RECONCILE_HINT)
+            if close_incomplete:
+                raise typer.Exit(1)
 
     _run(_order())
+
+
+async def _cancel_resting_close(  # type: ignore[no-untyped-def]
+    client, broker, order_id: str,
+) -> tuple[str, dict | None, bool]:  # type: ignore[type-arg]
+    """Cancel an incomplete CLOSE's live remainder (#840).
+
+    Returns ``(remainder, final_order, cancel_failed)``: a label for the
+    audit row, the venue's raw final order dict when known, and whether
+    a live remainder may still be resting, so contracts that
+    filled between placement and the cancel still get booked. If the
+    cancel fails (e.g. the remainder filled first), re-fetch the order
+    before calling it a failure. Best-effort: never raises.
+    """
+    import logging
+
+    logger = logging.getLogger("gimmes.cli")
+    if broker:
+        try:
+            await broker.cancel_order(order_id)
+            return "canceled", None, False
+        except Exception as exc:
+            logger.error(
+                "Cancel of resting close %s failed (#840)",
+                order_id, exc_info=True,
+            )
+            return f"cancel FAILED ({exc}) — may still be resting", None, True
+    from gimmes.kalshi.orders import cancel_order, get_order
+
+    try:
+        resp = await cancel_order(client, order_id)
+        return "canceled", resp.get("order"), False
+    except Exception as exc:
+        logger.error(
+            "Cancel of resting close %s failed (#840)",
+            order_id, exc_info=True,
+        )
+        failed = f"cancel FAILED ({exc}) — may still be resting"
+        try:
+            final = (await get_order(client, order_id)).get("order")
+        except Exception:
+            logger.error(
+                "Re-fetch of close %s failed (#840)", order_id,
+                exc_info=True,
+            )
+            return failed, None, True
+        if final and final.get("status") == "executed":
+            return "filled before cancel", final, False
+        if final and final.get("status") == "canceled":
+            return "already canceled", final, False
+        return failed, final, True
 
 
 @app.command(rich_help_panel="Trading")
@@ -3584,6 +3718,8 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
         None,
     )
     is_add = pos is not None and pos.count > n
+    # BUY fills only: a resting SELL can't reach the sweep (paper never
+    # rests a sell; #840 cancels a live one) — see #846 if that changes.
     trade = TradeDecision(
         ticker=order.ticker,
         action=(
@@ -4758,6 +4894,9 @@ def log_trade(
                             "ticker": ticker,
                             "agent": agent,
                             "side": resolved_side,
+                            # #840: tells a blocked CLOSE from a blocked
+                            # entry without opening the trades table.
+                            "rationale": (rationale_val or "")[:300],
                         }),
                     ))
                 except Exception:

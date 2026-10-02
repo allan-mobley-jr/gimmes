@@ -98,7 +98,7 @@ def _stub_config():
 
 def _run_order_cli(
     broker, *, sync_side_effect=None, championship_create_order=None,
-    insert_error_side_effect=None, extra_args=None, market=None,
+    championship_positions=None, insert_error_side_effect=None, extra_args=None, market=None,
     snapshot_mock=None, validation=None, cli_args=None,
     last_close=None, last_close_effect=None, config=None,
     orderbook=None, orderbook_side_effect=None,
@@ -219,7 +219,7 @@ def _run_order_cli(
             ),
             patch(
                 "gimmes.kalshi.portfolio.get_all_positions",
-                AsyncMock(return_value=[]),
+                AsyncMock(return_value=list(championship_positions or [])),
             ),
             patch("gimmes.store.queries.sync_positions", AsyncMock()),
             # #684: the settlements pre-consumption reads the old
@@ -1702,3 +1702,344 @@ class TestFillPriceLedger:
         assert t.count == 6  # #743: filled count, not requested
         assert t.price == pytest.approx(0.38)
         assert t.fee == pytest.approx(0.10)
+
+
+# ---------------------------------------------------------------------------
+# #840: a CLOSE that didn't fully fill is a failure
+# ---------------------------------------------------------------------------
+
+
+def _sell_order(*, status: str, remaining: int, order_id: str = "sell-1") -> Order:
+    return Order(
+        order_id=order_id,
+        ticker="TEST-TICKER",
+        action=OrderAction.SELL,
+        side=OrderSide.YES,
+        status=status,
+        yes_price=0.40,
+        count=10,
+        remaining_count=remaining,
+    )
+
+
+def _entries(mock_insert_error, code: str) -> list:  # type: ignore[type-arg]
+    return [
+        c.args[1] for c in mock_insert_error.call_args_list
+        if c.args[1].error_code == code
+    ]
+
+
+def _position_broker(count: int = 100, **kw):  # type: ignore[no-untyped-def]
+    pos = Position(
+        ticker="TEST-TICKER", side="yes", count=count,
+        avg_price=0.60, market_price=0.60, cost_basis=0.60 * count,
+    )
+    return _make_mock_broker(get_positions_side_effect=lambda: [pos], **kw)
+
+
+class TestIncompleteClose:
+    """#840: closes never rest (#659). A sell that rests or partly fills
+    cancels the live remainder, books only what filled, writes a
+    close_incomplete row, and exits 1 so the Closer logs close_failed."""
+
+    def _run(self, order: Order, *, cancel_effect=None):  # type: ignore[no-untyped-def]
+        broker = _position_broker()
+        broker.create_order = AsyncMock(return_value=order)
+        broker.cancel_order = AsyncMock(side_effect=cancel_effect)
+        captured, sync = _capture_trade()
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            result, console, insert = _run_order_cli(
+                broker, sync_side_effect=sync, cli_args=_SELL_CLI_ARGS,
+            )
+        return result, console, insert, broker, captured
+
+    def test_resting_sell_cancels_remainder_and_exits_1(self) -> None:
+        result, console, insert, broker, captured = self._run(
+            _sell_order(status="resting", remaining=10),
+        )
+        assert result.exit_code == 1
+        broker.cancel_order.assert_awaited_once_with("sell-1")
+        out = _printed(console)
+        assert "Close INCOMPLETE" in out
+        assert "rest-on-miss" not in out
+        [entry] = _entries(insert, "close_incomplete")
+        ctx = json.loads(entry.context)
+        assert entry.severity == ErrorSeverity.WARNING
+        assert (ctx["filled"], ctx["remaining"], ctx["remainder"]) == (
+            0, 10, "canceled",
+        )
+        assert "trade" not in captured  # nothing filled, nothing booked
+        assert broker.get_positions.await_count >= 2  # sync still ran
+
+    def test_partial_resting_sell_books_filled_part(self) -> None:
+        result, _, insert, _, captured = self._run(
+            _sell_order(status="resting", remaining=4),
+        )
+        assert result.exit_code == 1
+        t = captured["trade"]
+        assert t.action is TradeDecision.Action.CLOSE
+        assert t.count == 6
+        ctx = json.loads(_entries(insert, "close_incomplete")[0].context)
+        assert (ctx["filled"], ctx["remaining"]) == (6, 4)
+
+    def test_executed_partial_sell_no_cancel(self) -> None:
+        """Paper taker sell on a thin book: executed with a dropped
+        remainder — nothing to cancel, still a failure."""
+        result, _, insert, broker, captured = self._run(
+            _sell_order(status="executed", remaining=4),
+        )
+        assert result.exit_code == 1
+        broker.cancel_order.assert_not_awaited()
+        ctx = json.loads(_entries(insert, "close_incomplete")[0].context)
+        assert ctx["remainder"] == "abandoned"
+        assert captured["trade"].count == 6
+
+    def test_cancel_failure_is_error_severity(self) -> None:
+        result, _, insert, _, _ = self._run(
+            _sell_order(status="resting", remaining=10),
+            cancel_effect=httpx.ConnectError("down"),
+        )
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "close_incomplete")
+        assert entry.severity == ErrorSeverity.ERROR
+        assert "cancel FAILED" in json.loads(entry.context)["remainder"]
+
+    def test_full_sell_unchanged(self) -> None:
+        result, console, insert, broker, captured = self._run(
+            _sell_order(status="executed", remaining=0),
+        )
+        assert result.exit_code == 0, _printed(console)
+        assert _entries(insert, "close_incomplete") == []
+        broker.cancel_order.assert_not_awaited()
+        assert captured["trade"].count == 10
+
+
+class TestRejectedClose:
+    """#840: a sell with no position, or more than held, used to print
+    and exit 0 with no trace."""
+
+    def test_sell_without_position_exits_1_with_row(self) -> None:
+        broker = _make_mock_broker()  # get_positions → []
+        result, console, insert = _run_order_cli(
+            broker, cli_args=_SELL_CLI_ARGS,
+        )
+        assert result.exit_code == 1
+        broker.create_order.assert_not_awaited()
+        [entry] = _entries(insert, "close_rejected")
+        assert json.loads(entry.context)["held"] == 0
+        assert "No YES position" in _printed(console)
+
+    def test_sell_over_held_exits_1_with_row(self) -> None:
+        broker = _position_broker(count=5)
+        result, console, insert = _run_order_cli(
+            broker, cli_args=_SELL_CLI_ARGS,
+        )
+        assert result.exit_code == 1
+        broker.create_order.assert_not_awaited()
+        [entry] = _entries(insert, "close_rejected")
+        assert json.loads(entry.context)["held"] == 5
+        assert "only 5 held" in _printed(console)
+
+
+class TestOrderRowsCarryCycle:
+    """#840: order error rows used to land with cycle=0, so they could
+    not be joined to the per-cycle close_failed rows."""
+
+    def _run_in_cycle(self, monkeypatch, broker):  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("GIMMES_CYCLE", "7")
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            return _run_order_cli(
+                broker, cli_args=[*_SELL_CLI_ARGS, "--agent", "closer"],
+            )
+
+    def test_http_status_error_row_carries_cycle(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        exc = httpx.HTTPStatusError(
+            "bad", request=_make_response(500).request,
+            response=_make_response(500, text="boom"),
+        )
+        broker = _position_broker(create_order_side_effect=exc)
+        result, _, insert = self._run_in_cycle(monkeypatch, broker)
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "http_status_error")
+        assert entry.cycle == 7
+
+    def test_timeout_row_carries_cycle(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        broker = _position_broker(
+            create_order_side_effect=httpx.ReadTimeout("slow"),
+        )
+        result, _, insert = self._run_in_cycle(monkeypatch, broker)
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "timeout")
+        assert entry.cycle == 7
+
+    def test_close_incomplete_row_carries_cycle(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        broker = _position_broker()
+        broker.create_order = AsyncMock(
+            return_value=_sell_order(status="resting", remaining=10),
+        )
+        broker.cancel_order = AsyncMock()
+        result, _, insert = self._run_in_cycle(monkeypatch, broker)
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "close_incomplete")
+        assert entry.cycle == 7
+
+
+def _kalshi_final(*, fill: int, status: str = "canceled") -> dict:  # type: ignore[type-arg]
+    """Raw Kalshi order dict as returned by DELETE/GET (#840)."""
+    return {
+        "order_id": "sell-1", "ticker": "TEST-TICKER", "side": "yes",
+        "action": "sell", "status": status, "yes_price_dollars": "0.4000",
+        "initial_count_fp": "10.00", "remaining_count_fp": "0.00",
+        "fill_count_fp": f"{fill}.00",
+    }
+
+
+class TestIncompleteCloseChampionship:
+    """#840 real-money path: broker is None → kalshi cancel_order, and
+    fills that raced the cancel are booked from the venue's final word."""
+
+    def _run(self, order, *, cancel, get=None):  # type: ignore[no-untyped-def]
+        champ = _stub_config()
+        champ.is_championship = True
+        pos = Position(
+            ticker="TEST-TICKER", side="yes", count=100,
+            avg_price=0.60, market_price=0.60, cost_basis=60.0,
+        )
+        captured, sync = _capture_trade()
+        with patch("gimmes.kalshi.orders.cancel_order", cancel), patch(
+            "gimmes.kalshi.orders.get_order", get or AsyncMock(),
+        ), patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            result, console, insert = _run_order_cli(
+                None, config=champ, sync_side_effect=sync,
+                championship_create_order=AsyncMock(return_value=order),
+                championship_positions=[pos], cli_args=_SELL_CLI_ARGS,
+            )
+        return result, console, insert, captured
+
+    def test_resting_close_cancels_via_kalshi(self) -> None:
+        cancel = AsyncMock(return_value={"order": _kalshi_final(fill=0)})
+        result, console, insert, captured = self._run(
+            _sell_order(status="resting", remaining=10), cancel=cancel,
+        )
+        assert result.exit_code == 1, _printed(console)
+        cancel.assert_awaited_once()
+        assert cancel.await_args.args[1] == "sell-1"
+        [entry] = _entries(insert, "close_incomplete")
+        assert json.loads(entry.context)["remainder"] == "canceled"
+        assert entry.severity == ErrorSeverity.WARNING
+        assert "trade" not in captured
+
+    def test_fill_racing_the_cancel_is_booked(self) -> None:
+        """6 filled between placement (0) and cancel — book 6, not 0."""
+        cancel = AsyncMock(return_value={"order": _kalshi_final(fill=6)})
+        result, _, insert, captured = self._run(
+            _sell_order(status="resting", remaining=10), cancel=cancel,
+        )
+        assert result.exit_code == 1
+        assert captured["trade"].count == 6
+        ctx = json.loads(_entries(insert, "close_incomplete")[0].context)
+        assert (ctx["filled"], ctx["remaining"]) == (6, 4)
+
+    def test_full_fill_racing_the_cancel_is_a_success(self) -> None:
+        cancel = AsyncMock(return_value={"order": _kalshi_final(fill=10)})
+        result, console, insert, captured = self._run(
+            _sell_order(status="resting", remaining=10), cancel=cancel,
+        )
+        assert result.exit_code == 0, _printed(console)
+        assert captured["trade"].count == 10
+        assert _entries(insert, "close_incomplete") == []
+
+    def test_cancel_404_after_full_fill_is_a_success(self) -> None:
+        resp = _make_response(404, text="not found")
+        cancel = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "gone", request=resp.request, response=resp,
+        ))
+        get = AsyncMock(return_value={
+            "order": _kalshi_final(fill=10, status="executed"),
+        })
+        result, console, insert, captured = self._run(
+            _sell_order(status="resting", remaining=10),
+            cancel=cancel, get=get,
+        )
+        assert result.exit_code == 0, _printed(console)
+        assert captured["trade"].count == 10
+        assert _entries(insert, "close_incomplete") == []
+
+    def test_cancel_fails_but_order_already_canceled(self) -> None:
+        resp = _make_response(400, text="not resting")
+        cancel = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "bad", request=resp.request, response=resp,
+        ))
+        get = AsyncMock(return_value={"order": _kalshi_final(fill=3)})
+        result, _, insert, captured = self._run(
+            _sell_order(status="resting", remaining=10),
+            cancel=cancel, get=get,
+        )
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "close_incomplete")
+        assert entry.severity == ErrorSeverity.WARNING
+        assert json.loads(entry.context)["remainder"] == "already canceled"
+        assert captured["trade"].count == 3
+
+    def test_malformed_final_order_keeps_contract(self) -> None:
+        bad = _kalshi_final(fill=0)
+        bad["fill_count_fp"] = "not-a-number"
+        cancel = AsyncMock(return_value={"order": bad})
+        result, _, insert, _ = self._run(
+            _sell_order(status="resting", remaining=10), cancel=cancel,
+        )
+        assert result.exit_code == 1
+        assert len(_entries(insert, "close_incomplete")) == 1
+
+    def test_kalshi_cancel_failure_is_error(self) -> None:
+        resp = _make_response(500, text="boom")
+        cancel = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "bad", request=resp.request, response=resp,
+        ))
+        get = AsyncMock(side_effect=httpx.ConnectError("down"))
+        result, _, insert, _ = self._run(
+            _sell_order(status="resting", remaining=10),
+            cancel=cancel, get=get,
+        )
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "close_incomplete")
+        assert entry.severity == ErrorSeverity.ERROR
+        assert "cancel FAILED" in json.loads(entry.context)["remainder"]
+
+
+class TestCloseEdgeCases:
+    def test_zero_count_sell_exits_1_with_row(self) -> None:
+        """#840: a close sent with count 0 is a failed close."""
+        broker = _position_broker()
+        result, _, insert = _run_order_cli(
+            broker, cli_args=[
+                "order", "TEST-TICKER", "--action", "sell", "--side",
+                "yes", "--count", "0", "--price", "40", "--yes",
+            ],
+        )
+        assert result.exit_code == 1
+        broker.create_order.assert_not_awaited()
+        assert len(_entries(insert, "close_rejected")) == 1
+
+    def test_manual_order_row_cycle_zero(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.delenv("GIMMES_CYCLE", raising=False)
+        broker = _position_broker(
+            create_order_side_effect=httpx.ReadTimeout("slow"),
+        )
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            result, _, insert = _run_order_cli(broker, cli_args=_SELL_CLI_ARGS)
+        assert result.exit_code == 1
+        [entry] = _entries(insert, "timeout")
+        assert entry.cycle == 0
