@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.markup import escape as rich_escape
+from rich.measure import Measurement
 from rich.panel import Panel
 from rich.table import Table
 
@@ -14,6 +15,27 @@ from gimmes.reporting.metrics import PerformanceMetrics
 from gimmes.reporting.pnl import PnLSummary
 
 console = Console()
+
+
+def print_unwrapped(table: Table, target: Console | None = None) -> None:
+    """Print ``table`` so no cell folds in captured (non-TTY) output.
+
+    #838: at the width-80 non-TTY default agents see, ``overflow="fold"``
+    split long tickers across rows and agents copied the first fragment
+    (``KXPAYROLLS-26SEP-T1000``). When the table's natural width exceeds
+    the console, render at natural width — wider than 80 is harmless
+    for captured stdout — and ``crop=False`` stops Console cutting lines
+    at its width. A human terminal keeps the #567 fold so its box
+    borders don't break.
+    """
+    out = target if target is not None else console
+    if not out.is_terminal:
+        natural = Measurement.get(
+            out, out.options.update_width(10_000), table,
+        ).maximum
+        if natural > out.width:
+            table.width = natural
+    out.print(table, crop=False)
 
 
 def format_mode_status(mode: str, connected: bool, balance: float | None = None) -> None:
@@ -151,9 +173,8 @@ def format_positions(
     consumption per losing position (#659) and prints a
     ``StopGate: N% MANDATORY-CLOSE`` banner line BELOW the table for
     each position at >= 200%. The banner — not the table cell —
-    carries the load-bearing literal: at the width-80 non-TTY default
-    agents see, table cells wrap and ellipsize long content, but a
-    plain sub-80-char line always survives intact. Monitor copies the
+    carries the load-bearing literal and is printed soft-wrapped so it
+    survives intact; the table prints via ``print_unwrapped`` (#838). Monitor copies the
     banner into flags; Caddie Master's hard backstop keys on it.
 
     ``stale_tickers`` (#674): positions whose mark-to-market failed or
@@ -174,7 +195,8 @@ def format_positions(
     # ``overflow="fold"`` keeps the full ticker visible by wrapping to
     # the next line when the terminal can't fit it; Rich's default
     # ``"ellipsis"`` produced truncated tickers that broke downstream
-    # commands relying on exact-match lookup (issue #567).
+    # commands relying on exact-match lookup (issue #567). Non-TTY
+    # output skips fold entirely — see ``print_unwrapped`` (#838).
     table.add_column("Ticker", style="cyan", overflow="fold")
     table.add_column("Side")
     table.add_column("Qty", justify="right")
@@ -225,9 +247,10 @@ def format_positions(
                 )
         table.add_row(*row)
 
-    console.print(table)
+    print_unwrapped(table)
     for banner in banners:
-        console.print(banner)
+        # soft_wrap: the backstop keys on the whole banner line (#838).
+        console.print(banner, soft_wrap=True)
 
 
 def format_scan_results(markets: list[dict], title: str = "Scan Results") -> None:  # type: ignore[type-arg]
@@ -275,7 +298,7 @@ def format_scan_results(markets: list[dict], title: str = "Scan Results") -> Non
         ])
         table.add_row(*row)
 
-    console.print(table)
+    print_unwrapped(table)
 
 
 def format_kv_table(title: str, rows: list[tuple[str, str]]) -> Table:
