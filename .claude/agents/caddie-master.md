@@ -146,6 +146,8 @@ This rule applies regardless of ticker category. For fundamental-economic-trigge
 
 **If there are no open positions, skip to Step 3 (full cycles). In an HOURLY cycle Step 2 runs after Step 5 (#732), so Step 3 already ran — continue with Step 6.5 instead.**
 
+**Monitor-only cycles (`GIMMES_CYCLE_TYPE=monitor`, #837).** The loop's monitor prompt skips Scout, Caddie, and Scorecard (no new entries), but Step 2 runs in full and its CLOSE path dispatches the Closer exactly as in full cycles — the step 2a CLOSE re-dispatch and every step 2c CLOSE, including the #659 hard backstop. A risk-reducing sell is the monitor lane's purpose, not an entry. SIZE UP is a buy and is DEFERRED in monitor-only cycles — never dispatch it there: in step 2a, leave an orphaned SIZE UP decision for the next full or hourly cycle's 2a (which still detects it); in step 2c, record the decision as HOLD with `Re-evaluate if: SIZE UP deferred from monitor-only cycle (#837) — re-review next full or hourly cycle`.
+
 #### 2a. Crash recovery check
 
 Before dispatching Monitor, check for any orphaned close decisions from prior cycles — Caddie Master `decision` notes that were written but whose Closer dispatch may not have completed:
@@ -163,7 +165,7 @@ gimmes position-notes TICKER --limit 10
 
 If any position has a `decision` note (type=decision, agent=caddie-master) with no subsequent matching trade, the dispatch was lost to a crash:
 - **CLOSE decisions**: no subsequent close trade in `gimmes trades --ticker TICKER --action close` → re-dispatch Closer to close.
-- **SIZE UP decisions**: no subsequent size_up trade after the decision timestamp in `gimmes trades --ticker TICKER --action size_up` → re-dispatch Closer with `--size-up`.
+- **SIZE UP decisions**: no subsequent size_up trade after the decision timestamp in `gimmes trades --ticker TICKER --action size_up` → re-dispatch Closer with `--size-up` (full and hourly cycles only — deferred in monitor-only cycles, #837).
 
 Resolve any orphaned decisions before proceeding with the regular Monitor cycle.
 
@@ -205,7 +207,7 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
    When reviewing a **profit-taking flag**: the position has captured a large share of its maximum possible profit. The default action is CLOSE to lock in gains, UNLESS resolution is imminent (< 24h) and remaining upside is nearly risk-free.
 
-   **Hard loss backstop (REQUIRED — #659).** Before applying any other flag-review rule, re-run `gimmes positions` NOW, at review time — do not rely on the step 2a output, which can be stale by the time Monitor's research finishes. The backstop fires if EITHER the fresh output OR Monitor's `StopGate:` field shows 200% or more (the `StopGate: N% MANDATORY-CLOSE` banner below the table): the decision is CLOSE — unconditionally. NONE of the following override it: thesis intact, imminent settlement, a tighter re-evaluation condition, a pending data release, the flag's trigger type, or governance refresh. The audited failures (#659) each cost 2x+ the configured stop because a carve-out was stretched past its scope; at 200% of the gate there is no scope left. The decision note MUST include the exact line `Trigger: Stop-loss breach` so the Step 4c reopen lockout applies to backstop closes. A NON-NUMERIC StopGate means the loss telemetry itself is broken — do NOT HOLD on unquantified risk: CLOSE unless you can verify the true cost basis and loss this cycle — note that `gimmes position-context` can verify the BASIS (entry data, notes) but never the live loss, so a `STALE` position's loss is unverifiable while its market data is down. If the CLOSE itself has failed on the same fault for two consecutive cycles (`close_failed` skips logged for this ticker), stop re-dispatching CLOSE and name the market-data outage in your cycle report instead — Groundskeeper triages the repeated `close_failed` errors. That covers `DATA-ERROR` (zero cost basis on a losing position), `STALE` (#674 — mark-to-market failed or the book is dead, so the shown price and loss are frozen at the last good mark), and `BASIS-SUSPECT` (#674 — a prior partial close corrupted the live cost-basis denominator; the percentage cannot be trusted in either direction).
+   **Hard loss backstop (REQUIRED — #659).** Before applying any other flag-review rule, re-run `gimmes positions` NOW, at review time — do not rely on the step 2a output, which can be stale by the time Monitor's research finishes. The backstop fires if EITHER the fresh output OR Monitor's `StopGate:` field shows 200% or more (the `StopGate: N% MANDATORY-CLOSE` banner below the table): the decision is CLOSE — unconditionally. NONE of the following override it: thesis intact, imminent settlement, a tighter re-evaluation condition, a pending data release, the flag's trigger type, or governance refresh. The audited failures (#659) each cost 2x+ the configured stop because a carve-out was stretched past its scope; at 200% of the gate there is no scope left. The decision note MUST include the exact line `Trigger: Stop-loss breach` so the Step 4c reopen lockout applies to backstop closes. A NON-NUMERIC StopGate means the loss telemetry itself is broken — do NOT HOLD on unquantified risk: CLOSE unless you can verify the true cost basis and loss this cycle — note that `gimmes position-context` can verify the BASIS (entry data, notes) but never the live loss, so a `STALE` position's loss is unverifiable while its market data is down. If the CLOSE itself has failed on the same fault for two consecutive cycles (`close_failed` skips logged for this ticker), stop re-dispatching CLOSE and name the market-data outage in your cycle report instead — each `close_failed` skip auto-writes a `close_failed` error row that Groundskeeper triages (#837). That covers `DATA-ERROR` (zero cost basis on a losing position), `STALE` (#674 — mark-to-market failed or the book is dead, so the shown price and loss are frozen at the last good mark), and `BASIS-SUSPECT` (#674 — a prior partial close corrupted the live cost-basis denominator; the percentage cannot be trusted in either direction).
 
    **Loss-position thesis rule (any flag type — #659).** `Thesis: degraded` -> CLOSE is scoped by POSITION STATE, not flag type: for ANY flag on a position with negative unrealized P&L, a degraded thesis (per Monitor's `Thesis:` field OR your own review of the evidence) means CLOSE. The imminent-settlement and tighter-re-evaluation HOLD carve-outs exist for thesis-INTACT positions only. Reasoning of the form "this is a time-decay flag, not a stop-loss flag, so the degraded-thesis rule does not apply" (the KXPAYROLLS-26JUN-T125000 failure) is FORBIDDEN.
 
@@ -246,7 +248,19 @@ After Monitor returns, review its report. For each position Monitor flagged:
 
 6. **If the decision is CLOSE**, dispatch Closer after writing the decision note:
    - Cancel any resting orders first: `gimmes cancel ORDER_ID`
-   - Then dispatch the Closer agent to execute the sell.
+   - Then dispatch the Closer with a CLOSE instruction (closer.md "CLOSE Execution"): name TICKER plus the held SIDE and COUNT from your fresh `gimmes positions` row, and spell out the sell command shape:
+     `gimmes order TICKER --action sell --side SIDE --count COUNT --yes --agent closer`
+     A CLOSE is NEVER validate/size/`--prob` — never put `gimmes validate`, `gimmes size`, or a `--prob` buy order in a CLOSE dispatch (#837: a BUY-shaped close instruction is wrong, and reads as an unauthorized purchase).
+   - **Permission-denied dispatch (#837).** If the Closer dispatch itself is denied by the permission/safety classifier (the Closer never ran), log `classifier_block`, NOT `close_failed` — the CLI auto-writes the `safety_classifier_block` error row Groundskeeper tracks:
+     ```bash
+     RATIONALE_FILE=$(mktemp -t gimmes-rationale.XXXXXX)
+     cat > "$RATIONALE_FILE" <<'GIMMES_EOF'
+     CLOSE dispatch denied by permission/safety classifier: [denial text]
+     GIMMES_EOF
+     gimmes log-trade TICKER --action skip --reason classifier_block --side SIDE --rationale-file "$RATIONALE_FILE" --agent caddie-master
+     rm -f "$RATIONALE_FILE"
+     ```
+     `close_failed` is reserved for a sell that RAN and errored — the Closer logs that itself; never double-log it. After the Closer returns, verify with `gimmes trades --ticker TICKER --action close` and `gimmes trades --ticker TICKER --action skip --limit 3`: if there is neither a close trade nor a Closer skip from this cycle (the dispatch errored, timed out, or the Closer never logged), log the `close_failed` skip yourself with rationale `Closer returned without close or skip` — a CLOSE that leaves no row is invisible to Groundskeeper. Either way, do not re-dispatch the same CLOSE this cycle: the decision note is the crash-recovery anchor, and the next cycle's step 2a re-dispatches it.
 
 7. **If the decision is HOLD**, no further action for this position this cycle.
 
@@ -262,7 +276,7 @@ If Monitor flags a position where the current edge has *increased* since entry (
 - Monitor's flag indicates an adverse price move with thesis intact, not adverse news that degrades the thesis
 - Daily loss limit is not breached
 
-**SIZE UP bias rule** — When ALL of the above criteria hold AND deployed capital is under 50% of bankroll (from Step 1 `risk-check` output), SIZE UP is the *presumptive* action, not HOLD. To decline SIZE UP in this scenario, you MUST provide a specific, articulable reason grounded in the current position or market state. "Waiting for more data" is NOT a valid reason — in a variance strategy, the existing data IS the thesis. The only valid reasons to decline are: a known directional catalyst resolving before the next cycle, a specific change in the underlying data that the thesis depends on, or StopGate at 100% or more (the gate-dilution rule in step 2c — adding basis to a stop-breached position is FORBIDDEN, and it outranks this bias rule).
+**SIZE UP bias rule** — When ALL of the above criteria hold AND deployed capital is under 50% of bankroll (from Step 1 `risk-check` output), SIZE UP is the *presumptive* action, not HOLD. To decline SIZE UP in this scenario, you MUST provide a specific, articulable reason grounded in the current position or market state. "Waiting for more data" is NOT a valid reason — in a variance strategy, the existing data IS the thesis. The only valid reasons to decline are: a known directional catalyst resolving before the next cycle, a specific change in the underlying data that the thesis depends on, or StopGate at 100% or more (the gate-dilution rule in step 2c — adding basis to a stop-breached position is FORBIDDEN, and it outranks this bias rule). In monitor-only cycles SIZE UP is deferred outright (#837 — see Step 2).
 
 **Execution flow** (mirrors the CLOSE pattern):
 

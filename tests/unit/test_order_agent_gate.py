@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 from gimmes import cli as cli_module
@@ -571,6 +572,133 @@ class TestClassifierBlockSkip:
         from gimmes.strategy.advisor import NON_ENTRY_SKIP_REASONS
 
         assert "classifier_block" in NON_ENTRY_SKIP_REASONS
+
+
+class TestCloseFailedSkip:
+    """#837: a close_failed skip means a position the loop decided to
+    exit is still open — log-trade machine-writes an error row so
+    Groundskeeper sees repeats, but NOT the #768 marker (that gate is
+    buy-only; a failed CLOSE must stay retryable next cycle)."""
+
+    @staticmethod
+    async def _noop(db):
+        pass
+
+    def _log_skip(
+        self, monkeypatch, tmp_path, *, cycle="42",
+        reason="close_failed", times=1,
+    ):
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        if cycle is None:
+            monkeypatch.delenv("GIMMES_CYCLE", raising=False)
+        else:
+            monkeypatch.setenv("GIMMES_CYCLE", cycle)
+        for _ in range(times):
+            result = runner.invoke(app, [
+                "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+                "--reason", reason, "--side", "no",
+                "--agent", "closer",
+            ])
+            assert result.exit_code == 0, result.output
+        return result, db_path
+
+    def _errors(self, db_path: Path) -> list[dict]:
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT severity, category, component, cycle, context,"
+                " agent, message"
+                " FROM error_log WHERE error_code = 'close_failed'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        return _db_run(db_path, _q)
+
+    def _markers(self, db_path: Path) -> list[dict]:
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT cycle FROM activity_log"
+                " WHERE message LIKE 'Order attempt terminal:%'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        return _db_run(db_path, _q)
+
+    def test_writes_error_row_without_marker(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        _, db_path = self._log_skip(monkeypatch, tmp_path)
+        errors = self._errors(db_path)
+        assert len(errors) == 1
+        assert errors[0]["severity"] == "warning"
+        assert errors[0]["category"] == "order_failure"
+        assert errors[0]["component"] == "cli.log-trade"
+        assert errors[0]["cycle"] == 42
+        assert "KXTEST-26AUG-T1" in errors[0]["context"]
+        assert errors[0]["agent"] == "closer"
+        assert "close did not execute (#837)" in errors[0]["message"]
+        assert self._markers(db_path) == []
+
+    def test_error_row_written_even_without_cycle(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        _, db_path = self._log_skip(monkeypatch, tmp_path, cycle=None)
+        assert len(self._errors(db_path)) == 1
+
+    @pytest.mark.parametrize("reason", ["order_failed", "order_canceled"])
+    def test_other_skip_reasons_write_no_error_row(
+        self, monkeypatch, tmp_path, reason,
+    ) -> None:
+        _, db_path = self._log_skip(monkeypatch, tmp_path, reason=reason)
+
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT COUNT(*) FROM error_log"
+                " WHERE component = 'cli.log-trade'"
+            )
+            return (await cursor.fetchone())[0]
+
+        assert _db_run(db_path, _q) == 0
+
+    def test_each_skip_writes_a_row(self, monkeypatch, tmp_path) -> None:
+        """No dedupe: Groundskeeper's 2+-per-ticker rule counts one
+        row per failed close (#837)."""
+        _, db_path = self._log_skip(monkeypatch, tmp_path, times=2)
+        assert len(self._errors(db_path)) == 2
+
+    def test_classifier_block_writes_no_close_failed_row(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        _, db_path = self._log_skip(
+            monkeypatch, tmp_path, reason="classifier_block",
+        )
+        assert self._errors(db_path) == []
+
+    def test_error_write_failure_still_logs_skip(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        monkeypatch.setenv("GIMMES_CYCLE", "42")
+        monkeypatch.setattr(
+            cli_module, "_log_cli_error",
+            AsyncMock(side_effect=sqlite3.OperationalError("locked")),
+        )
+        result = runner.invoke(app, [
+            "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+            "--reason", "close_failed", "--agent", "closer",
+        ])
+        assert result.exit_code == 0, result.output
+
+        async def _rows(db):
+            cursor = await db.conn.execute(
+                "SELECT ticker FROM trades WHERE action = 'skip'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        assert len(_db_run(db_path, _rows)) == 1
 
 
 class TestHasTerminalOrderAttempt:

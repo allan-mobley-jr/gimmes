@@ -40,6 +40,7 @@ If there are no unresolved errors, report "No issues to escalate" and exit.
 - Any error with `risk_breach` category — EXCEPT `churn_roundtrip` WARNING rows (#661): those are audit-trail records for the Pro agent's churn analysis, written on every sub-hour close including correct stop-loss closes — do NOT file issues for them. `reopen_gate_overridden` rows DO escalate (a forced bypass always warrants review).
 - `auth_failure` errors that have been unresolved for 2+ cycles
 - `position_past_close` rows whose context carries reason `settle_failed` or `determined_no_result` (#783) — a published result that is not realizing is a broken sweep, not settlement lag; `awaiting_determination` rows follow the pattern rules below (Kalshi lag is normal, but re-logs at growing buckets mean the lag keeps doubling)
+- `close_failed` rows (#837) appearing 2+ times for the same ticker (`context.ticker`) in the last 24 hours — a position the loop decided to exit is still open; Caddie Master stops re-dispatching after two failed closes, so the 3+/24h pattern rule would never see it
 
 **Pattern escalation (file issue if threshold met):**
 - Same `error_code` appears 3+ times in the last 24 hours
@@ -133,6 +134,7 @@ gh issue create --label "bug" --title "[SEVERITY] Error: ERROR_CODE — BRIEF_DE
 - `data_integrity` → Inspect database for corruption or schema issues
 - `agent_failure` → Review agent logs for the failing cycle
 - `order_failure` → Check order parameters and market status
+  - `close_failed` (#837) → a mandated CLOSE did not execute and the position is still open: check `gimmes positions` (StopGate/STALE banners) and the matching `gimmes order` error row, if any
 - `risk_breach` → Review risk limits and current exposure immediately
 - `config_error` → Validate config settings
 - `network_error` → Check network connectivity and API endpoint reachability
