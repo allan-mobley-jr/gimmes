@@ -542,3 +542,15 @@ class TestUninstall:
         assert result.returncode == 1
         assert "Unknown option" in result.stdout
         assert (home / "repo").is_dir()
+
+
+class TestPostUpdateScheduleRefresh:
+    def test_post_update_refreshes_schedule_without_failing(self) -> None:
+        """#843: `gimmes update` re-renders a managed schedule wrapper,
+        and a refresh failure must never fail the update."""
+        text = GIMMES_SH.read_text()
+        post = text.split("_post-update)", 1)[1].split(";;", 1)[0]
+        assert (
+            '"$PYTHON" -m gimmes schedule refresh || echo'
+            in post
+        )

@@ -7025,6 +7025,85 @@ def discover(
     _run(_discover())
 
 
+schedule_app = typer.Typer(
+    name="schedule",
+    help="Auto-start the loop on weekdays via a managed launchd job (macOS).",
+    no_args_is_help=True,
+)
+app.add_typer(schedule_app, rich_help_panel="Setup & Config")
+
+
+def _schedule_args() -> tuple[float, str]:
+    from gimmes import __version__
+
+    return load_config().ops.min_free_disk_gb, __version__
+
+
+@schedule_app.command("install")
+def schedule_install(
+    force: bool = typer.Option(
+        False, "--force",
+        help="Replace hand-made or modified files (originals are backed up).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would change; write nothing.",
+    ),
+) -> None:
+    """Install the trading-hours wrapper and LaunchAgent (#843).
+
+    Never touches launchd while a loop is running (#638) — the wrapper
+    is updated in place and launchd changes are deferred. Installing
+    never starts trading.
+    """
+    from gimmes import schedule
+
+    min_free_gb, version = _schedule_args()
+    raise typer.Exit(schedule.install(
+        schedule.SchedulePaths.default(), force=force, dry_run=dry_run,
+        min_free_gb=min_free_gb, version=version, out=console.print,
+    ))
+
+
+@schedule_app.command("status")
+def schedule_status() -> None:
+    """Show the managed schedule's files, launchd state, and failures."""
+    from gimmes import schedule
+
+    min_free_gb, version = _schedule_args()
+    for line in schedule.status(
+        schedule.SchedulePaths.default(),
+        min_free_gb=min_free_gb, version=version,
+    ):
+        console.print(line, markup=False)
+
+
+@schedule_app.command("uninstall")
+def schedule_uninstall() -> None:
+    """Unload the managed LaunchAgent (refuses while a loop runs)."""
+    from gimmes import schedule
+
+    raise typer.Exit(schedule.uninstall(
+        schedule.SchedulePaths.default(), out=console.print,
+    ))
+
+
+@schedule_app.command("refresh", hidden=True)
+def schedule_refresh() -> None:
+    """`gimmes update` hook: re-render managed files. Always exits 0."""
+    from gimmes import schedule
+
+    try:
+        min_free_gb, version = _schedule_args()
+        msgs = schedule.refresh(
+            schedule.SchedulePaths.default(),
+            min_free_gb=min_free_gb, version=version,
+        )
+    except Exception as exc:
+        msgs = [f"schedule refresh skipped: {exc}"]
+    for msg in msgs:
+        console.print(msg, markup=False)
+
+
 config_app = typer.Typer(
     name="config",
     help="Configuration — interactive wizard, get/set individual values.",
@@ -8418,6 +8497,62 @@ def _housekeeping(
     return low_disk_logged
 
 
+async def _ingest_startup_markers(
+    config: GimmesConfig, logs_dir: Path, tmp_dir: Path | None = None,
+) -> int:
+    """Record the wrapper's STARTUP-FAILED markers as error rows (#827).
+
+    A failed start leaves no loop to log it; the next start does. Each
+    marker is renamed ``*.recorded`` only after its row lands. Never
+    raises. Returns the number recorded.
+    """
+    import json as _json
+    import logging
+
+    from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
+    from gimmes.schedule import _startup_markers
+    from gimmes.store.database import Database
+    from gimmes.store.queries import insert_error
+
+    recorded = 0
+    try:
+        markers = _startup_markers(logs_dir, tmp_dir)
+        if not markers:
+            return 0
+        async with Database(config.db_path) as db:
+            for marker in markers:
+                # One bad marker must not strand the rest.
+                try:
+                    lines = marker.read_text(errors="replace").splitlines()
+                    await insert_error(db, ErrorLogEntry(
+                        severity=ErrorSeverity.ERROR,
+                        category=ErrorCategory.CONFIG_ERROR,
+                        error_code="startup_failed",
+                        component="schedule.wrapper",
+                        message=(
+                            f"Loop start failed {len(lines)} time(s):"
+                            f" {lines[-1] if lines else marker.name} (#827)"
+                        ),
+                        context=_json.dumps({
+                            "marker": str(marker), "failures": lines[-20:],
+                        }),
+                    ))
+                    marker.rename(
+                        marker.with_name(marker.name + ".recorded"),
+                    )
+                    recorded += 1
+                except Exception:
+                    logging.getLogger("gimmes").warning(
+                        "startup-failure marker %s not recorded (#827)",
+                        marker, exc_info=True,
+                    )
+    except Exception:
+        logging.getLogger("gimmes").warning(
+            "startup-failure markers not recorded (#827)", exc_info=True,
+        )
+    return recorded
+
+
 def _wrap_stream_json(raw: bytes) -> bytes:
     """Wrap newline-delimited JSON events into a JSON array.
 
@@ -8553,6 +8688,13 @@ def _autonomous_loop(
     # Cycle log directory
     logs_dir = GIMMES_HOME / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    # #827: a start the wrapper refused (full disk, unwritable log, died
+    # at birth) left a marker, not a row — record it now.
+    if asyncio.run(_ingest_startup_markers(config, logs_dir)):
+        console.print(
+            "[red bold]Recorded earlier failed loop start(s) to the error"
+            " log (#827) — see `gimmes errors`.[/red bold]"
+        )
 
     # Auto-start Clubhouse dashboard
     if not no_dashboard:
