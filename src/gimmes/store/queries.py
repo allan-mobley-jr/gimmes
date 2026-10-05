@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from pydantic import ValidationError
 
@@ -1577,6 +1577,44 @@ async def insert_error(db: Database, entry: ErrorLogEntry) -> int:
     )
     await db.conn.commit()
     return cursor.lastrowid or 0
+
+
+DedupePolicy = Literal["latest_unresolved", "latest_any"]
+
+_DEDUPE_WHERE: dict[DedupePolicy, str] = {
+    # #783: resolving the latest row while the condition persists must
+    # RE-ARM the alert, so only unresolved rows count as "already said".
+    "latest_unresolved": " AND resolved = 0",
+    # #767: resolving acknowledges the divergence; the same state must
+    # not re-fire just because the operator resolved it.
+    "latest_any": "",
+}
+
+
+async def insert_error_if_changed(
+    db: Database, entry: ErrorLogEntry, *, dedupe: DedupePolicy,
+) -> bool:
+    """Insert ``entry`` unless the latest error_log row for the same
+    ``error_code`` (under ``dedupe``) has a byte-identical ``context``
+    (#819).
+
+    Keyed on error_code only, NOT component: one condition reported by
+    several sweeps (cli.mark / cli.positions) shares one dedupe chain.
+    Callers must pass a canonical context (json.dumps(..., sort_keys=True)).
+    Returns True if a row was inserted. Raises like insert_error;
+    fail-open wrapping is the caller's job (see cli._log_cli_error).
+    """
+    cursor = await db.conn.execute(
+        "SELECT context FROM error_log WHERE error_code = ?"
+        + _DEDUPE_WHERE[dedupe]
+        + " ORDER BY id DESC LIMIT 1",
+        (entry.error_code,),
+    )
+    last = await cursor.fetchone()
+    if last is not None and last["context"] == entry.context:
+        return False
+    await insert_error(db, entry)
+    return True
 
 
 async def get_errors(

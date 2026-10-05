@@ -8,7 +8,13 @@ import pytest
 
 from gimmes.models.error import ErrorCategory, ErrorLogEntry, ErrorSeverity
 from gimmes.store.database import Database
-from gimmes.store.queries import get_error_summary, get_errors, insert_error, resolve_error
+from gimmes.store.queries import (
+    get_error_summary,
+    get_errors,
+    insert_error,
+    insert_error_if_changed,
+    resolve_error,
+)
 
 
 @pytest.fixture
@@ -153,3 +159,105 @@ class TestMigrationV3:
         )
         row = await cursor.fetchone()
         assert row[0] >= 3
+
+
+class TestInsertErrorIfChanged:
+    """#819: the two dedupe policies the #783 / #767 call sites rely on."""
+
+    @staticmethod
+    def _entry(ctx: str, code: str = "X", component: str = "cli.mark") -> ErrorLogEntry:
+        return ErrorLogEntry(
+            severity=ErrorSeverity.WARNING,
+            category=ErrorCategory.DATA_INTEGRITY,
+            error_code=code, component=component,
+            message="m", context=ctx,
+        )
+
+    @staticmethod
+    async def _count(db: Database, code: str = "X") -> int:
+        cur = await db.conn.execute(
+            "SELECT COUNT(*) FROM error_log WHERE error_code = ?", (code,),
+        )
+        return (await cur.fetchone())[0]
+
+    @pytest.mark.parametrize("policy", ["latest_unresolved", "latest_any"])
+    async def test_empty_log_inserts(self, db: Database, policy: str) -> None:
+        assert await insert_error_if_changed(db, self._entry("A"), dedupe=policy)
+        assert await self._count(db) == 1
+
+    @pytest.mark.parametrize("policy", ["latest_unresolved", "latest_any"])
+    async def test_equal_context_skips(self, db: Database, policy: str) -> None:
+        await insert_error_if_changed(db, self._entry("A"), dedupe=policy)
+        assert not await insert_error_if_changed(db, self._entry("A"), dedupe=policy)
+        assert await self._count(db) == 1
+
+    @pytest.mark.parametrize("policy", ["latest_unresolved", "latest_any"])
+    async def test_different_context_inserts(self, db: Database, policy: str) -> None:
+        await insert_error_if_changed(db, self._entry("A"), dedupe=policy)
+        assert await insert_error_if_changed(db, self._entry("B"), dedupe=policy)
+        assert await self._count(db) == 2
+
+    async def test_compares_latest_not_any(self, db: Database) -> None:
+        for ctx in ("A", "B"):
+            await insert_error_if_changed(db, self._entry(ctx), dedupe="latest_any")
+        assert await insert_error_if_changed(db, self._entry("A"), dedupe="latest_any")
+
+    async def test_resolved_latest_suppresses_under_latest_any(self, db: Database) -> None:
+        row = await insert_error(db, self._entry("A"))
+        await resolve_error(db, row)
+        assert not await insert_error_if_changed(db, self._entry("A"), dedupe="latest_any")
+
+    async def test_resolved_latest_rearms_under_latest_unresolved(self, db: Database) -> None:
+        row = await insert_error(db, self._entry("A"))
+        await resolve_error(db, row)
+        assert await insert_error_if_changed(
+            db, self._entry("A"), dedupe="latest_unresolved",
+        )
+
+    async def test_latest_unresolved_skips_resolved_newer_row(self, db: Database) -> None:
+        await insert_error(db, self._entry("A"))
+        newer = await insert_error(db, self._entry("B"))
+        await resolve_error(db, newer)
+        assert not await insert_error_if_changed(
+            db, self._entry("A"), dedupe="latest_unresolved",
+        )
+
+    async def test_scoped_by_error_code(self, db: Database) -> None:
+        await insert_error(db, self._entry("A", code="Y"))
+        assert await insert_error_if_changed(db, self._entry("A"), dedupe="latest_any")
+
+    async def test_component_not_in_key(self, db: Database) -> None:
+        """One condition reported by cli.mark and cli.positions shares
+        one dedupe chain — a second sweep must not double-log it."""
+        await insert_error_if_changed(
+            db, self._entry("A", component="cli.mark"), dedupe="latest_unresolved",
+        )
+        assert not await insert_error_if_changed(
+            db, self._entry("A", component="cli.positions"),
+            dedupe="latest_unresolved",
+        )
+
+    async def test_log_cli_error_dedupe_fails_open(self, db: Database) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from gimmes.cli import _log_cli_error
+
+        with patch(
+            "gimmes.store.queries.insert_error_if_changed",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        ):
+            await _log_cli_error(db, self._entry("A"), dedupe="latest_any")
+        assert await self._count(db) == 0
+
+    async def test_log_cli_error_without_dedupe_always_writes(self, db: Database) -> None:
+        from gimmes.cli import _log_cli_error
+
+        for _ in range(2):
+            await _log_cli_error(db, self._entry("A"))
+        assert await self._count(db) == 2
+
+    async def test_unknown_policy_fails_loudly(self, db: Database) -> None:
+        from gimmes.cli import _log_cli_error
+
+        with pytest.raises(ValueError, match="unknown dedupe policy"):
+            await _log_cli_error(db, self._entry("A"), dedupe="latest_uresolved")  # type: ignore[arg-type]
