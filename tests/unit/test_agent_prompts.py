@@ -3215,6 +3215,48 @@ def test_groundskeeper_checks_for_a_silent_pro(
     )
 
 
+def test_silent_pro_check_counts_loop_time_not_calendar_time(
+    groundskeeper_text: str,
+) -> None:
+    """#850: the loop runs weekdays only and Groundskeeper (6.5) runs
+    before the Pro (7) in the same cycle, so wall-clock age alone flagged
+    the Pro at every Monday's first cycle. Escalation also requires 3
+    completed cycles since the Pro became due."""
+    step5 = groundskeeper_text.split(
+        "### Step 5: Silent-Agent Check", 1,
+    )[1].split("## Output Format", 1)[0]
+    for needle in (
+        "COLUMNS=200 gimmes activity --agent caddie-master --phase start"
+        " --limit 4",
+        "anchor row's `Time (UTC)` plus the cadence",
+        "only when BOTH hold",
+        "exceeds **2×** the configured cadence; AND",
+        "its TOP row is the current cycle — skip it",
+        "**All three** rows below it (earlier cycles) started later than"
+        " the due time",
+        "Measure silence in loop-running time, not calendar time (#850)",
+        "the current cycle has not reached the Pro yet and never counts",
+        "Count cycle `start` rows, not `complete` rows",
+        "gimmes activity --agent caddie-master --phase info --limit 10",
+    ):
+        assert needle in step5, needle
+    # The marker it quotes must match the one Step 7 actually writes.
+    assert "Step 7 (Pro) skipped" in step5
+    assert "Step 7 (Pro) skipped" in CADDIE_MASTER.read_text()
+
+
+def test_silent_pro_check_premises_hold_in_caddie_master() -> None:
+    """#850's rule rests on two facts in caddie-master.md: Groundskeeper
+    (6.5) runs before the Pro (7), and Step 0 writes a `start` row for
+    every cycle. Reordering or rewording either silently breaks it."""
+    cm = CADDIE_MASTER.read_text()
+    assert cm.index("### Step 6.5") < cm.index("### Step 7") < cm.index(
+        "### Step 8",
+    )
+    step0 = cm.split("### Step 0: Log Cycle Start", 1)[1].split("###", 1)[0]
+    assert "--agent caddie-master --phase start" in step0
+
+
 def test_cycle_deadline_protocol() -> None:
     """#746: deadline protocol, candidate cap, review reuse, and the
     time-boxed Monitor contract — all four load-bearing strings must
