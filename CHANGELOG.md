@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.32] - 2026-10-05
+
+One fix to the Groundskeeper's silent-Pro check. **Restart not required after `gimmes update`** — the only changed path is an agent prompt, read fresh each cycle; no code, no migration. Behavior note: `pro_dispatch_stale` no longer fires at Monday's first cycle or after a holiday; a genuinely stalled Pro is now flagged once three earlier cycles have started after it became due (about 3 hours of loop time later than a pure wall-clock check would).
+
+### Fixed
+
+- **#850**: a false `pro_dispatch_stale` issue at 12:28 UTC Monday — the Pro completed two minutes later in the same cycle. The loop runs weekdays only, so Friday's last Pro is ~67h old at Monday's first cycle, and Groundskeeper (Step 6.5) runs before the Pro (Step 7) in every cycle, so the check always looked before the current cycle's dispatch. It would have fired every Monday. Escalation now also requires the three cycles before the current one to have started after the Pro's due time, counting Step 0 `start` rows so cycles killed before Step 8 (including a Pro that died mid-run) still count. Replayed against the activity log: Monday → no issue; the real two-week silence of #833 → still escalates.
+
 ## [0.8.31] - 2026-10-02
 
 One fix closing the last silent failed-close paths. **Restart not required after `gimmes update`** — `order` and `log-trade` are per-invocation CLI commands and `closer.md` is read on every dispatch; no migration. Behavior notes: (1) a CLOSE that rests or only partly fills now exits 1 with `Close INCOMPLETE` — the unfilled remainder is canceled and what filled is booked; in paper mode post-only closes still fill at the limit, so expect this mainly on `--taker` partials and in Championship; (2) a sell with no position, more than held, or count 0 exits 1 with a `close_rejected` row instead of exiting 0; (3) `cli.order` error rows now carry the cycle number and `cli.log-trade` rows carry the first 300 characters of the rationale. **Go-live note:** real-money econ CLOSEs are post-only at mid and will not fill on Kalshi — this release makes that loud rather than silent; how closes should execute is open in #847 and must be decided before Championship mode.
