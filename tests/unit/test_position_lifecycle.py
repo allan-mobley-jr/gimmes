@@ -331,6 +331,24 @@ class TestReportConsistencyFootnote:
         ]
         assert len(rows) == 1
 
+        # #819: latest-row-regardless-of-resolved — resolving the row
+        # acknowledges THIS divergence; the same state must not re-fire.
+        async def _resolve(db):
+            await db.conn.execute(
+                "UPDATE error_log SET resolved = 1"
+                " WHERE error_code = 'position_count_mismatch'"
+            )
+            await db.conn.commit()
+
+        _db_run(db_path, _resolve)
+        with patch("gimmes.cli.load_config", return_value=_config(db_path)):
+            runner.invoke(app, ["report"])
+        rows = [
+            e for e in _read_errors(db_path)
+            if e["error_code"] == "position_count_mismatch"
+        ]
+        assert len(rows) == 1
+
     def test_count_drift_detected_while_open(self, tmp_path) -> None:
         """Review-found: a live re-poisoning (ledger residual != broker
         count on the SAME ticker) is visible while the position is

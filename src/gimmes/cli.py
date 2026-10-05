@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from gimmes.models.market import Market
+    from gimmes.store.queries import DedupePolicy
 
 import click
 import typer
@@ -262,7 +263,9 @@ def _resolve_prose_arg(
     return inline
 
 
-async def _log_cli_error(db, entry) -> None:  # type: ignore[no-untyped-def]
+async def _log_cli_error(  # type: ignore[no-untyped-def]
+    db, entry, *, dedupe: DedupePolicy | None = None,
+) -> None:
     """Best-effort write to error_log; never raises into the caller.
 
     Wraps the autonomous-loop pattern used by ``cli.order`` so failure-
@@ -270,12 +273,27 @@ async def _log_cli_error(db, entry) -> None:  # type: ignore[no-untyped-def]
     surface failures to Groundskeeper without risking that a DB-locked
     or otherwise broken logger silently breaks the user-facing path.
     See #588.
+
+    ``dedupe`` (#819): skip the write when the latest row for the same
+    error_code already carries this exact context — see
+    ``insert_error_if_changed`` for the two named policies.
     """
     import logging
 
-    from gimmes.store.queries import insert_error
+    from gimmes.store.queries import (
+        _DEDUPE_WHERE,
+        insert_error,
+        insert_error_if_changed,
+    )
+    # Outside the try: a misspelled policy is a programming error and
+    # must fail loudly, not vanish as a swallowed "DB failure" (#819).
+    if dedupe is not None and dedupe not in _DEDUPE_WHERE:
+        raise ValueError(f"unknown dedupe policy {dedupe!r}")
     try:
-        await insert_error(db, entry)
+        if dedupe is None:
+            await insert_error(db, entry)
+        else:
+            await insert_error_if_changed(db, entry, dedupe=dedupe)
     except Exception:
         logging.getLogger("gimmes.cli").error(
             "Failed to log error to DB", exc_info=True,
@@ -686,18 +704,8 @@ async def _note_past_close_positions(
             },
             sort_keys=True,
         )
-        # Unresolved rows only (Copilot review): resolving the last
-        # row while the condition persists must RE-ARM the alert, not
-        # suppress it.
-        cursor = await db.conn.execute(
-            "SELECT context FROM error_log"
-            " WHERE error_code = 'position_past_close'"
-            " AND resolved = 0"
-            " ORDER BY id DESC LIMIT 1"
-        )
-        last = await cursor.fetchone()
-        if last and last["context"] == payload:
-            return
+        # Unresolved-only: resolving the last row while the condition
+        # persists must RE-ARM the alert (#783).
         await _log_cli_error(db, ErrorLogEntry(
             severity=ErrorSeverity.WARNING,
             category=ErrorCategory.DATA_INTEGRITY,
@@ -712,7 +720,7 @@ async def _note_past_close_positions(
                 " growing lag"
             ),
             context=payload,
-        ))
+        ), dedupe="latest_unresolved")
     except Exception:
         logging.getLogger("gimmes.cli").warning(
             "past-close alert failed", exc_info=True,
@@ -4276,14 +4284,8 @@ async def _report_consistency_footnote(db, summary) -> None:
         },
         sort_keys=True,
     )
-    cursor = await db.conn.execute(
-        "SELECT context FROM error_log"
-        " WHERE error_code = 'position_count_mismatch'"
-        " ORDER BY id DESC LIMIT 1"
-    )
-    last = await cursor.fetchone()
-    if last and last["context"] == payload:
-        return
+    # Latest row regardless of resolved: resolving acknowledges this
+    # divergence; the same state must not re-fire (#767).
     await _log_cli_error(db, ErrorLogEntry(
         severity=ErrorSeverity.WARNING,
         category=ErrorCategory.DATA_INTEGRITY,
@@ -4295,7 +4297,7 @@ async def _report_consistency_footnote(db, summary) -> None:
             f" count-drift {count_drift}"
         ),
         context=payload,
-    ))
+    ), dedupe="latest_any")
 
 
 @app.command(rich_help_panel="Portfolio")
