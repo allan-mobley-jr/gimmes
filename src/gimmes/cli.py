@@ -3690,24 +3690,40 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
     produced the order); a missing record degrades to zeros with the
     cause named in the rationale, the #656 pattern.
     """
+    from gimmes.models.order import OrderAction
     from gimmes.models.trade import TradeDecision
     from gimmes.store.queries import (
+        get_entry_analytics,
         get_recent_candidates,
         get_thesis_for_ticker,
         sync_positions_with_trade,
     )
 
+    is_sell = order.action == OrderAction.SELL
     price = order.fill_price  # #834: one spelling of the ledger price
-    prob = score = edge = 0.0
+    prob = score = edge = kelly = 0.0
     thesis = ""
     try:
-        rows = await get_recent_candidates(db, ticker=order.ticker, limit=1)
-        if rows:
-            cand = rows[0]
-            prob = float(cand["model_probability"] or 0.0)
-            score = float(cand["gimme_score"] or 0.0)
-            edge = float(cand["edge"] or 0.0)
-        thesis = await get_thesis_for_ticker(db, order.ticker)
+        if is_sell:
+            # #846: a close inherits the ENTRY's analytics (#656), never
+            # a later re-scan's, and carries no thesis — as the CLI does.
+            entry = await get_entry_analytics(
+                db, order.ticker, order.side.value,
+            ) or {}
+            prob = float(entry.get("model_probability") or 0.0)
+            score = float(entry.get("gimme_score") or 0.0)
+            edge = float(entry.get("edge") or 0.0)
+            kelly = float(entry.get("kelly_fraction") or 0.0)
+        else:
+            rows = await get_recent_candidates(
+                db, ticker=order.ticker, limit=1,
+            )
+            if rows:
+                cand = rows[0]
+                prob = float(cand["model_probability"] or 0.0)
+                score = float(cand["gimme_score"] or 0.0)
+                edge = float(cand["edge"] or 0.0)
+            thesis = await get_thesis_for_ticker(db, order.ticker)
     except Exception:
         import logging
 
@@ -3716,34 +3732,44 @@ async def _log_sweep_fill(db, broker, order, n: int) -> None:  # type: ignore[no
             " recording with zeros (#743)", order.ticker, exc_info=True,
         )
 
-    # First fill of the order opens the position; a later partial fill
-    # adds to it (position count > this fill's count) — a size_up in
-    # ledger terms, matching how the CLI logs adds.
     positions = await broker.get_positions()
-    pos = next(
-        (p for p in positions
-         if p.ticker == order.ticker and p.side == order.side.value),
-        None,
-    )
-    is_add = pos is not None and pos.count > n
-    # BUY fills only: a resting SELL can't reach the sweep (paper never
-    # rests a sell; #840 cancels a live one) — see #846 if that changes.
+    if is_sell:
+        # #846: a swept SELL is a close. Unreachable today (paper never
+        # rests a sell; #840 cancels a live one), but if that changes it
+        # must not be booked as an entry.
+        action = TradeDecision.Action.CLOSE
+        default_rationale = (
+            f"rest-on-miss sweep close fill (order {order.order_id},"
+            f" #743/#846)"
+        )
+    else:
+        # First fill of the order opens the position; a later partial
+        # fill adds to it (position count > this fill's count) — a
+        # size_up in ledger terms, matching how the CLI logs adds.
+        pos = next(
+            (p for p in positions
+             if p.ticker == order.ticker and p.side == order.side.value),
+            None,
+        )
+        action = (
+            TradeDecision.Action.SIZE_UP
+            if pos is not None and pos.count > n
+            else TradeDecision.Action.OPEN
+        )
+        default_rationale = (
+            f"rest-on-miss sweep fill (order {order.order_id}, #743)"
+        )
     trade = TradeDecision(
         ticker=order.ticker,
-        action=(
-            TradeDecision.Action.SIZE_UP if is_add
-            else TradeDecision.Action.OPEN
-        ),
+        action=action,
         side=order.side.value,
         count=n,
         price=price,
         model_probability=prob,
         gimme_score=score,
         edge=edge,
-        rationale=(
-            thesis
-            or f"rest-on-miss sweep fill (order {order.order_id}, #743)"
-        ),
+        kelly_fraction=kelly,
+        rationale=thesis or default_rationale,
         thesis=thesis,
         agent="sweep",
         order_id=order.order_id,

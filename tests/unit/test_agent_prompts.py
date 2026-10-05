@@ -3960,3 +3960,24 @@ def test_closer_incomplete_close_is_failure() -> None:
     assert "Exit 0 means the full count sold." in closer_text
     assert "says `cancel FAILED`" in closer_text
     assert "Status: [filled/resting/failed]" not in closer_text
+
+
+def test_crash_recovery_redispatches_partial_close(
+    caddie_master_text: str,
+) -> None:
+    """#846: a Close INCOMPLETE books a close trade for the filled part,
+    so "no close trade" alone would never re-dispatch the remainder."""
+    s2a = caddie_master_text.split("#### 2a.", 1)[1].split("#### 2b.", 1)[0]
+    for needle in (
+        "Close INCOMPLETE",
+        "remaining held COUNT ONLY when ALL hold",
+        "latest** caddie-master `decision` note is CLOSE",
+        "a close trade exists **after that decision's timestamp**",
+        "NO open or size_up trade after that decision's timestamp",
+        "still held in the fresh `gimmes positions` output",
+        "`market_not_active`",
+        "`cancel FAILED`",
+        "two consecutive `close_failed` skips",
+        "A 2a CLOSE outcome is final for that ticker this cycle (#768)",
+    ):
+        assert needle in s2a, needle
