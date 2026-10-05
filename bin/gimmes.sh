@@ -230,6 +230,9 @@ case "${1:-}" in
         else
             "$PYTHON" -m pip install -e . --quiet
         fi
+        # #843: re-render a gimmes-managed schedule wrapper (never a
+        # hand-made or modified one); never fails the update.
+        "$PYTHON" -m gimmes schedule refresh || echo "warning: schedule refresh failed"
         show_banner
         echo "Updated to $update_label"
         ;;
@@ -243,6 +246,8 @@ Setup & Config:
   gimmes config set K V    Set a single config value directly
   gimmes config get [K]    Show config value(s)
   gimmes tour_guide        Interactive product tour (The Starter)
+  gimmes schedule install  Auto-start the loop on weekdays (macOS launchd)
+  gimmes schedule status   Show the schedule, launchd state, failed starts
   gimmes caddie_shop       Conversational config advisor (The Caddie Shop)
   gimmes update            Pull latest code and reinstall
   gimmes uninstall         Remove gimmes (--keep-data to preserve config/db)

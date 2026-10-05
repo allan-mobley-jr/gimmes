@@ -1,0 +1,139 @@
+#!/bin/bash
+# gimmes-managed: trading-hours wrapper v@@VERSION@@ (gimmes schedule install).
+# Edits are detected: `gimmes update` will not overwrite a modified copy.
+#
+# Runs `gimmes driving_range` inside the weekday trading window and stops
+# it at the window's end. Fails LOUD (#827/#843): a start that cannot log,
+# lacks disk headroom, or dies at birth exits non-zero and leaves a
+# STARTUP-FAILED marker the loop records as an error row on its next start.
+set -uo pipefail
+
+GIMMES_HOME="@@GIMMES_HOME@@"
+GIMMES="@@GIMMES_BIN@@"
+MIN_FREE_KB=@@MIN_FREE_KB@@
+WINDOW_START_SEC=@@START_SEC@@
+WINDOW_END_SEC=@@END_SEC@@
+WEEKDAYS="@@WEEKDAYS@@"
+LOOP_PATTERN='@@LOOP_PATTERN@@'
+# PATH captured from the installing shell (for `claude`). Never source
+# ~/.zshrc from bash: zsh-only syntax under `set -u` kills this script
+# silently (#843 review).
+export PATH='@@PATH@@'
+GRACE_SECONDS=30
+EX_TEMPFAIL=75
+EX_CONFIG=78
+
+TODAY=$(date +%Y-%m-%d)
+LOG_DIR="${GIMMES_HOME}/logs"
+WRAPPER_LOG="${LOG_DIR}/wrapper-$(date -u +%Y-%m-%d).log"
+FAIL_MARKER="${LOG_DIR}/STARTUP-FAILED-${TODAY}"
+
+log() {
+    echo "$(date -u): $*" >> "${WRAPPER_LOG}" 2>/dev/null || echo "$(date -u): $*" >&2
+}
+
+fail() {  # $1 reason, $2 exit code (default 75) — durable marker with fallbacks
+    local msg
+    msg="$(date -u +%Y-%m-%dT%H:%M:%SZ) startup failed: $1"
+    echo "${msg}" >&2
+    echo "${msg}" >> "${FAIL_MARKER}" 2>/dev/null \
+        || echo "${msg}" >> "${TMPDIR:-/tmp}/gimmes-STARTUP-FAILED-${TODAY}" 2>/dev/null \
+        || true
+    if command -v logger >/dev/null 2>&1; then
+        logger -t gimmes "${msg}" 2>/dev/null || true
+    fi
+    exit "${2:-$EX_TEMPFAIL}"
+}
+
+# --- Gates: no-ops exit 0 and never write a marker ---
+case " ${WEEKDAYS} " in
+    *" $(date +%u) "*) ;;
+    *) exit 0 ;;
+esac
+now_sec=$(( 10#$(date +%H) * 3600 + 10#$(date +%M) * 60 + 10#$(date +%S) ))
+if (( now_sec < WINDOW_START_SEC || now_sec >= WINDOW_END_SEC )); then
+    log "outside trading window; not starting"
+    exit 0
+fi
+if running=$(pgrep -lf "${LOOP_PATTERN}" 2>/dev/null) && [ -n "${running}" ]; then
+    log "loop already running; not starting a second one (#638): $(echo "${running}" | head -3 | tr '\n' ' ')"
+    exit 0
+fi
+
+# --- Preflight (#827): never launch blind into a dead log or full disk ---
+mkdir -p "${LOG_DIR}" 2>/dev/null || fail "cannot create ${LOG_DIR}"
+# A real line, not a zero-byte append: an empty append succeeds on a full disk.
+{ echo "$(date -u): preflight" >> "${WRAPPER_LOG}"; } 2>/dev/null \
+    || fail "cannot write ${WRAPPER_LOG}"
+if (( MIN_FREE_KB > 0 )); then
+    free_kb=$(df -Pk "${GIMMES_HOME}" 2>/dev/null | awk 'NR==2 {print $4}')
+    [[ "${free_kb}" =~ ^[0-9]+$ ]] || fail "df failed on ${GIMMES_HOME}"
+    (( free_kb >= MIN_FREE_KB )) \
+        || fail "free disk ${free_kb} KB < ${MIN_FREE_KB} KB on ${GIMMES_HOME}"
+fi
+[ -x "${GIMMES}" ] || fail "gimmes binary not found at ${GIMMES}" "${EX_CONFIG}"
+command -v claude >/dev/null 2>&1 \
+    || fail "claude not on PATH (rerun \`gimmes schedule install\` from a shell where it is)" "${EX_CONFIG}"
+
+GIMMES_PID=""
+WATCHDOG_PID=""
+on_term() {  # makes `launchctl kickstart -k` / bootout safe (#638)
+    local rc=143
+    log "wrapper got a stop signal; forwarding SIGTERM to loop ${GIMMES_PID}"
+    if [ -n "${GIMMES_PID}" ]; then
+        kill -TERM "${GIMMES_PID}" 2>/dev/null
+        wait "${GIMMES_PID}"
+        rc=$?
+    fi
+    [ -n "${WATCHDOG_PID}" ] && kill -TERM "${WATCHDOG_PID}" 2>/dev/null
+    exit "${rc}"
+}
+trap on_term TERM INT HUP
+
+deadline=$(( WINDOW_END_SEC - now_sec ))
+DEADLINE_FLAG="${LOG_DIR}/.deadline-fired-$$"
+rm -f "${DEADLINE_FLAG}" 2>/dev/null
+log "starting gimmes driving_range with ${deadline}s deadline"
+"${GIMMES}" driving_range --cycles 0 >> "${WRAPPER_LOG}" 2>&1 &
+GIMMES_PID=$!
+
+(
+    # Reap our own sleep when stopped, so no orphan outlives the wrapper.
+    trap 'kill "${sleep_pid}" 2>/dev/null; exit 0' TERM
+    sleep "${deadline}" &
+    sleep_pid=$!
+    wait "${sleep_pid}"
+    if kill -0 "${GIMMES_PID}" 2>/dev/null; then
+        : > "${DEADLINE_FLAG}" 2>/dev/null
+        log "deadline reached; sending SIGTERM to ${GIMMES_PID}"
+        kill -TERM "${GIMMES_PID}" 2>/dev/null
+        # Backgrounded so the TERM trap can cut the grace short once the
+        # loop has exited (a foreground sleep defers the trap 30s).
+        sleep "${GRACE_SECONDS}" &
+        sleep_pid=$!
+        wait "${sleep_pid}"
+        if kill -0 "${GIMMES_PID}" 2>/dev/null; then
+            log "grace expired; sending SIGKILL"
+            kill -KILL "${GIMMES_PID}" 2>/dev/null
+        fi
+    fi
+) &
+WATCHDOG_PID=$!
+
+wait "${GIMMES_PID}"
+EXIT=$?
+log "gimmes exited with code ${EXIT}"
+kill -TERM "${WATCHDOG_PID}" 2>/dev/null
+wait "${WATCHDOG_PID}" 2>/dev/null
+
+# Any non-zero exit the deadline didn't cause is a failure the next
+# start records (#843 review): a mid-day crash must not vanish.
+if [ -e "${DEADLINE_FLAG}" ]; then
+    rm -f "${DEADLINE_FLAG}" 2>/dev/null
+elif (( EXIT != 0 )); then
+    if (( SECONDS < 120 )); then
+        fail "loop exited ${EXIT} after ${SECONDS}s (died at birth)" "${EXIT}"
+    fi
+    fail "loop exited ${EXIT} after ${SECONDS}s (crashed mid-day)" "${EXIT}"
+fi
+exit "${EXIT}"

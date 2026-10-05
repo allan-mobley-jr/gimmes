@@ -22,6 +22,21 @@ def _no_ambient_cycle_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GIMMES_SESSION_ID", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_startup_markers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#843: the loop ingests the wrapper's STARTUP-FAILED markers from
+    $TMPDIR and /tmp. A test that runs the loop must never consume (and
+    rename away) a real marker on the dev machine."""
+    import gimmes.schedule
+
+    empty = tmp_path / "no-real-markers"
+    monkeypatch.setattr(
+        gimmes.schedule, "_marker_tmp_dirs", lambda: [empty],
+    )
+
+
 @pytest.fixture
 def config() -> GimmesConfig:
     """Default test config (driving range, side=yes pinned for test stability)."""
