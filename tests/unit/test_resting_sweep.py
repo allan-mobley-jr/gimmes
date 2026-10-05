@@ -342,3 +342,106 @@ class TestSweepHourlyBand:
         assert [
             o.order_id for o in await broker.list_orders(status="resting")
         ] == [order.order_id]
+
+
+class TestSweepFillAction:
+    """#846: the sweep books a filled resting SELL as a CLOSE."""
+
+    @staticmethod
+    async def _book(action: OrderAction, held: int, n: int):  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock
+
+        from gimmes.cli import _log_sweep_fill
+        from gimmes.models.portfolio import Position
+
+        order = MagicMock()
+        order.ticker, order.side, order.action = "KXTEST-MKT", OrderSide.NO, action
+        order.order_id, order.fill_price, order.fill_fees = "o-1", 0.6, 0.01
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(return_value=[Position(
+            ticker="KXTEST-MKT", side="no", count=held,
+            avg_price=0.5, market_price=0.6, cost_basis=0.5 * held,
+        )] if held else [])
+        captured = {}
+
+        async def _sync(db, positions, trade):  # type: ignore[no-untyped-def]
+            captured["trade"] = trade
+
+        with patch("gimmes.store.queries.sync_positions_with_trade", _sync), patch(
+            "gimmes.store.queries.get_recent_candidates", AsyncMock(return_value=[]),
+        ), patch(
+            "gimmes.store.queries.get_thesis_for_ticker", AsyncMock(return_value=""),
+        ):
+            await _log_sweep_fill(AsyncMock(), broker, order, n)
+        return captured["trade"]
+
+    @pytest.mark.asyncio
+    async def test_swept_sell_books_close(self) -> None:
+        from gimmes.models.trade import TradeDecision
+
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value={"model_probability": 0.9, "gimme_score": 80.0,
+                                    "edge": 0.2, "kelly_fraction": 0.03}),
+        ):
+            trade = await self._book(OrderAction.SELL, held=4, n=6)
+        assert trade.action is TradeDecision.Action.CLOSE
+        assert trade.count == 6
+        assert (trade.price, trade.fee, trade.agent) == (0.6, 0.01, "sweep")
+        # #656: the close inherits ENTRY analytics, with no thesis.
+        assert (trade.model_probability, trade.gimme_score) == (0.9, 80.0)
+        assert trade.thesis == ""
+        assert "sweep close fill" in trade.rationale
+
+    @pytest.mark.asyncio
+    async def test_swept_full_close_on_real_db(self, db: Database) -> None:
+        """Full close: the broker snapshot no longer holds the ticker;
+        exactly one close row, ledger balanced, position row gone."""
+        from unittest.mock import MagicMock
+
+        from gimmes.cli import _log_sweep_fill
+        from gimmes.models.portfolio import Position
+        from gimmes.models.trade import TradeDecision
+        from gimmes.store.queries import (
+            count_opened_closed,
+            insert_trade,
+            sync_positions,
+        )
+
+        await insert_trade(db, TradeDecision(
+            ticker="KXTEST-MKT", action=TradeDecision.Action.OPEN,
+            side="no", count=6, price=0.5, model_probability=0.9,
+            agent="closer",
+        ))
+        await sync_positions(db, [Position(
+            ticker="KXTEST-MKT", side="no", count=6, avg_price=0.5,
+            market_price=0.5, cost_basis=3.0,
+        )])
+        order = MagicMock()
+        order.ticker, order.side, order.action = "KXTEST-MKT", OrderSide.NO, OrderAction.SELL
+        order.order_id, order.fill_price, order.fill_fees = "o-9", 0.7, 0.02
+        broker = AsyncMock()
+        broker.get_positions = AsyncMock(return_value=[])
+        await _log_sweep_fill(db, broker, order, 6)
+
+        cursor = await db.conn.execute(
+            "SELECT action, count FROM trades WHERE ticker = 'KXTEST-MKT'"
+            " AND action = 'close'"
+        )
+        assert [tuple(r) for r in await cursor.fetchall()] == [("close", 6)]
+        assert await count_opened_closed(db, "KXTEST-MKT", "no") == (6, 6)
+        cursor = await db.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE ticker = 'KXTEST-MKT'"
+        )
+        assert (await cursor.fetchone())[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_swept_buy_unchanged(self) -> None:
+        from gimmes.models.trade import TradeDecision
+
+        assert (await self._book(OrderAction.BUY, held=10, n=10)).action is (
+            TradeDecision.Action.OPEN
+        )
+        assert (await self._book(OrderAction.BUY, held=16, n=6)).action is (
+            TradeDecision.Action.SIZE_UP
+        )
