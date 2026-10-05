@@ -160,10 +160,18 @@ The error log only shows agents that FAILED loudly. An agent that simply stops b
 ```bash
 gimmes config get strategy.pro_analysis_interval_hours
 gimmes activity --agent pro --phase complete --limit 1
+COLUMNS=200 gimmes activity --agent caddie-master --phase start --limit 4
 date -u '+%F %T'
 ```
 
-Escalate (file an issue, same Step 2.5 dedup pre-flight) when the gap between the anchor row's `Time (UTC)` and now exceeds **2×** the configured cadence, or when the command prints `No activity found` and the book has ≥20 closed trades (`Close Events` in `gimmes report`). Use error_code `pro_dispatch_stale` and component `caddie-master.step7` so the dedup key is stable. Compare against `date -u`, NEVER local time. A gap under 2× is normal — the cadence is a floor, not a promise, and a single shed cycle is expected.
+The Pro's **due time** is the anchor row's `Time (UTC)` plus the cadence. Escalate (file an issue, same Step 2.5 dedup pre-flight) only when BOTH hold:
+
+1. the gap between the anchor row's `Time (UTC)` and now exceeds **2×** the configured cadence; AND
+2. the loop has had the chance to dispatch it: the output is newest first, and its TOP row is the current cycle — skip it. **All three** rows below it (earlier cycles) started later than the due time (i.e. the BOTTOM row is after it) — at least 3 earlier cycles since the Pro became overdue, none of which produced a Pro `complete` row.
+
+Measure silence in loop-running time, not calendar time (#850). The loop runs weekdays only, so Friday's last Pro is ~67h old at Monday's first cycle; and Groundskeeper (Step 6.5) runs BEFORE Step 7 in the same cycle, so the current cycle has not reached the Pro yet and never counts. Count cycle `start` rows, not `complete` rows: Step 0 writes one for every cycle, so a cycle killed before Step 8 — including one that died mid-Pro — still counts as a missed chance. Wall-clock age alone false-positives every Monday and after any holiday or outage. Fewer than 3 earlier cycles since the due time is normal — the cadence is a floor, not a promise, and a single shed cycle is expected.
+
+Also escalate when the Pro command prints `No activity found` and the book has ≥20 closed trades (`Close Events` in `gimmes report`). Use error_code `pro_dispatch_stale` and component `caddie-master.step7` so the dedup key is stable. Compare against `date -u`, NEVER local time. When filing, include the three cycle numbers and run `gimmes activity --agent caddie-master --phase info --limit 10`; quote any `Step 7 (Pro) skipped` markers in the issue body — they explain the silence but do not excuse it.
 
 This is the only check here that is NOT driven by an error-log row. Do not skip it because `gimmes errors` came back empty: an empty error log is exactly the condition under which a silent agent hides.
 
