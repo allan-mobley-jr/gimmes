@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.34] - 2026-10-06
+
+Closes execute the way real money would. **No restart required after `gimmes update`** — `gimmes order` runs per invocation and the agent prompts are read per dispatch; the new `orders.close_slippage_cents` key is read per order. Behavior notes: (1) every CLOSE sell, paper and championship, is now a taker limit at the held side's bid less `orders.close_slippage_cents` (default 2¢; `0` = strictly at the bid) — **paper close P&L will be lower than history**, because paper used to fill closes at mid as a maker, which live never would; (2) on a thin book a close may fill partially and finish over several cycles: a partial that sold contracts no longer counts toward step 2a's two-strike stop; (3) a sell into an empty book is refused (`close_rejected`).
+
+### Changed
+
+- **#847** (go-live blocker): non-hourly closes went out post-only at the midpoint and would essentially never fill on Kalshi, while paper filled them at mid through the #255 fallback. Decided: every close crosses the spread, up to 2¢ below the bid, with `--price` on a sell acting as a floor and limits computed in whole cents rounded down. Unfilled remainders follow the #840 `Close INCOMPLETE` path. Pre-existing orderbook and sell-VWAP issues found in review are tracked in #859.
+
 ## [0.8.33] - 2026-10-05
 
 A managed launchd schedule that fails loud, one error-log dedupe helper, and two close-path guards. **No restart required after `gimmes update`** — everything changed is a per-invocation CLI command or an agent prompt, except the loop-start recording of failed starts, which takes effect at the next normal loop start. Nothing is installed automatically: run `gimmes schedule install --dry-run` to see how the managed wrapper and LaunchAgent differ from a hand-made setup, `gimmes schedule install --force` to adopt them (originals are backed up; during trading hours only the wrapper is swapped and launchd changes wait), and rerun it after 18:00 to migrate the LaunchAgent. Behavior notes: (1) the managed job fires weekdays at 08:00 with retries at 08:15/08:30/09:00 and stops the loop at 18:00 local; a retry restarts a loop deliberately stopped before 09:00 (`launchctl disable` to prevent), and a manual kickstart outside 08:00–18:00 is a no-op; (2) a failed start — unwritable log, under `ops.min_free_disk_gb` free, missing `gimmes` or `claude`, or a non-deadline non-zero exit — exits non-zero and becomes a `startup_failed` error row on the next start; (3) the managed wrapper bakes the installing shell's PATH and no longer sources `~/.zshrc`.
