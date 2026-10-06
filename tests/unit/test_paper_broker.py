@@ -1810,3 +1810,57 @@ class TestAvgFillPrice:
         assert order.remaining_count == 10
         assert order.avg_fill_price is None
         assert order.fill_fees is None
+
+
+class TestTakerCloseAtBid:
+    """#847: a close is a taker limit at the bid — paper walks the real
+    bids down to the limit and never fills below it (no #255 fill-at-
+    limit fiction), leaving any remainder unfilled for #840."""
+
+    @staticmethod
+    async def _hold(broker: PaperBroker, orderbook: Orderbook) -> None:
+        await broker.create_order(CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.BUY, side=OrderSide.YES,
+            count=10, yes_price=0.70, post_only=True,
+        ), orderbook)
+
+    @pytest.mark.asyncio
+    async def test_walks_bids_to_limit_and_stops(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        await self._hold(broker, orderbook)
+        book = Orderbook(
+            ticker="TEST-MKT",
+            yes_bids=[
+                OrderbookLevel(price=0.68, quantity=3),
+                OrderbookLevel(price=0.67, quantity=2),
+                OrderbookLevel(price=0.60, quantity=50),
+            ],
+            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
+        )
+        order = await broker.create_order(CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.SELL, side=OrderSide.YES,
+            count=10, yes_price=0.67, post_only=False,
+        ), book)
+        assert order.status == "executed"
+        assert order.remaining_count == 5  # 3 @ 0.68 + 2 @ 0.67, none at 0.60
+        assert order.avg_fill_price == pytest.approx((3 * 0.68 + 2 * 0.67) / 5)
+        positions = await broker.get_positions()
+        assert positions[0].count == 5
+
+    @pytest.mark.asyncio
+    async def test_empty_bids_fill_nothing(
+        self, broker: PaperBroker, orderbook: Orderbook,
+    ) -> None:
+        await self._hold(broker, orderbook)
+        book = Orderbook(
+            ticker="TEST-MKT", yes_bids=[],
+            no_bids=[OrderbookLevel(price=0.30, quantity=500)],
+        )
+        order = await broker.create_order(CreateOrderParams(
+            ticker="TEST-MKT", action=OrderAction.SELL, side=OrderSide.YES,
+            count=10, yes_price=0.67, post_only=False,
+        ), book)
+        assert order.status == "canceled"
+        positions = await broker.get_positions()
+        assert positions[0].count == 10

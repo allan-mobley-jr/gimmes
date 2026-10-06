@@ -36,6 +36,35 @@ def price_at_bound(price: float) -> bool:
     return price <= BOUND_TICK or price >= 1.0 - BOUND_TICK
 
 
+def executable_bid(market, side: str) -> float:  # type: ignore[no-untyped-def]
+    """#847: the price a taker SELL of ``side`` executes at now.
+
+    The side's best bid, else the complement of the other side's ask;
+    0.0 when there is no bid at all (an empty book).
+    """
+    if side == "no":
+        bid, opp_ask = market.no_bid, market.yes_ask
+    else:
+        bid, opp_ask = market.yes_bid, market.no_ask
+    if bid > 0:
+        return bid
+    return 1.0 - opp_ask if 0 < opp_ask < 1 else 0.0
+
+
+def close_limit(
+    bid: float, slippage_cents: int, floor: float | None = None,
+) -> float:
+    """#847: a CLOSE's taker limit — ``slippage_cents`` below the bid,
+    never under ``floor`` (``--price``) or one tick. Computed in whole
+    cents and rounded DOWN: rounding a sub-cent bid up (0.835 → 0.84)
+    would stop the sell crossing the book at all."""
+    import math
+
+    bid_c = math.floor(bid * 100 + 1e-9)
+    floor_c = math.ceil(floor * 100 - 1e-9) if floor else 0
+    return max(bid_c - slippage_cents, floor_c, 1) / 100
+
+
 def tradeable_edge(prob: float, yes_price: float, side: str) -> float:
     """Edge on the side actually being bought, 0.0 at the price bounds.
 

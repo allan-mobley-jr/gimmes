@@ -3978,6 +3978,17 @@ def test_crash_recovery_redispatches_partial_close(
         "`market_not_active`",
         "`cancel FAILED`",
         "two consecutive `close_failed` skips",
+        "with NO close trade landing between them",
+        "A partial that sold contracts is progress, not a strike",
         "A 2a CLOSE outcome is final for that ticker this cycle (#768)",
     ):
         assert needle in s2a, needle
+
+
+def test_closer_closes_take_at_the_bid() -> None:
+    """#847: non-hourly closes take at the bid via the CLI, no flags."""
+    closer_text = _CLOSER.read_text()
+    assert "their CLOSES take at the bid automatically (#847)" in closer_text
+    assert "never pass `--price` or `--taker` on a non-hourly close" in closer_text
+    assert "it is never re-priced lower than the limit" in closer_text
+    assert "`orders.close_slippage_cents` below it (#847)" in closer_text
