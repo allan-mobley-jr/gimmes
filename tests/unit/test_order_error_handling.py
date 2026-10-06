@@ -80,6 +80,8 @@ def _stub_market():
     m.title = "Test Market"
     m.subtitle = ""
     m.status = "active"
+    # #847: real book fields — sells price at the executable bid.
+    m.yes_bid, m.yes_ask, m.no_bid, m.no_ask = 0.39, 0.41, 0.59, 0.61
     return m
 
 
@@ -93,6 +95,7 @@ def _stub_config():
     # path — unrealistic for the non-hourly TEST-TICKER. Shadow-gate
     # tests opt in with their own config.
     c.is_hourly_ticker = MagicMock(return_value=False)
+    c.orders.close_slippage_cents = 2  # #847: a real int for close limits
     return c
 
 
@@ -2043,3 +2046,183 @@ class TestCloseEdgeCases:
         assert result.exit_code == 1
         [entry] = _entries(insert, "timeout")
         assert entry.cycle == 0
+
+
+class TestCloseTakesTheBid:
+    """#847 (decided): every CLOSE sell is a taker limit up to
+    orders.close_slippage_cents (2 here) below the held side's bid —
+    paper and championship alike. --price is a floor; an empty book is
+    refused."""
+
+    _NO_SELL = [
+        "order", "TEST-TICKER", "--action", "sell",
+        "--side", "no", "--count", "10", "--yes",
+    ]
+    _YES_SELL = [
+        "order", "TEST-TICKER", "--action", "sell",
+        "--side", "yes", "--count", "10", "--yes",
+    ]
+
+    @staticmethod
+    def _broker(side: str = "yes", **kw):  # type: ignore[no-untyped-def]
+        pos = Position(
+            ticker="TEST-TICKER", side=side, count=100,
+            avg_price=0.60, market_price=0.60, cost_basis=60.0,
+        )
+        return _make_mock_broker(get_positions_side_effect=lambda: [pos], **kw)
+
+    def _run(self, broker, args, market=None):  # type: ignore[no-untyped-def]
+        _, sync = _capture_trade()
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            return _run_order_cli(
+                broker, config=_maker_config(), cli_args=args, market=market,
+                sync_side_effect=sync,
+            )
+
+    def test_yes_sell_takes_at_yes_bid(self) -> None:
+        broker = self._broker()
+        result, console, _ = self._run(broker, self._YES_SELL)
+        assert result.exit_code == 0, _printed(console)
+        params = broker.create_order.call_args[0][0]
+        assert params.post_only is False
+        assert params.yes_price == pytest.approx(0.37)  # bid 0.39 − 2¢
+        assert params.no_price is None
+
+    def test_no_sell_takes_at_no_bid(self) -> None:
+        broker = self._broker("no")
+        result, console, _ = self._run(broker, self._NO_SELL)
+        assert result.exit_code == 0, _printed(console)
+        params = broker.create_order.call_args[0][0]
+        assert params.post_only is False
+        assert params.no_price == pytest.approx(0.57)  # NO bid 0.59 − 2¢
+
+    def test_no_bid_falls_back_to_complement_of_yes_ask(self) -> None:
+        m = _stub_market()
+        m.no_bid, m.yes_ask = 0.0, 0.45
+        broker = self._broker("no")
+        result, console, _ = self._run(broker, self._NO_SELL, market=m)
+        assert result.exit_code == 0, _printed(console)
+        assert broker.create_order.call_args[0][0].no_price == pytest.approx(0.53)
+
+    def test_empty_book_is_refused(self) -> None:
+        m = _stub_market()
+        m.yes_bid, m.no_ask = 0.0, 0.0
+        broker = self._broker()
+        result, console, insert = self._run(broker, self._YES_SELL, market=m)
+        assert result.exit_code == 1
+        broker.create_order.assert_not_awaited()
+        assert len(_entries(insert, "close_rejected")) == 1
+        assert "No executable YES bid" in _printed(console)
+
+    @pytest.mark.parametrize(("floor", "limit"), [("45", 0.45), ("38", 0.38), ("30", 0.37)])
+    def test_price_is_a_floor(self, floor: str, limit: float) -> None:
+        broker = self._broker()
+        result, console, _ = self._run(
+            broker, [*self._YES_SELL, "--price", floor],
+        )
+        assert result.exit_code == 0, _printed(console)
+        assert broker.create_order.call_args[0][0].yes_price == pytest.approx(limit)
+
+    def test_buy_unchanged_maker_at_mid(self) -> None:
+        broker = _make_mock_broker()
+        result, _, _ = _run_order_cli(broker, config=_maker_config())
+        assert result.exit_code == 0
+        assert broker.create_order.call_args[0][0].post_only is True
+
+    def test_partial_at_the_bid_is_close_incomplete(self) -> None:
+        broker = self._broker()
+        broker.create_order = AsyncMock(
+            return_value=_sell_order(status="executed", remaining=4),
+        )
+        broker.cancel_order = AsyncMock()
+        captured, sync = _capture_trade()
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            result, _, insert = _run_order_cli(
+                broker, config=_maker_config(), sync_side_effect=sync,
+                cli_args=self._YES_SELL,
+            )
+        assert result.exit_code == 1
+        assert broker.create_order.call_args[0][0].yes_price == pytest.approx(0.37)
+        ctx = json.loads(_entries(insert, "close_incomplete")[0].context)
+        assert ctx["remainder"] == "abandoned"
+        assert captured["trade"].count == 6
+
+    def test_championship_sell_is_taker_at_bid(self) -> None:
+        champ = _maker_config()
+        champ.is_championship = True
+        create = AsyncMock(return_value=_sell_order(status="executed", remaining=0))
+        pos = Position(
+            ticker="TEST-TICKER", side="yes", count=100,
+            avg_price=0.60, market_price=0.60, cost_basis=60.0,
+        )
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            _, sync = _capture_trade()
+            result, console, _ = _run_order_cli(
+                None, config=champ, championship_create_order=create,
+                championship_positions=[pos], cli_args=self._YES_SELL,
+                sync_side_effect=sync,
+            )
+        assert result.exit_code == 0, _printed(console)
+        params = create.call_args[0][1]
+        assert params.post_only is False
+        assert params.yes_price == pytest.approx(0.37)
+
+    def test_slippage_zero_is_strictly_at_the_bid(self) -> None:
+        cfg = _maker_config()
+        cfg.orders.close_slippage_cents = 0
+        broker = self._broker()
+        _, sync = _capture_trade()
+        with patch(
+            "gimmes.store.queries.get_entry_analytics",
+            AsyncMock(return_value=None),
+        ):
+            result, console, _ = _run_order_cli(
+                broker, config=cfg, cli_args=self._YES_SELL,
+                sync_side_effect=sync,
+            )
+        assert result.exit_code == 0, _printed(console)
+        assert broker.create_order.call_args[0][0].yes_price == pytest.approx(0.39)
+
+
+class TestCloseLimitMath:
+    """#847: limits in whole cents, rounded DOWN, never under the floor
+    or one tick."""
+
+    @pytest.mark.parametrize(("bid", "slip", "floor", "limit"), [
+        (0.39, 2, None, 0.37),
+        (0.835, 0, None, 0.83),   # sub-cent bid rounds DOWN, still crosses
+        (0.835, 2, None, 0.81),
+        (0.39, 2, 0.38, 0.38),    # floor wins
+        (0.02, 5, None, 0.01),    # never below one tick
+        (0.57, 2, 0.574, 0.58),   # a sub-cent floor rounds UP (never sells below it)
+    ])
+    def test_close_limit(self, bid, slip, floor, limit) -> None:  # type: ignore[no-untyped-def]
+        from gimmes.strategy.scanner import close_limit
+
+        assert close_limit(bid, slip, floor) == pytest.approx(limit)
+
+    @pytest.mark.parametrize(("side", "fields", "bid"), [
+        ("yes", {"yes_bid": 0.39, "no_ask": 0.61}, 0.39),
+        ("no", {"no_bid": 0.59, "yes_ask": 0.41}, 0.59),
+        ("no", {"no_bid": 0.0, "yes_ask": 0.45}, 0.55),
+        ("no", {"no_bid": 0.0, "yes_ask": 1.0}, 0.0),
+        ("yes", {"yes_bid": 0.0, "no_ask": 0.0}, 0.0),
+    ])
+    def test_executable_bid(self, side, fields, bid) -> None:  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from gimmes.strategy.scanner import executable_bid
+
+        m = SimpleNamespace(yes_bid=0.0, yes_ask=0.0, no_bid=0.0, no_ask=0.0)
+        for k, v in fields.items():
+            setattr(m, k, v)
+        assert executable_bid(m, side) == pytest.approx(bid)

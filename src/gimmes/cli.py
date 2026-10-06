@@ -1201,7 +1201,12 @@ def order(
     side: str = typer.Option("", "--side", "-s", help="Order side (yes/no, default from config)"),
     count: int = typer.Option(0, "--count", "-c", help="Number of contracts (0=auto-size)"),
     price: int = typer.Option(
-        0, "--price", help="Limit price in cents, e.g. 70 for $0.70 (0=market)"
+        0, "--price",
+        help=(
+            "Limit price in cents, e.g. 70 for $0.70 (0=market). SELL: a"
+            " floor — closes take at the bid less"
+            " orders.close_slippage_cents, never below the floor (#847)"
+        ),
     ),
     probability: float | None = typer.Option(
         None, "--prob", "-p",
@@ -1231,6 +1236,7 @@ def order(
             "Force taker execution for THIS order (post_only=False),"
             " regardless of orders.preferred_order_type. Resting maker"
             " orders in sub-hour markets are honest no-fills (#690/#721)."
+            " Sells are always taker (#847)."
         ),
     ),
     rest_on_miss: bool = typer.Option(
@@ -1690,7 +1696,11 @@ def order(
                     "status": str(market.status),
                 })
                 raise typer.Exit(1)
-            is_taker = taker or config.orders.preferred_order_type != "maker"
+            # #847: closes never rest — every sell is a taker at the bid.
+            is_taker = (
+                taker or not is_buy
+                or config.orders.preferred_order_type != "maker"
+            )
 
             bankroll = config.bankroll
             true_prob = probability
@@ -1773,7 +1783,23 @@ def order(
                     )
                 return
 
-            final_price = cap_price if cap_price is not None else eff_price
+            if is_buy:
+                final_price = cap_price if cap_price is not None else eff_price
+            else:
+                # #847: every close is a taker limit up to
+                # orders.close_slippage_cents below the held side's bid
+                # (thin tops of book otherwise fill a sliver per attempt);
+                # --price is a floor; nothing ever sells at mid as a maker.
+                from gimmes.strategy.scanner import (
+                    BOUND_TICK,
+                    close_limit,
+                    executable_bid,
+                )
+
+                sell_bid = executable_bid(market, side)
+                final_price = close_limit(
+                    sell_bid, config.orders.close_slippage_cents, cap_price,
+                )
             trade_dollars = final_count * final_price
 
             # --- Sell validation: check position exists and count ---
@@ -1789,6 +1815,13 @@ def order(
                         if not matching else
                         f"Cannot sell {final_count} contracts"
                         f" — only {held} held"
+                    )
+                    console.print(f"[red]{msg}[/red]")
+                    await _reject_close(msg, final_count, held)
+                if sell_bid < BOUND_TICK:
+                    msg = (
+                        f"No executable {side.upper()} bid for {ticker}"
+                        f" — refusing to sell into an empty book (#847)"
                     )
                     console.print(f"[red]{msg}[/red]")
                     await _reject_close(msg, final_count, held)

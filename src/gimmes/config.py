@@ -814,6 +814,24 @@ class OrdersConfig(BaseModel):
         },
     )
 
+    close_slippage_cents: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        json_schema_extra={
+            "display_name": "Close slippage (cents below bid)",
+            "description": (
+                "How far below the held side's best bid a CLOSE may fill\n"
+                "(#847). Every close is a taker limit at bid minus this; any\n"
+                "contracts that don't fill within it are canceled and retried\n"
+                "next cycle. 0 = strictly at the bid (thin books may fill\n"
+                "only a sliver per attempt). Default 2."
+            ),
+            "min_val": 0,
+            "max_val": 10,
+        },
+    )
+
 
 class ScannerConfig(BaseModel):
     model_config = ConfigDict(json_schema_extra={
