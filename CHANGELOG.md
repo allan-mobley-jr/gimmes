@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.35] - 2026-10-12
+
+One fix: the loop's own CLOSE decisions are authorized in every cycle, and a denied close goes to the operator instead of being retried. **UPDATE AND RESTART BOTH REQUIRED** — the cycle prompts are in-memory module constants, so a running loop keeps sending `Run one trading cycle.` (no close authorization) until it is replaced. Behavior notes: (1) a CLOSE that the safety classifier denies is no longer re-dispatched every cycle — the position stays open until you review it; to authorize the close, write `gimmes position-note TICKER --type decision --body "Operator: close authorized"`; (2) a denied close is logged at ERROR and Groundskeeper files an issue on the first occurrence.
+
+### Fixed
+
+- **#862**: six Step 2a CLOSE re-dispatches were denied on Oct 7–9 (the October payrolls remainder sat open ~4h). Full cycles ran on `Run one trading cycle.` with no close authorization, and the #837 monitor wording didn't cover finishing a prior cycle's decision. A shared operator authorization now rides the full, monitor, and hourly prompts. Re-dispatches state the decision's reason and P&L and never omit a prior denial; a denied CLOSE waits for an operator decision note; `safety_classifier_block` rows for closes are ERROR with `context.action = "close"` and escalate on first occurrence.
+
 ## [0.8.34] - 2026-10-06
 
 Closes execute the way real money would. **No restart required after `gimmes update`** — `gimmes order` runs per invocation and the agent prompts are read per dispatch; the new `orders.close_slippage_cents` key is read per order. Behavior notes: (1) every CLOSE sell, paper and championship, is now a taker limit at the held side's bid less `orders.close_slippage_cents` (default 2¢; `0` = strictly at the bid) — **paper close P&L will be lower than history**, because paper used to fill closes at mid as a maker, which live never would; (2) on a thin book a close may fill partially and finish over several cycles: a partial that sold contracts no longer counts toward step 2a's two-strike stop; (3) a sell into an empty book is refused (`close_rejected`).
