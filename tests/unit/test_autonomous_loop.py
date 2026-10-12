@@ -2803,7 +2803,9 @@ class TestHourlyLadder:
         env = mock_popen.call_args.kwargs["env"]
         assert env["GIMMES_CYCLE_TYPE"] == "full"
         cmd = mock_popen.call_args.args[0]
-        assert cmd[cmd.index("-p") + 1] == "Run one trading cycle."
+        from gimmes.cli import FULL_CYCLE_PROMPT
+
+        assert cmd[cmd.index("-p") + 1] == FULL_CYCLE_PROMPT
 
     def test_hourly_timeout_clamped(self) -> None:
         with (

@@ -677,6 +677,40 @@ class TestCloseFailedSkip:
         ctx = json.loads(row["context"])
         assert ctx["rationale"] == rationale[:300]
 
+    @pytest.mark.parametrize(("rationale", "close"), [
+        ("CLOSE dispatch denied by permission/safety classifier: x", True),
+        ("CLOSE order denied by permission/safety classifier: x", True),
+        ("Validation passed; order blocked by classifier", False),
+    ])
+    def test_close_denial_escalates_as_error(
+        self, monkeypatch, tmp_path, rationale, close,
+    ) -> None:
+        """#862: a denied CLOSE is ERROR with action=close (Groundskeeper
+        escalates it on the first occurrence); an entry denial stays
+        WARNING."""
+        import json
+
+        db_path = tmp_path / "gimmes.db"
+        _db_run(db_path, self._noop)
+        _patch_config(monkeypatch, db_path)
+        result = runner.invoke(app, [
+            "log-trade", "KXTEST-26AUG-T1", "--action", "skip",
+            "--reason", "classifier_block", "--side", "no",
+            "--agent", "caddie-master", "--rationale", rationale,
+        ])
+        assert result.exit_code == 0, result.output
+
+        async def _q(db):
+            cursor = await db.conn.execute(
+                "SELECT severity, context FROM error_log"
+                " WHERE error_code = 'safety_classifier_block'"
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+        [row] = _db_run(db_path, _q)
+        assert row["severity"] == ("error" if close else "warning")
+        assert (json.loads(row["context"]).get("action") == "close") is close
+
     @pytest.mark.parametrize("reason", ["order_failed", "order_canceled"])
     def test_other_skip_reasons_write_no_error_row(
         self, monkeypatch, tmp_path, reason,
