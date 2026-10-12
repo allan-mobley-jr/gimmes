@@ -3992,3 +3992,83 @@ def test_closer_closes_take_at_the_bid() -> None:
     assert "never pass `--price` or `--taker` on a non-hourly close" in closer_text
     assert "it is never re-priced lower than the limit" in closer_text
     assert "`orders.close_slippage_cents` below it (#847)" in closer_text
+
+
+def test_every_cycle_prompt_authorizes_carried_forward_closes() -> None:
+    """#862: full cycles carried no CLOSE authorization ("Run one trading
+    cycle.") and the monitor wording didn't cover a prior cycle's
+    decision — the classifier blocked 6 Step 2a closes on Oct 7–9."""
+    import re
+
+    from gimmes.cli import (
+        CLOSE_AUTHORIZATION,
+        FULL_CYCLE_PROMPT,
+        HOURLY_CYCLE_PROMPT_TEMPLATE,
+        MONITOR_CYCLE_PROMPT,
+    )
+
+    assert CLOSE_AUTHORIZATION  # imported for the cross-check below
+    for prompt in (
+        FULL_CYCLE_PROMPT,
+        MONITOR_CYCLE_PROMPT,
+        HOURLY_CYCLE_PROMPT_TEMPLATE.format(series="KXTEST"),
+    ):
+        # Pin the RENDERED wording, not the shared constant.
+        for needle in (
+            "dispatch the Closer for any CLOSE (sell)",
+            "carries forward from a prior cycle's CLOSE decision note",
+            "unfilled remainder of a partial close",
+        ):
+            assert needle in prompt, (needle, prompt)
+        assert re.search(r"(?i)\bskip\b[^.]*\bCloser\b", prompt) is None
+        assert re.search(
+            r"(?i)\b(do not|don't|never) (run|dispatch) (the )?Closer\b", prompt,
+        ) is None
+
+
+def test_classifier_block_is_not_retried_and_dispatch_carries_reason(
+    caddie_master_text: str,
+) -> None:
+    """#862: a 2a re-dispatch states the decision's reason and P&L; a
+    classifier denial goes to the operator, never retried around."""
+    s2a = caddie_master_text.split("#### 2a.", 1)[1].split("#### 2b.", 1)[0]
+    for needle in (
+        "Every 2a CLOSE re-dispatch (#862)",
+        "one-line close reason, quoted from the decision note",
+        "current P&L and StopGate",
+        "Never omit, soften, or reword a prior permission/safety denial",
+        "do NOT dispatch that CLOSE again — from step 2a OR step 2c —"
+        " until the operator acts (#862)",
+        "Step 2c may still write its own decision notes for the ticker, but MUST NOT dispatch",
+        "written by the operator (`agent=manual`) AFTER the denial",
+        "NEVER write an `agent=manual` note yourself",
+        "`classifier_block` skips are NOT `close_failed` strikes",
+        "there is no `classifier_block` skip for this ticker after that decision",
+        "the CLOSE-decisions rule above never fires",
+    ):
+        assert needle in s2a, needle
+    assert "not a retry story" not in caddie_master_text
+    assert (
+        "NEITHER step 2a nor this step dispatches that CLOSE again"
+        in caddie_master_text
+    )
+
+
+def test_close_denial_prefixes_match_agent_templates(
+    caddie_master_text: str, groundskeeper_text: str,
+) -> None:
+    """#862: the CLI escalates a denied CLOSE by its rationale prefix —
+    both agents must write exactly those prefixes, and Groundskeeper
+    must escalate the tagged row on its first occurrence."""
+    from gimmes.cli import _CLOSE_DENIAL_PREFIXES
+
+    dispatch, order = _CLOSE_DENIAL_PREFIXES
+    assert dispatch in caddie_master_text
+    assert order in _CLOSER.read_text()
+    immediate = groundskeeper_text.split(
+        "**Immediate escalation", 1,
+    )[1].split("**Pattern escalation", 1)[0]
+    assert (
+        "`safety_classifier_block` rows whose `context.action` is `close`"
+        " (#862) — on the FIRST occurrence"
+    ) in immediate

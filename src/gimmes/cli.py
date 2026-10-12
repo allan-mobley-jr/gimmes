@@ -93,6 +93,21 @@ def _rest_on_miss_expiration(
         return None, "market closes too soon to rest"
     return int(expiry.timestamp()), ""
 
+# #862: the operator's standing authorization for CLOSE sells, shared by
+# every cycle prompt. The auto-mode classifier reads the -p prompt as
+# the user's instruction; full cycles ("Run one trading cycle.") carried
+# none, and the #837 monitor wording ("that Step 2 decides") did not
+# cover Step 2a finishing a prior cycle's decision — 6 blocks on Oct 7–9.
+CLOSE_AUTHORIZATION = (
+    "Step 2 is authorized to dispatch the Closer for any CLOSE (sell)"
+    " of an open position that Step 2 decides this cycle, or that"
+    " Step 2a carries forward from a prior cycle's CLOSE decision note"
+    " (including the unfilled remainder of a partial close)"
+)
+
+FULL_CYCLE_PROMPT = f"Run one trading cycle. {CLOSE_AUTHORIZATION}."
+
+
 # Cycle prompts are module constants so drift guards can pin the step
 # lists against caddie-master.md's headings (#724). Step 2 rides the
 # hourly lane deliberately: in steady state hourly cycles are the only
@@ -108,7 +123,9 @@ HOURLY_CYCLE_PROMPT_TEMPLATE = (
     " (Monitor) runs AFTER Step 5 — trade path first, surveillance"
     " with whatever window remains. In Step 3, instruct Scout to scan"
     " ONLY the hourly series (run 'gimmes scan -s <series>' for each"
-    " of: {series}). Skip Scorecard and Pro."
+    " of: {series}). Skip Scorecard and Pro. "
+    + CLOSE_AUTHORIZATION.replace("{", "{{").replace("}", "}}")
+    + "."
 )
 
 # Step 7 rides the monitor lane (#829): most cycles outside a trade
@@ -123,9 +140,8 @@ HOURLY_CYCLE_PROMPT_TEMPLATE = (
 MONITOR_CYCLE_PROMPT = (
     "Run a MONITOR-ONLY cycle. Only run Steps 0, 0.5, 1, 2,"
     " 6.5, 7, and 8. Skip Scout, Caddie, and Scorecard: no new"
-    " entries this cycle. Step 2 is authorized to dispatch the Closer"
-    " for any CLOSE (sell) of an open position that Step 2 decides"
-    " (#837). Defer every SIZE UP to the next full or hourly cycle:"
+    " entries this cycle. " + CLOSE_AUTHORIZATION
+    + ". Defer every SIZE UP to the next full or hourly cycle:"
     " never dispatch a buy in a monitor-only cycle. Step 7 (Pro) runs"
     " only when its own Step 7 condition is met (#829)."
 )
@@ -4943,8 +4959,18 @@ def log_trade(
                     import json as _json
 
                     category, error_code, message = skip_error_rows[reason]
+                    # #862: a denied CLOSE leaves a position the loop
+                    # decided to exit open, and the loop no longer
+                    # retries it — ERROR + action=close so Groundskeeper
+                    # escalates it on the first occurrence.
+                    is_close_denial = reason == "classifier_block" and (
+                        rationale_val or ""
+                    ).startswith(_CLOSE_DENIAL_PREFIXES)
                     await _log_cli_error(db, ErrorLogEntry(
-                        severity=ErrorSeverity.WARNING,
+                        severity=(
+                            ErrorSeverity.ERROR if is_close_denial
+                            else ErrorSeverity.WARNING
+                        ),
                         category=category,
                         error_code=error_code,
                         component="cli.log-trade",
@@ -4958,6 +4984,7 @@ def log_trade(
                             # #840: tells a blocked CLOSE from a blocked
                             # entry without opening the trades table.
                             "rationale": (rationale_val or "")[:300],
+                            **({"action": "close"} if is_close_denial else {}),
                         }),
                     ))
                 except Exception:
@@ -8614,6 +8641,14 @@ async def _ingest_startup_markers(
     return recorded
 
 
+# #862: rationale prefixes the Caddie Master (denied Closer dispatch) and
+# the Closer (denied sell) write for a classifier-blocked CLOSE.
+_CLOSE_DENIAL_PREFIXES = (
+    "CLOSE dispatch denied by permission/safety classifier",
+    "CLOSE order denied by permission/safety classifier",
+)
+
+
 def _wrap_stream_json(raw: bytes) -> bytes:
     """Wrap newline-delimited JSON events into a JSON array.
 
@@ -9153,7 +9188,7 @@ def _autonomous_loop(
             cycles_run += 1
             if in_window:
                 cycle_type = "full"
-                cycle_prompt = "Run one trading cycle."
+                cycle_prompt = FULL_CYCLE_PROMPT
                 post_sleep = pause_seconds
                 console.print(
                     f"[cyan]--- Cycle {cycle} ---[/cyan]"
@@ -9161,7 +9196,7 @@ def _autonomous_loop(
                 )
             elif in_pos_window:
                 cycle_type = "full"
-                cycle_prompt = "Run one trading cycle."
+                cycle_prompt = FULL_CYCLE_PROMPT
                 post_sleep = pause_seconds
                 console.print(
                     f"[cyan]--- Cycle {cycle} ---[/cyan]"
