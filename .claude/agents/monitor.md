@@ -154,6 +154,7 @@ Sweep: [sweep cycle: 'full (#731)' OR non-sweep cycle: 'skipped (cadence #731 �
 Price: $X.XX (was $X.XX, moved +/-Npp since last observation).
 Semantics: [threshold markets only (#641) — YES wins when <metric> <comparator> <threshold>; NO wins when <complement>, derived from the Rules (primary) row of market-info; OMIT for non-threshold markets]
 News delta: [new developments since last observation, or 'No new developments'].
+Estimates: [threshold markets only (#867) — effective threshold <rounding-adjusted value>; Contrary: <house value (publisher, date)>; …; Supporting: <house value (publisher, date)>; … — the LATEST figure per named forecasting house (sell-side or independent research, playbook or not) for THIS period, sorted by which side of the effective threshold it sits; an aggregator consensus goes in Supporting/Contrary marked "(consensus)" and is not a house; 'none found' when empty; OMIT for non-threshold markets]
 Thesis delta: [any change in thesis assessment, or 'Unchanged'].
 Trigger conditions: [NEW triggers only — not triggers already flagged and decided on].
 Overall: [Material change / No material change].
@@ -220,7 +221,7 @@ When a trigger condition is met, write a flag note in addition to the observatio
 
 **Trigger-name vocabulary (REQUIRED — use these exact strings):**
 - `Trigger: Price movement` — for the adverse-or-favorable Npp price-trigger condition.
-- `Trigger: New information` — for material new news/data published after entry.
+- `Trigger: New information` — for material new news/data published after entry. ALSO REQUIRED (#867), regardless of your own materiality judgment: whenever a contrary house estimate appears in your `Estimates:` line that was not there in the prior observation, or the count of contrary houses reaches 2. Name the houses and values in the flag.
 - `Trigger: Time decay` — for the <24h-to-settlement + not-profitable condition. Never for hourly-series positions (#721).
 - `Trigger: Risk approaching` — for the daily-loss-limit-approaching condition.
 - `Trigger: Stop-loss breach` — for unrealized P&L <= -(stop-loss% × cost basis).

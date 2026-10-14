@@ -4072,3 +4072,45 @@ def test_close_denial_prefixes_match_agent_templates(
         "`safety_classifier_block` rows whose `context.action` is `close`"
         " (#862) — on the FIRST occurrence"
     ) in immediate
+
+
+def test_contrary_estimate_rule(caddie_master_text: str, monitor_text: str) -> None:
+    """#867: clustered contrary house estimates can't be waved off as
+    "unverified"; they force a re-derivation (not an auto-close) and a
+    pre-release enumeration. Monitor records them in a countable line."""
+    s2c = caddie_master_text.split("#### 2c.", 1)[1].split("#### 2d.", 1)[0]
+    marker = "**Contrary-estimate rule (#867).**"
+    assert marker in s2c
+    # After the hard backstop, which runs "before any other rule".
+    assert s2c.index("**Hard loss backstop") < s2c.index(marker)
+    rule = s2c.split(marker, 1)[1].split("**Scheduled-release HOLD rule", 1)[0]
+    for needle in (
+        "two or more named forecasting houses",
+        "past the rounding-adjusted threshold",
+        "playbook list or not",
+        "`gimmes position-notes TICKER --limit 2000`",
+        "state the earliest note cycle you read",
+        '"already in the thesis" does NOT satisfy this rule',
+        "An aggregator consensus is evidence but does not count toward the two",
+        "Exclusion needs positive grounds, applied both ways",
+        "Monitor marked its source `SUPERSEDED` (#641)",
+        '"Unverified", "year not confirmed", "single source", or'
+        ' "not a playbook bank" is NOT grounds',
+        "do not accept a supporting figure under a looser standard",
+        "Re-derive, don't auto-close",
+        "showing the arithmetic",
+        "below `strategy.min_true_probability` or the edge after fees is gone",
+        "IS a degraded thesis → CLOSE per the loss-position thesis rule",
+        "in a `Contrary estimates:` line of the decision note",
+        "A HOLD into the print without that line is FORBIDDEN",
+    ):
+        assert needle in rule, needle
+    assert "or reduce" not in rule
+    assert "the step 2c contrary-estimate rule (#867)" in caddie_master_text
+    # Monitor side: a countable line + a mandatory flag.
+    assert "Estimates: [threshold markets only (#867)" in monitor_text
+    assert "the LATEST figure per named forecasting house" in monitor_text
+    assert (
+        "ALSO REQUIRED (#867), regardless of your own materiality judgment"
+        in monitor_text
+    )
