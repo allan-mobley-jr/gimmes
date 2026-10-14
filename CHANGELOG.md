@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.36] - 2026-10-14
+
+One fix to how Caddie Master weighs evidence against an open position. **Restart not required after `gimmes update`** — agent prompts only, read per dispatch. Behavior notes: (1) Monitor observations on threshold markets gain an `Estimates:` line (latest figure per forecasting house, contrary vs supporting); a new contrary house, or two of them, always raises a `New information` flag; (2) when two or more houses sit past the threshold against a position, Caddie Master must re-derive the probability with the arithmetic on record and close if it falls below the floor or the edge is gone — "unverified" is no longer grounds to dismiss an estimate; (3) a HOLD into a release must list every contrary estimate.
+
+### Fixed
+
+- **#867**: KXCPICORE-26SEP-T0.2 lost $492 after contrary estimates from Citi, JPM, DB and BofA were dismissed as "unverified" for 13+ cycles. The Pro's review of every loss since Jun 1 found an automatic close at this trigger would have lost money (2 losses saved, 4 wins forfeited), so the rule forces a symmetric, documented re-derivation rather than a close.
+
 ## [0.8.35] - 2026-10-12
 
 One fix: the loop's own CLOSE decisions are authorized in every cycle, and a denied close goes to the operator instead of being retried. **UPDATE AND RESTART BOTH REQUIRED** — the cycle prompts are in-memory module constants, so a running loop keeps sending `Run one trading cycle.` (no close authorization) until it is replaced. Behavior notes: (1) a CLOSE that the safety classifier denies is no longer re-dispatched every cycle — the position stays open until you review it; to authorize the close, write `gimmes position-note TICKER --type decision --body "Operator: close authorized"`; (2) a denied close is logged at ERROR and Groundskeeper files an issue on the first occurrence.
