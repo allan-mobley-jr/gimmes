@@ -4114,3 +4114,118 @@ def test_contrary_estimate_rule(caddie_master_text: str, monitor_text: str) -> N
         "ALSO REQUIRED (#867), regardless of your own materiality judgment"
         in monitor_text
     )
+
+
+def test_caddie_source_date_guard(caddie_text: str) -> None:
+    """#874: every source the Caddie relies on carries a publication
+    date checked against the market's period window; the guard sits
+    ahead of the extraordinary-event check so a prior-year shutdown
+    article cannot raise the flag."""
+    import re
+
+    match = re.search(
+        r"^## Sanity-Check Mode.*?(?=\n## )", caddie_text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None
+    section = match.group(0)
+    marker = "**Source-date guard (REQUIRED — #874"
+    assert marker in section
+    assert section.index(marker) < section.index(
+        "1. **Extraordinary event check**",
+    )
+    for needle in (
+        "UNDATED/OUT-OF-PERIOD",
+        "Source dates: all within",
+        "after the previous release of the same metric",
+        "Date the event report (#874)",
+        "last year's shutdown coverage is not this year's shutdown",
+        "2016-11-04 FXStreet",
+    ):
+        assert needle in section, needle
+    # Deep-research side: news, signals, template and rules all dated.
+    for needle in (
+        "each with its publication date, inside the period window"
+        " (Source-date guard, #874)",
+        "MUST state each signal's publication date beside the URL (#874)",
+        "[URL] (published YYYY-MM-DD)",
+        "[The `Source dates:` line required by the Source-date guard (#874)]",
+        "MUST cite sources, with publication dates inside the period"
+        " window, for all claims (#874)",
+    ):
+        assert needle in caddie_text, needle
+
+
+def test_monitor_source_date_rule(monitor_text: str) -> None:
+    """#874: the first-time-find loophole in the Freshness rule is
+    closed, the News delta / Estimates lines carry dated items, and
+    the footer enforcement paragraph names the validator window."""
+    import re
+
+    rule = _observation_rule(monitor_text, "Freshness rule")
+    for needle in (
+        "#874",
+        "three months before the ticker's period month",
+        "26OCT → 2026-07-01; 26JAN → 2025-10-01",
+        "ONLY when current-period",
+        "2016-11-04 FXStreet NFP preview",
+        "OUT-OF-PERIOD",
+        # #641 needles survive the amendment
+        "strictly newer",
+        "inherited: <prior cite>",
+    ):
+        assert needle in rule, needle
+    news = re.search(r"^News delta: \[.*$", monitor_text, flags=re.MULTILINE)
+    assert news is not None
+    assert "(publisher, YYYY-MM-DD)" in news.group(0)
+    assert "OUT-OF-PERIOD: <url> (<date>)" in news.group(0)
+    assert "#874" in news.group(0)
+    trigger = re.search(
+        r"^- \*\*New information\*\*.*$", monitor_text, flags=re.MULTILINE,
+    )
+    assert trigger is not None
+    assert "#874" in trigger.group(0)
+    assert "cannot raise this flag" in trigger.group(0)
+    # #867 Estimates line keeps its pinned prefix and gains dated houses.
+    assert "Estimates: [threshold markets only (#867)" in monitor_text
+    assert "every date MUST be inside the period window (#874)" in monitor_text
+    assert "The publication date is CHECKED, not copied" in monitor_text
+
+
+def test_caddie_master_source_date_check(caddie_master_text: str) -> None:
+    """#874: Caddie Master verifies cite dates before counting an
+    estimate (2c) and before acting on an extraordinary-event flag or
+    a consensus cite (4c); the #867 literals are untouched."""
+    s2c = caddie_master_text.split("#### 2c.", 1)[1].split("#### 2d.", 1)[0]
+    rule = s2c.split("**Contrary-estimate rule (#867).**", 1)[1].split(
+        "**Scheduled-release HOLD rule", 1,
+    )[0]
+    marker = "**Date check before exclusion or reliance (#874).**"
+    assert marker in rule
+    assert rule.index("Exclusion needs positive grounds") < rule.index(marker)
+    assert rule.index(marker) < rule.index("**Re-derive, don't auto-close.**")
+    for needle in (
+        "applied by CHECKING, never by assuming",
+        "OUT-OF-PERIOD: <house> <value> (<publisher>, <date>)",
+        '"Year not confirmed" remains NOT grounds to dismiss',
+        "the figure stays counted as contrary",
+        # #867 literals survive
+        "traced to a prior-year article",
+        '"Unverified", "year not confirmed", "single source", or'
+        ' "not a playbook bank" is NOT grounds',
+    ):
+        assert needle in rule, needle
+    s4c = caddie_master_text.split("#### 4c.", 1)[1].split("### Step 5", 1)[0]
+    check = "**Source-date check (#874).**"
+    assert check in s4c
+    assert s4c.index(check) < s4c.index("**Edge pre-filter.**")
+    block = s4c.split(check, 1)[1].split("**Edge pre-filter.**", 1)[0]
+    for needle in (
+        "extraordinary-event flag",
+        "`Source dates:` line",
+        "carries NO weight",
+        "October 2025 shutdown coverage is not a 2026 shutdown",
+        "**Thesis hole**",
+        "A memo with no `Source dates:` line is incomplete research",
+    ):
+        assert needle in block, needle

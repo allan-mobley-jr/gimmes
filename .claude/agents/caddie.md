@@ -60,10 +60,13 @@ For candidates in backtested gimme categories (KXCPICORE, KXCPIYOY, KXCPICOREYOY
 
 Sanity-check mode skips deep probability estimation, but it does NOT license an unobserved driver: whenever a check below adjusts an input off a real-world quantity (gas prices, oil, a rate level), that adjustment MUST carry a `Driver:` line with a current value and an as-of date, exactly as the Confidence Signals driver rule requires for deep research (#828).
 
+**Source-date guard (REQUIRED — #874; every mode, sanity-check and deep research).** Web search returns no publication-date filter, and bank forecasts, NFP previews, and shutdown coverage read identically year to year. Before a forecast, consensus, nowcast, or news item is used for ANYTHING — the center, a confidence signal, a consensus reconciliation, or an extraordinary-event flag — read its publication date off the article itself and check it against this market's period window: after the previous release of the same metric and before the contract close (for KXPAYROLLS-26OCT that is roughly 2026-10-02..2026-11-06). A source with no recoverable date, or dated outside the window, is `UNDATED/OUT-OF-PERIOD`: name it in the memo as such and do NOT use it. Every memo states the check in one line: `Source dates: all within <YYYY-MM-DD>..<YYYY-MM-DD>` or `Source dates: <n> excluded UNDATED/OUT-OF-PERIOD — <url> (<date or 'undated'>)`. The two incidents: a 2016-11-04 FXStreet preview of the October 2016 jobs report was cited as the "Oct 2026 consensus 170k-245k" and closed KXPAYROLLS-26OCT-T70000 at a loss; October 2025 shutdown coverage was cited as a 2026 shutdown and produced a wrong entry thesis and two REJECTs.
+
 1. **Extraordinary event check**: Is there a one-time event that could break the structural edge?
    - Government shutdown affecting data collection or release
    - Methodology change to the underlying statistic
    - Natural disaster, policy shock, or geopolitical event specifically targeting this metric
+   - **Date the event report (#874):** a shutdown, cancellation, or methodology change counts ONLY from an article dated inside this market's period window — last year's shutdown coverage is not this year's shutdown. Undated or out-of-period → no event, no flag.
    - If YES → flag for Caddie Master review, do NOT auto-pass
    - **CPI/inflation exception**: When the extraordinary event fires for an inflation category (KXCPI, KXCPICORE, KXCPIYOY, KXCPICOREYOY, KXPCECORE), do NOT abandon base-effect arithmetic. The YoY calculation methodology remains valid — the extraordinary event changes the MoM *estimate*, not the *math*. Adjust the MoM input range to reflect the event (e.g., elevated gas prices raise expected MoM from 0.2% to 0.4%), then recompute threshold probabilities mechanically: for each threshold T, calculate the MoM needed for YoY to exceed T, compare that to the adjusted MoM estimate, and derive P(exceed). Still flag for Caddie Master review, but include the arithmetic result alongside the flag — do NOT replace arithmetic with a vague "structural edge is broken" conclusion.
 
@@ -135,7 +138,7 @@ One line per probe, no padding, real content — a boilerplate preload defeats i
 ## Deep Research Framework (Non-Gimme Categories Only)
 
 For candidates NOT in gimme categories, investigate all of these:
-- **Current news**: Recent developments affecting the outcome
+- **Current news**: Recent developments affecting the outcome — each with its publication date, inside the period window (Source-date guard, #874)
 - **Domain data**: Polling, economic data, forecasts, expert consensus
 - **Cross-platform pricing**: How other prediction markets price this event
 - **Historical base rates**: How often similar events resolve YES
@@ -160,7 +163,7 @@ Identify independent signals and rate their strength (0-1). "Independent" means 
 3. **Cross-platform pricing** (Polymarket, Metaculus, PredictIt) — strength 0.5-0.7
 4. **News/sentiment** — strength 0.3-0.6
 
-MUST gather at least 2 signals from different categories. MUST cite at least one source URL per signal.
+MUST gather at least 2 signals from different categories. MUST cite at least one source URL per signal. MUST state each signal's publication date beside the URL (#874).
 
 **Driver observation (REQUIRED — #828; deep research only — hourly-series candidates use the Shadow line instead).** When a probability estimate leans on a named causal mechanism — a seasonal reversal, a base effect, a scheduled policy change — the mechanism's DRIVER is what must be observed, not the mechanism's reputation. A signal that merely asserts the mechanism ("gasoline typically retreats after Labor Day", news/analysis, strength 0.5) is NOT an observation of the driver and NEVER carries the estimate on its own.
 
@@ -275,7 +278,7 @@ MUST produce this exact format for each candidate:
 ### GimmeScore: XX/100
 
 ### Confidence Signals
-1. [Source] — [Description] (strength: X.X) [URL]
+1. [Source] — [Description] (strength: X.X) [URL] (published YYYY-MM-DD)
 2. ...
 
 ### Settlement Risk Assessment
@@ -284,6 +287,7 @@ MUST produce this exact format for each candidate:
 ### Research Memo
 [Structured analysis with sources cited]
 [Deep research: the `Driver:` / `Drivers: none` line(s) required by Confidence Signals (#828)]
+[The `Source dates:` line required by the Source-date guard (#874)]
 
 ### Recommendation
 [PROCEED / PASS / NEEDS MORE RESEARCH]
@@ -369,4 +373,4 @@ Substitute actual values: number of candidates researched and number with recomm
 - MUST produce a GimmeScore for every candidate — NEVER recommend PROCEED/PASS without a numeric score
 - MUST be explicit about uncertainty in probability estimates
 - MUST flag any settlement concerns prominently
-- MUST cite sources for all claims
+- MUST cite sources, with publication dates inside the period window, for all claims (#874)

@@ -15,6 +15,12 @@ Scope: fundamental-economic-trigger tickers only (CPI/PCE/payrolls/etc.).
 Equity-index tickers (KXSPX/KXINX/KXNASDAQ100) skip the validator —
 they have no bank-forecast vocabulary to contradict.
 
+#874 adds a publication-date window to the footer audit: a bare fresh
+row whose cite is dated before the first day of the month three months
+before the ticker's period month is rejected — a prior-year preview of
+the same release reads identically to a current one, and the #641
+first-time-find rule let it through as "fresh by definition".
+
 Constants are hard-coded rather than parsed from monitor.md so the
 validator works regardless of install path / worktree state. A
 drift-guard test in `tests/unit/test_observation_validator.py` keeps
@@ -211,6 +217,60 @@ def _valid_iso_dates(text: str) -> list[str]:
             continue
         out.append(candidate)
     return out
+
+
+# ---------------------------------------------------------------------------
+# #874: publication-date window for playbook cites
+# ---------------------------------------------------------------------------
+
+_TICKER_PERIOD_RE = re.compile(
+    r"(?<!\d)(?P<yy>\d{2})"
+    r"(?P<mon>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
+)
+_MONTH_INDEX: dict[str, int] = {
+    m: i
+    for i, m in enumerate(
+        ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+         "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"),
+        start=1,
+    )
+}
+# A forecast for a scheduled release is published after the PREVIOUS
+# release of the same metric — roughly one month out for monthly series,
+# ~3 months for the quarterly GDP advance. Three months is the loosest
+# window that still rejects a prior-year article (#874).
+PUB_DATE_WINDOW_MONTHS: int = 3
+
+
+def ticker_period(ticker: str) -> tuple[int, int] | None:
+    """(year, month) of the market's period from the first `YYMON`
+    token in the ticker (`KXPAYROLLS-26OCT-T70000` -> (2026, 10);
+    `KXGDP-26OCT30-T4.0` -> (2026, 10); `KXUE-CAN26APR-6.6` ->
+    (2026, 4)). None when the ticker carries no month token
+    (`KXGDP-26Q1`) — callers skip the window check."""
+    m = _TICKER_PERIOD_RE.search(ticker.upper())
+    if m is None:
+        return None
+    return (2000 + int(m.group("yy")), _MONTH_INDEX[m.group("mon")])
+
+
+def _floor_for_period(year: int, month: int) -> datetime.date:
+    month -= PUB_DATE_WINDOW_MONTHS
+    if month < 1:
+        month += 12
+        year -= 1
+    return datetime.date(year, month, 1)
+
+
+def pub_date_floor(ticker: str) -> datetime.date | None:
+    """Earliest publication date a fresh cite may carry for this
+    ticker: the first day of the period month minus
+    PUB_DATE_WINDOW_MONTHS. `26OCT` -> 2026-07-01; `26JAN` ->
+    2025-10-01. None when the period is unparseable."""
+    period = ticker_period(ticker)
+    if period is None:
+        return None
+    return _floor_for_period(*period)
 
 # Comparator library for Kalshi settlement sentences and Semantics lines.
 # Deliberately small: any wording outside it makes the parse inconclusive
@@ -626,9 +686,11 @@ def validate_playbook_footer(
     observation_body: str,
     prior_observation_body: str | None,
     prior_observation_timestamp: str | None = None,
+    now: datetime.datetime | None = None,
 ) -> tuple[list[str], list[str]]:
     """Footer audit (#643): five-outcome grammar (#731), 13-source
-    enumeration, date monotonicity for bare fresh rows, SUPERSEDED
+    enumeration, date monotonicity for bare fresh rows, the #874
+    publication-date window for bare fresh rows, SUPERSEDED
     stickiness, and the #731 sweep-marker chain. Prior-cycle rows
     parse best-effort — a prior row that doesn't classify cleanly
     skips its cross-cycle checks (historical pre-#615 prose), but the
@@ -701,11 +763,51 @@ def validate_playbook_footer(
             f" playbook list."
         )
 
+    # --- #731 sweep mode (parsed once; the #874 checks below and the
+    # #731 chain further down both read it) -----------------------------
+    marker = parse_sweep_marker(observation_body)
+    mode: str | None = marker[0] if marker is not None else None
+    current = now if now is not None else datetime.datetime.now(datetime.UTC)
+    today_iso = current.date().isoformat()
+    tomorrow_iso = (current.date() + datetime.timedelta(days=1)).isoformat()
+
+    # #874: publication-date hard floor, derived once from the ticker.
+    # Looser than the prompts' period window (the validator has no
+    # release calendar) but it rejects every prior-year cite.
+    period = ticker_period(ticker)
+    floor_iso: str | None = None
+    period_label: str | None = None
+    if period is not None:
+        floor_iso = _floor_for_period(*period).isoformat()
+        period_label = f"{period[0]}-{period[1]:02d}"
+
     for source in PLAYBOOK_SOURCES:
         row = footer.get(source)
         if row is None:
             continue
-        if row.kind == "fresh" and row.pub_date is None:
+        if row.kind == "inherited":
+            if (
+                row.pub_date is not None
+                and floor_iso is not None
+                and row.pub_date < floor_iso
+            ):
+                when = (
+                    "carry it this cycle (`inherited` is the only legal"
+                    " form on a skipped cycle); on the next full sweep"
+                    if mode == "skipped"
+                    else "now"
+                )
+                warnings.append(
+                    f"Footer row `{source}` for {ticker} inherits a cite"
+                    f" dated {row.pub_date}, below the #874 hard floor"
+                    f" {floor_iso} — most likely a prior period's note;"
+                    f" {when} replace it with a current-period search"
+                    f" result or `no result this cycle`."
+                )
+            continue
+        if row.kind != "fresh":
+            continue
+        if row.pub_date is None:
             hint = ""
             if "no result" in row.text.lower():
                 hint = (
@@ -720,6 +822,46 @@ def validate_playbook_footer(
                 f" YYYY-MM-DD)`, or write `inherited: <prior cite>` /"
                 f" `no result this cycle`.{hint}"
             )
+            continue
+        if mode == "skipped":
+            # The #731 chain below already rejects every fresh row on a
+            # skipped cycle; a second error with a contradictory remedy
+            # would send the agent in circles.
+            continue
+        # Lexicographic compare is safe: pub_date comes from
+        # _valid_iso_dates (calendar-checked ISO); the bounds are
+        # date.isoformat().
+        cited = (
+            f"Footer row `{source}` for {ticker} cites a fresh result"
+            f" dated {row.pub_date}"
+        )
+        if floor_iso is not None and row.pub_date < floor_iso:
+            errors.append(
+                f"{cited}, below the #874 hard floor {floor_iso} for a"
+                f" {period_label} period market (period month minus"
+                f" {PUB_DATE_WINDOW_MONTHS} months). A note published"
+                f" that early is a prior period's forecast — prior-year"
+                f" previews read identically to current ones. The period"
+                f" window itself is narrower (after the previous release"
+                f" of the same metric), so a date past the floor still"
+                f" needs the article's own date checked. Re-search for a"
+                f" note on THIS period, or write `no result this cycle`."
+            )
+        elif row.pub_date > tomorrow_iso:
+            # Beyond timezone slack: a typo that would poison the #641
+            # monotonicity chain for this source until the date passes.
+            errors.append(
+                f"{cited}, which is in the future (today is {today_iso},"
+                f" #874) — a typo here would block every later fresh cite"
+                f" for this source as 'not strictly newer'. Fix the"
+                f" publication date."
+            )
+        elif row.pub_date > today_iso:
+            warnings.append(
+                f"{cited}, one day ahead of UTC today ({today_iso}, #874)"
+                f" — timezone slack or a typo; verify the publication"
+                f" date before the next cycle inherits it."
+            )
 
     # --- #731 sweep-marker chain -------------------------------------
     sweep_lines = _SWEEP_LINE_RE.findall(observation_body)
@@ -729,8 +871,6 @@ def validate_playbook_footer(
             f" `Sweep:` lines (#731) — only the FIRST is parsed; quoted"
             f" or duplicated markers can hijack the declared mode."
         )
-    marker = parse_sweep_marker(observation_body)
-    mode: str | None = None
     if marker is None:
         warnings.append(
             f"Observation for {ticker} has no `Sweep:` marker (#731) —"
@@ -738,7 +878,7 @@ def validate_playbook_footer(
             f" a full sweep (no anchor on record)."
         )
     else:
-        mode, anchor_ts = marker
+        _, anchor_ts = marker
         if mode == "full":
             for source in PLAYBOOK_SOURCES:
                 row = footer.get(source)
@@ -785,7 +925,7 @@ def validate_playbook_footer(
                     )
                 else:
                     age_h = (
-                        datetime.datetime.now(datetime.UTC) - anchor_dt
+                        current - anchor_dt
                     ).total_seconds() / 3600
                     if age_h > SWEEP_ANCHOR_MAX_AGE_HOURS:
                         errors.append(

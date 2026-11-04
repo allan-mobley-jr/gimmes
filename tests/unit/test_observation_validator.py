@@ -383,6 +383,26 @@ class TestSyncWith643Rules:
             f" (#643)` paragraphs (semantics + footer); found {count}."
         )
 
+    def test_enforcement_sentence_names_874_window(self) -> None:
+        """#874 drift guard: the footer enforcement paragraph in
+        monitor.md must describe the publication-date window the
+        validator enforces, and the constant must match the prose."""
+        from gimmes.store.observation_validator import (
+            PUB_DATE_WINDOW_MONTHS,
+        )
+
+        text = _monitor_md()
+        match = re.search(
+            r"\*\*Runtime enforcement \(#643\)\.\*\* The footer rules.*?\n\n",
+            text,
+            flags=re.DOTALL,
+        )
+        assert match is not None, "footer enforcement paragraph missing"
+        para = match.group(0)
+        assert "#874" in para
+        assert "three months" in para
+        assert PUB_DATE_WINDOW_MONTHS == 3
+
     def test_template_footer_round_trips_through_validator(self) -> None:
         """Render monitor.md's own heredoc footer with each of the
         sweep-legal canonical outcome forms and prove the validator
