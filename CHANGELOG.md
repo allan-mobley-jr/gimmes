@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.37] - 2026-11-04
+
+One fix to how the research agents treat the age of a source. **Restart not required after `gimmes update`** — agent prompts are read per dispatch and the validator runs inside `gimmes position-note`; the loop code is untouched. Behavior notes: (1) Caddie memos carry a `Source dates:` line and may not use an undated or out-of-period article for a center, a confidence signal, or an extraordinary-event flag; (2) Monitor's first-time-find exemption to the Freshness rule now applies only to current-period cites, and `News delta:` / `Estimates:` items carry publication dates; (3) `gimmes position-note --type observation` rejects a fresh playbook cite dated before the first of the month three months before the ticker's period month (`26OCT` → 2026-07-01), rejects a cite more than a day in the future, and warns on inherited out-of-window cites; (4) Caddie Master verifies cite dates before counting an estimate and before acting on a shutdown or cancellation claim.
+
+### Fixed
+
+- **#874**: a 2016-11-04 FXStreet NFP preview was cited as the "Oct 2026 consensus 170k-245k" and closed KXPAYROLLS-26OCT-T70000 at -$62; October 2025 shutdown coverage was cited as a 2026 shutdown and produced a wrong entry thesis on KXCPICORE-26OCT-T0.2 and two REJECTs on KXPAYROLLS-26OCT-T80000. Web search has no date filter and the footer validator accepted any first-time cite as fresh. Follow-ups in #877.
+
 ## [0.8.36] - 2026-10-14
 
 One fix to how Caddie Master weighs evidence against an open position. **Restart not required after `gimmes update`** — agent prompts only, read per dispatch. Behavior notes: (1) Monitor observations on threshold markets gain an `Estimates:` line (latest figure per forecasting house, contrary vs supporting); a new contrary house, or two of them, always raises a `New information` flag; (2) when two or more houses sit past the threshold against a position, Caddie Master must re-derive the probability with the arithmetic on record and close if it falls below the floor or the edge is gone — "unverified" is no longer grounds to dismiss an estimate; (3) a HOLD into a release must list every contrary estimate.
