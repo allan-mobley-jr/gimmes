@@ -497,6 +497,36 @@ def test_refound_stale_cite_rejected_end_to_end(
     assert len(notes) == 1
 
 
+def test_prior_year_cite_rejected_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#874 incident: a first-time find with no prior cite, dated
+    2016-11-04, written as fresh against an October 2026 market. The
+    #641 first-time rule let it through; the publication window must
+    not."""
+    db_path = tmp_path / "test.db"
+    _seed_empty_db(db_path)
+    _patch_config(monkeypatch, db_path)
+    footer = _full_footer().replace(
+        "- FXStreet: no result this cycle",
+        "- FXStreet: Oct NFP consensus 170k-245k (FXStreet, 2016-11-04)",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "position-note", "KXPAYROLLS-26OCT-T70000",
+        "--cycle", "2650", "--agent", "monitor", "--type", "observation",
+        "--body",
+        "Delta: Oct NFP preview found.\nSweep: full (#731)\n\n" + footer,
+    ])
+    assert result.exit_code == 1, result.output
+    for needle in ("#874", "2016-11-04", "2026-07-01"):
+        assert needle in result.output
+    assert _read_notes(
+        db_path, "KXPAYROLLS-26OCT-T70000", note_type="observation",
+    ) == []
+
+
 def test_warnings_print_but_do_not_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

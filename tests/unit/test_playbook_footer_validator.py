@@ -11,11 +11,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from gimmes.store.observation_validator import (
     AGGREGATORS,
     NAMED_BANKS,
     PLAYBOOK_SOURCES,
     parse_playbook_footer,
+    pub_date_floor,
+    ticker_period,
     validate_playbook_footer,
 )
 
@@ -51,6 +55,14 @@ def _recent_anchor(hours_ago: float = 2.0) -> str:
     return (
         datetime.now(UTC) - timedelta(hours=hours_ago)
     ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+NOT_SEARCHED = "not searched (cadence — last full sweep 2026-07-10: no result)"
+
+
+def _not_searched_rows() -> dict[str, str]:
+    """make_footer overrides marking every source not-searched."""
+    return {s.replace(" ", "_"): NOT_SEARCHED for s in PLAYBOOK_SOURCES}
 
 
 def make_skipped_observation(
@@ -340,6 +352,190 @@ class TestValidatePlaybookFooter:
         assert any("not verifiable" in w for w in warnings)
 
 
+class TestPublicationDateWindow:
+    """#874: a bare fresh row dated before the ticker's hard floor (first
+    of the month three months before the period month) is a prior-year
+    article — the 2016-11-04 FXStreet NFP preview that closed
+    KXPAYROLLS-26OCT-T70000 had no prior cite and passed the #641
+    first-time-find rule as "fresh by definition"."""
+
+    PAYROLLS = "KXPAYROLLS-26OCT-T70000"
+    NOW = datetime(2026, 10, 22, 14, 0, tzinfo=UTC)
+
+    def _run(self, ticker: str, **rows: str) -> tuple[list[str], list[str]]:
+        return validate_playbook_footer(
+            ticker=ticker,
+            observation_body=make_observation(make_footer(**rows)),
+            prior_observation_body=None,
+            now=self.NOW,
+        )
+
+    def test_prior_year_first_time_fresh_row_rejected(self) -> None:
+        errors, _ = self._run(
+            self.PAYROLLS,
+            FXStreet="Oct NFP consensus 170k-245k (FXStreet, 2016-11-04)",
+        )
+        assert len(errors) == 1
+        for needle in (
+            "FXStreet", "2016-11-04", "2026-07-01", "2026-10", "#874",
+        ):
+            assert needle in errors[0]
+
+    @pytest.mark.parametrize(
+        ("ticker", "source", "row"),
+        [
+            # in-window fresh cite
+            (PAYROLLS, "FXStreet", "60k-90k (FXStreet, 2026-10-03)"),
+            # floor is inclusive
+            (PAYROLLS, "Reuters", "+70k (Reuters, 2026-07-01)"),
+            # January market accepts a prior-year November forecast
+            ("KXCPI-26JAN-T0.3", "Reuters", "+0.3% (Reuters, 2025-11-20)"),
+            # no YYMON token: window check skipped
+            ("KXGDP-26Q1-T2.5", "Reuters", "+2.1% (Reuters, 2016-11-04)"),
+            # same-day cite is not "future"
+            (PAYROLLS, "Reuters", "+70k (Reuters, 2026-10-22)"),
+            # inherited row without a date is silent
+            (PAYROLLS, "Citi", "inherited: +0.2% (FXStreet)"),
+        ],
+    )
+    def test_clean_row_is_silent(
+        self, ticker: str, source: str, row: str,
+    ) -> None:
+        errors, warnings = self._run(ticker, **{source: row})
+        assert errors == []
+        assert warnings == []
+
+    @pytest.mark.parametrize(
+        ("ticker", "bad_date", "floor"),
+        [
+            ("KXPAYROLLS-26OCT-T70000", "2026-06-30", "2026-07-01"),
+            ("KXCPI-26JAN-T0.3", "2025-09-30", "2025-10-01"),
+        ],
+    )
+    def test_day_before_floor_rejected(
+        self, ticker: str, bad_date: str, floor: str,
+    ) -> None:
+        errors, _ = self._run(ticker, Reuters=f"+1 (Reuters, {bad_date})")
+        assert any("#874" in e and bad_date in e and floor in e for e in errors)
+
+    def test_future_dated_fresh_row_beyond_one_day_is_error(self) -> None:
+        errors, warnings = self._run(
+            self.PAYROLLS, Reuters="+70k (Reuters, 2099-01-01)",
+        )
+        assert warnings == []
+        assert len(errors) == 1
+        assert "#874" in errors[0] and "future" in errors[0]
+        assert "not strictly newer" in errors[0]
+
+    def test_future_check_runs_without_a_parseable_period(self) -> None:
+        errors, _ = self._run(
+            "KXGDP-26Q1-T2.5", Reuters="+2.1% (Reuters, 2099-01-01)",
+        )
+        assert any("#874" in e and "future" in e for e in errors)
+
+    def test_fresh_row_dated_tomorrow_warns_only(self) -> None:
+        errors, warnings = self._run(
+            self.PAYROLLS, Reuters="+70k (Reuters, 2026-10-23)",
+        )
+        assert errors == []
+        assert len(warnings) == 1
+        assert "#874" in warnings[0] and "timezone slack" in warnings[0]
+
+    def test_inherited_out_of_window_warns_only(self) -> None:
+        errors, warnings = self._run(
+            self.PAYROLLS, Citi="inherited: +0.2% (FXStreet, 2016-11-04)",
+        )
+        assert errors == []
+        assert any("#874" in w and "Citi" in w for w in warnings)
+
+    def test_window_error_coexists_with_monotonicity(self) -> None:
+        prior = make_observation(make_footer(
+            FXStreet="+70k (FXStreet, 2026-10-01)",
+        ))
+        errors, _ = validate_playbook_footer(
+            ticker=self.PAYROLLS,
+            observation_body=make_observation(make_footer(
+                FXStreet="170k-245k (FXStreet, 2016-11-04)",
+            )),
+            prior_observation_body=prior,
+            now=self.NOW,
+        )
+        assert any("#874" in e for e in errors)
+        assert any("NEWLY PUBLISHED" in e for e in errors)
+
+    def test_skipped_cycle_out_of_window_fresh_row_reports_731_only(
+        self,
+    ) -> None:
+        """On a skipped cycle the #731 branch already rejects every
+        fresh row; a second #874 error with a contradictory remedy
+        ('write no result this cycle', itself forbidden on skipped
+        cycles) must not pile on."""
+        errors, _ = validate_playbook_footer(
+            ticker=self.PAYROLLS,
+            observation_body=make_skipped_observation(make_footer(
+                FXStreet="170k-245k (FXStreet, 2016-11-04)",
+            )),
+            prior_observation_body=make_observation(make_footer()),
+            now=self.NOW,
+        )
+        assert any("#731" in e and "FXStreet" in e for e in errors)
+        assert not any("#874" in e for e in errors)
+
+    def test_inherited_out_of_window_on_skipped_cycle_says_carry(
+        self,
+    ) -> None:
+        cite = "inherited: +0.2% (FXStreet, 2016-11-04)"
+        rows = _not_searched_rows()
+        rows["Citi"] = cite
+        errors, warnings = validate_playbook_footer(
+            ticker=self.PAYROLLS,
+            observation_body=make_skipped_observation(make_footer(**rows)),
+            prior_observation_body=make_observation(make_footer(Citi=cite)),
+            now=self.NOW,
+        )
+        assert errors == []
+        w = [x for x in warnings if "#874" in x and "Citi" in x]
+        assert len(w) == 1
+        assert "carry it this cycle" in w[0]
+        assert "next full sweep" in w[0]
+
+    @pytest.mark.parametrize(
+        ("ticker", "expected"),
+        [
+            ("KXPAYROLLS-26OCT-T70000", (2026, 10)),
+            ("KXGDP-26OCT30-T4.0", (2026, 10)),
+            ("KXJOBLESSCLAIMS-26MAY14-210000", (2026, 5)),
+            ("KXCPI-26JUN-T-0.1", (2026, 6)),
+            ("KXUE-CAN26APR-6.6", (2026, 4)),
+            ("KXCPI-26MARB-T0.3", (2026, 3)),
+            ("kxcpi-26dec-t0.3", (2026, 12)),
+            ("KXGDP-26Q1-T2.5", None),
+            ("KXCPI-TEST", None),
+        ],
+    )
+    def test_ticker_period_shapes(
+        self, ticker: str, expected: tuple[int, int] | None,
+    ) -> None:
+        assert ticker_period(ticker) == expected
+
+    @pytest.mark.parametrize(
+        ("ticker", "expected"),
+        [
+            ("KXCPI-26JAN-T0.3", "2025-10-01"),
+            ("KXCPI-26FEB-T0.3", "2025-11-01"),
+            ("KXCPI-26MAR-T0.3", "2025-12-01"),
+            ("KXCPI-26APR-T0.3", "2026-01-01"),
+            ("KXPAYROLLS-26OCT-T70000", "2026-07-01"),
+        ],
+    )
+    def test_pub_date_floor_year_rollover(
+        self, ticker: str, expected: str,
+    ) -> None:
+        floor = pub_date_floor(ticker)
+        assert floor is not None
+        assert floor.isoformat() == expected
+
+
 class TestFirstDateExtractionAndRowForms:
     """#643 review regressions: min()-date extraction hard-failed
     diligent-refresh rows; en-dash rows were absorbed; Citi aliases
@@ -481,18 +677,13 @@ class TestFirstDateExtractionAndRowForms:
 class TestSweepCadence731:
     """#731: the sweep-marker chain and the five-outcome grammar."""
 
-    NOT_SEARCHED = (
-        "not searched (cadence — last full sweep 2026-07-10: no result)"
-    )
+    NOT_SEARCHED = NOT_SEARCHED
 
     def _prior_full(self) -> str:
         return make_observation(make_footer())
 
     def _not_searched_rows(self) -> dict[str, str]:
-        """make_footer overrides marking every source not-searched."""
-        return {
-            s.replace(" ", "_"): self.NOT_SEARCHED for s in PLAYBOOK_SOURCES
-        }
+        return _not_searched_rows()
 
     def test_not_searched_row_classifies_without_dates(self) -> None:
         footer = parse_playbook_footer(
